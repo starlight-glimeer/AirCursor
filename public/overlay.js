@@ -17,6 +17,7 @@ const aircursor = window.aircursor || {
         rightClick: "middlePinch",
         exit: "fist",
       },
+      recordedGestures: {},
     },
     screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
   }),
@@ -42,6 +43,7 @@ const settings = {
     rightClick: "middlePinch",
     exit: "fist",
   },
+  recordedGestures: {},
 };
 
 const GESTURE_LABELS = {
@@ -151,8 +153,33 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function buildPoseTemplate(points, palmWidth) {
+  const wrist = points[0];
+  const scale = Math.max(40, palmWidth);
+  return points.flatMap((p) => [
+    Number(((p.x - wrist.x) / scale).toFixed(4)),
+    Number(((p.y - wrist.y) / scale).toFixed(4)),
+    Number(((p.z || 0) * 3).toFixed(4)),
+  ]);
+}
+
+function templateDistance(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return Infinity;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum / a.length);
+}
+
 function gestureMatches(gesture, gestureId) {
   if (!gesture || !gestureId || gestureId === "none") return false;
+  if (gestureId.startsWith("custom:")) {
+    const action = gestureId.slice("custom:".length);
+    const template = settings.recordedGestures?.[action]?.points;
+    return templateDistance(gesture.poseTemplate, template) < 0.22;
+  }
   return Boolean(gesture[gestureId]);
 }
 
@@ -201,6 +228,7 @@ function detectGesture(points) {
     palm: palmCenter(points),
     index,
     palmWidth,
+    poseTemplate: buildPoseTemplate(points, palmWidth),
   };
   const clickGesture = settings.gestureMap?.click || "pinch";
   const rightClickGesture = settings.gestureMap?.rightClick || "middlePinch";
@@ -565,6 +593,8 @@ function loop(now) {
           ? "骨架已开，等待检测到手"
           : "未检测到手",
       controlEnabled: settings.controlEnabled,
+      poseTemplate: gesture?.poseTemplate,
+      poseAvailable: Boolean(gesture?.poseTemplate),
     });
   }
 
@@ -708,6 +738,7 @@ aircursor.onSettings((next) => {
   const needsResize = next.effects && next.effects !== settings.effects;
   Object.assign(settings, next, {
     gestureMap: { ...settings.gestureMap, ...(next.gestureMap || {}) },
+    recordedGestures: next.recordedGestures || settings.recordedGestures,
   });
   if (needsResize) resize();
   if (!settings.controlEnabled && state.pointerDown) {

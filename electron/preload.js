@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("aircursor", {
   getState: () => ipcRenderer.invoke("aircursor:get-state"),
   getRules: () => ipcRenderer.invoke("aircursor:get-rules"),
   updateSettings: (patch) => ipcRenderer.invoke("aircursor:update-settings", patch),
+  saveRecordedGesture: (action) => ipcRenderer.invoke("aircursor:save-recorded-gesture", action),
+  clearRecordedGesture: (action) => ipcRenderer.invoke("aircursor:clear-recorded-gesture", action),
   runRule: (ruleId) => ipcRenderer.invoke("aircursor:run-rule", ruleId),
   openNetease: () => ipcRenderer.invoke("aircursor:open-netease"),
   openAccessibilitySettings: () => ipcRenderer.invoke("aircursor:open-accessibility"),

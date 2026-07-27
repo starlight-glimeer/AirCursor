@@ -22,8 +22,9 @@ let voiceBuffer = "";
 let voiceStatus = "等待";
 let quitting = false;
 let systemCursorHidden = false;
+let latestPoseTemplate = null;
 
-const settings = {
+const defaultSettings = {
   overlayVisible: true,
   showHands: false,
   controlEnabled: false,
@@ -36,7 +37,9 @@ const settings = {
     rightClick: "middlePinch",
     exit: "fist",
   },
+  recordedGestures: {},
 };
+let settings = JSON.parse(JSON.stringify(defaultSettings));
 
 const ruleDefinitions = [
   {
@@ -94,6 +97,33 @@ const ruleDefinitions = [
 ];
 
 const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, voice }));
+
+function mergeSettings(base, incoming) {
+  return {
+    ...base,
+    ...incoming,
+    gestureMap: { ...base.gestureMap, ...(incoming?.gestureMap || {}) },
+    recordedGestures: { ...base.recordedGestures, ...(incoming?.recordedGestures || {}) },
+  };
+}
+
+function settingsPath() {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+    settings = mergeSettings(defaultSettings, saved);
+  } catch {
+    settings = JSON.parse(JSON.stringify(defaultSettings));
+  }
+}
+
+function saveSettings() {
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+}
 
 function helperBinaryPath(binaryName) {
   return path.join(app.getPath("userData"), `${binaryName}-${app.getVersion()}`);
@@ -234,6 +264,17 @@ function syncSettings() {
   }
 }
 
+function updateSettings(patch) {
+  const previousControlEnabled = settings.controlEnabled;
+  settings = mergeSettings(settings, patch);
+  if (settings.controlEnabled !== previousControlEnabled) {
+    setSystemCursorHidden(settings.controlEnabled);
+  }
+  saveSettings();
+  syncSettings();
+  return settings;
+}
+
 function openWithCandidates(candidates) {
   for (const args of candidates) {
     const result = spawnSync("/usr/bin/open", args, { stdio: "ignore" });
@@ -359,6 +400,7 @@ function showDashboard() {
 }
 
 app.whenReady().then(() => {
+  loadSettings();
   if (process.platform === "darwin") {
     app.setActivationPolicy?.("regular");
     app.dock?.show();
@@ -399,16 +441,47 @@ ipcMain.handle("aircursor:get-state", () => ({
   status: { voice: voiceStatus },
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
-  const previousControlEnabled = settings.controlEnabled;
-  if (patch.gestureMap) {
-    patch.gestureMap = { ...settings.gestureMap, ...patch.gestureMap };
-  }
-  Object.assign(settings, patch);
-  if (settings.controlEnabled !== previousControlEnabled) {
-    setSystemCursorHidden(settings.controlEnabled);
-  }
-  syncSettings();
+  updateSettings(patch);
   return { settings };
+});
+ipcMain.handle("aircursor:save-recorded-gesture", (_event, action) => {
+  if (!["wake", "click", "rightClick", "exit"].includes(action)) {
+    return { ok: false, reason: "未知动作" };
+  }
+  if (!latestPoseTemplate) {
+    return { ok: false, reason: "还没有检测到可保存的手势" };
+  }
+  updateSettings({
+    gestureMap: { [action]: `custom:${action}` },
+    recordedGestures: {
+      [action]: {
+        at: Date.now(),
+        points: latestPoseTemplate,
+      },
+    },
+  });
+  return { ok: true, settings };
+});
+ipcMain.handle("aircursor:clear-recorded-gesture", (_event, action) => {
+  if (!["wake", "click", "rightClick", "exit"].includes(action)) {
+    return { ok: false, reason: "未知动作" };
+  }
+  const recordedGestures = { ...settings.recordedGestures };
+  delete recordedGestures[action];
+  const fallback = {
+    wake: "openPalm",
+    click: "pinch",
+    rightClick: "middlePinch",
+    exit: "fist",
+  };
+  settings = {
+    ...settings,
+    gestureMap: { ...settings.gestureMap, [action]: fallback[action] },
+    recordedGestures,
+  };
+  saveSettings();
+  syncSettings();
+  return { ok: true, settings };
 });
 ipcMain.handle("aircursor:get-rules", () => ({ rules: publicRules }));
 ipcMain.handle("aircursor:run-rule", (_event, ruleId) => runRule(ruleId));
@@ -425,5 +498,8 @@ ipcMain.on("aircursor:pointer", (_event, command) => {
   sendPointer(command);
 });
 ipcMain.on("aircursor:overlay-status", (_event, status) => {
+  if (status.poseTemplate) {
+    latestPoseTemplate = status.poseTemplate;
+  }
   broadcast("aircursor:overlay-status", status);
 });

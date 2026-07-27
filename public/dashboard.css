@@ -159,6 +159,50 @@ h2 {
   font-size: 14px;
 }
 
+.gesture-recorder {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.recorder-row {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #eef1f6;
+  border-radius: 8px;
+  background: #f8faff;
+}
+
+.recorder-row div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.recorder-row span {
+  color: #677083;
+  font-size: 13px;
+}
+
+.recorder-row.is-recording {
+  border-color: #0f72d4;
+  box-shadow: 0 0 0 3px rgba(15, 114, 212, 0.12);
+}
+
+.recorder-row.is-saved {
+  background: #f5fbf8;
+  border-color: #bfe4d1;
+}
+
+.recorder-row button {
+  min-width: 78px;
+  padding: 0 12px;
+}
+
 .rules div {
   min-height: 86px;
   display: grid;

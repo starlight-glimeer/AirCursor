@@ -29,10 +29,43 @@ let settings = {
     rightClick: "middlePinch",
     exit: "fist",
   },
+  recordedGestures: {},
 };
 let rules = [];
+let recordingAction = null;
+
+const actionLabels = {
+  wake: "唤醒控制",
+  click: "点击/拖拽",
+  rightClick: "右键",
+  exit: "退出控制",
+};
+
+const actionSelects = {
+  wake: wakeGesture,
+  click: clickGesture,
+  rightClick: rightClickGesture,
+  exit: exitGesture,
+};
+
+function ensureRecordedOption(action) {
+  const select = actionSelects[action];
+  const value = `custom:${action}`;
+  const existing = Array.from(select.options).find((option) => option.value === value);
+  if (settings.recordedGestures?.[action]) {
+    if (!existing) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = "使用已录制手势";
+      select.prepend(option);
+    }
+  } else if (existing) {
+    existing.remove();
+  }
+}
 
 function render() {
+  for (const action of Object.keys(actionSelects)) ensureRecordedOption(action);
   overlayVisible.checked = settings.overlayVisible;
   showHands.checked = settings.showHands;
   voiceEnabled.checked = settings.voiceEnabled;
@@ -44,6 +77,14 @@ function render() {
   exitGesture.value = settings.gestureMap?.exit || "fist";
   controlState.textContent = settings.controlEnabled ? "开启" : "关闭";
   controlToggle.textContent = settings.controlEnabled ? "关闭控制" : "开启控制";
+
+  document.querySelectorAll(".recorder-row").forEach((row) => {
+    const action = row.dataset.action;
+    row.classList.toggle("is-recording", recordingAction === action);
+    row.classList.toggle("is-saved", Boolean(settings.recordedGestures?.[action]));
+    row.querySelector("[data-save-action]").disabled = recordingAction !== action;
+    row.querySelector("[data-clear-action]").disabled = !settings.recordedGestures?.[action];
+  });
 
   voiceRules.innerHTML = "";
   for (const rule of rules) {
@@ -109,6 +150,42 @@ rightClickGesture.addEventListener("change", () => {
 });
 exitGesture.addEventListener("change", () => {
   patchSettings({ gestureMap: { exit: exitGesture.value } });
+});
+document.querySelectorAll("[data-record-action]").forEach((button) => {
+  button.addEventListener("click", () => {
+    recordingAction = button.dataset.recordAction;
+    ruleState.textContent = `录制中：${actionLabels[recordingAction]}。打开骨架，摆好手势后点“确定保存”。`;
+    patchSettings({ overlayVisible: true, showHands: true });
+    render();
+  });
+});
+document.querySelectorAll("[data-save-action]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const action = button.dataset.saveAction;
+    const result = await window.aircursor.saveRecordedGesture(action);
+    if (result.ok) {
+      settings = result.settings;
+      recordingAction = null;
+      ruleState.textContent = `已保存录制手势：${actionLabels[action]}`;
+    } else {
+      ruleState.textContent = `保存失败：${result.reason}`;
+    }
+    render();
+  });
+});
+document.querySelectorAll("[data-clear-action]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const action = button.dataset.clearAction;
+    const result = await window.aircursor.clearRecordedGesture(action);
+    if (result.ok) {
+      settings = result.settings;
+      if (recordingAction === action) recordingAction = null;
+      ruleState.textContent = `已清除录制手势：${actionLabels[action]}`;
+    } else {
+      ruleState.textContent = `清除失败：${result.reason}`;
+    }
+    render();
+  });
 });
 
 window.aircursor.onSettings((nextSettings) => {
