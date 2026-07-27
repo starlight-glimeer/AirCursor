@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gesture Launcher</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  </head>
+  <body>
+    <main class="stage">
+      <video id="camera" playsinline muted></video>
+      <canvas id="scene"></canvas>
+      <section class="hud">
+        <div>
+          <p class="eyebrow">Palm Command</p>
+          <h1>捏合召唤网易云</h1>
+        </div>
+        <div id="status" class="status">等待摄像头权限</div>
+      </section>
+      <section class="panel">
+        <div>
+          <span class="label">手势</span>
+          <strong id="gesture">未检测到手</strong>
+        </div>
+        <div>
+          <span class="label">触发进度</span>
+          <div class="meter">
+            <i id="meter"></i>
+          </div>
+        </div>
+        <button id="testButton" type="button">测试打开网易云</button>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
