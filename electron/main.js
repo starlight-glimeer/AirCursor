@@ -45,6 +45,7 @@ const defaultSettings = {
     deadzone: 1.6,
     prediction: 0.35,
     matchThreshold: 0.22,
+    rotationTolerance: 20,
     inferenceIntervalMs: 20,
     moveIntervalMs: 8,
   },
