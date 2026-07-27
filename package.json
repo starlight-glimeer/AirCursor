@@ -1,6 +1,6 @@
 {
   "name": "aircursor",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Transparent macOS hand and voice control overlay.",
   "author": "starlight-glimeer",
   "main": "electron/main.js",
@@ -24,6 +24,10 @@
       {
         "from": "native/AirCursorPointer.swift",
         "to": "native/AirCursorPointer.swift"
+      },
+      {
+        "from": "native/AirCursorVoice.swift",
+        "to": "native/AirCursorVoice.swift"
       }
     ],
     "mac": {

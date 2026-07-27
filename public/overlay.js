@@ -20,6 +20,7 @@ const aircursor = window.aircursor || {
   pointer: () => {},
   status: () => {},
   onSettings: () => {},
+  onVoiceCommand: () => {},
 };
 
 const settings = {
@@ -51,6 +52,8 @@ const state = {
   lastPointerSentAt: 0,
   lastInferenceAt: 0,
   inferenceBusy: false,
+  handRuntime: null,
+  handRestartToken: 0,
   cursor: { x: 0, y: 0, ready: false },
   screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
 };
@@ -70,12 +73,17 @@ const VOICE_RULES = [
   },
   {
     id: "click",
-    match: /点击|单击|点一下/,
+    match: /^(点|选|开|确认|点击|单击|点一下|click|go)$/i,
     run: () => {
+      if (!settings.controlEnabled) {
+        aircursor.status({ rule: "先开启控制，再用语音点选" });
+        return false;
+      }
       sendPointer("click", state.cursor.x, state.cursor.y);
       burst(state.cursor.x, state.cursor.y, 18, "#ffd76a");
+      return true;
     },
-    label: "点击当前位置",
+    label: "语音点选当前位置",
   },
   { id: "open_netease", match: /网易云|音乐/, label: "打开网易云音乐" },
   { id: "open_wechat", match: /微信|wechat/i, label: "打开微信" },
@@ -204,6 +212,11 @@ function setControlMode(enabled) {
   burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 48 : 20, enabled ? "#49e5ff" : "#ff4ea3");
 }
 
+function moveCursorToward(gesture, smoothing) {
+  state.cursor.x += (gesture.index.x - state.cursor.x) * smoothing;
+  state.cursor.y += (gesture.index.y - state.cursor.y) * smoothing;
+}
+
 function updateHoldGesture(gesture) {
   if (!gesture) {
     state.holdGesture = null;
@@ -250,8 +263,7 @@ function updateSystemCursor(gesture) {
   }
 
   const smoothing = state.pinch.dragging ? 0.34 : 0.22;
-  state.cursor.x += (gesture.index.x - state.cursor.x) * smoothing;
-  state.cursor.y += (gesture.index.y - state.cursor.y) * smoothing;
+  moveCursorToward(gesture, smoothing);
 
   const now = performance.now();
   const canSendMove = !state.pinch.active || state.pinch.dragging;
@@ -452,7 +464,26 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
+async function stopHandsRuntime() {
+  const runtime = state.handRuntime;
+  state.handRuntime = null;
+  state.hands = [];
+  state.cameraReady = false;
+  state.inferenceBusy = false;
+  resetPinch();
+
+  if (runtime?.camera?.stop) {
+    await runtime.camera.stop();
+  }
+  if (runtime?.hands?.close) {
+    runtime.hands.close();
+  }
+}
+
 async function setupHands() {
+  const token = state.handRestartToken + 1;
+  state.handRestartToken = token;
+  await stopHandsRuntime();
   aircursor.status({ camera: "正在加载手势模型" });
 
   if (!window.Hands || !window.Camera) {
@@ -471,6 +502,7 @@ async function setupHands() {
   });
 
   hands.onResults((results) => {
+    if (token !== state.handRestartToken) return;
     state.hands = results.multiHandLandmarks || [];
   });
 
@@ -478,7 +510,7 @@ async function setupHands() {
     onFrame: async () => {
       const now = performance.now();
       const minInterval = settings.twoHands ? 50 : 33;
-      if (state.inferenceBusy || now - state.lastInferenceAt < minInterval) return;
+      if (token !== state.handRestartToken || state.inferenceBusy || now - state.lastInferenceAt < minInterval) return;
 
       state.inferenceBusy = true;
       state.lastInferenceAt = now;
@@ -492,15 +524,45 @@ async function setupHands() {
     height: settings.twoHands ? 540 : 480,
   });
 
+  state.handRuntime = { hands, camera };
   aircursor.status({ camera: "正在请求摄像头权限" });
   await camera.start();
+  if (token !== state.handRestartToken) return;
   state.cameraReady = true;
-  aircursor.status({ camera: "已开启" });
+  aircursor.status({ camera: settings.twoHands ? "已开启（双手）" : "已开启（单手）" });
+}
+
+function handleVoiceText(rawText, source = "语音") {
+  if (!settings.voiceEnabled) return;
+  const text = rawText.trim().replace(/\s+/g, "");
+  if (!text) return;
+
+  const rule = VOICE_RULES.find((item) => item.match.test(text));
+  if (!rule) {
+    aircursor.status({ rule: `未匹配${source}：${text}` });
+    return;
+  }
+
+  if (rule.run) {
+    if (rule.run() !== false) {
+      aircursor.status({ rule: `${source}：${rule.label}` });
+    }
+    return;
+  }
+
+  aircursor.runRule(rule.id).then((response) => {
+    aircursor.status({
+      rule: `${response.ok ? source : `${source}失败`}：${rule.label}`,
+    });
+  });
 }
 
 function setupVoice() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return;
+  if (!SpeechRecognition) {
+    aircursor.status({ voice: "浏览器语音不可用，使用 macOS 固定口令" });
+    return;
+  }
 
   const recognizer = new SpeechRecognition();
   recognizer.lang = "zh-CN";
@@ -508,30 +570,20 @@ function setupVoice() {
   recognizer.interimResults = false;
 
   recognizer.onresult = (event) => {
-    if (!settings.voiceEnabled) return;
     const result = event.results[event.results.length - 1];
-    const text = result[0].transcript.trim().replace(/\s+/g, "");
-    const rule = VOICE_RULES.find((item) => item.match.test(text));
-
-    if (!rule) {
-      aircursor.status({ rule: `未匹配语音：${text}` });
-      return;
-    }
-
-    if (rule.run) {
-      rule.run();
-      aircursor.status({ rule: `语音：${rule.label}` });
-      return;
-    }
-
-    aircursor.runRule(rule.id).then((response) => {
-      aircursor.status({
-        rule: `${response.ok ? "语音执行" : "语音执行失败"}：${rule.label}`,
-      });
-    });
+    handleVoiceText(result[0].transcript, "浏览器语音");
   };
 
-  recognizer.onend = () => recognizer.start();
+  recognizer.onstart = () => aircursor.status({ voice: "浏览器语音已开启" });
+  recognizer.onerror = (event) => aircursor.status({ voice: `浏览器语音错误：${event.error}` });
+  recognizer.onend = () => {
+    if (!settings.voiceEnabled) return;
+    try {
+      recognizer.start();
+    } catch {
+      // Voice stays optional because Chromium speech support can vary.
+    }
+  };
   try {
     recognizer.start();
   } catch {
@@ -540,6 +592,7 @@ function setupVoice() {
 }
 
 aircursor.onSettings((next) => {
+  const previousTwoHands = settings.twoHands;
   const needsResize = next.effects && next.effects !== settings.effects;
   Object.assign(settings, next);
   if (needsResize) resize();
@@ -548,7 +601,14 @@ aircursor.onSettings((next) => {
     state.pointerDown = false;
   }
   if (!settings.controlEnabled) resetPinch();
+  if (typeof next.twoHands === "boolean" && next.twoHands !== previousTwoHands) {
+    setupHands().catch((error) => {
+      console.error(error);
+      aircursor.status({ camera: `切换失败：${error.message}` });
+    });
+  }
 });
+aircursor.onVoiceCommand((phrase) => handleVoiceText(phrase, "系统语音"));
 window.addEventListener("resize", resize);
 
 async function boot() {

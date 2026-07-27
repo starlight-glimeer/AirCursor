@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld("aircursor", {
   onStatus: (handler) => {
     ipcRenderer.on("aircursor:overlay-status", (_event, payload) => handler(payload));
   },
+  onVoiceCommand: (handler) => {
+    ipcRenderer.on("aircursor:voice-command", (_event, phrase) => handler(phrase));
+  },
   onHelperLog: (handler) => {
     ipcRenderer.on("aircursor:helper-log", (_event, message) => handler(message));
   },

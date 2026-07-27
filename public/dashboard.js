@@ -7,6 +7,7 @@ const twoHands = document.getElementById("twoHands");
 const effectsEnabled = document.getElementById("effectsEnabled");
 const cameraState = document.getElementById("cameraState");
 const handState = document.getElementById("handState");
+const voiceState = document.getElementById("voiceState");
 const controlState = document.getElementById("controlState");
 const ruleState = document.getElementById("ruleState");
 const voiceRules = document.getElementById("voiceRules");
@@ -91,6 +92,7 @@ window.aircursor.onSettings((nextSettings) => {
 window.aircursor.onStatus((status) => {
   if (status.camera) cameraState.textContent = status.camera;
   if (status.hand) handState.textContent = status.hand;
+  if (status.voice) voiceState.textContent = status.voice;
   if (status.rule) ruleState.textContent = status.rule;
   if (typeof status.controlEnabled === "boolean") {
     settings.controlEnabled = status.controlEnabled;
@@ -104,5 +106,6 @@ window.aircursor.onHelperLog((message) => {
 window.aircursor.getState().then((state) => {
   settings = state.settings;
   rules = state.rules || [];
+  if (state.status?.voice) voiceState.textContent = state.status.voice;
   render();
 });

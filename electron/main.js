@@ -7,10 +7,16 @@ const root = path.join(__dirname, "..");
 const helperSource = app.isPackaged
   ? path.join(process.resourcesPath, "native", "AirCursorPointer.swift")
   : path.join(root, "native", "AirCursorPointer.swift");
+const voiceSource = app.isPackaged
+  ? path.join(process.resourcesPath, "native", "AirCursorVoice.swift")
+  : path.join(root, "native", "AirCursorVoice.swift");
 
 let dashboardWindow;
 let overlayWindow;
 let pointerHelper;
+let voiceHelper;
+let voiceBuffer = "";
+let voiceStatus = "等待";
 let quitting = false;
 
 const settings = {
@@ -105,6 +111,62 @@ function startPointerHelper() {
   });
   pointerHelper.on("exit", () => {
     pointerHelper = null;
+  });
+}
+
+function compileSwiftHelper(source, binaryName) {
+  const helperBinary = path.join(app.getPath("userData"), binaryName);
+  const needsBuild =
+    !fs.existsSync(helperBinary) ||
+    fs.statSync(helperBinary).mtimeMs < fs.statSync(source).mtimeMs;
+
+  if (!needsBuild) return helperBinary;
+
+  const result = spawnSync("/usr/bin/swiftc", [source, "-o", helperBinary], {
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `Failed to compile ${binaryName}.`);
+  }
+
+  return helperBinary;
+}
+
+function startVoiceHelper() {
+  if (process.platform !== "darwin") return;
+
+  let helperBinary;
+  try {
+    helperBinary = compileSwiftHelper(voiceSource, "AirCursorVoice");
+  } catch (error) {
+    voiceStatus = `系统语音不可用：${error.message}`;
+    broadcast("aircursor:overlay-status", { voice: voiceStatus });
+    return;
+  }
+
+  voiceHelper = spawn(helperBinary, [], { stdio: ["ignore", "pipe", "pipe"] });
+  voiceHelper.stdout.on("data", (chunk) => {
+    voiceBuffer += chunk.toString();
+    const lines = voiceBuffer.split(/\r?\n/);
+    voiceBuffer = lines.pop() || "";
+    for (const line of lines) {
+      const phrase = line.trim();
+      if (!phrase) continue;
+      if (phrase === "__AIRCURSOR_VOICE_READY__") {
+        voiceStatus = "系统语音已开启";
+        broadcast("aircursor:overlay-status", { voice: voiceStatus });
+      } else {
+        broadcast("aircursor:voice-command", phrase);
+      }
+    }
+  });
+  voiceHelper.stderr.on("data", (chunk) => {
+    voiceStatus = chunk.toString().trim();
+    broadcast("aircursor:overlay-status", { voice: voiceStatus });
+  });
+  voiceHelper.on("exit", () => {
+    voiceHelper = null;
   });
 }
 
@@ -233,9 +295,10 @@ app.whenReady().then(() => {
     permission === "media" || permission === "camera" || permission === "microphone"
   ));
 
-  startPointerHelper();
   createDashboardWindow();
   createOverlayWindow();
+  startPointerHelper();
+  startVoiceHelper();
 
   app.on("activate", showDashboard);
 });
@@ -243,6 +306,7 @@ app.whenReady().then(() => {
 app.on("before-quit", () => {
   quitting = true;
   if (pointerHelper && !pointerHelper.killed) pointerHelper.kill();
+  if (voiceHelper && !voiceHelper.killed) voiceHelper.kill();
 });
 
 app.on("window-all-closed", () => {
@@ -253,6 +317,7 @@ ipcMain.handle("aircursor:get-state", () => ({
   settings,
   screen: screen.getPrimaryDisplay().bounds,
   rules: publicRules,
+  status: { voice: voiceStatus },
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   Object.assign(settings, patch);
