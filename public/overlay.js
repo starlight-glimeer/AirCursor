@@ -1,3 +1,4 @@
+(function () {
 const video = document.getElementById("camera");
 const canvas = document.getElementById("scene");
 const ctx = canvas.getContext("2d", { alpha: true });
@@ -442,3 +443,4 @@ async function boot() {
 }
 
 boot();
+})();
