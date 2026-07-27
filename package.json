@@ -1,6 +1,6 @@
 {
   "name": "aircursor",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Transparent macOS hand and voice control overlay.",
   "author": "starlight-glimeer",
   "main": "electron/main.js",
@@ -28,6 +28,10 @@
       {
         "from": "native/AirCursorVoice.swift",
         "to": "native/AirCursorVoice.swift"
+      },
+      {
+        "from": "native/AirCursorVoiceInfo.plist",
+        "to": "native/AirCursorVoiceInfo.plist"
       }
     ],
     "mac": {
@@ -35,6 +39,7 @@
       "extendInfo": {
         "NSCameraUsageDescription": "AirCursor uses the camera to recognize your hand gestures.",
         "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
+        "NSSpeechRecognitionUsageDescription": "AirCursor uses speech recognition for optional local voice commands.",
         "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request."
       },
       "target": [

@@ -213,6 +213,12 @@ function setControlMode(enabled) {
 }
 
 function moveCursorToward(gesture, smoothing) {
+  if (!state.cursor.ready) {
+    state.cursor.x = gesture.index.x;
+    state.cursor.y = gesture.index.y;
+    state.cursor.ready = true;
+    return;
+  }
   state.cursor.x += (gesture.index.x - state.cursor.x) * smoothing;
   state.cursor.y += (gesture.index.y - state.cursor.y) * smoothing;
 }
@@ -262,12 +268,12 @@ function updateSystemCursor(gesture) {
     return;
   }
 
-  const smoothing = state.pinch.dragging ? 0.34 : 0.22;
+  const smoothing = state.pinch.dragging ? 0.72 : 0.58;
   moveCursorToward(gesture, smoothing);
 
   const now = performance.now();
   const canSendMove = !state.pinch.active || state.pinch.dragging;
-  if (canSendMove && now - state.lastPointerSentAt > 24) {
+  if (canSendMove && now - state.lastPointerSentAt > 8) {
     sendPointer("move", state.cursor.x, state.cursor.y);
     state.lastPointerSentAt = now;
   }
@@ -384,7 +390,7 @@ function drawHand(points, handIndex, gesture) {
 
 function drawCursor(gesture) {
   if (!settings.controlEnabled) return;
-  const radius = gesture?.pinch ? 18 : 24;
+  const radius = gesture?.pinch ? 14 : 18;
   const color = gesture?.pinch ? "#ff4ea3" : "#49e5ff";
 
   ctx.save();
@@ -431,7 +437,7 @@ let lastFrame = performance.now();
 let lastStatusAt = 0;
 let lastDrawAt = 0;
 function loop(now) {
-  const targetDrawInterval = settings.effects === "rich" ? 16 : 33;
+  const targetDrawInterval = 16;
   if (now - lastDrawAt < targetDrawInterval) {
     requestAnimationFrame(loop);
     return;
@@ -497,8 +503,8 @@ async function setupHands() {
   hands.setOptions({
     maxNumHands: settings.twoHands ? 2 : 1,
     modelComplexity: 0,
-    minDetectionConfidence: 0.65,
-    minTrackingConfidence: 0.65,
+    minDetectionConfidence: 0.55,
+    minTrackingConfidence: 0.5,
   });
 
   hands.onResults((results) => {
@@ -509,7 +515,7 @@ async function setupHands() {
   const camera = new Camera(video, {
     onFrame: async () => {
       const now = performance.now();
-      const minInterval = settings.twoHands ? 50 : 33;
+      const minInterval = settings.twoHands ? 24 : 16;
       if (token !== state.handRestartToken || state.inferenceBusy || now - state.lastInferenceAt < minInterval) return;
 
       state.inferenceBusy = true;
@@ -520,8 +526,8 @@ async function setupHands() {
         state.inferenceBusy = false;
       }
     },
-    width: settings.twoHands ? 960 : 640,
-    height: settings.twoHands ? 540 : 480,
+    width: settings.twoHands ? 640 : 640,
+    height: settings.twoHands ? 480 : 360,
   });
 
   state.handRuntime = { hands, camera };
@@ -558,6 +564,11 @@ function handleVoiceText(rawText, source = "语音") {
 }
 
 function setupVoice() {
+  if (aircursor.platform === "darwin") {
+    aircursor.status({ voice: "使用 macOS 本地语音" });
+    return;
+  }
+
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
     aircursor.status({ voice: "浏览器语音不可用，使用 macOS 固定口令" });

@@ -10,6 +10,9 @@ const helperSource = app.isPackaged
 const voiceSource = app.isPackaged
   ? path.join(process.resourcesPath, "native", "AirCursorVoice.swift")
   : path.join(root, "native", "AirCursorVoice.swift");
+const voiceInfoSource = app.isPackaged
+  ? path.join(process.resourcesPath, "native", "AirCursorVoiceInfo.plist")
+  : path.join(root, "native", "AirCursorVoiceInfo.plist");
 
 let dashboardWindow;
 let overlayWindow;
@@ -116,13 +119,20 @@ function startPointerHelper() {
 
 function compileSwiftHelper(source, binaryName) {
   const helperBinary = path.join(app.getPath("userData"), binaryName);
+  const extraInputs = binaryName === "AirCursorVoice" ? [voiceInfoSource] : [];
   const needsBuild =
     !fs.existsSync(helperBinary) ||
-    fs.statSync(helperBinary).mtimeMs < fs.statSync(source).mtimeMs;
+    fs.statSync(helperBinary).mtimeMs < fs.statSync(source).mtimeMs ||
+    extraInputs.some((file) => fs.statSync(helperBinary).mtimeMs < fs.statSync(file).mtimeMs);
 
   if (!needsBuild) return helperBinary;
 
-  const result = spawnSync("/usr/bin/swiftc", [source, "-o", helperBinary], {
+  const args = [source, "-o", helperBinary];
+  if (binaryName === "AirCursorVoice") {
+    args.push("-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", voiceInfoSource);
+  }
+
+  const result = spawnSync("/usr/bin/swiftc", args, {
     encoding: "utf8",
   });
 
@@ -154,7 +164,10 @@ function startVoiceHelper() {
       const phrase = line.trim();
       if (!phrase) continue;
       if (phrase === "__AIRCURSOR_VOICE_READY__") {
-        voiceStatus = "系统语音已开启";
+        voiceStatus = "macOS 本地语音已开启";
+        broadcast("aircursor:overlay-status", { voice: voiceStatus });
+      } else if (phrase.startsWith("__AIRCURSOR_VOICE_ERROR__:")) {
+        voiceStatus = phrase.replace("__AIRCURSOR_VOICE_ERROR__:", "");
         broadcast("aircursor:overlay-status", { voice: voiceStatus });
       } else {
         broadcast("aircursor:voice-command", phrase);
