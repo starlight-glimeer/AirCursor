@@ -565,7 +565,7 @@ function handleVoiceText(rawText, source = "语音") {
 
 function setupVoice() {
   if (aircursor.platform === "darwin") {
-    aircursor.status({ voice: "使用 macOS 本地语音" });
+    aircursor.status({ voice: "使用 macOS 语音 helper" });
     return;
   }
 

@@ -3,7 +3,6 @@ import Foundation
 import Speech
 
 let commandAliases: [(canonical: String, aliases: [String])] = [
-    ("点", ["点", "选", "开", "确认", "点击", "单击", "点一下"]),
     ("启动", ["启动", "唤醒", "开始", "开启控制", "打开控制"]),
     ("退出", ["退出", "停止", "隐藏", "关闭控制", "关掉控制"]),
     ("打开网易云", ["打开网易云", "网易云", "打开音乐"]),
@@ -13,7 +12,10 @@ let commandAliases: [(canonical: String, aliases: [String])] = [
     ("打开访达", ["打开访达", "访达", "Finder"]),
     ("打开终端", ["打开终端", "终端", "Terminal"]),
     ("打开 Cursor", ["打开 Cursor", "Cursor"]),
+    ("点", ["点", "选", "开", "确认", "点击", "单击", "点一下"]),
 ]
+
+let exactCommandAliases = Set(["点", "选", "开", "确认", "点击", "单击", "点一下"].map(normalize))
 
 func emit(_ value: String) {
     guard let data = "\(value)\n".data(using: .utf8) else {
@@ -38,6 +40,8 @@ final class VoiceEngine {
     private var task: SFSpeechRecognitionTask?
     private var lastCommand = ""
     private var lastCommandAt = Date.distantPast
+    private var lastTranscript = ""
+    private var lastTranscriptAt = Date.distantPast
     private var restarting = false
 
     func requestAccessAndStart() {
@@ -80,9 +84,8 @@ final class VoiceEngine {
         }
 
         request.shouldReportPartialResults = true
-        if #available(macOS 10.15, *), recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.contextualStrings = commandAliases.flatMap { $0.aliases }
+        request.taskHint = .confirmation
 
         let input = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -118,9 +121,23 @@ final class VoiceEngine {
             return
         }
 
+        let now = Date()
+        if text != lastTranscript || now.timeIntervalSince(lastTranscriptAt) > 1.2 {
+            lastTranscript = text
+            lastTranscriptAt = now
+            emit("__AIRCURSOR_VOICE_HEARD__:\(transcript)")
+        }
+
         for item in commandAliases {
-            if item.aliases.map(normalize).contains(where: { text.contains($0) }) {
-                let now = Date()
+            let aliases = item.aliases.map(normalize)
+            let matched: Bool
+            if item.canonical == "点" {
+                matched = aliases.contains(text) || exactCommandAliases.contains(text)
+            } else {
+                matched = aliases.contains(where: { text.contains($0) })
+            }
+
+            if matched {
                 if item.canonical == lastCommand && now.timeIntervalSince(lastCommandAt) < 0.9 {
                     return
                 }

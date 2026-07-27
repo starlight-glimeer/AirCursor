@@ -164,10 +164,14 @@ function startVoiceHelper() {
       const phrase = line.trim();
       if (!phrase) continue;
       if (phrase === "__AIRCURSOR_VOICE_READY__") {
-        voiceStatus = "macOS 本地语音已开启";
+        voiceStatus = "macOS 语音已开启";
         broadcast("aircursor:overlay-status", { voice: voiceStatus });
       } else if (phrase.startsWith("__AIRCURSOR_VOICE_ERROR__:")) {
         voiceStatus = phrase.replace("__AIRCURSOR_VOICE_ERROR__:", "");
+        broadcast("aircursor:overlay-status", { voice: voiceStatus });
+      } else if (phrase.startsWith("__AIRCURSOR_VOICE_HEARD__:")) {
+        const heard = phrase.replace("__AIRCURSOR_VOICE_HEARD__:", "");
+        voiceStatus = `听到：${heard}`;
         broadcast("aircursor:overlay-status", { voice: voiceStatus });
       } else {
         broadcast("aircursor:voice-command", phrase);
