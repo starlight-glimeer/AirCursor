@@ -9,6 +9,8 @@ const aircursor = window.aircursor || {
       showHands: true,
       controlEnabled: false,
       voiceEnabled: true,
+      twoHands: false,
+      effects: "balanced",
     },
     screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
   }),
@@ -24,10 +26,13 @@ const settings = {
   showHands: true,
   controlEnabled: false,
   voiceEnabled: true,
+  twoHands: false,
+  effects: "balanced",
 };
 
 const state = {
   hands: [],
+  gesture: null,
   particles: [],
   cameraReady: false,
   holdGesture: null,
@@ -35,12 +40,14 @@ const state = {
   toggleCooldownUntil: 0,
   pointerDown: false,
   lastPointerSentAt: 0,
+  lastInferenceAt: 0,
+  inferenceBusy: false,
   cursor: { x: 0, y: 0, ready: false },
   screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
 };
 
 function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, settings.effects === "rich" ? 1.5 : 1);
   canvas.width = Math.floor(window.innerWidth * dpr);
   canvas.height = Math.floor(window.innerHeight * dpr);
   canvas.style.width = `${window.innerWidth}px`;
@@ -153,7 +160,7 @@ function setControlMode(enabled) {
 
   aircursor.updateSettings({ controlEnabled: enabled, overlayVisible: true });
   aircursor.status({ controlEnabled: enabled });
-  burst(state.cursor.x, state.cursor.y, 64, enabled ? "#49e5ff" : "#ff4ea3");
+  burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 48 : 20, enabled ? "#49e5ff" : "#ff4ea3");
 }
 
 function updateHoldGesture(gesture) {
@@ -198,22 +205,27 @@ function updateSystemCursor(gesture) {
 
   if (gesture.middlePinch) {
     sendPointer("rightClick", state.cursor.x, state.cursor.y);
-    burst(state.cursor.x, state.cursor.y, 26, "#ffd76a");
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 24 : 8, "#ffd76a");
     return;
   }
 
   if (gesture.pinch && !state.pointerDown) {
     state.pointerDown = true;
     sendPointer("down", state.cursor.x, state.cursor.y);
-    burst(state.cursor.x, state.cursor.y, 24, "#ff4ea3");
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 22 : 8, "#ff4ea3");
   } else if (!gesture.pinch && state.pointerDown) {
     state.pointerDown = false;
     sendPointer("up", state.cursor.x, state.cursor.y);
-    burst(state.cursor.x, state.cursor.y, 18, "#49e5ff");
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#49e5ff");
   }
 }
 
 function burst(x, y, count, color) {
+  const maxParticles = settings.effects === "rich" ? 72 : 28;
+  if (state.particles.length > maxParticles) {
+    state.particles.splice(0, state.particles.length - maxParticles);
+  }
+
   for (let i = 0; i < count; i += 1) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 2 + Math.random() * 8;
@@ -254,7 +266,7 @@ function drawHand(points, handIndex, gesture) {
   ctx.lineWidth = settings.controlEnabled ? 5 : 3;
   ctx.strokeStyle = stroke;
   ctx.shadowColor = stroke;
-  ctx.shadowBlur = settings.controlEnabled ? 28 : 16;
+  ctx.shadowBlur = settings.effects === "rich" ? (settings.controlEnabled ? 28 : 16) : 8;
   ctx.globalAlpha = settings.controlEnabled ? 0.96 : 0.72;
 
   for (const line of lines) {
@@ -287,7 +299,7 @@ function drawCursor(gesture) {
   ctx.strokeStyle = color;
   ctx.lineWidth = 3;
   ctx.shadowColor = color;
-  ctx.shadowBlur = 18;
+  ctx.shadowBlur = settings.effects === "rich" ? 18 : 8;
   ctx.beginPath();
   ctx.arc(state.cursor.x, state.cursor.y, radius, 0, Math.PI * 2);
   ctx.stroke();
@@ -324,13 +336,22 @@ function drawParticles(dt) {
 
 let lastFrame = performance.now();
 let lastStatusAt = 0;
+let lastDrawAt = 0;
 function loop(now) {
+  const targetDrawInterval = settings.effects === "rich" ? 16 : 33;
+  if (now - lastDrawAt < targetDrawInterval) {
+    requestAnimationFrame(loop);
+    return;
+  }
+  lastDrawAt = now;
+
   const dt = Math.min(0.04, (now - lastFrame) / 1000);
   lastFrame = now;
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 
   const hands = state.hands.map((hand) => hand.map(point));
   const gesture = hands[0] ? detectGesture(hands[0]) : null;
+  state.gesture = gesture;
 
   updateHoldGesture(gesture);
   updateSystemCursor(gesture);
@@ -338,7 +359,7 @@ function loop(now) {
   drawCursor(gesture);
   drawParticles(dt);
 
-  if (now - lastStatusAt > 180) {
+  if (now - lastStatusAt > 500) {
     lastStatusAt = now;
     aircursor.status({
       camera: state.cameraReady ? "已开启" : "等待权限",
@@ -362,10 +383,10 @@ async function setupHands() {
   });
 
   hands.setOptions({
-    maxNumHands: 2,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.72,
-    minTrackingConfidence: 0.7,
+    maxNumHands: settings.twoHands ? 2 : 1,
+    modelComplexity: 0,
+    minDetectionConfidence: 0.65,
+    minTrackingConfidence: 0.65,
   });
 
   hands.onResults((results) => {
@@ -374,10 +395,20 @@ async function setupHands() {
 
   const camera = new Camera(video, {
     onFrame: async () => {
-      await hands.send({ image: video });
+      const now = performance.now();
+      const minInterval = settings.twoHands ? 50 : 33;
+      if (state.inferenceBusy || now - state.lastInferenceAt < minInterval) return;
+
+      state.inferenceBusy = true;
+      state.lastInferenceAt = now;
+      try {
+        await hands.send({ image: video });
+      } finally {
+        state.inferenceBusy = false;
+      }
     },
-    width: 1280,
-    height: 720,
+    width: settings.twoHands ? 960 : 640,
+    height: settings.twoHands ? 540 : 480,
   });
 
   aircursor.status({ camera: "正在请求摄像头权限" });
@@ -421,7 +452,9 @@ function setupVoice() {
 }
 
 aircursor.onSettings((next) => {
+  const needsResize = next.effects && next.effects !== settings.effects;
   Object.assign(settings, next);
+  if (needsResize) resize();
   if (!settings.controlEnabled && state.pointerDown) {
     sendPointer("up", state.cursor.x, state.cursor.y);
     state.pointerDown = false;

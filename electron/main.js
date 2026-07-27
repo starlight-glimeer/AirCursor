@@ -18,6 +18,8 @@ const settings = {
   showHands: true,
   controlEnabled: false,
   voiceEnabled: true,
+  twoHands: false,
+  effects: "balanced",
 };
 
 function compilePointerHelper() {

@@ -3,6 +3,8 @@ const accessibilityButton = document.getElementById("accessibilityButton");
 const overlayVisible = document.getElementById("overlayVisible");
 const showHands = document.getElementById("showHands");
 const voiceEnabled = document.getElementById("voiceEnabled");
+const twoHands = document.getElementById("twoHands");
+const effectsEnabled = document.getElementById("effectsEnabled");
 const cameraState = document.getElementById("cameraState");
 const handState = document.getElementById("handState");
 const controlState = document.getElementById("controlState");
@@ -12,12 +14,16 @@ let settings = {
   showHands: true,
   controlEnabled: false,
   voiceEnabled: true,
+  twoHands: false,
+  effects: "balanced",
 };
 
 function render() {
   overlayVisible.checked = settings.overlayVisible;
   showHands.checked = settings.showHands;
   voiceEnabled.checked = settings.voiceEnabled;
+  twoHands.checked = settings.twoHands;
+  effectsEnabled.checked = settings.effects === "rich";
   controlState.textContent = settings.controlEnabled ? "开启" : "关闭";
   controlToggle.textContent = settings.controlEnabled ? "关闭控制" : "开启控制";
 }
@@ -42,6 +48,12 @@ showHands.addEventListener("change", () => {
 });
 voiceEnabled.addEventListener("change", () => {
   patchSettings({ voiceEnabled: voiceEnabled.checked });
+});
+twoHands.addEventListener("change", () => {
+  patchSettings({ twoHands: twoHands.checked });
+});
+effectsEnabled.addEventListener("change", () => {
+  patchSettings({ effects: effectsEnabled.checked ? "rich" : "balanced" });
 });
 
 window.aircursor.onSettings((nextSettings) => {
