@@ -350,8 +350,14 @@ function loop(now) {
 }
 
 async function setupHands() {
+  aircursor.status({ camera: "正在加载手势模型" });
+
+  if (!window.Hands || !window.Camera) {
+    throw new Error("MediaPipe 本地脚本未加载");
+  }
+
   const hands = new Hands({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+    locateFile: (file) => `./vendor/mediapipe/hands/${file}`,
   });
 
   hands.setOptions({
@@ -373,8 +379,10 @@ async function setupHands() {
     height: 720,
   });
 
+  aircursor.status({ camera: "正在请求摄像头权限" });
   await camera.start();
   state.cameraReady = true;
+  aircursor.status({ camera: "已开启" });
 }
 
 function setupVoice() {
@@ -428,6 +436,7 @@ async function boot() {
   setupVoice();
   requestAnimationFrame(loop);
   setupHands().catch((error) => {
+    console.error(error);
     aircursor.status({ camera: `启动失败：${error.message}` });
   });
 }

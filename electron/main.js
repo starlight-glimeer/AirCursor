@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, session, shell } = require("electron");
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -147,6 +147,11 @@ function createOverlayWindow() {
   overlayWindow.setIgnoreMouseEvents(true, { forward: true });
   overlayWindow.loadFile(path.join(root, "public", "overlay.html"));
   overlayWindow.once("ready-to-show", syncSettings);
+  overlayWindow.webContents.on("console-message", (_event, level, message) => {
+    if (level >= 2) {
+      broadcast("aircursor:overlay-status", { camera: `Overlay: ${message}` });
+    }
+  });
 }
 
 function showDashboard() {
@@ -156,6 +161,14 @@ function showDashboard() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === "media" || permission === "camera" || permission === "microphone");
+  });
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => (
+    permission === "media" || permission === "camera" || permission === "microphone"
+  ));
+
   startPointerHelper();
   createDashboardWindow();
   createOverlayWindow();
