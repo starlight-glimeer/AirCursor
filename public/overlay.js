@@ -396,24 +396,78 @@ function drawHand(points, handIndex, gesture) {
 
 function drawCursor(gesture) {
   if (!settings.controlEnabled) return;
-  const radius = gesture?.pinch ? 14 : 18;
-  const color = gesture?.pinch ? "#ff4ea3" : "#49e5ff";
+  const x = state.cursor.x;
+  const y = state.cursor.y;
+  const t = performance.now() / 1000;
+  const eventHorizon = gesture?.pinch ? 7.5 : 6.5;
+  const ring = gesture?.pinch ? 13 : 12;
+  const glow = gesture?.pinch ? "#ff67ba" : "#f6d986";
+  const coolEdge = gesture?.pinch ? "#7cf4ff" : "#dff8ff";
 
   ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
   ctx.globalCompositeOperation = "lighter";
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = settings.effects === "rich" ? 18 : 8;
+  ctx.globalAlpha = 0.42;
+  ctx.strokeStyle = coolEdge;
+  ctx.lineWidth = 1.2;
+  ctx.shadowColor = coolEdge;
+  ctx.shadowBlur = settings.effects === "rich" ? 12 : 6;
+  for (let i = 0; i < 3; i += 1) {
+    const offset = i * 2.6;
+    const drift = Math.sin(t * 2.1 + i) * 1.4;
+    ctx.beginPath();
+    ctx.ellipse(x + drift, y, ring + 5 + offset, ring * 0.55 + offset * 0.2, -0.22, Math.PI * 1.08, Math.PI * 1.9);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(x - drift, y, ring + 5 + offset, ring * 0.55 + offset * 0.2, -0.22, Math.PI * 0.08, Math.PI * 0.9);
+    ctx.stroke();
+  }
+
+  const diskGradient = ctx.createLinearGradient(x - ring * 2.0, y, x + ring * 2.0, y);
+  diskGradient.addColorStop(0, "rgba(255, 236, 145, 0)");
+  diskGradient.addColorStop(0.18, "rgba(255, 229, 135, 0.68)");
+  diskGradient.addColorStop(0.5, "rgba(255, 247, 196, 0.94)");
+  diskGradient.addColorStop(0.82, "rgba(255, 195, 95, 0.62)");
+  diskGradient.addColorStop(1, "rgba(255, 212, 116, 0)");
+  ctx.globalAlpha = gesture?.pinch ? 0.9 : 0.78;
+  ctx.strokeStyle = diskGradient;
+  ctx.lineWidth = 3.2;
+  ctx.shadowColor = glow;
+  ctx.shadowBlur = settings.effects === "rich" ? 18 : 9;
   ctx.beginPath();
-  ctx.arc(state.cursor.x, state.cursor.y, radius, 0, Math.PI * 2);
+  ctx.ellipse(x, y + 0.4, ring * 2.1, ring * 0.34, 0.02, 0, Math.PI * 2);
   ctx.stroke();
+
+  ctx.globalAlpha = 0.92;
+  ctx.strokeStyle = glow;
+  ctx.lineWidth = 1.4;
+  ctx.shadowBlur = settings.effects === "rich" ? 14 : 7;
   ctx.beginPath();
-  ctx.moveTo(state.cursor.x - 8, state.cursor.y);
-  ctx.lineTo(state.cursor.x + 8, state.cursor.y);
-  ctx.moveTo(state.cursor.x, state.cursor.y - 8);
-  ctx.lineTo(state.cursor.x, state.cursor.y + 8);
+  ctx.ellipse(x, y, ring, ring * 0.82, -0.2, 0, Math.PI * 2);
   ctx.stroke();
+
+  ctx.globalCompositeOperation = "source-over";
+  const core = ctx.createRadialGradient(x - 2, y - 2, 1, x, y, eventHorizon + 1.5);
+  core.addColorStop(0, "#1b1d23");
+  core.addColorStop(0.58, "#030406");
+  core.addColorStop(1, "rgba(0, 0, 0, 0.94)");
+  ctx.fillStyle = core;
+  ctx.shadowColor = "#000000";
+  ctx.shadowBlur = 5;
+  ctx.beginPath();
+  ctx.arc(x, y, eventHorizon, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = gesture?.pinch ? "#ffffff" : "#8ff8ff";
+  ctx.shadowColor = ctx.fillStyle;
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.arc(x, y, 1.7, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
