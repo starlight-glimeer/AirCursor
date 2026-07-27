@@ -5,6 +5,10 @@ const showHands = document.getElementById("showHands");
 const voiceEnabled = document.getElementById("voiceEnabled");
 const twoHands = document.getElementById("twoHands");
 const effectsEnabled = document.getElementById("effectsEnabled");
+const wakeGesture = document.getElementById("wakeGesture");
+const clickGesture = document.getElementById("clickGesture");
+const rightClickGesture = document.getElementById("rightClickGesture");
+const exitGesture = document.getElementById("exitGesture");
 const cameraState = document.getElementById("cameraState");
 const handState = document.getElementById("handState");
 const voiceState = document.getElementById("voiceState");
@@ -19,6 +23,12 @@ let settings = {
   voiceEnabled: true,
   twoHands: true,
   effects: "balanced",
+  gestureMap: {
+    wake: "openPalm",
+    click: "pinch",
+    rightClick: "middlePinch",
+    exit: "fist",
+  },
 };
 let rules = [];
 
@@ -28,6 +38,10 @@ function render() {
   voiceEnabled.checked = settings.voiceEnabled;
   twoHands.checked = settings.twoHands;
   effectsEnabled.checked = settings.effects === "rich";
+  wakeGesture.value = settings.gestureMap?.wake || "openPalm";
+  clickGesture.value = settings.gestureMap?.click || "pinch";
+  rightClickGesture.value = settings.gestureMap?.rightClick || "middlePinch";
+  exitGesture.value = settings.gestureMap?.exit || "fist";
   controlState.textContent = settings.controlEnabled ? "开启" : "关闭";
   controlToggle.textContent = settings.controlEnabled ? "关闭控制" : "开启控制";
 
@@ -83,6 +97,18 @@ twoHands.addEventListener("change", () => {
 });
 effectsEnabled.addEventListener("change", () => {
   patchSettings({ effects: effectsEnabled.checked ? "rich" : "balanced" });
+});
+wakeGesture.addEventListener("change", () => {
+  patchSettings({ gestureMap: { wake: wakeGesture.value } });
+});
+clickGesture.addEventListener("change", () => {
+  patchSettings({ gestureMap: { click: clickGesture.value } });
+});
+rightClickGesture.addEventListener("change", () => {
+  patchSettings({ gestureMap: { rightClick: rightClickGesture.value } });
+});
+exitGesture.addEventListener("change", () => {
+  patchSettings({ gestureMap: { exit: exitGesture.value } });
 });
 
 window.aircursor.onSettings((nextSettings) => {

@@ -71,6 +71,40 @@
 
         <article class="panel wide">
           <h2>手势规则</h2>
+          <div class="gesture-settings">
+            <label>
+              <span>唤醒控制</span>
+              <select id="wakeGesture">
+                <option value="openPalm">张开手掌</option>
+                <option value="fist">握拳</option>
+                <option value="none">关闭手势唤醒</option>
+              </select>
+            </label>
+            <label>
+              <span>点击/拖拽</span>
+              <select id="clickGesture">
+                <option value="pinch">拇指 + 食指捏合</option>
+                <option value="middlePinch">拇指 + 中指捏合</option>
+                <option value="none">只用语音点选</option>
+              </select>
+            </label>
+            <label>
+              <span>右键</span>
+              <select id="rightClickGesture">
+                <option value="middlePinch">拇指 + 中指捏合</option>
+                <option value="pinch">拇指 + 食指捏合</option>
+                <option value="none">关闭右键手势</option>
+              </select>
+            </label>
+            <label>
+              <span>退出控制</span>
+              <select id="exitGesture">
+                <option value="fist">握拳</option>
+                <option value="openPalm">张开手掌</option>
+                <option value="none">关闭手势退出</option>
+              </select>
+            </label>
+          </div>
           <div class="rules">
             <div><b>张开手掌 1 秒</b><span>唤醒控制模式</span></div>
             <div><b>食指移动</b><span>移动鼠标指针</span></div>

@@ -30,6 +30,12 @@ const settings = {
   voiceEnabled: true,
   twoHands: true,
   effects: "balanced",
+  gestureMap: {
+    wake: "openPalm",
+    click: "pinch",
+    rightClick: "middlePinch",
+    exit: "fist",
+  },
 };
 
 const ruleDefinitions = [
@@ -89,13 +95,17 @@ const ruleDefinitions = [
 
 const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, voice }));
 
+function helperBinaryPath(binaryName) {
+  return path.join(app.getPath("userData"), `${binaryName}-${app.getVersion()}`);
+}
+
 function compilePointerHelper() {
-  const helperBinary = path.join(app.getPath("userData"), "AirCursorPointer");
+  const helperBinary = helperBinaryPath("AirCursorPointer");
   const needsBuild =
     !fs.existsSync(helperBinary) ||
     fs.statSync(helperBinary).mtimeMs < fs.statSync(helperSource).mtimeMs;
 
-  if (!needsBuild) return;
+  if (!needsBuild) return helperBinary;
 
   const result = spawnSync("/usr/bin/swiftc", [helperSource, "-o", helperBinary], {
     encoding: "utf8",
@@ -104,11 +114,12 @@ function compilePointerHelper() {
   if (result.status !== 0) {
     throw new Error(result.stderr || "Failed to compile AirCursorPointer.");
   }
+
+  return helperBinary;
 }
 
 function startPointerHelper() {
-  compilePointerHelper();
-  const helperBinary = path.join(app.getPath("userData"), "AirCursorPointer");
+  const helperBinary = compilePointerHelper();
   pointerHelper = spawn(helperBinary, [], { stdio: ["pipe", "ignore", "pipe"] });
   if (systemCursorHidden) {
     pointerHelper.stdin.write(`${JSON.stringify({ type: "hideCursor" })}\n`);
@@ -122,7 +133,7 @@ function startPointerHelper() {
 }
 
 function compileSwiftHelper(source, binaryName) {
-  const helperBinary = path.join(app.getPath("userData"), binaryName);
+  const helperBinary = helperBinaryPath(binaryName);
   const extraInputs = binaryName === "AirCursorVoice" ? [voiceInfoSource] : [];
   const needsBuild =
     !fs.existsSync(helperBinary) ||
@@ -389,6 +400,9 @@ ipcMain.handle("aircursor:get-state", () => ({
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   const previousControlEnabled = settings.controlEnabled;
+  if (patch.gestureMap) {
+    patch.gestureMap = { ...settings.gestureMap, ...patch.gestureMap };
+  }
   Object.assign(settings, patch);
   if (settings.controlEnabled !== previousControlEnabled) {
     setSystemCursorHidden(settings.controlEnabled);

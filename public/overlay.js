@@ -11,6 +11,12 @@ const aircursor = window.aircursor || {
       voiceEnabled: true,
       twoHands: true,
       effects: "balanced",
+      gestureMap: {
+        wake: "openPalm",
+        click: "pinch",
+        rightClick: "middlePinch",
+        exit: "fist",
+      },
     },
     screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
   }),
@@ -30,6 +36,20 @@ const settings = {
   voiceEnabled: true,
   twoHands: true,
   effects: "balanced",
+  gestureMap: {
+    wake: "openPalm",
+    click: "pinch",
+    rightClick: "middlePinch",
+    exit: "fist",
+  },
+};
+
+const GESTURE_LABELS = {
+  openPalm: "张开手掌",
+  fist: "握拳",
+  pinch: "拇指+食指捏合",
+  middlePinch: "拇指+中指捏合",
+  none: "关闭",
 };
 
 const state = {
@@ -131,6 +151,11 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function gestureMatches(gesture, gestureId) {
+  if (!gesture || !gestureId || gestureId === "none") return false;
+  return Boolean(gesture[gestureId]);
+}
+
 function palmCenter(points) {
   const ids = [0, 5, 9, 13, 17];
   const sum = ids.reduce(
@@ -168,18 +193,7 @@ function detectGesture(points) {
     dist(ring, wrist) < palmWidth * 1.12 &&
     dist(pinky, wrist) < palmWidth * 1.1;
 
-  return {
-    label: settings.controlEnabled
-      ? pinch
-        ? "捏合点击/拖拽"
-        : middlePinch
-          ? "右键手势"
-          : fist
-            ? "握拳退出"
-            : "控制中"
-      : openPalm
-        ? "张开手掌唤醒"
-        : "待机",
+  const detected = {
     pinch,
     middlePinch,
     openPalm,
@@ -188,6 +202,22 @@ function detectGesture(points) {
     index,
     palmWidth,
   };
+  const clickGesture = settings.gestureMap?.click || "pinch";
+  const rightClickGesture = settings.gestureMap?.rightClick || "middlePinch";
+  const wakeGesture = settings.gestureMap?.wake || "openPalm";
+  const exitGesture = settings.gestureMap?.exit || "fist";
+  detected.label = settings.controlEnabled
+    ? gestureMatches(detected, clickGesture)
+      ? `${GESTURE_LABELS[clickGesture] || "手势"}点击/拖拽`
+      : gestureMatches(detected, rightClickGesture)
+        ? `${GESTURE_LABELS[rightClickGesture] || "手势"}右键`
+        : gestureMatches(detected, exitGesture)
+          ? `${GESTURE_LABELS[exitGesture] || "手势"}退出`
+          : "控制中"
+    : gestureMatches(detected, wakeGesture)
+      ? `${GESTURE_LABELS[wakeGesture] || "手势"}唤醒`
+      : "待机";
+  return detected;
 }
 
 function screenPoint(localX, localY) {
@@ -236,7 +266,11 @@ function updateHoldGesture(gesture) {
     return;
   }
 
-  const desired = !settings.controlEnabled && gesture.openPalm ? "wake" : settings.controlEnabled && gesture.fist ? "sleep" : null;
+  const desired = !settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.wake)
+    ? "wake"
+    : settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.exit)
+      ? "sleep"
+      : null;
   if (!desired) {
     state.holdGesture = null;
     state.holdStartedAt = 0;
@@ -284,14 +318,17 @@ function updateSystemCursor(gesture) {
     state.lastPointerSentAt = now;
   }
 
-  if (gesture.middlePinch && now > state.rightClickCooldownUntil) {
+  const rightClickActive = gestureMatches(gesture, settings.gestureMap?.rightClick);
+  const clickActive = gestureMatches(gesture, settings.gestureMap?.click);
+
+  if (rightClickActive && now > state.rightClickCooldownUntil) {
     state.rightClickCooldownUntil = now + 650;
     sendPointer("rightClick", state.cursor.x, state.cursor.y);
     burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 24 : 8, "#ffd76a");
     return;
   }
 
-  if (gesture.pinch && !state.pinch.active) {
+  if (clickActive && !state.pinch.active) {
     state.pinch.active = true;
     state.pinch.startedAt = now;
     state.pinch.startX = state.cursor.x;
@@ -301,7 +338,7 @@ function updateSystemCursor(gesture) {
     return;
   }
 
-  if (gesture.pinch && state.pinch.active) {
+  if (clickActive && state.pinch.active) {
     const moved = Math.hypot(state.cursor.x - state.pinch.startX, state.cursor.y - state.pinch.startY);
     const held = now - state.pinch.startedAt;
     if (!state.pinch.dragging && moved > 28 && held > 140) {
@@ -312,7 +349,7 @@ function updateSystemCursor(gesture) {
     return;
   }
 
-  if (!gesture.pinch && state.pinch.active) {
+  if (!clickActive && state.pinch.active) {
     if (state.pinch.dragging || state.pointerDown) {
       sendPointer("up", state.cursor.x, state.cursor.y);
       state.pointerDown = false;
@@ -669,7 +706,9 @@ function setupVoice() {
 aircursor.onSettings((next) => {
   const previousTwoHands = settings.twoHands;
   const needsResize = next.effects && next.effects !== settings.effects;
-  Object.assign(settings, next);
+  Object.assign(settings, next, {
+    gestureMap: { ...settings.gestureMap, ...(next.gestureMap || {}) },
+  });
   if (needsResize) resize();
   if (!settings.controlEnabled && state.pointerDown) {
     sendPointer("up", state.cursor.x, state.cursor.y);

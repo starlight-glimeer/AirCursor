@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ApplicationServices
+import AppKit
 
 struct PointerCommand: Decodable {
     let type: String
@@ -37,6 +38,7 @@ func hideSystemCursor() {
         return
     }
     CGDisplayHideCursor(CGMainDisplayID())
+    NSCursor.hide()
     cursorHidden = true
 }
 
@@ -45,6 +47,7 @@ func showSystemCursor() {
         return
     }
     CGDisplayShowCursor(CGMainDisplayID())
+    NSCursor.unhide()
     cursorHidden = false
 }
 
