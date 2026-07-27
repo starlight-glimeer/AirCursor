@@ -362,7 +362,9 @@ window.aircursor.onMetrics((m) => {
   setMetric("mPipeline", m.pipelineMs, `${m.pipelineMs} / p95 ${m.pipelineP95Ms} ms`);
   setMetric("mJitter", m.jitterPx, `${m.jitterPx} px${m.cursorHeld ? " · 静止锁定" : ""}`);
   setMetric("mLag", m.lagPx, `${m.lagPx} px`);
-  setMetric("mTracking", m.trackingRate, `${m.trackingRate}% · ${m.hands} 手`);
+  // Both rates: a two-hand gesture only matches on frames where both hands were
+  // found, so the loose rate can look fine while the gesture is unusable.
+  setMetric("mTracking", m.trackingRate, `${m.trackingRate}% / 双手 ${m.bothHandsRate}% · ${m.hands} 手`);
   // Which gesture is closest matters as soon as more than one is bound: a
   // distance alone cannot tell you the wrong template is the one winning.
   setMetric(
@@ -371,6 +373,19 @@ window.aircursor.onMetrics((m) => {
     m.matchDistance === null
       ? "未使用自定义手势"
       : `${m.matchDistance} / 最近 ${m.matchBestDistance}${m.closestAction ? ` · ${labelFor(m.closestAction)}` : ""}`,
+  );
+  // Separates "never matched" from "matched but the hold kept restarting": the
+  // status line above shows a gesture from a single frame, so without this a
+  // gesture that is recognised every frame and still never fires looks the same
+  // as one that fires normally.
+  setMetric(
+    "mHold",
+    null,
+    m.holdId
+      ? `${labelFor(m.holdId)} · ${m.holdMs} ms`
+      : m.pinchActive
+        ? "捏合中 · 松开即点击"
+        : "无保持中的手势",
   );
 });
 window.aircursor.onOverlayLog((entry) => {

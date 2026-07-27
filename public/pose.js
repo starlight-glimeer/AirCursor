@@ -26,6 +26,16 @@ function wrapAngle(angle) {
 // Rotation reference: wrist -> middle-finger base, averaged over the hands in
 // the pose. One global axis rather than one per hand, so the hands' relative
 // orientation stays part of the signature.
+//
+// Returns null when the pose has no usable axis. That has to be a separate value
+// from a number: 0 rad is a perfectly ordinary axis (hand pointing right), so
+// reporting "no axis" as 0 made a degenerate pose claim it pointed right. Two
+// mirrored hands cancel to a near-zero vector whose direction is pure noise, so
+// consecutive frames of one held pose alternated between "no axis" and a random
+// angle, and matching de-rotated the live pose by that random angle. Measured on
+// a stored two-hand template: an identical pose scored 0.52 instead of 0.00, far
+// past any threshold, while the frames that happened to agree still matched — so
+// the gesture appeared on the status line yet almost never fired.
 function poseAngle(handList) {
   let vx = 0;
   let vy = 0;
@@ -37,11 +47,31 @@ function poseAngle(handList) {
     vy += dy / handList.length;
     span += Math.hypot(dx, dy) / handList.length;
   }
-  // Mirrored hands can cancel out. An axis much shorter than the mean hand span
-  // is noise, so leave the pose unrotated instead of spinning it on an angle
-  // that flips between frames.
-  if (span <= 0 || Math.hypot(vx, vy) < span * 0.34) return 0;
+  // An axis much shorter than the mean hand span is cancellation, not a
+  // direction. Say so, rather than picking an angle that flips between frames.
+  if (span <= 0 || Math.hypot(vx, vy) < span * 0.34) return null;
   return Math.atan2(vy, vx);
+}
+
+// The same axis, recovered from an already-built template. Normalization is a
+// uniform translate and scale, both angle-preserving, so this reproduces what
+// `poseAngle` saw at capture time. Used to repair templates saved while "no
+// axis" was still written as 0, without asking anyone to re-record.
+function templateAngle(template) {
+  const values = template?.values;
+  const hands = template?.hands;
+  if (!Array.isArray(values) || !hands || values.length !== hands * LANDMARKS_PER_HAND * 3) return null;
+  const handList = [];
+  for (let hand = 0; hand < hands; hand += 1) {
+    const offset = hand * LANDMARKS_PER_HAND * 3;
+    const points = [];
+    for (let id = 0; id < LANDMARKS_PER_HAND; id += 1) {
+      points.push({ x: values[offset + id * 3], y: values[offset + id * 3 + 1], z: 0 });
+    }
+    handList.push(points);
+  }
+  const angle = poseAngle(handList);
+  return angle === null ? null : Number(angle.toFixed(4));
 }
 
 function rotateValues(values, angle) {
@@ -96,7 +126,10 @@ function buildPoseTemplate(handList) {
   );
   // The angle rides along instead of being baked in: matching decides how much
   // rotation to forgive, and a stored template keeps working when that changes.
-  return { hands: handList.length, angle: Number(poseAngle(handList).toFixed(4)), values };
+  // null means "this pose has no reliable axis" and travels as null, so matching
+  // can skip de-rotation instead of rotating onto a noise direction.
+  const angle = poseAngle(handList);
+  return { hands: handList.length, angle: angle === null ? null : Number(angle.toFixed(4)), values };
 }
 
 function rms(left, right) {
@@ -175,8 +208,11 @@ function templateDistance(a, b, rotationTolerance = 0) {
   if (!left || !right || a.hands !== b.hands || left.length !== right.length) return Infinity;
   if (!(rotationTolerance > 0)) return poseDistance(left, right, a.hands);
 
-  // Templates recorded before angles existed have none; without a reference
-  // axis there is nothing to align to, so compare as-is rather than guessing.
+  // Either side may have no axis: templates recorded before angles existed have
+  // none, and a mirrored two-hand pose cancels out (`poseAngle` returns null).
+  // Without a reference on both sides there is nothing to align to, so compare
+  // as-is. Treating a missing axis as 0 rad instead would de-rotate by the full
+  // difference to the other side's real angle and reject the pose it matches.
   if (!Number.isFinite(a.angle) || !Number.isFinite(b.angle)) return poseDistance(left, right, a.hands);
   const delta = wrapAngle(b.angle - a.angle);
   const applied = clamp(delta, -rotationTolerance, rotationTolerance);
@@ -202,9 +238,12 @@ function medianTemplate(samples) {
 
 // Angles wrap, so a plain median of samples straddling ±π lands near zero — the
 // opposite direction. Take the median of the offsets from one reference angle.
+//
+// Returns null when no sample had a usable axis, so a two-hand pose whose axis
+// cancels stores "no axis" rather than "points right".
 function medianAngle(samples) {
   const angles = samples.map((s) => s.angle).filter((a) => Number.isFinite(a));
-  if (!angles.length) return 0;
+  if (!angles.length) return null;
   const reference = angles[0];
   const offsets = angles.map((a) => wrapAngle(a - reference)).sort((x, y) => x - y);
   const mid = Math.floor(offsets.length / 2);
@@ -285,6 +324,7 @@ root.AirCursorPose = {
   palmWidthOf,
   orderHands,
   poseAngle,
+  templateAngle,
   buildPoseTemplate,
   templateDistance,
   medianTemplate,

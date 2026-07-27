@@ -187,7 +187,7 @@ class TrackingMetrics {
     this.jitterPx = new Series();
     this.lagPx = new Series();
     this.matchDistance = new Series(60);
-    this.counters = { frames: 0, inferences: 0, skipped: 0, handFrames: 0, emptyFrames: 0, pointerEvents: 0 };
+    this.counters = { frames: 0, inferences: 0, skipped: 0, handFrames: 0, bothHandFrames: 0, emptyFrames: 0, pointerEvents: 0 };
     this.stillWindow = [];
     this.lastFrameAt = 0;
     this.lastDrawAt = 0;
@@ -218,9 +218,14 @@ class TrackingMetrics {
     this.lastDrawAt = now;
   }
 
+  // Two rates, because a two-hand gesture needs both hands in the same frame and
+  // "at least one hand" says nothing about that. Reporting only the loose rate
+  // made a two-hand gesture look better tracked than it was, and it is the strict
+  // rate that decides whether a hold can survive to its deadline.
   markHands(count) {
     if (count > 0) this.counters.handFrames += 1;
     else this.counters.emptyFrames += 1;
+    if (count >= 2) this.counters.bothHandFrames += 1;
   }
 
   markPipeline(capturedAt, now) {
@@ -287,6 +292,7 @@ class TrackingMetrics {
       matchBestDistance: this.matchDistance.length ? Number(this.matchDistance.percentile(5).toFixed(3)) : null,
       closestAction: this.closestAction,
       trackingRate: total ? Number(((this.counters.handFrames / total) * 100).toFixed(1)) : 0,
+      bothHandsRate: total ? Number(((this.counters.bothHandFrames / total) * 100).toFixed(1)) : 0,
       skippedFrames: this.counters.skipped,
       inferences: this.counters.inferences,
       pointerEvents: this.counters.pointerEvents,
@@ -306,7 +312,7 @@ class TrackingMetrics {
     ]) {
       series.clear();
     }
-    this.counters = { frames: 0, inferences: 0, skipped: 0, handFrames: 0, emptyFrames: 0, pointerEvents: 0 };
+    this.counters = { frames: 0, inferences: 0, skipped: 0, handFrames: 0, bothHandFrames: 0, emptyFrames: 0, pointerEvents: 0 };
     this.stillWindow = [];
     this.lastFrameAt = 0;
     this.lastDrawAt = 0;

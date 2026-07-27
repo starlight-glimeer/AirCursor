@@ -100,6 +100,25 @@ const MAX_SAMPLES = 90;
 // Longer than the wake/exit hold: opening an app by accident is more annoying
 // than a stray cursor move, so it asks for more intent.
 const RULE_HOLD_MS = 1200;
+const WAKE_HOLD_MS = 1000;
+// How long a hold survives frames that do not match, before the timer restarts.
+//
+// A hold used to reset on the first such frame, which made it unreachable on real
+// hardware: measured tracking rate is 59-68%, so at ~30 fps a run of 3 misses
+// (~100 ms) happens more than once per second of holding, and the chance of a
+// clean 1000 ms run is effectively zero. The gesture still appeared on the status
+// line, which is computed from a single frame — "识别显示出来了但没有反应".
+//
+// 250 ms covers a run of 7 misses at 29 fps; simulated at the measured rates a
+// 1000 ms hold then completes 99.5-99.7% of the time (80 ms: 27-42%). It is also
+// short enough that letting the pose go still reads as letting go: the pose has
+// to be absent for a quarter second, several times the frame interval.
+const HOLD_GRACE_MS = 250;
+// Same idea for the click, but shorter: a click fires on release, so this delay
+// is added to every click's latency. 140 ms covers a run of 4 missed frames at
+// 29 fps (the 250 ms case shows up as a hold that has to be re-formed, which is
+// recoverable; a click that is late by a quarter second just feels broken).
+const PINCH_GRACE_MS = 140;
 
 const state = {
   hands: [],
@@ -108,13 +127,13 @@ const state = {
   recording: null,
   particles: [],
   cameraReady: false,
-  holdGesture: null,
-  holdStartedAt: 0,
+  // Wake/exit and rule holds keep the same shape so both go through trackHold.
+  modeHold: { id: null, startedAt: 0, missingSince: 0 },
   toggleCooldownUntil: 0,
   // Which rules exist is main's business; the overlay reads the list it is
   // handed rather than keeping a second copy that can drift out of step.
   ruleIds: [],
-  ruleHold: { id: null, startedAt: 0 },
+  ruleHold: { id: null, startedAt: 0, missingSince: 0 },
   ruleCooldownUntil: 0,
   pointerDown: false,
   pinch: {
@@ -123,6 +142,7 @@ const state = {
     startX: 0,
     startY: 0,
     dragging: false,
+    missingSince: 0,
   },
   rightClickCooldownUntil: 0,
   lastPointerSentAt: 0,
@@ -363,35 +383,70 @@ function moveCursorToward(gesture, timestamp) {
   return next;
 }
 
-function updateHoldGesture(gesture) {
-  if (!gesture) {
-    state.holdGesture = null;
-    state.holdStartedAt = 0;
-    return;
+// A hold is measured in wall-clock time, not in consecutive matching frames.
+//
+// The tracker drops a third of frames on real hardware, so "reset on the first
+// non-matching frame" is not a strictness knob — it makes any hold longer than a
+// few frames unreachable. Instead the timer keeps running while the gesture is
+// missing, and only restarts once it has been missing for HOLD_GRACE_MS. Letting
+// go still cancels: the user just has to actually let go rather than blink out
+// for one frame.
+//
+// `hold` carries { id, startedAt, missingSince }. Returns the elapsed hold in ms,
+// or 0 when nothing is being held.
+function trackHold(hold, id, now) {
+  if (!id) {
+    // Keep the timer alive across a short dropout, but remember when the gap
+    // started so a real release can end it.
+    if (!hold.id) return 0;
+    if (!hold.missingSince) hold.missingSince = now;
+    if (now - hold.missingSince <= HOLD_GRACE_MS) return now - hold.startedAt;
+    hold.id = null;
+    hold.startedAt = 0;
+    hold.missingSince = 0;
+    return 0;
   }
 
-  const desired = !settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.wake)
-    ? "wake"
-    : settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.exit)
-      ? "sleep"
-      : null;
-  if (!desired) {
-    state.holdGesture = null;
-    state.holdStartedAt = 0;
-    return;
+  if (hold.id !== id) {
+    hold.id = id;
+    hold.startedAt = now;
+    hold.missingSince = 0;
+    return 0;
   }
+  hold.missingSince = 0;
+  return now - hold.startedAt;
+}
+
+function clearHold(hold) {
+  hold.id = null;
+  hold.startedAt = 0;
+  hold.missingSince = 0;
+}
+
+// For diagnostics: how long the hold in progress has been running, whichever gate
+// owns it. Only one can be active, since a pose maps to one action.
+function holdElapsedMs() {
+  const hold = state.modeHold.id ? state.modeHold : state.ruleHold;
+  return hold.id ? Math.round(Date.now() - hold.startedAt) : 0;
+}
+
+function updateHoldGesture(gesture) {
+  const desired = !gesture
+    ? null
+    : !settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.wake)
+      ? "wake"
+      : settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.exit)
+        ? "sleep"
+        : null;
 
   const now = Date.now();
-  if (state.holdGesture !== desired) {
-    state.holdGesture = desired;
-    state.holdStartedAt = now;
-  }
+  const hold = state.modeHold;
+  const held = trackHold(hold, desired, now);
+  if (!hold.id || held < WAKE_HOLD_MS) return;
 
-  if ((now - state.holdStartedAt) / 1000 >= 1) {
-    setControlMode(desired === "wake");
-    state.holdGesture = null;
-    state.holdStartedAt = 0;
-  }
+  const target = hold.id;
+  clearHold(hold);
+  setControlMode(target === "wake");
 }
 
 // Launching an app is not a mouse move: it cannot be undone by moving back, and
@@ -400,39 +455,30 @@ function updateHoldGesture(gesture) {
 // the built-in poses stay reserved for the pointer.
 function updateRuleGestures(gesture) {
   const hold = state.ruleHold;
-  if (!gesture) {
-    hold.id = null;
-    hold.startedAt = 0;
-    return;
-  }
-
   const now = Date.now();
-  const bound = state.ruleIds.find((id) => {
-    const mapped = settings.gestureMap?.[id];
-    return mapped?.startsWith("custom:") && gestureMatches(gesture, mapped);
-  });
+  const bound = !gesture
+    ? null
+    : state.ruleIds.find((id) => {
+        const mapped = settings.gestureMap?.[id];
+        return mapped?.startsWith("custom:") && gestureMatches(gesture, mapped);
+      });
 
-  if (!bound) {
-    hold.id = null;
-    hold.startedAt = 0;
-    return;
-  }
+  const held = trackHold(hold, bound || null, now);
+  if (!hold.id) return;
+  // Checked after the hold is tracked, so a pose held through the cooldown is
+  // still being timed rather than having to be re-formed once it lifts.
   if (now < state.ruleCooldownUntil) return;
+  if (held < RULE_HOLD_MS) return;
 
-  if (hold.id !== bound) {
-    hold.id = bound;
-    hold.startedAt = now;
-    return;
-  }
-  if (now - hold.startedAt < RULE_HOLD_MS) return;
-
-  hold.id = null;
-  hold.startedAt = 0;
+  const target = hold.id;
+  clearHold(hold);
   // Long enough that releasing the pose is not a race, since the launched app
   // takes the foreground and the hand is usually still mid-frame.
   state.ruleCooldownUntil = now + 2500;
   burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 32 : 12, "#8affc1");
-  aircursor.runRule(bound);
+  // `target`, not `bound`: the hold can complete on a frame where the tracker
+  // lost the hand and the grace window is carrying it, and `bound` is null then.
+  aircursor.runRule(target);
 }
 
 function resetPinch() {
@@ -441,10 +487,30 @@ function resetPinch() {
   state.pinch.startX = 0;
   state.pinch.startY = 0;
   state.pinch.dragging = false;
+  state.pinch.missingSince = 0;
+}
+
+// Finish a pinch the way a deliberate release would: a click if the pose never
+// turned into a drag, otherwise the pointer-up that ends the drag.
+function releasePinch() {
+  if (state.pinch.dragging || state.pointerDown) {
+    sendPointer("up", state.cursor.x, state.cursor.y);
+    state.pointerDown = false;
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#49e5ff");
+  } else {
+    sendPointer("click", state.pinch.startX, state.pinch.startY);
+    burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ffd76a");
+  }
+  resetPinch();
 }
 
 function updateSystemCursor(gesture) {
-  if (!gesture || !settings.controlEnabled) {
+  const now = performance.now();
+
+  // Turning control off is a deliberate abort, so it drops the pinch without
+  // clicking. Losing the hand is not: the click fires on release, so treating a
+  // dropped frame as "no gesture" threw away a click the user had already made.
+  if (!settings.controlEnabled) {
     if (state.pointerDown) {
       sendPointer("up", state.cursor.x, state.cursor.y);
       state.pointerDown = false;
@@ -454,7 +520,20 @@ function updateSystemCursor(gesture) {
     return;
   }
 
-  const now = performance.now();
+  // No hand at all: hold the pinch through a short dropout, then release it as
+  // if the user had let go — which, if the hand really is gone, they have.
+  if (!gesture) {
+    if (!state.pinch.active) {
+      pointerFilter.reset();
+      return;
+    }
+    if (!state.pinch.missingSince) state.pinch.missingSince = now;
+    if (now - state.pinch.missingSince <= PINCH_GRACE_MS) return;
+    releasePinch();
+    pointerFilter.reset();
+    return;
+  }
+
   const moved = moveCursorToward(gesture, now);
 
   const canSendMove = !state.pinch.active || state.pinch.dragging;
@@ -477,6 +556,7 @@ function updateSystemCursor(gesture) {
   }
 
   if (clickActive && !state.pinch.active) {
+    state.pinch.missingSince = 0;
     state.pinch.active = true;
     state.pinch.startedAt = now;
     state.pinch.startX = state.cursor.x;
@@ -487,6 +567,7 @@ function updateSystemCursor(gesture) {
   }
 
   if (clickActive && state.pinch.active) {
+    state.pinch.missingSince = 0;
     const moved = Math.hypot(state.cursor.x - state.pinch.startX, state.cursor.y - state.pinch.startY);
     const held = now - state.pinch.startedAt;
     if (!state.pinch.dragging && moved > 28 && held > 140) {
@@ -498,15 +579,14 @@ function updateSystemCursor(gesture) {
   }
 
   if (!clickActive && state.pinch.active) {
-    if (state.pinch.dragging || state.pointerDown) {
-      sendPointer("up", state.cursor.x, state.cursor.y);
-      state.pointerDown = false;
-      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#49e5ff");
-    } else {
-      sendPointer("click", state.pinch.startX, state.pinch.startY);
-      burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ffd76a");
-    }
-    resetPinch();
+    // The pose is gone this frame, but a recorded gesture flickers off for a
+    // frame or two while still being held — a two-hand click loses its match
+    // every time either hand is missed. Clicking on the first such frame fired
+    // early and then fired again on the real release, so the same grace window
+    // applies here: only a gap longer than PINCH_GRACE_MS counts as a release.
+    if (!state.pinch.missingSince) state.pinch.missingSince = now;
+    if (now - state.pinch.missingSince <= PINCH_GRACE_MS) return;
+    releasePinch();
   }
 }
 
@@ -868,6 +948,12 @@ function loop(now) {
       hands: hands.length,
       cursorHeld: Boolean(state.cursor.held),
       controlEnabled: settings.controlEnabled,
+      // What the frame loop is actually waiting on. A distance alone cannot tell
+      // "nothing matched" from "it matched but the hold never survived long
+      // enough to fire", and those need opposite fixes.
+      holdId: state.modeHold.id || state.ruleHold.id || null,
+      holdMs: holdElapsedMs(),
+      pinchActive: state.pinch.active,
       tuning: tuning(),
     });
   }

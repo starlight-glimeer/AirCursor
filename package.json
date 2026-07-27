@@ -1,6 +1,6 @@
 {
   "name": "aircursor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Transparent macOS hand and voice control overlay.",
   "author": "starlight-glimeer",
   "main": "electron/main.js",

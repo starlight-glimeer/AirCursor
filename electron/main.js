@@ -8,7 +8,7 @@ const root = path.join(__dirname, "..");
 // exact geometry the overlay matches with. A second implementation here would be
 // free to disagree with the one that actually decides what fires.
 require("../public/pose.js");
-const { templateDistance, SEPARATION_FACTOR, ADVISORY_FACTOR } = globalThis.AirCursorPose;
+const { templateDistance, templateAngle, SEPARATION_FACTOR, ADVISORY_FACTOR } = globalThis.AirCursorPose;
 const helperSource = app.isPackaged
   ? path.join(process.resourcesPath, "native", "AirCursorPointer.swift")
   : path.join(root, "native", "AirCursorPointer.swift");
@@ -160,10 +160,43 @@ function settingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+// Superseded tuning defaults, per key. A saved file always wins over a new
+// default — that is what makes a slider stick — but a value the user never chose
+// is not a preference, it is the old default frozen in place. `matchThreshold`
+// moved 0.22 -> 0.28 when the distance metric started weighting the worst finger,
+// and a real report came back still running 0.22 with its closest frame at 0.239:
+// every pose was a near miss, on a version whose default would have matched.
+//
+// So a saved value equal to a superseded default is replaced; anything else,
+// including a deliberate 0.22 set after this ships, is left alone.
+const supersededTuning = { matchThreshold: [0.22] };
+
+function migrateTuning(saved) {
+  const tuning = saved?.tuning;
+  if (!tuning) return saved;
+  for (const [key, oldDefaults] of Object.entries(supersededTuning)) {
+    if (oldDefaults.includes(tuning[key])) delete tuning[key];
+  }
+  return saved;
+}
+
+// Angle 0 used to mean both "points right" and "has no usable axis" (see
+// poseAngle). Templates saved under that ambiguity are re-derived from their own
+// landmarks, so a two-hand pose whose axis cancels stops being de-rotated by the
+// difference to a live frame's real angle — which is what made a held two-hand
+// gesture show up on the status line and still never fire.
+function migrateRecordedTemplates(saved) {
+  for (const entry of Object.values(saved?.recordedGestures || {})) {
+    if (!entry?.template || entry.template.angle !== 0) continue;
+    entry.template.angle = templateAngle(entry.template);
+  }
+  return saved;
+}
+
 function loadSettings() {
   try {
     const saved = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
-    settings = mergeSettings(defaultSettings, saved);
+    settings = mergeSettings(defaultSettings, migrateRecordedTemplates(migrateTuning(saved)));
   } catch {
     settings = JSON.parse(JSON.stringify(defaultSettings));
   }
@@ -442,7 +475,9 @@ function buildReport(note) {
       jitterPx: stat("jitterPx"),
       lagPx: stat("lagPx"),
       trackingRate: stat("trackingRate"),
+      bothHandsRate: stat("bothHandsRate"),
       matchDistance: stat("matchDistance"),
+      holdMs: stat("holdMs"),
       pointerEvents: stat("pointerEvents"),
     },
     latest: latestMetrics,
