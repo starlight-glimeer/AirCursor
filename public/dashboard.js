@@ -14,10 +14,10 @@ const voiceRules = document.getElementById("voiceRules");
 
 let settings = {
   overlayVisible: true,
-  showHands: true,
+  showHands: false,
   controlEnabled: false,
   voiceEnabled: true,
-  twoHands: false,
+  twoHands: true,
   effects: "balanced",
 };
 let rules = [];

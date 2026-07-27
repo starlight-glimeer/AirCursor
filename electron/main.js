@@ -24,10 +24,10 @@ let quitting = false;
 
 const settings = {
   overlayVisible: true,
-  showHands: true,
+  showHands: false,
   controlEnabled: false,
   voiceEnabled: true,
-  twoHands: false,
+  twoHands: true,
   effects: "balanced",
 };
 

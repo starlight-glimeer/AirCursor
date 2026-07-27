@@ -6,10 +6,10 @@ const aircursor = window.aircursor || {
   getState: async () => ({
     settings: {
       overlayVisible: true,
-      showHands: true,
+      showHands: false,
       controlEnabled: false,
       voiceEnabled: true,
-      twoHands: false,
+      twoHands: true,
       effects: "balanced",
     },
     screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
@@ -25,10 +25,10 @@ const aircursor = window.aircursor || {
 
 const settings = {
   overlayVisible: true,
-  showHands: true,
+  showHands: false,
   controlEnabled: false,
   voiceEnabled: true,
-  twoHands: false,
+  twoHands: true,
   effects: "balanced",
 };
 
