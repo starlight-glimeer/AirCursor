@@ -28,9 +28,11 @@ const aircursor = window.aircursor || {
   status: () => {},
   recordingProgress: () => {},
   recordingResult: () => {},
+  metrics: () => {},
   onSettings: () => {},
   onVoiceCommand: () => {},
   onRecording: () => {},
+  onResetMetrics: () => {},
 };
 
 const settings = {
@@ -47,6 +49,8 @@ const settings = {
     exit: "fist",
   },
   recordedGestures: {},
+  tuning: {},
+  diagnostics: false,
 };
 
 const GESTURE_LABELS = {
@@ -57,16 +61,29 @@ const GESTURE_LABELS = {
   none: "关闭",
 };
 
-// Static pose matching. Recording demands a tighter fit than triggering, so a
-// recorded template stays usable when the hand drifts a little at runtime.
-const MATCH_THRESHOLD = 0.22;
+const { PointerFilter, TrackingMetrics } = window.AirCursorTracking;
+const { orderHands, buildPoseTemplate, templateDistance, medianTemplate } = window.AirCursorPose;
+const metrics = new TrackingMetrics();
+
+const DEFAULT_TUNING = {
+  minCutoff: 1.2,
+  beta: 0.045,
+  deadzone: 1.6,
+  prediction: 0.35,
+  matchThreshold: 0.22,
+  inferenceIntervalMs: 20,
+  moveIntervalMs: 8,
+};
+const pointerFilter = new PointerFilter(DEFAULT_TUNING);
+
+// Recording demands a tighter fit than triggering, so a recorded template stays
+// usable when the hand drifts a little at runtime.
+let MATCH_THRESHOLD = 0.22;
 const STABLE_TOLERANCE = 0.1;
 const COUNTDOWN_MS = 3000;
 const HOLD_MS = 2000;
 const CAPTURE_TIMEOUT_MS = 15000;
 const MAX_SAMPLES = 90;
-// MediaPipe depth is the noisiest axis; keep it below the in-plane axes.
-const Z_WEIGHT = 0.5;
 
 const state = {
   hands: [],
@@ -90,6 +107,8 @@ const state = {
   lastPointerSentAt: 0,
   lastInferenceAt: 0,
   inferenceBusy: false,
+  frameCapturedAt: 0,
+  resultAt: 0,
   handRuntime: null,
   handRestartToken: 0,
   cursor: { x: 0, y: 0, ready: false },
@@ -138,6 +157,18 @@ const VOICE_RULES = [
   { id: "open_cursor", match: /cursor/i, label: "打开 Cursor" },
 ];
 
+function tuning() {
+  return { ...DEFAULT_TUNING, ...(settings.tuning || {}) };
+}
+
+// Tuning is applied live so the feedback loop is "drag slider, feel the change"
+// rather than "edit constant, repackage, reinstall".
+function applyTuning() {
+  const active = tuning();
+  MATCH_THRESHOLD = active.matchThreshold;
+  pointerFilter.setTuning(active);
+}
+
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, settings.effects === "rich" ? 1.5 : 1);
   canvas.width = Math.floor(window.innerWidth * dpr);
@@ -169,64 +200,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-// Templates are position-sensitive, so the hands must always arrive in the same
-// slot order. MediaPipe emits detection order, which swaps between frames; label
-// order (Left before Right) is stable.
-function orderHands(handList, handedness) {
-  if (handList.length < 2) return handList;
-  return handList
-    .map((points, index) => ({ points, label: handedness?.[index]?.label || "" }))
-    .sort((a, b) => a.label.localeCompare(b.label))
-    .map((item) => item.points);
-}
-
-function palmWidthOf(points) {
-  return Math.max(60, dist(points[5], points[17]));
-}
-
-// One shared origin and one shared scale across every hand in the pose, so a
-// two-hand template keeps the distance between the hands instead of dividing it
-// away. Anchoring on the wrist of each hand separately would erase exactly the
-// information that makes a two-hand gesture distinct.
-function buildPoseTemplate(handList) {
-  if (!handList.length) return null;
-  const origin = handList.reduce(
-    (acc, points) => ({ x: acc.x + points[0].x / handList.length, y: acc.y + points[0].y / handList.length }),
-    { x: 0, y: 0 },
-  );
-  const scale = Math.max(
-    40,
-    handList.reduce((acc, points) => acc + palmWidthOf(points) / handList.length, 0),
-  );
-  const values = handList.flatMap((points) =>
-    points.flatMap((p) => [
-      Number(((p.x - origin.x) / scale).toFixed(4)),
-      Number(((p.y - origin.y) / scale).toFixed(4)),
-      Number(((p.z || 0) * Z_WEIGHT).toFixed(4)),
-    ]),
-  );
-  return { hands: handList.length, values };
-}
-
-function templateDistance(a, b) {
-  const left = Array.isArray(a?.values) ? a.values : null;
-  const right = Array.isArray(b?.values) ? b.values : null;
-  // A one-hand pose must never match a two-hand template, and vice versa.
-  if (!left || !right || a.hands !== b.hands || left.length !== right.length) return Infinity;
-  let sum = 0;
-  for (let i = 0; i < left.length; i += 1) {
-    const diff = left[i] - right[i];
-    sum += diff * diff;
-  }
-  return Math.sqrt(sum / left.length);
-}
-
 function gestureMatches(gesture, gestureId) {
   if (!gesture || !gestureId || gestureId === "none") return false;
   if (gestureId.startsWith("custom:")) {
     const action = gestureId.slice("custom:".length);
     const template = settings.recordedGestures?.[action]?.template;
-    return templateDistance(gesture.poseTemplate, template) < MATCH_THRESHOLD;
+    const distance = templateDistance(gesture.poseTemplate, template);
+    if (Number.isFinite(distance)) metrics.markMatchDistance(distance);
+    return distance < MATCH_THRESHOLD;
   }
   return Boolean(gesture[gestureId]);
 }
@@ -324,15 +305,15 @@ function setControlMode(enabled) {
   burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 48 : 20, enabled ? "#49e5ff" : "#ff4ea3");
 }
 
-function moveCursorToward(gesture, smoothing) {
-  if (!state.cursor.ready) {
-    state.cursor.x = gesture.index.x;
-    state.cursor.y = gesture.index.y;
-    state.cursor.ready = true;
-    return;
-  }
-  state.cursor.x += (gesture.index.x - state.cursor.x) * smoothing;
-  state.cursor.y += (gesture.index.y - state.cursor.y) * smoothing;
+function moveCursorToward(gesture, timestamp) {
+  const raw = gesture.index;
+  const next = pointerFilter.update(raw.x, raw.y, timestamp);
+  state.cursor.x = next.x;
+  state.cursor.y = next.y;
+  state.cursor.ready = true;
+  state.cursor.held = next.held;
+  metrics.markCursor(raw.x, raw.y, next.x, next.y);
+  return next;
 }
 
 function updateHoldGesture(gesture) {
@@ -381,17 +362,20 @@ function updateSystemCursor(gesture) {
       state.pointerDown = false;
     }
     resetPinch();
+    pointerFilter.reset();
     return;
   }
 
-  const smoothing = state.pinch.dragging ? 0.72 : 0.58;
-  moveCursorToward(gesture, smoothing);
-
   const now = performance.now();
+  const moved = moveCursorToward(gesture, now);
+
   const canSendMove = !state.pinch.active || state.pinch.dragging;
-  if (canSendMove && now - state.lastPointerSentAt > 8) {
+  // A held cursor is intentionally parked, so re-sending the same coordinate
+  // would only add pointer traffic without moving anything.
+  if (canSendMove && !moved.held && now - state.lastPointerSentAt > tuning().moveIntervalMs) {
     sendPointer("move", state.cursor.x, state.cursor.y);
     state.lastPointerSentAt = now;
+    metrics.markPointerEvent();
   }
 
   const rightClickActive = gestureMatches(gesture, settings.gestureMap?.rightClick);
@@ -436,20 +420,6 @@ function updateSystemCursor(gesture) {
     }
     resetPinch();
   }
-}
-
-function medianTemplate(samples) {
-  const length = samples[0].values.length;
-  const values = new Array(length);
-  const column = new Array(samples.length);
-  for (let i = 0; i < length; i += 1) {
-    for (let s = 0; s < samples.length; s += 1) column[s] = samples[s].values[i];
-    column.sort((a, b) => a - b);
-    const mid = Math.floor(column.length / 2);
-    const value = column.length % 2 ? column[mid] : (column[mid - 1] + column[mid]) / 2;
-    values[i] = Number(value.toFixed(4));
-  }
-  return { hands: samples[0].hands, values };
 }
 
 function startRecording(action, wantedHands) {
@@ -733,14 +703,16 @@ function drawParticles(dt) {
 
 let lastFrame = performance.now();
 let lastStatusAt = 0;
+let lastMetricsAt = 0;
 let lastDrawAt = 0;
 function loop(now) {
-  const targetDrawInterval = 16;
+  const targetDrawInterval = settings.effects === "rich" ? 8 : 12;
   if (now - lastDrawAt < targetDrawInterval) {
     requestAnimationFrame(loop);
     return;
   }
   lastDrawAt = now;
+  metrics.markDraw(now);
 
   const dt = Math.min(0.04, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -759,6 +731,17 @@ function loop(now) {
   hands.forEach((points, index) => drawHand(points, index, index === 0 ? gesture : null));
   drawCursor(gesture);
   drawParticles(dt);
+
+  if (settings.diagnostics && now - lastMetricsAt > 500) {
+    lastMetricsAt = now;
+    aircursor.metrics({
+      ...metrics.snapshot(),
+      hands: hands.length,
+      cursorHeld: Boolean(state.cursor.held),
+      controlEnabled: settings.controlEnabled,
+      tuning: tuning(),
+    });
+  }
 
   if (now - lastStatusAt > 500) {
     lastStatusAt = now;
@@ -819,23 +802,32 @@ async function setupHands() {
     if (token !== state.handRestartToken) return;
     state.hands = results.multiHandLandmarks || [];
     state.handedness = results.multiHandedness || [];
+    state.resultAt = performance.now();
+    metrics.markHands(state.hands.length);
+    metrics.markPipeline(state.frameCapturedAt, state.resultAt);
   });
 
   const camera = new Camera(video, {
     onFrame: async () => {
       const now = performance.now();
-      const minInterval = settings.twoHands ? 24 : 16;
-      if (token !== state.handRestartToken || state.inferenceBusy || now - state.lastInferenceAt < minInterval) return;
+      metrics.markFrame(now);
+      const minInterval = tuning().inferenceIntervalMs;
+      if (token !== state.handRestartToken || state.inferenceBusy || now - state.lastInferenceAt < minInterval) {
+        metrics.markSkippedFrame();
+        return;
+      }
 
       state.inferenceBusy = true;
       state.lastInferenceAt = now;
+      state.frameCapturedAt = now;
       try {
         await hands.send({ image: video });
+        metrics.markInference(performance.now() - now);
       } finally {
         state.inferenceBusy = false;
       }
     },
-    width: settings.twoHands ? 640 : 640,
+    width: 640,
     height: settings.twoHands ? 480 : 360,
   });
 
@@ -917,7 +909,9 @@ aircursor.onSettings((next) => {
   Object.assign(settings, next, {
     gestureMap: { ...settings.gestureMap, ...(next.gestureMap || {}) },
     recordedGestures: next.recordedGestures || settings.recordedGestures,
+    tuning: { ...settings.tuning, ...(next.tuning || {}) },
   });
+  applyTuning();
   if (needsResize) resize();
   if (!settings.controlEnabled && state.pointerDown) {
     sendPointer("up", state.cursor.x, state.cursor.y);
@@ -930,6 +924,12 @@ aircursor.onSettings((next) => {
       aircursor.status({ camera: `切换失败：${error.message}` });
     });
   }
+});
+// The rolling means live here, so a reset from the dashboard has to reach the
+// overlay; clearing only main's log would keep reporting the old numbers.
+aircursor.onResetMetrics(() => {
+  metrics.reset();
+  pointerFilter.reset();
 });
 aircursor.onRecording((request) => {
   if (!request || request.type === "stop") {
@@ -945,6 +945,7 @@ async function boot() {
   const bootState = await aircursor.getState();
   Object.assign(settings, bootState.settings);
   state.screen = bootState.screen;
+  applyTuning();
   resize();
   setupVoice();
   requestAnimationFrame(loop);

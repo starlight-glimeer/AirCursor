@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld("aircursor", {
   status: (payload) => ipcRenderer.send("aircursor:overlay-status", payload),
   recordingProgress: (payload) => ipcRenderer.send("aircursor:recording-progress", payload),
   recordingResult: (payload) => ipcRenderer.send("aircursor:recording-result", payload),
+  metrics: (payload) => ipcRenderer.send("aircursor:metrics", payload),
+  writeReport: (note) => ipcRenderer.invoke("aircursor:write-report", note),
+  revealReports: () => ipcRenderer.invoke("aircursor:reveal-reports"),
+  resetMetrics: () => ipcRenderer.invoke("aircursor:reset-metrics"),
+  resetTuning: () => ipcRenderer.invoke("aircursor:reset-tuning"),
+  openDevTools: (target) => ipcRenderer.invoke("aircursor:open-devtools", target),
   onSettings: (handler) => {
     ipcRenderer.on("aircursor:settings", (_event, payload) => handler(payload));
   },
@@ -33,6 +39,15 @@ contextBridge.exposeInMainWorld("aircursor", {
   },
   onRecordingResult: (handler) => {
     ipcRenderer.on("aircursor:recording-result", (_event, payload) => handler(payload));
+  },
+  onResetMetrics: (handler) => {
+    ipcRenderer.on("aircursor:reset-metrics", (_event, payload) => handler(payload));
+  },
+  onMetrics: (handler) => {
+    ipcRenderer.on("aircursor:metrics", (_event, payload) => handler(payload));
+  },
+  onOverlayLog: (handler) => {
+    ipcRenderer.on("aircursor:overlay-log", (_event, payload) => handler(payload));
   },
   onHelperLog: (handler) => {
     ipcRenderer.on("aircursor:helper-log", (_event, message) => handler(message));

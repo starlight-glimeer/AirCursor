@@ -67,6 +67,69 @@
             <span>特效增强</span>
             <input id="effectsEnabled" type="checkbox" />
           </label>
+          <label class="switch">
+            <span>诊断与调参（Command+D）</span>
+            <input id="diagnostics" type="checkbox" />
+          </label>
+        </article>
+
+        <article class="panel wide" id="diagnosticsPanel" hidden>
+          <h2>诊断与调参</h2>
+          <p class="panel-hint">
+            Command+D 开关本面板。指标每 0.5 秒刷新；滑块即时生效，无需重启。
+            反馈问题时点“保存报告”，把生成的 JSON 发给我。
+          </p>
+          <div class="metric-grid">
+            <div class="metric"><span>摄像头帧率</span><strong id="mCameraFps">-</strong><em>越高越跟手</em></div>
+            <div class="metric"><span>绘制帧率</span><strong id="mDrawFps">-</strong><em>越高越丝滑</em></div>
+            <div class="metric"><span>推理耗时</span><strong id="mInference">-</strong><em>单帧 MediaPipe</em></div>
+            <div class="metric"><span>端到端延迟</span><strong id="mPipeline">-</strong><em>采集到出结果</em></div>
+            <div class="metric"><span>静止抖动</span><strong id="mJitter">-</strong><em>越低越稳</em></div>
+            <div class="metric"><span>跟随滞后</span><strong id="mLag">-</strong><em>光标落后指尖</em></div>
+            <div class="metric"><span>识别率</span><strong id="mTracking">-</strong><em>有手帧占比</em></div>
+            <div class="metric"><span>手势距离</span><strong id="mMatch">-</strong><em>低于阈值才触发</em></div>
+          </div>
+          <div class="tuning-grid">
+            <label>
+              <span>平滑强度 <b data-tuning-value="minCutoff"></b></span>
+              <input type="range" data-tuning="minCutoff" min="0.3" max="6" step="0.1" />
+              <em>越小越稳但越黏，越大越跟手但抖</em>
+            </label>
+            <label>
+              <span>快速跟随 <b data-tuning-value="beta"></b></span>
+              <input type="range" data-tuning="beta" min="0" max="0.3" step="0.005" />
+              <em>手快时自动减少平滑</em>
+            </label>
+            <label>
+              <span>静止死区 <b data-tuning-value="deadzone"></b></span>
+              <input type="range" data-tuning="deadzone" min="0" max="8" step="0.2" />
+              <em>小于该像素不动，抑制悬停乱爬</em>
+            </label>
+            <label>
+              <span>预测提前量 <b data-tuning-value="prediction"></b></span>
+              <input type="range" data-tuning="prediction" min="0" max="2" step="0.05" />
+              <em>抵消延迟，过大会过冲</em>
+            </label>
+            <label>
+              <span>手势容错阈值 <b data-tuning-value="matchThreshold"></b></span>
+              <input type="range" data-tuning="matchThreshold" min="0.05" max="0.6" step="0.01" />
+              <em>越大越容错，越易误触</em>
+            </label>
+            <label>
+              <span>推理间隔 <b data-tuning-value="inferenceIntervalMs"></b></span>
+              <input type="range" data-tuning="inferenceIntervalMs" min="8" max="60" step="2" />
+              <em>越小越跟手，CPU 占用越高</em>
+            </label>
+          </div>
+          <div class="diag-actions">
+            <input id="reportNote" type="text" placeholder="现象描述，例如：双手录制时光标漂" />
+            <button id="saveReport" type="button" class="primary">保存报告</button>
+            <button id="revealReports" type="button">打开报告目录</button>
+            <button id="resetMetrics" type="button">重置指标</button>
+            <button id="resetTuning" type="button">恢复默认调参</button>
+            <button id="overlayDevtools" type="button">透明层 DevTools</button>
+          </div>
+          <pre id="overlayLog" class="overlay-log"></pre>
         </article>
 
         <article class="panel wide">

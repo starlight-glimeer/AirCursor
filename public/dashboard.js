@@ -15,6 +15,9 @@ const voiceState = document.getElementById("voiceState");
 const controlState = document.getElementById("controlState");
 const ruleState = document.getElementById("ruleState");
 const voiceRules = document.getElementById("voiceRules");
+const diagnostics = document.getElementById("diagnostics");
+const diagnosticsPanel = document.getElementById("diagnosticsPanel");
+const overlayLog = document.getElementById("overlayLog");
 
 let settings = {
   overlayVisible: true,
@@ -30,6 +33,8 @@ let settings = {
     exit: "fist",
   },
   recordedGestures: {},
+  diagnostics: false,
+  tuning: {},
 };
 let rules = [];
 let recordingAction = null;
@@ -64,8 +69,42 @@ function ensureRecordedOption(action) {
   }
 }
 
+// Thresholds that turn a metric amber. They mark "this is what would make the
+// experience feel wrong", so a report carries the judgement, not just numbers.
+const METRIC_WARN = {
+  mCameraFps: (v) => v < 24,
+  mDrawFps: (v) => v < 50,
+  mInference: (v) => v > 22,
+  mPipeline: (v) => v > 45,
+  mJitter: (v) => v > 2.5,
+  mLag: (v) => v > 26,
+  mTracking: (v) => v < 85,
+};
+
+function setMetric(id, value, text) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.textContent = text;
+  const warn = METRIC_WARN[id];
+  node.parentElement.classList.toggle("is-warn", Boolean(warn && Number.isFinite(value) && warn(value)));
+}
+
+function renderTuning() {
+  document.querySelectorAll("[data-tuning]").forEach((input) => {
+    const key = input.dataset.tuning;
+    const value = settings.tuning?.[key];
+    if (value === undefined) return;
+    input.value = String(value);
+    const label = document.querySelector(`[data-tuning-value="${key}"]`);
+    if (label) label.textContent = value;
+  });
+}
+
 function render() {
   for (const action of Object.keys(actionSelects)) ensureRecordedOption(action);
+  diagnostics.checked = Boolean(settings.diagnostics);
+  diagnosticsPanel.hidden = !settings.diagnostics;
+  renderTuning();
   overlayVisible.checked = settings.overlayVisible;
   showHands.checked = settings.showHands;
   voiceEnabled.checked = settings.voiceEnabled;
@@ -150,6 +189,40 @@ twoHands.addEventListener("change", () => {
 effectsEnabled.addEventListener("change", () => {
   patchSettings({ effects: effectsEnabled.checked ? "rich" : "balanced" });
 });
+diagnostics.addEventListener("change", () => {
+  patchSettings({ diagnostics: diagnostics.checked });
+});
+document.querySelectorAll("[data-tuning]").forEach((input) => {
+  input.addEventListener("input", () => {
+    const key = input.dataset.tuning;
+    const value = Number(input.value);
+    const label = document.querySelector(`[data-tuning-value="${key}"]`);
+    if (label) label.textContent = value;
+    patchSettings({ tuning: { [key]: value } });
+  });
+});
+document.getElementById("saveReport").addEventListener("click", async () => {
+  const note = document.getElementById("reportNote").value.trim();
+  const result = await window.aircursor.writeReport(note);
+  ruleState.textContent = result.ok ? `报告已保存：${result.file}` : "报告保存失败";
+});
+document.getElementById("revealReports").addEventListener("click", () => {
+  window.aircursor.revealReports();
+});
+document.getElementById("resetMetrics").addEventListener("click", async () => {
+  await window.aircursor.resetMetrics();
+  overlayLog.textContent = "";
+  ruleState.textContent = "指标已重置";
+});
+document.getElementById("resetTuning").addEventListener("click", async () => {
+  const result = await window.aircursor.resetTuning();
+  if (result.settings) settings = result.settings;
+  render();
+  ruleState.textContent = "调参已恢复默认";
+});
+document.getElementById("overlayDevtools").addEventListener("click", () => {
+  window.aircursor.openDevTools("overlay");
+});
 wakeGesture.addEventListener("change", () => {
   patchSettings({ gestureMap: { wake: wakeGesture.value } });
 });
@@ -199,6 +272,27 @@ document.querySelectorAll("[data-clear-action]").forEach((button) => {
   });
 });
 
+window.aircursor.onMetrics((m) => {
+  if (!m) return;
+  setMetric("mCameraFps", m.cameraFps, `${m.cameraFps} fps`);
+  setMetric("mDrawFps", m.drawFps, `${m.drawFps} fps`);
+  setMetric("mInference", m.inferenceMs, `${m.inferenceMs} / p95 ${m.inferenceP95Ms} ms`);
+  setMetric("mPipeline", m.pipelineMs, `${m.pipelineMs} / p95 ${m.pipelineP95Ms} ms`);
+  setMetric("mJitter", m.jitterPx, `${m.jitterPx} px${m.cursorHeld ? " · 静止锁定" : ""}`);
+  setMetric("mLag", m.lagPx, `${m.lagPx} px`);
+  setMetric("mTracking", m.trackingRate, `${m.trackingRate}% · ${m.hands} 手`);
+  setMetric(
+    "mMatch",
+    m.matchDistance,
+    m.matchDistance === null ? "未使用自定义手势" : `${m.matchDistance} / 最近 ${m.matchBestDistance}`,
+  );
+});
+window.aircursor.onOverlayLog((entry) => {
+  if (!entry) return;
+  const line = `[${entry.source}] ${entry.message}\n`;
+  overlayLog.textContent = (overlayLog.textContent + line).split("\n").slice(-60).join("\n");
+  overlayLog.scrollTop = overlayLog.scrollHeight;
+});
 window.aircursor.onRecordingProgress((payload) => {
   if (!payload || payload.action !== recordingAction) return;
   const bar = document.querySelector(`[data-progress-action="${payload.action}"]`);

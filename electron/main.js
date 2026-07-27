@@ -38,8 +38,20 @@ const defaultSettings = {
     exit: "fist",
   },
   recordedGestures: {},
+  diagnostics: false,
+  tuning: {
+    minCutoff: 1.2,
+    beta: 0.045,
+    deadzone: 1.6,
+    prediction: 0.35,
+    matchThreshold: 0.22,
+    inferenceIntervalMs: 20,
+    moveIntervalMs: 8,
+  },
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
+let latestMetrics = null;
+let metricsLog = [];
 
 const ruleDefinitions = [
   {
@@ -112,6 +124,7 @@ function mergeSettings(base, incoming) {
     ...incoming,
     gestureMap: { ...base.gestureMap, ...(incoming?.gestureMap || {}) },
     recordedGestures: { ...base.recordedGestures, ...(incoming?.recordedGestures || {}) },
+    tuning: { ...base.tuning, ...(incoming?.tuning || {}) },
   };
 }
 
@@ -317,6 +330,63 @@ function saveRecordedTemplate(action, template) {
   });
 }
 
+// A tuning report is the unit of feedback from a real Mac: numbers plus the
+// exact tuning that produced them, so a "feels laggy" observation arrives with
+// the frame rate, pipeline latency and jitter that caused it.
+function buildReport(note) {
+  const samples = metricsLog.slice(-120);
+  const field = (key) => samples.map((s) => s[key]).filter((v) => typeof v === "number");
+  const stat = (key) => {
+    const values = field(key);
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    return {
+      mean: Number((values.reduce((a, b) => a + b, 0) / values.length).toFixed(2)),
+      min: Number(sorted[0].toFixed(2)),
+      max: Number(sorted[sorted.length - 1].toFixed(2)),
+      p95: Number(sorted[Math.min(sorted.length - 1, Math.round(0.95 * (sorted.length - 1)))].toFixed(2)),
+    };
+  };
+
+  return {
+    generatedAt: new Date().toISOString(),
+    note: note || "",
+    app: { version: app.getVersion(), packaged: app.isPackaged },
+    system: { platform: process.platform, arch: process.arch, electron: process.versions.electron, chrome: process.versions.chrome },
+    display: screen.getPrimaryDisplay().bounds,
+    settings: { twoHands: settings.twoHands, effects: settings.effects, showHands: settings.showHands, controlEnabled: settings.controlEnabled },
+    tuning: settings.tuning,
+    recordedGestures: Object.fromEntries(
+      Object.entries(settings.recordedGestures || {}).map(([action, entry]) => [
+        action,
+        { hands: entry.hands, dims: entry.template?.values?.length, at: entry.at },
+      ]),
+    ),
+    sampleCount: samples.length,
+    metrics: {
+      cameraFps: stat("cameraFps"),
+      drawFps: stat("drawFps"),
+      inferenceMs: stat("inferenceMs"),
+      pipelineMs: stat("pipelineMs"),
+      jitterPx: stat("jitterPx"),
+      lagPx: stat("lagPx"),
+      trackingRate: stat("trackingRate"),
+      matchDistance: stat("matchDistance"),
+      pointerEvents: stat("pointerEvents"),
+    },
+    latest: latestMetrics,
+  };
+}
+
+function writeReport(note) {
+  const report = buildReport(note);
+  const dir = path.join(app.getPath("userData"), "reports");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `aircursor-report-${Date.now()}.json`);
+  fs.writeFileSync(file, JSON.stringify(report, null, 2));
+  return { ok: true, file, report };
+}
+
 function openWithCandidates(candidates) {
   for (const args of candidates) {
     const result = spawnSync("/usr/bin/open", args, { stdio: "ignore" });
@@ -364,6 +434,39 @@ function createApplicationMenu() {
         { type: "separator" },
         { role: "minimize", label: "最小化" },
         { label: "退出 AirCursor", accelerator: isMac ? undefined : "Alt+F4", click: quitApp },
+      ],
+    },
+    {
+      label: "调试",
+      submenu: [
+        {
+          label: "诊断面板",
+          accelerator: "CommandOrControl+D",
+          click: () => {
+            updateSettings({ diagnostics: !settings.diagnostics });
+            showDashboard();
+          },
+        },
+        {
+          label: "保存调参报告",
+          accelerator: "CommandOrControl+S",
+          click: () => {
+            const result = writeReport("menu");
+            broadcast("aircursor:overlay-status", { rule: `报告已保存：${result.file}` });
+          },
+        },
+        { type: "separator" },
+        {
+          label: "主窗口开发者工具",
+          accelerator: "CommandOrControl+Alt+I",
+          click: () => dashboardWindow?.webContents.openDevTools({ mode: "right" }),
+        },
+        {
+          label: "透明层开发者工具",
+          accelerator: "CommandOrControl+Alt+O",
+          click: () => overlayWindow?.webContents.openDevTools({ mode: "detach" }),
+        },
+        { role: "reload", label: "重新加载" },
       ],
     },
   ];
@@ -428,9 +531,25 @@ function createOverlayWindow() {
   overlayWindow.setIgnoreMouseEvents(true, { forward: true });
   overlayWindow.loadFile(path.join(root, "public", "overlay.html"));
   overlayWindow.once("ready-to-show", syncSettings);
-  overlayWindow.webContents.on("console-message", (_event, level, message) => {
-    if (level >= 2) {
+  // Electron 36 replaced the positional (event, level, message, line, sourceId)
+  // signature with a single details object and a string level. Accepting both
+  // keeps the overlay console visible instead of silently going quiet.
+  overlayWindow.webContents.on("console-message", (...args) => {
+    const details = args[1] && typeof args[1] === "object" ? args[1] : null;
+    const level = details ? details.level : args[1];
+    const message = details ? details.message : args[2];
+    const line = details ? details.lineNumber : args[3];
+    const sourceId = details ? details.sourceId : args[4];
+    const isError = level === "error" || level === "warning" || (typeof level === "number" && level >= 2);
+    if (isError) {
       broadcast("aircursor:overlay-status", { camera: `Overlay: ${message}` });
+    }
+    if (settings.diagnostics && dashboardWindow && !dashboardWindow.isDestroyed()) {
+      dashboardWindow.webContents.send("aircursor:overlay-log", {
+        level: String(level),
+        message,
+        source: `${(sourceId || "").split("/").pop()}:${line ?? 0}`,
+      });
     }
   });
 }
@@ -522,6 +641,39 @@ ipcMain.on("aircursor:pointer", (_event, command) => {
 });
 ipcMain.on("aircursor:overlay-status", (_event, status) => {
   broadcast("aircursor:overlay-status", status);
+});
+ipcMain.on("aircursor:metrics", (_event, payload) => {
+  latestMetrics = payload;
+  metricsLog.push(payload);
+  if (metricsLog.length > 600) metricsLog.shift();
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    dashboardWindow.webContents.send("aircursor:metrics", payload);
+  }
+});
+ipcMain.handle("aircursor:write-report", (_event, note) => writeReport(note));
+ipcMain.handle("aircursor:reveal-reports", () => {
+  const dir = path.join(app.getPath("userData"), "reports");
+  fs.mkdirSync(dir, { recursive: true });
+  shell.openPath(dir);
+  return { ok: true, dir };
+});
+ipcMain.handle("aircursor:reset-metrics", () => {
+  metricsLog = [];
+  latestMetrics = null;
+  broadcast("aircursor:reset-metrics", {});
+  return { ok: true };
+});
+ipcMain.handle("aircursor:open-devtools", (_event, target) => {
+  const win = target === "overlay" ? overlayWindow : dashboardWindow;
+  if (!win || win.isDestroyed()) return { ok: false, reason: "窗口不存在" };
+  win.webContents.openDevTools({ mode: target === "overlay" ? "detach" : "right" });
+  return { ok: true, target };
+});
+ipcMain.handle("aircursor:reset-tuning", () => {
+  settings = { ...settings, tuning: { ...defaultSettings.tuning } };
+  saveSettings();
+  syncSettings();
+  return { ok: true, settings };
 });
 ipcMain.on("aircursor:recording-progress", (_event, payload) => {
   if (!recordingSession) return;
