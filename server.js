@@ -99,5 +99,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`Gesture launcher running at http://127.0.0.1:${port}`);
+  console.log(`AirCursor running at http://127.0.0.1:${port}`);
 });

@@ -1,6 +1,6 @@
-# Gesture Launcher
+# AirCursor
 
-Mac webcam gesture prototype. It recognizes a thumb-index pinch in the browser and asks a local Node server to open NetEase Cloud Music.
+Mac webcam gesture-control prototype. It recognizes a thumb-index pinch in the browser and asks a local Node server to open NetEase Cloud Music.
 
 ## Run
 
