@@ -412,6 +412,14 @@ function quitApp() {
   app.quit();
 }
 
+// A destroyed window still answers to `?.`, so guard on isDestroyed or the
+// shortcut throws instead of doing nothing.
+function openDevTools(win, mode) {
+  if (!win || win.isDestroyed()) return { ok: false, reason: "窗口不存在" };
+  win.webContents.openDevTools({ mode });
+  return { ok: true };
+}
+
 function createApplicationMenu() {
   const isMac = process.platform === "darwin";
   const template = [
@@ -459,12 +467,12 @@ function createApplicationMenu() {
         {
           label: "主窗口开发者工具",
           accelerator: "CommandOrControl+Alt+I",
-          click: () => dashboardWindow?.webContents.openDevTools({ mode: "right" }),
+          click: () => openDevTools(dashboardWindow, "right"),
         },
         {
           label: "透明层开发者工具",
           accelerator: "CommandOrControl+Alt+O",
-          click: () => overlayWindow?.webContents.openDevTools({ mode: "detach" }),
+          click: () => openDevTools(overlayWindow, "detach"),
         },
         { role: "reload", label: "重新加载" },
       ],
@@ -664,10 +672,8 @@ ipcMain.handle("aircursor:reset-metrics", () => {
   return { ok: true };
 });
 ipcMain.handle("aircursor:open-devtools", (_event, target) => {
-  const win = target === "overlay" ? overlayWindow : dashboardWindow;
-  if (!win || win.isDestroyed()) return { ok: false, reason: "窗口不存在" };
-  win.webContents.openDevTools({ mode: target === "overlay" ? "detach" : "right" });
-  return { ok: true, target };
+  const overlay = target === "overlay";
+  return { ...openDevTools(overlay ? overlayWindow : dashboardWindow, overlay ? "detach" : "right"), target };
 });
 ipcMain.handle("aircursor:reset-tuning", () => {
   settings = { ...settings, tuning: { ...defaultSettings.tuning } };
