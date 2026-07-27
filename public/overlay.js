@@ -522,7 +522,11 @@ function loop(now) {
     lastStatusAt = now;
     aircursor.status({
       camera: state.cameraReady ? "已开启" : "等待权限",
-      hand: hands.length ? `${hands.length} 只手 / ${gesture?.label || "识别中"}` : "未检测到手",
+      hand: hands.length
+        ? `${hands.length} 只手 / ${settings.showHands ? "骨架显示中" : "骨架隐藏"} / ${gesture?.label || "识别中"}`
+        : settings.showHands
+          ? "骨架已开，等待检测到手"
+          : "未检测到手",
       controlEnabled: settings.controlEnabled,
     });
   }
@@ -563,8 +567,8 @@ async function setupHands() {
   hands.setOptions({
     maxNumHands: settings.twoHands ? 2 : 1,
     modelComplexity: 0,
-    minDetectionConfidence: 0.55,
-    minTrackingConfidence: 0.5,
+    minDetectionConfidence: 0.48,
+    minTrackingConfidence: 0.44,
   });
 
   hands.onResults((results) => {

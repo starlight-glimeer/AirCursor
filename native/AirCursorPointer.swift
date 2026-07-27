@@ -10,6 +10,7 @@ struct PointerCommand: Decodable {
 
 let source = CGEventSource(stateID: .hidSystemState)
 var lastPoint = CGPoint(x: 0, y: 0)
+var cursorHidden = false
 
 if !AXIsProcessTrusted() {
     FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件可能不会生效。\n".data(using: .utf8)!)
@@ -31,6 +32,26 @@ func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton = .
     event.post(tap: .cghidEventTap)
 }
 
+func hideSystemCursor() {
+    if cursorHidden {
+        return
+    }
+    CGDisplayHideCursor(CGMainDisplayID())
+    cursorHidden = true
+}
+
+func showSystemCursor() {
+    if !cursorHidden {
+        return
+    }
+    CGDisplayShowCursor(CGMainDisplayID())
+    cursorHidden = false
+}
+
+atexit {
+    showSystemCursor()
+}
+
 while let line = readLine() {
     guard let data = line.data(using: .utf8),
           let command = try? JSONDecoder().decode(PointerCommand.self, from: data) else {
@@ -40,6 +61,10 @@ while let line = readLine() {
     let point = CGPoint(x: command.x ?? Double(lastPoint.x), y: command.y ?? Double(lastPoint.y))
 
     switch command.type {
+    case "hideCursor":
+        hideSystemCursor()
+    case "showCursor":
+        showSystemCursor()
     case "move":
         lastPoint = point
         postMouse(.mouseMoved, at: point)

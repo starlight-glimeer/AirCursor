@@ -21,6 +21,7 @@ let voiceHelper;
 let voiceBuffer = "";
 let voiceStatus = "等待";
 let quitting = false;
+let systemCursorHidden = false;
 
 const settings = {
   overlayVisible: true,
@@ -109,6 +110,9 @@ function startPointerHelper() {
   compilePointerHelper();
   const helperBinary = path.join(app.getPath("userData"), "AirCursorPointer");
   pointerHelper = spawn(helperBinary, [], { stdio: ["pipe", "ignore", "pipe"] });
+  if (systemCursorHidden) {
+    pointerHelper.stdin.write(`${JSON.stringify({ type: "hideCursor" })}\n`);
+  }
   pointerHelper.stderr.on("data", (chunk) => {
     broadcast("aircursor:helper-log", chunk.toString());
   });
@@ -194,6 +198,12 @@ function startVoiceHelper() {
 function sendPointer(command) {
   if (!pointerHelper || pointerHelper.killed) startPointerHelper();
   pointerHelper.stdin.write(`${JSON.stringify(command)}\n`);
+}
+
+function setSystemCursorHidden(hidden) {
+  if (systemCursorHidden === hidden) return;
+  systemCursorHidden = hidden;
+  sendPointer({ type: hidden ? "hideCursor" : "showCursor" });
 }
 
 function broadcast(channel, payload) {
@@ -362,6 +372,7 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   quitting = true;
+  setSystemCursorHidden(false);
   if (pointerHelper && !pointerHelper.killed) pointerHelper.kill();
   if (voiceHelper && !voiceHelper.killed) voiceHelper.kill();
 });
@@ -377,7 +388,11 @@ ipcMain.handle("aircursor:get-state", () => ({
   status: { voice: voiceStatus },
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
+  const previousControlEnabled = settings.controlEnabled;
   Object.assign(settings, patch);
+  if (settings.controlEnabled !== previousControlEnabled) {
+    setSystemCursorHidden(settings.controlEnabled);
+  }
   syncSettings();
   return { settings };
 });
