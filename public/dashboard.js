@@ -15,6 +15,7 @@ const voiceState = document.getElementById("voiceState");
 const controlState = document.getElementById("controlState");
 const ruleState = document.getElementById("ruleState");
 const voiceRules = document.getElementById("voiceRules");
+const gestureConflicts = document.getElementById("gestureConflicts");
 const diagnostics = document.getElementById("diagnostics");
 const diagnosticsPanel = document.getElementById("diagnosticsPanel");
 const overlayLog = document.getElementById("overlayLog");
@@ -212,6 +213,25 @@ function paintRecorderRow(row) {
     : "未录制";
 }
 
+// Two templates too close together produce the most confusing symptom there is:
+// the gesture works, but a different action happens. Naming the pair turns
+// "click does nothing" into "click and exit are the same pose".
+function renderConflicts(conflicts) {
+  gestureConflicts.innerHTML = "";
+  gestureConflicts.hidden = !conflicts?.length;
+  if (!conflicts?.length) return;
+  for (const conflict of conflicts) {
+    const line = document.createElement("p");
+    const [a, b] = conflict.labels || conflict.actions;
+    const head = `「${a}」和「${b}」的手势距离只有 ${conflict.distance}`;
+    line.textContent =
+      conflict.severity === "advisory"
+        ? `${head}（建议 ${conflict.needs} 以上）：一般能分对，但手势摆得不标准时可能认错。`
+        : `${head}，已经小于单次摆同一个手势的抖动幅度：会触发哪一个基本是随机的，请重录其中一个。`;
+    gestureConflicts.append(line);
+  }
+}
+
 function labelFor(action) {
   return actionLabels[action] || rules.find((rule) => rule.id === action)?.label || action;
 }
@@ -385,6 +405,7 @@ window.aircursor.onSettings((nextSettings) => {
   settings = nextSettings;
   render();
 });
+window.aircursor.onGestureConflicts(renderConflicts);
 window.aircursor.onStatus((status) => {
   if (status.camera) cameraState.textContent = status.camera;
   if (status.hand) handState.textContent = status.hand;
@@ -403,5 +424,6 @@ window.aircursor.getState().then((state) => {
   settings = state.settings;
   rules = state.rules || [];
   if (state.status?.voice) voiceState.textContent = state.status.voice;
+  renderConflicts(state.gestureConflicts);
   render();
 });

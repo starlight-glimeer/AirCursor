@@ -40,6 +40,9 @@ contextBridge.exposeInMainWorld("aircursor", {
   onRecordingResult: (handler) => {
     ipcRenderer.on("aircursor:recording-result", (_event, payload) => handler(payload));
   },
+  onGestureConflicts: (handler) => {
+    ipcRenderer.on("aircursor:gesture-conflicts", (_event, payload) => handler(payload));
+  },
   onResetMetrics: (handler) => {
     ipcRenderer.on("aircursor:reset-metrics", (_event, payload) => handler(payload));
   },

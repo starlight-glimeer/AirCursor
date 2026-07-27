@@ -62,15 +62,18 @@ const GESTURE_LABELS = {
 };
 
 const { PointerFilter, TrackingMetrics } = window.AirCursorTracking;
-const { orderHands, buildPoseTemplate, templateDistance, medianTemplate } = window.AirCursorPose;
+const { orderHands, buildPoseTemplate, templateDistance, medianTemplate, GestureResolver, SEPARATION_FACTOR } =
+  window.AirCursorPose;
+
 const metrics = new TrackingMetrics();
+const resolver = new GestureResolver();
 
 const DEFAULT_TUNING = {
   minCutoff: 1.2,
   beta: 0.045,
   deadzone: 1.6,
   prediction: 0.35,
-  matchThreshold: 0.22,
+  matchThreshold: 0.28,
   rotationTolerance: 20,
   inferenceIntervalMs: 20,
   moveIntervalMs: 8,
@@ -79,11 +82,17 @@ const pointerFilter = new PointerFilter(DEFAULT_TUNING);
 
 // Recording demands a tighter fit than triggering, so a recorded template stays
 // usable when the hand drifts a little at runtime.
-let MATCH_THRESHOLD = 0.22;
+let MATCH_THRESHOLD = 0.28;
 // Degrees in settings because that is what a tester can reason about; radians
 // here because that is what the geometry wants.
 let ROTATION_TOLERANCE = 0;
-const STABLE_TOLERANCE = 0.1;
+// How far the pose may drift within a hold window before the 2 seconds restart.
+// Scaled to the same units as the match threshold: at 0.1 (its value under the
+// old whole-hand distance) finger weighting pushed 37% of frames over the limit
+// at the landmark noise a real hand produces, so a perfectly still hand could
+// sit at "手势有变动" forever. Half the match threshold keeps the template
+// tighter than what will later be accepted, without fighting the tracker.
+const STABLE_TOLERANCE_RATIO = 0.5;
 const COUNTDOWN_MS = 3000;
 const HOLD_MS = 2000;
 const CAPTURE_TIMEOUT_MS = 15000;
@@ -213,14 +222,36 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// Every custom gesture bound anywhere, resolved together once per frame. Asking
+// each consumer "does this match?" in turn let the first asker win a pose that
+// belonged to someone else.
+function resolveCustomGesture(gesture) {
+  if (!gesture?.poseTemplate) {
+    resolver.reset();
+    return null;
+  }
+  const candidates = [];
+  for (const [action, mapped] of Object.entries(settings.gestureMap || {})) {
+    if (!mapped?.startsWith("custom:")) continue;
+    const template = settings.recordedGestures?.[mapped.slice("custom:".length)]?.template;
+    if (template) candidates.push({ action, template });
+  }
+  return resolver.resolve(
+    gesture.poseTemplate,
+    candidates,
+    MATCH_THRESHOLD,
+    ROTATION_TOLERANCE,
+    (distance, action) => metrics.markMatchDistance(distance, action),
+  );
+}
+
 function gestureMatches(gesture, gestureId) {
   if (!gesture || !gestureId || gestureId === "none") return false;
   if (gestureId.startsWith("custom:")) {
-    const action = gestureId.slice("custom:".length);
-    const template = settings.recordedGestures?.[action]?.template;
-    const distance = templateDistance(gesture.poseTemplate, template, ROTATION_TOLERANCE);
-    metrics.markMatchDistance(distance, action);
-    return distance < MATCH_THRESHOLD;
+    // The winner is decided for the whole frame and carried on the gesture, so
+    // this is a lookup rather than a fresh comparison: two callers can no longer
+    // disagree about one pose, and no caller can forget to pass it.
+    return gesture.custom?.action === gestureId.slice("custom:".length);
   }
   return Boolean(gesture[gestureId]);
 }
@@ -272,6 +303,9 @@ function detectGesture(points, allHands = [points]) {
     palmWidth,
     poseTemplate: buildPoseTemplate(allHands),
   };
+  // Resolved before any consumer looks at it, so every consumer this frame sees
+  // the same verdict.
+  detected.custom = resolveCustomGesture(detected);
   const clickGesture = settings.gestureMap?.click || "pinch";
   const rightClickGesture = settings.gestureMap?.rightClick || "middlePinch";
   const wakeGesture = settings.gestureMap?.wake || "openPalm";
@@ -492,17 +526,24 @@ function stopRecording() {
   state.recording = null;
 }
 
-// Two poses closer together than the match threshold are not two gestures: at
-// runtime whichever is checked first wins and the other looks broken. Better to
-// refuse at save time, while the user still knows what they just did, than to
-// ship a mapping that silently never fires.
+// Two poses too close together are not two gestures: a live pose goes to
+// whichever template is nearer, so the user gets the other action and this one
+// looks broken. Better to refuse at save time, while they still know what they
+// just did, than to ship a mapping that misfires.
+//
+// Only the blocking level refuses here (see SEPARATION_FACTOR): below it the two
+// templates sit within the drift of a single held pose, so which one fires is
+// arbitrary. Pairs in the advisory band still save — refusing them would reject
+// open-palm vs fist — and the dashboard warns about those instead.
 function conflictingAction(action, template) {
   const entries = Object.entries(settings.recordedGestures || {});
   for (const [other, entry] of entries) {
     if (other === action || !entry?.template) continue;
     if (!settings.gestureMap?.[other]?.startsWith("custom:")) continue;
     const distance = templateDistance(template, entry.template, ROTATION_TOLERANCE);
-    if (distance < MATCH_THRESHOLD * 1.35) return { action: other, distance: Number(distance.toFixed(3)) };
+    if (distance < MATCH_THRESHOLD * SEPARATION_FACTOR) {
+      return { action: other, distance: Number(distance.toFixed(3)) };
+    }
   }
   return null;
 }
@@ -578,7 +619,7 @@ function updateRecording(gesture, handCount) {
   // Drift is measured against the pose that opened this hold window, so slow
   // creeping movement cannot accumulate frame by frame unnoticed.
   const drift = recording.reference ? templateDistance(pose, recording.reference) : 0;
-  if (drift > STABLE_TOLERANCE) {
+  if (drift > MATCH_THRESHOLD * STABLE_TOLERANCE_RATIO) {
     recording.holdStartedAt = now;
     recording.samples = [pose];
     recording.reference = pose;
@@ -799,6 +840,9 @@ function loop(now) {
 
   const hands = orderHands(state.hands, state.handedness).map((hand) => hand.map(point));
   const gesture = hands[0] ? detectGesture(hands[0], hands) : null;
+  // Without this the resolver's sticky winner survives the hand leaving frame,
+  // and hysteresis would then bias the next pose toward whatever was held last.
+  if (!gesture) resolver.reset();
   state.gesture = gesture;
 
   updateRecording(gesture, hands.length);

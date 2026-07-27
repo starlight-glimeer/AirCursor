@@ -108,6 +108,62 @@ function rms(left, right) {
   return Math.sqrt(sum / left.length);
 }
 
+// Landmark ids per finger, thumb first. The wrist (0) belongs to no finger and
+// only participates in the whole-hand term.
+const FINGERS = [
+  [1, 2, 3, 4],
+  [5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [17, 18, 19, 20],
+];
+const LANDMARKS_PER_HAND = 21;
+
+// RMS over a subset of landmarks, across every hand in the pose.
+function rmsOver(left, right, ids, hands) {
+  let sum = 0;
+  let count = 0;
+  for (let hand = 0; hand < hands; hand += 1) {
+    const offset = hand * LANDMARKS_PER_HAND * 3;
+    for (const id of ids) {
+      for (let axis = 0; axis < 3; axis += 1) {
+        const i = offset + id * 3 + axis;
+        const diff = left[i] - right[i];
+        sum += diff * diff;
+        count += 1;
+      }
+    }
+  }
+  return count ? Math.sqrt(sum / count) : 0;
+}
+
+// How much of the distance comes from the single worst finger rather than the
+// whole hand. Plain RMS over all 63 dimensions dilutes a one-finger difference:
+// the thumb is 4 of 21 landmarks, so even a large thumb movement shrinks by
+// about sqrt(4/21). Measured over eight distinct poses, that put fist and
+// thumbs-up 0.210 apart — under the 0.22 default threshold, i.e. not
+// distinguishable at all, while a held pose drifts 0.10-0.16 on real hardware.
+//
+// Blending in the worst finger raises that closest pair to 0.346 and costs only
+// 13% more drift (0.099 -> 0.112 at the same simulated noise), so the margin
+// between "different pose" and "same pose, shaky" roughly doubles. 0.5 is where
+// that ratio flattens out; going further mostly amplifies noise.
+const FINGER_WEIGHT = 0.5;
+const ALL_LANDMARKS = Array.from({ length: LANDMARKS_PER_HAND }, (_, i) => i);
+
+// One finger in the wrong place should read as a different gesture even when the
+// other four agree, so the whole-hand term and the worst single finger are
+// blended rather than the whole hand alone deciding.
+function poseDistance(left, right, hands) {
+  const whole = rmsOver(left, right, ALL_LANDMARKS, hands);
+  let worst = 0;
+  for (const finger of FINGERS) {
+    const value = rmsOver(left, right, finger, hands);
+    if (value > worst) worst = value;
+  }
+  return (1 - FINGER_WEIGHT) * whole + FINGER_WEIGHT * worst;
+}
+
 // Rotation is forgiven up to a limit, not ignored. Full invariance would make
 // thumbs-up and thumbs-down the same gesture; zero tolerance makes a tilted
 // wrist a miss. `rotationTolerance` is the half-width in radians: the live pose
@@ -117,14 +173,14 @@ function templateDistance(a, b, rotationTolerance = 0) {
   const right = Array.isArray(b?.values) ? b.values : null;
   // A one-hand pose must never match a two-hand template, and vice versa.
   if (!left || !right || a.hands !== b.hands || left.length !== right.length) return Infinity;
-  if (!(rotationTolerance > 0)) return rms(left, right);
+  if (!(rotationTolerance > 0)) return poseDistance(left, right, a.hands);
 
   // Templates recorded before angles existed have none; without a reference
   // axis there is nothing to align to, so compare as-is rather than guessing.
-  if (!Number.isFinite(a.angle) || !Number.isFinite(b.angle)) return rms(left, right);
+  if (!Number.isFinite(a.angle) || !Number.isFinite(b.angle)) return poseDistance(left, right, a.hands);
   const delta = wrapAngle(b.angle - a.angle);
   const applied = clamp(delta, -rotationTolerance, rotationTolerance);
-  return rms(rotateValues(left, applied), right);
+  return poseDistance(rotateValues(left, applied), right, a.hands);
 }
 
 // Median rather than mean: a single mistracked frame inside the hold window
@@ -156,8 +212,75 @@ function medianAngle(samples) {
   return Number(wrapAngle(reference + offset).toFixed(4));
 }
 
+// A pose is whatever template it sits closest to — not whatever happens to be
+// checked first. With a fixed check order, a click pose that landed slightly
+// nearer the exit template fired exit instead, and since exit is checked first
+// in the frame, the click could never win no matter how the user held it.
+class GestureResolver {
+  // `hysteresis` is a fraction of the match threshold. A pose sitting between
+  // two templates would otherwise flip winners frame to frame, and every flip
+  // away from the click gesture releases the pinch and fires a stray click.
+  constructor({ hysteresis = 0.18 } = {}) {
+    this.hysteresis = hysteresis;
+    this.current = null;
+  }
+
+  reset() {
+    this.current = null;
+  }
+
+  // candidates: [{ action, template }]. onDistance sees every comparison so the
+  // diagnostics get one distance per template per frame, computed once.
+  resolve(pose, candidates, threshold, rotationTolerance, onDistance) {
+    let best = null;
+    let currentDistance = Infinity;
+    for (const candidate of candidates) {
+      const distance = templateDistance(pose, candidate.template, rotationTolerance);
+      if (onDistance) onDistance(distance, candidate.action);
+      if (candidate.action === this.current) currentDistance = distance;
+      if (!best || distance < best.distance) best = { action: candidate.action, distance };
+    }
+
+    // best is the minimum, so if it misses the threshold nothing matches.
+    if (!best || !(best.distance < threshold)) {
+      this.current = null;
+      return null;
+    }
+    if (
+      this.current !== best.action &&
+      currentDistance < threshold &&
+      best.distance > currentDistance - threshold * this.hysteresis
+    ) {
+      return { action: this.current, distance: currentDistance };
+    }
+    this.current = best.action;
+    return best;
+  }
+}
+
+// How far apart two templates have to be, as a multiple of the match threshold.
+//
+// Guaranteeing no misassignment needs a gap of 2x the threshold: a pose is
+// accepted within `threshold` of its own template, so by the triangle inequality
+// only a gap of 2x makes it provably nearer the right one. That guarantee is not
+// available here — measured across eight distinct single-hand poses (palm, fist,
+// point, peace, thumbs-up, rock, three, pinky-out) the whole space spans 0.21 to
+// 0.54, so at the default 0.22 threshold a 2x rule refuses 21 of 28 legitimate
+// pairs, open-palm vs fist (0.364) among them.
+//
+// So the two levels are split. Below 1x the templates are closer than the drift
+// of a single held pose, which on a real Mac measured 0.094-0.16 while holding
+// still: those are not two gestures and saving one is refused. Between 1x and 2x
+// the guarantee is gone but the nearest-match resolver still picks correctly most
+// of the time, so it saves and warns instead of blocking a pose the user wants.
+const SEPARATION_FACTOR = 1;
+const ADVISORY_FACTOR = 2;
+
 root.AirCursorPose = {
   Z_WEIGHT,
+  GestureResolver,
+  SEPARATION_FACTOR,
+  ADVISORY_FACTOR,
   dist,
   palmWidthOf,
   orderHands,

@@ -4,6 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.join(__dirname, "..");
+// pose.js attaches to globalThis when there is no window, so main can reuse the
+// exact geometry the overlay matches with. A second implementation here would be
+// free to disagree with the one that actually decides what fires.
+require("../public/pose.js");
+const { templateDistance, SEPARATION_FACTOR, ADVISORY_FACTOR } = globalThis.AirCursorPose;
 const helperSource = app.isPackaged
   ? path.join(process.resourcesPath, "native", "AirCursorPointer.swift")
   : path.join(root, "native", "AirCursorPointer.swift");
@@ -44,7 +49,7 @@ const defaultSettings = {
     beta: 0.045,
     deadzone: 1.6,
     prediction: 0.35,
-    matchThreshold: 0.22,
+    matchThreshold: 0.28,
     rotationTolerance: 20,
     inferenceIntervalMs: 20,
     moveIntervalMs: 8,
@@ -305,6 +310,10 @@ function syncSettings() {
   }
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.webContents.send("aircursor:settings", settings);
+    // Sent alongside settings rather than computed in the renderer: the geometry
+    // and the threshold both live here, and a conflict has to surface the moment
+    // it exists, not when someone thinks to save a report.
+    dashboardWindow.webContents.send("aircursor:gesture-conflicts", gestureConflicts());
   }
 }
 
@@ -353,6 +362,36 @@ function saveRecordedTemplate(action, template) {
   });
 }
 
+// Templates that are too close to each other are the one fault that looks like
+// every other fault: the action fires, just the wrong one. The report says so
+// outright rather than leaving it to be inferred from distances, because the
+// symptom the user reports will be "click does nothing".
+function gestureConflicts() {
+  const bound = Object.entries(settings.recordedGestures || {})
+    .filter(([action, entry]) => entry?.template && settings.gestureMap?.[action] === `custom:${action}`)
+    .map(([action, entry]) => ({ action, template: entry.template }));
+  const tolerance = ((settings.tuning?.rotationTolerance || 0) * Math.PI) / 180;
+  const threshold = settings.tuning?.matchThreshold ?? defaultSettings.tuning.matchThreshold;
+  const conflicts = [];
+  for (let i = 0; i < bound.length; i += 1) {
+    for (let j = i + 1; j < bound.length; j += 1) {
+      const distance = templateDistance(bound[i].template, bound[j].template, tolerance);
+      if (!Number.isFinite(distance) || distance >= threshold * ADVISORY_FACTOR) continue;
+      conflicts.push({
+        actions: [bound[i].action, bound[j].action],
+        labels: [actionLabels[bound[i].action] || bound[i].action, actionLabels[bound[j].action] || bound[j].action],
+        distance: Number(distance.toFixed(3)),
+        needs: Number((threshold * ADVISORY_FACTOR).toFixed(3)),
+        // Below 1x the two are within the drift of one held pose, so which one
+        // fires is effectively arbitrary. Between 1x and 2x the resolver still
+        // picks the nearer template; it is just no longer provably right.
+        severity: distance < threshold * SEPARATION_FACTOR ? "blocking" : "advisory",
+      });
+    }
+  }
+  return conflicts;
+}
+
 // A tuning report is the unit of feedback from a real Mac: numbers plus the
 // exact tuning that produced them, so a "feels laggy" observation arrives with
 // the frame rate, pipeline latency and jitter that caused it.
@@ -393,6 +432,7 @@ function buildReport(note) {
         },
       ]),
     ),
+    gestureConflicts: gestureConflicts(),
     sampleCount: samples.length,
     metrics: {
       cameraFps: stat("cameraFps"),
@@ -639,6 +679,9 @@ ipcMain.handle("aircursor:get-state", () => ({
   screen: screen.getPrimaryDisplay().bounds,
   rules: publicRules,
   status: { voice: voiceStatus },
+  // A conflict recorded in an earlier run is still a conflict on launch, so the
+  // dashboard must not have to wait for a settings change to hear about it.
+  gestureConflicts: gestureConflicts(),
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   updateSettings(patch);

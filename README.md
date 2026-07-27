@@ -45,7 +45,11 @@ The saved template is the median of the frames you held, so one mistracked frame
 
 Wrist tilt is forgiven up to 旋转容差 (default 20°), measured along wrist to middle-finger base. It is capped rather than unlimited on purpose: full rotation invariance would make thumbs-up and thumbs-down the same gesture. For two hands the tilt is one shared axis, so leaning the whole pose still matches while rotating one hand alone stays a distinct gesture.
 
-Recording is deliberately tighter than triggering: 手势容错阈值 controls how far a live pose may sit from the template and still fire. A new recording is refused if it lands too close to a gesture you already saved, naming the one it clashed with — otherwise whichever gets checked first would win and the other would look broken.
+Matching weights the worst single finger as heavily as the whole hand. Plain whole-hand RMS dilutes a one-finger difference — the thumb is 4 of 21 landmarks — which put fist and thumbs-up 0.210 apart, under the 0.22 threshold that shipped, meaning they were not distinguishable at all. Weighting the worst finger raises that pair to 0.346 for 13% more noise, so the default threshold is now 0.28.
+
+Which gesture fires is decided once per frame by nearest template, not by whichever consumer asks first. A pose sitting between two templates sticks with the one already held (18% of the threshold in hysteresis) so it cannot flip frame to frame.
+
+A new recording is refused when it lands within one threshold of a gesture you already saved: at that range it is inside the drift of a single held pose, so which one fires would be arbitrary. Pairs between one and two thresholds apart still save — the whole single-hand pose space only spans about 0.21 to 0.54, so refusing that band would reject open-palm vs fist — and the dashboard warns instead.
 
 ## Gesture-Triggered Rules
 
@@ -68,15 +72,17 @@ Turn on 诊断与调参 in the dashboard (or press Command+D) to get the panel t
 | 识别率 | share of frames with a hand, plus hand count | < 85% |
 | 手势距离 | distance to the nearest recorded template, the closest seen, and which gesture it is | — |
 
+If two bound gestures are too close together, an amber banner in 手势规则 names the pair and their distance — that fault presents as "the action does nothing" because a different action fires instead, so it is called out rather than left to be inferred. Reports carry the same list under `gestureConflicts`.
+
 手势距离 is the number to read while recording: a pose that should fire but does not is a threshold problem if the distance sits just above it, and a template problem if it never comes close. With several gestures bound, the name tells you whether the wrong template is the one winning.
 
-The six sliders apply instantly, no restart:
+The seven sliders apply instantly, no restart:
 
 - **平滑强度 (minCutoff)** — lower is steadier but syrupy, higher is more responsive but shakier.
 - **快速跟随 (beta)** — how aggressively smoothing backs off when the hand moves fast.
 - **静止死区** — pixels of movement to ignore, which kills hover crawl.
 - **预测提前量** — compensates pipeline latency; too much overshoots.
-- **手势容错阈值** — larger accepts sloppier poses and misfires more.
+- **手势容错阈值** — larger accepts sloppier poses and misfires more. Default 0.28: above the 0.10-0.16 a held pose drifts on real hardware, below the 0.346 that separates the closest distinct pair.
 - **旋转容差** — degrees of wrist tilt to forgive; too large merges gestures that differ only in direction.
 - **推理间隔** — smaller tracks tighter and costs more CPU.
 
