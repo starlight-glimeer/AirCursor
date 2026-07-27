@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ApplicationServices
 
 struct PointerCommand: Decodable {
     let type: String
@@ -9,6 +10,14 @@ struct PointerCommand: Decodable {
 
 let source = CGEventSource(stateID: .hidSystemState)
 var lastPoint = CGPoint(x: 0, y: 0)
+
+if !AXIsProcessTrusted() {
+    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件可能不会生效。\n".data(using: .utf8)!)
+}
+
+func currentMousePoint() -> CGPoint {
+    CGEvent(source: nil)?.location ?? lastPoint
+}
 
 func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton = .left) {
     guard let event = CGEvent(
@@ -42,11 +51,19 @@ while let line = readLine() {
         postMouse(.leftMouseUp, at: point)
     case "click":
         lastPoint = point
+        postMouse(.mouseMoved, at: point)
         postMouse(.leftMouseDown, at: point)
         usleep(45_000)
         postMouse(.leftMouseUp, at: point)
+    case "clickCurrent":
+        let current = currentMousePoint()
+        lastPoint = current
+        postMouse(.leftMouseDown, at: current)
+        usleep(45_000)
+        postMouse(.leftMouseUp, at: current)
     case "rightClick":
         lastPoint = point
+        postMouse(.mouseMoved, at: point)
         postMouse(.rightMouseDown, at: point, button: .right)
         usleep(45_000)
         postMouse(.rightMouseUp, at: point, button: .right)

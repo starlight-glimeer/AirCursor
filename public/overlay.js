@@ -79,8 +79,14 @@ const VOICE_RULES = [
         aircursor.status({ rule: "先开启控制，再用语音点选" });
         return false;
       }
+      if (!state.gesture) {
+        aircursor.pointer({ type: "clickCurrent" });
+        aircursor.status({ rule: "系统语音：点击当前鼠标位置（未检测到手）" });
+        return false;
+      }
+      sendPointer("move", state.cursor.x, state.cursor.y);
       sendPointer("click", state.cursor.x, state.cursor.y);
-      burst(state.cursor.x, state.cursor.y, 18, "#ffd76a");
+      burst(state.cursor.x, state.cursor.y, 24, "#ffd76a");
       return true;
     },
     label: "语音点选当前位置",
