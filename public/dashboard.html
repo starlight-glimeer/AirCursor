@@ -35,6 +35,10 @@
             <span>控制模式</span>
             <strong id="controlState">关闭</strong>
           </div>
+          <div class="status">
+            <span>规则</span>
+            <strong id="ruleState">等待</strong>
+          </div>
         </article>
 
         <article class="panel">
@@ -66,11 +70,16 @@
           <div class="rules">
             <div><b>张开手掌 1 秒</b><span>唤醒控制模式</span></div>
             <div><b>食指移动</b><span>移动鼠标指针</span></div>
-            <div><b>拇指 + 食指捏合</b><span>点击或拖拽</span></div>
+            <div><b>拇指 + 食指捏合</b><span>锁定当前点；短捏点击，捏住移动拖拽</span></div>
             <div><b>拇指 + 中指捏合</b><span>右键点击</span></div>
             <div><b>握拳 1 秒</b><span>退出控制模式</span></div>
-            <div><b>语音</b><span>启动、退出、打开网易云、点击</span></div>
+            <div><b>语音</b><span>本地常用规则，不接大模型</span></div>
           </div>
+        </article>
+
+        <article class="panel wide">
+          <h2>常用规则</h2>
+          <div id="voiceRules" class="rule-list"></div>
         </article>
       </section>
     </main>

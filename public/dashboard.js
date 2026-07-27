@@ -8,6 +8,8 @@ const effectsEnabled = document.getElementById("effectsEnabled");
 const cameraState = document.getElementById("cameraState");
 const handState = document.getElementById("handState");
 const controlState = document.getElementById("controlState");
+const ruleState = document.getElementById("ruleState");
+const voiceRules = document.getElementById("voiceRules");
 
 let settings = {
   overlayVisible: true,
@@ -17,6 +19,7 @@ let settings = {
   twoHands: false,
   effects: "balanced",
 };
+let rules = [];
 
 function render() {
   overlayVisible.checked = settings.overlayVisible;
@@ -26,6 +29,31 @@ function render() {
   effectsEnabled.checked = settings.effects === "rich";
   controlState.textContent = settings.controlEnabled ? "开启" : "关闭";
   controlToggle.textContent = settings.controlEnabled ? "关闭控制" : "开启控制";
+
+  voiceRules.innerHTML = "";
+  for (const rule of rules) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+
+    const copy = document.createElement("div");
+    const title = document.createElement("b");
+    const voice = document.createElement("span");
+    title.textContent = rule.label;
+    voice.textContent = rule.voice;
+    copy.append(title, voice);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "测试";
+    button.addEventListener("click", async () => {
+      ruleState.textContent = `执行中：${rule.label}`;
+      const result = await window.aircursor.runRule(rule.id);
+      ruleState.textContent = `${result.ok ? "已执行" : "失败"}：${rule.label}`;
+    });
+
+    row.append(copy, button);
+    voiceRules.append(row);
+  }
 }
 
 async function patchSettings(patch) {
@@ -63,6 +91,7 @@ window.aircursor.onSettings((nextSettings) => {
 window.aircursor.onStatus((status) => {
   if (status.camera) cameraState.textContent = status.camera;
   if (status.hand) handState.textContent = status.hand;
+  if (status.rule) ruleState.textContent = status.rule;
   if (typeof status.controlEnabled === "boolean") {
     settings.controlEnabled = status.controlEnabled;
     render();
@@ -74,5 +103,6 @@ window.aircursor.onHelperLog((message) => {
 
 window.aircursor.getState().then((state) => {
   settings = state.settings;
+  rules = state.rules || [];
   render();
 });

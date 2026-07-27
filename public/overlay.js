@@ -15,6 +15,7 @@ const aircursor = window.aircursor || {
     screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
   }),
   updateSettings: async (patch) => ({ settings: { ...settings, ...patch } }),
+  runRule: async (ruleId) => ({ ok: true, id: ruleId, label: ruleId }),
   openNetease: async () => fetch("/api/open/netease", { method: "POST" }).then((response) => response.json()),
   pointer: () => {},
   status: () => {},
@@ -39,12 +40,51 @@ const state = {
   holdStartedAt: 0,
   toggleCooldownUntil: 0,
   pointerDown: false,
+  pinch: {
+    active: false,
+    startedAt: 0,
+    startX: 0,
+    startY: 0,
+    dragging: false,
+  },
+  rightClickCooldownUntil: 0,
   lastPointerSentAt: 0,
   lastInferenceAt: 0,
   inferenceBusy: false,
   cursor: { x: 0, y: 0, ready: false },
   screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
 };
+
+const VOICE_RULES = [
+  {
+    id: "control_off",
+    match: /退出|停止|隐藏|关闭控制|关掉控制/,
+    run: () => setControlMode(false),
+    label: "退出控制模式",
+  },
+  {
+    id: "control_on",
+    match: /启动|唤醒|开始|开启控制|打开控制/,
+    run: () => setControlMode(true),
+    label: "启动控制模式",
+  },
+  {
+    id: "click",
+    match: /点击|单击|点一下/,
+    run: () => {
+      sendPointer("click", state.cursor.x, state.cursor.y);
+      burst(state.cursor.x, state.cursor.y, 18, "#ffd76a");
+    },
+    label: "点击当前位置",
+  },
+  { id: "open_netease", match: /网易云|音乐/, label: "打开网易云音乐" },
+  { id: "open_wechat", match: /微信|wechat/i, label: "打开微信" },
+  { id: "open_chrome", match: /谷歌|chrome|浏览器/i, label: "打开 Chrome" },
+  { id: "open_safari", match: /safari/i, label: "打开 Safari" },
+  { id: "open_finder", match: /访达|finder/i, label: "打开访达" },
+  { id: "open_terminal", match: /终端|terminal/i, label: "打开终端" },
+  { id: "open_cursor", match: /cursor/i, label: "打开 Cursor" },
+];
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, settings.effects === "rich" ? 1.5 : 1);
@@ -157,6 +197,7 @@ function setControlMode(enabled) {
     sendPointer("up", state.cursor.x, state.cursor.y);
     state.pointerDown = false;
   }
+  resetPinch();
 
   aircursor.updateSettings({ controlEnabled: enabled, overlayVisible: true });
   aircursor.status({ controlEnabled: enabled });
@@ -190,33 +231,73 @@ function updateHoldGesture(gesture) {
   }
 }
 
-function updateSystemCursor(gesture) {
-  if (!gesture || !settings.controlEnabled) return;
+function resetPinch() {
+  state.pinch.active = false;
+  state.pinch.startedAt = 0;
+  state.pinch.startX = 0;
+  state.pinch.startY = 0;
+  state.pinch.dragging = false;
+}
 
-  const smoothing = gesture.pinch ? 0.34 : 0.22;
+function updateSystemCursor(gesture) {
+  if (!gesture || !settings.controlEnabled) {
+    if (state.pointerDown) {
+      sendPointer("up", state.cursor.x, state.cursor.y);
+      state.pointerDown = false;
+    }
+    resetPinch();
+    return;
+  }
+
+  const smoothing = state.pinch.dragging ? 0.34 : 0.22;
   state.cursor.x += (gesture.index.x - state.cursor.x) * smoothing;
   state.cursor.y += (gesture.index.y - state.cursor.y) * smoothing;
 
   const now = performance.now();
-  if (now - state.lastPointerSentAt > 24) {
+  const canSendMove = !state.pinch.active || state.pinch.dragging;
+  if (canSendMove && now - state.lastPointerSentAt > 24) {
     sendPointer("move", state.cursor.x, state.cursor.y);
     state.lastPointerSentAt = now;
   }
 
-  if (gesture.middlePinch) {
+  if (gesture.middlePinch && now > state.rightClickCooldownUntil) {
+    state.rightClickCooldownUntil = now + 650;
     sendPointer("rightClick", state.cursor.x, state.cursor.y);
     burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 24 : 8, "#ffd76a");
     return;
   }
 
-  if (gesture.pinch && !state.pointerDown) {
-    state.pointerDown = true;
-    sendPointer("down", state.cursor.x, state.cursor.y);
-    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 22 : 8, "#ff4ea3");
-  } else if (!gesture.pinch && state.pointerDown) {
-    state.pointerDown = false;
-    sendPointer("up", state.cursor.x, state.cursor.y);
-    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#49e5ff");
+  if (gesture.pinch && !state.pinch.active) {
+    state.pinch.active = true;
+    state.pinch.startedAt = now;
+    state.pinch.startX = state.cursor.x;
+    state.pinch.startY = state.cursor.y;
+    state.pinch.dragging = false;
+    burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ff4ea3");
+    return;
+  }
+
+  if (gesture.pinch && state.pinch.active) {
+    const moved = Math.hypot(state.cursor.x - state.pinch.startX, state.cursor.y - state.pinch.startY);
+    const held = now - state.pinch.startedAt;
+    if (!state.pinch.dragging && moved > 28 && held > 140) {
+      state.pinch.dragging = true;
+      state.pointerDown = true;
+      sendPointer("down", state.pinch.startX, state.pinch.startY);
+    }
+    return;
+  }
+
+  if (!gesture.pinch && state.pinch.active) {
+    if (state.pinch.dragging || state.pointerDown) {
+      sendPointer("up", state.cursor.x, state.cursor.y);
+      state.pointerDown = false;
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#49e5ff");
+    } else {
+      sendPointer("click", state.pinch.startX, state.pinch.startY);
+      burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ffd76a");
+    }
+    resetPinch();
   }
 }
 
@@ -429,18 +510,25 @@ function setupVoice() {
   recognizer.onresult = (event) => {
     if (!settings.voiceEnabled) return;
     const result = event.results[event.results.length - 1];
-    const text = result[0].transcript.trim();
+    const text = result[0].transcript.trim().replace(/\s+/g, "");
+    const rule = VOICE_RULES.find((item) => item.match.test(text));
 
-    if (/启动|唤醒|开始|控制/.test(text)) {
-      setControlMode(true);
-    } else if (/退出|停止|隐藏|关闭控制/.test(text)) {
-      setControlMode(false);
-    } else if (/网易云|音乐/.test(text)) {
-      aircursor.openNetease();
-    } else if (/点击/.test(text)) {
-      sendPointer("click", state.cursor.x, state.cursor.y);
-      burst(state.cursor.x, state.cursor.y, 30, "#ffd76a");
+    if (!rule) {
+      aircursor.status({ rule: `未匹配语音：${text}` });
+      return;
     }
+
+    if (rule.run) {
+      rule.run();
+      aircursor.status({ rule: `语音：${rule.label}` });
+      return;
+    }
+
+    aircursor.runRule(rule.id).then((response) => {
+      aircursor.status({
+        rule: `${response.ok ? "语音执行" : "语音执行失败"}：${rule.label}`,
+      });
+    });
   };
 
   recognizer.onend = () => recognizer.start();
@@ -459,6 +547,7 @@ aircursor.onSettings((next) => {
     sendPointer("up", state.cursor.x, state.cursor.y);
     state.pointerDown = false;
   }
+  if (!settings.controlEnabled) resetPinch();
 });
 window.addEventListener("resize", resize);
 

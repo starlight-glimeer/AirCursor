@@ -3,7 +3,9 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("aircursor", {
   platform: process.platform,
   getState: () => ipcRenderer.invoke("aircursor:get-state"),
+  getRules: () => ipcRenderer.invoke("aircursor:get-rules"),
   updateSettings: (patch) => ipcRenderer.invoke("aircursor:update-settings", patch),
+  runRule: (ruleId) => ipcRenderer.invoke("aircursor:run-rule", ruleId),
   openNetease: () => ipcRenderer.invoke("aircursor:open-netease"),
   openAccessibilitySettings: () => ipcRenderer.invoke("aircursor:open-accessibility"),
   showDashboard: () => ipcRenderer.invoke("aircursor:show-dashboard"),

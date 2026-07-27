@@ -22,6 +22,63 @@ const settings = {
   effects: "balanced",
 };
 
+const ruleDefinitions = [
+  {
+    id: "open_netease",
+    label: "打开网易云音乐",
+    voice: "打开网易云 / 打开音乐",
+    candidates: [
+      ["/Applications/NeteaseMusic.app"],
+      ["-b", "com.netease.163music"],
+      ["-a", "NeteaseMusic"],
+      ["-a", "网易云音乐"],
+    ],
+  },
+  {
+    id: "open_wechat",
+    label: "打开微信",
+    voice: "打开微信",
+    candidates: [
+      ["/Applications/WeChat.app"],
+      ["-b", "com.tencent.xinWeChat"],
+      ["-a", "WeChat"],
+      ["-a", "微信"],
+    ],
+  },
+  {
+    id: "open_chrome",
+    label: "打开 Chrome",
+    voice: "打开浏览器 / 打开 Chrome",
+    candidates: [["/Applications/Google Chrome.app"], ["-a", "Google Chrome"], ["-a", "Chrome"]],
+  },
+  {
+    id: "open_safari",
+    label: "打开 Safari",
+    voice: "打开 Safari",
+    candidates: [["-a", "Safari"]],
+  },
+  {
+    id: "open_finder",
+    label: "打开访达",
+    voice: "打开访达 / 打开 Finder",
+    candidates: [["-a", "Finder"]],
+  },
+  {
+    id: "open_terminal",
+    label: "打开终端",
+    voice: "打开终端 / 打开 Terminal",
+    candidates: [["-a", "Terminal"], ["-a", "终端"]],
+  },
+  {
+    id: "open_cursor",
+    label: "打开 Cursor",
+    voice: "打开 Cursor",
+    candidates: [["/Applications/Cursor.app"], ["-a", "Cursor"]],
+  },
+];
+
+const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, voice }));
+
 function compilePointerHelper() {
   const helperBinary = path.join(app.getPath("userData"), "AirCursorPointer");
   const needsBuild =
@@ -73,19 +130,24 @@ function syncSettings() {
   }
 }
 
-function openNeteaseMusic() {
-  const candidates = [
-    ["/usr/bin/open", ["/Applications/NeteaseMusic.app"]],
-    ["/usr/bin/open", ["-b", "com.netease.163music"]],
-    ["/usr/bin/open", ["-a", "NeteaseMusic"]],
-    ["/usr/bin/open", ["-a", "网易云音乐"]],
-  ];
-
-  for (const [command, args] of candidates) {
-    const result = spawnSync(command, args, { stdio: "ignore" });
+function openWithCandidates(candidates) {
+  for (const args of candidates) {
+    const result = spawnSync("/usr/bin/open", args, { stdio: "ignore" });
     if (result.status === 0) return true;
   }
   return false;
+}
+
+function runRule(ruleId) {
+  const rule = ruleDefinitions.find((item) => item.id === ruleId);
+  if (!rule) return { ok: false, id: ruleId, label: "未知规则" };
+
+  const ok = openWithCandidates(rule.candidates);
+  const result = { ok, id: rule.id, label: rule.label };
+  broadcast("aircursor:overlay-status", {
+    rule: `${ok ? "已执行" : "执行失败"}：${rule.label}`,
+  });
+  return result;
 }
 
 function createDashboardWindow() {
@@ -190,13 +252,16 @@ app.on("window-all-closed", () => {
 ipcMain.handle("aircursor:get-state", () => ({
   settings,
   screen: screen.getPrimaryDisplay().bounds,
+  rules: publicRules,
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   Object.assign(settings, patch);
   syncSettings();
   return { settings };
 });
-ipcMain.handle("aircursor:open-netease", () => ({ ok: openNeteaseMusic() }));
+ipcMain.handle("aircursor:get-rules", () => ({ rules: publicRules }));
+ipcMain.handle("aircursor:run-rule", (_event, ruleId) => runRule(ruleId));
+ipcMain.handle("aircursor:open-netease", () => runRule("open_netease"));
 ipcMain.handle("aircursor:open-accessibility", () => {
   shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
   return { ok: true };
