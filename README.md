@@ -11,7 +11,7 @@ npm install
 npm start
 ```
 
-The first run asks for camera permission. Real mouse movement/clicking requires macOS Accessibility permission for the terminal or packaged app that launches AirCursor.
+The first run opens a normal AirCursor dashboard and a separate transparent overlay. Minimize the dashboard to keep AirCursor running in the background. Real mouse movement/clicking requires macOS Accessibility permission for the terminal or packaged app that launches AirCursor.
 
 For the old browser fallback:
 
@@ -31,3 +31,11 @@ Then open `http://127.0.0.1:5177`.
 - Voice: "启动/控制", "退出/停止", "打开网易云", "点击".
 
 The desktop build uses Electron for the transparent always-on-top overlay and a tiny Swift CoreGraphics helper for macOS pointer events.
+
+## Package
+
+```bash
+npm run dist:mac
+```
+
+The unsigned DMG is written to `dist/`.

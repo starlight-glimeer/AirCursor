@@ -4,13 +4,24 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.join(__dirname, "..");
-const helperSource = path.join(root, "native", "AirCursorPointer.swift");
-const helperBinary = path.join(root, "native", "AirCursorPointer");
+const helperSource = app.isPackaged
+  ? path.join(process.resourcesPath, "native", "AirCursorPointer.swift")
+  : path.join(root, "native", "AirCursorPointer.swift");
 
-let mainWindow;
+let dashboardWindow;
+let overlayWindow;
 let pointerHelper;
+let quitting = false;
+
+const settings = {
+  overlayVisible: true,
+  showHands: true,
+  controlEnabled: false,
+  voiceEnabled: true,
+};
 
 function compilePointerHelper() {
+  const helperBinary = path.join(app.getPath("userData"), "AirCursorPointer");
   const needsBuild =
     !fs.existsSync(helperBinary) ||
     fs.statSync(helperBinary).mtimeMs < fs.statSync(helperSource).mtimeMs;
@@ -28,11 +39,10 @@ function compilePointerHelper() {
 
 function startPointerHelper() {
   compilePointerHelper();
+  const helperBinary = path.join(app.getPath("userData"), "AirCursorPointer");
   pointerHelper = spawn(helperBinary, [], { stdio: ["pipe", "ignore", "pipe"] });
   pointerHelper.stderr.on("data", (chunk) => {
-    if (mainWindow) {
-      mainWindow.webContents.send("aircursor:helper-log", chunk.toString());
-    }
+    broadcast("aircursor:helper-log", chunk.toString());
   });
   pointerHelper.on("exit", () => {
     pointerHelper = null;
@@ -40,10 +50,25 @@ function startPointerHelper() {
 }
 
 function sendPointer(command) {
-  if (!pointerHelper || pointerHelper.killed) {
-    startPointerHelper();
-  }
+  if (!pointerHelper || pointerHelper.killed) startPointerHelper();
   pointerHelper.stdin.write(`${JSON.stringify(command)}\n`);
+}
+
+function broadcast(channel, payload) {
+  for (const win of [dashboardWindow, overlayWindow]) {
+    if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+function syncSettings() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send("aircursor:settings", settings);
+    if (settings.overlayVisible) overlayWindow.showInactive();
+    else overlayWindow.hide();
+  }
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    dashboardWindow.webContents.send("aircursor:settings", settings);
+  }
 }
 
 function openNeteaseMusic() {
@@ -61,11 +86,40 @@ function openNeteaseMusic() {
   return false;
 }
 
-function createWindow() {
-  const display = screen.getPrimaryDisplay();
-  const bounds = display.bounds;
+function createDashboardWindow() {
+  dashboardWindow = new BrowserWindow({
+    width: 1040,
+    height: 760,
+    minWidth: 880,
+    minHeight: 640,
+    show: false,
+    title: "AirCursor",
+    backgroundColor: "#f6f7fb",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
 
-  mainWindow = new BrowserWindow({
+  dashboardWindow.loadFile(path.join(root, "public", "dashboard.html"));
+  dashboardWindow.once("ready-to-show", () => {
+    dashboardWindow.show();
+    syncSettings();
+  });
+  dashboardWindow.on("close", (event) => {
+    if (process.platform === "darwin" && !quitting) {
+      event.preventDefault();
+      dashboardWindow.hide();
+    }
+  });
+}
+
+function createOverlayWindow() {
+  const bounds = screen.getPrimaryDisplay().bounds;
+
+  overlayWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
     width: bounds.width,
@@ -77,8 +131,8 @@ function createWindow() {
     fullscreenable: false,
     hasShadow: false,
     alwaysOnTop: true,
-    skipTaskbar: false,
-    title: "AirCursor",
+    skipTaskbar: true,
+    title: "AirCursor Overlay",
     backgroundColor: "#00000000",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -88,37 +142,57 @@ function createWindow() {
     },
   });
 
-  mainWindow.setAlwaysOnTop(true, "screen-saver");
-  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  mainWindow.setIgnoreMouseEvents(true, { forward: true });
-  mainWindow.loadFile(path.join(root, "public", "index.html"));
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  overlayWindow.loadFile(path.join(root, "public", "overlay.html"));
+  overlayWindow.once("ready-to-show", syncSettings);
+}
+
+function showDashboard() {
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
+  dashboardWindow.show();
+  dashboardWindow.focus();
 }
 
 app.whenReady().then(() => {
   startPointerHelper();
-  createWindow();
+  createDashboardWindow();
+  createOverlayWindow();
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on("activate", showDashboard);
+});
+
+app.on("before-quit", () => {
+  quitting = true;
+  if (pointerHelper && !pointerHelper.killed) pointerHelper.kill();
 });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
-  if (pointerHelper && !pointerHelper.killed) {
-    pointerHelper.kill();
-  }
+ipcMain.handle("aircursor:get-state", () => ({
+  settings,
+  screen: screen.getPrimaryDisplay().bounds,
+}));
+ipcMain.handle("aircursor:update-settings", (_event, patch) => {
+  Object.assign(settings, patch);
+  syncSettings();
+  return { settings };
 });
-
-ipcMain.handle("aircursor:get-screen", () => screen.getPrimaryDisplay().bounds);
 ipcMain.handle("aircursor:open-netease", () => ({ ok: openNeteaseMusic() }));
 ipcMain.handle("aircursor:open-accessibility", () => {
   shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
   return { ok: true };
 });
+ipcMain.handle("aircursor:show-dashboard", () => {
+  showDashboard();
+  return { ok: true };
+});
 ipcMain.on("aircursor:pointer", (_event, command) => {
   sendPointer(command);
+});
+ipcMain.on("aircursor:overlay-status", (_event, status) => {
+  broadcast("aircursor:overlay-status", status);
 });

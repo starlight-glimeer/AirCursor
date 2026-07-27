@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AirCursor</title>
+    <link rel="stylesheet" href="/dashboard.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">AirCursor</p>
+        <h1>用手势和语音控制 Mac</h1>
+        <p class="intro">
+          主窗口负责设置和说明；最小化后 AirCursor 继续在后台运行，只保留透明手势层。
+        </p>
+        <div class="actions">
+          <button id="controlToggle" class="primary" type="button">开启控制</button>
+          <button id="accessibilityButton" type="button">打开辅助功能权限</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>运行状态</h2>
+          <div class="status">
+            <span>摄像头</span>
+            <strong id="cameraState">等待</strong>
+          </div>
+          <div class="status">
+            <span>识别</span>
+            <strong id="handState">未检测到手</strong>
+          </div>
+          <div class="status">
+            <span>控制模式</span>
+            <strong id="controlState">关闭</strong>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>透明层</h2>
+          <label class="switch">
+            <span>显示透明悬浮层</span>
+            <input id="overlayVisible" type="checkbox" />
+          </label>
+          <label class="switch">
+            <span>显示双手骨架</span>
+            <input id="showHands" type="checkbox" />
+          </label>
+          <label class="switch">
+            <span>开启语音命令</span>
+            <input id="voiceEnabled" type="checkbox" />
+          </label>
+        </article>
+
+        <article class="panel wide">
+          <h2>手势规则</h2>
+          <div class="rules">
+            <div><b>张开手掌 1 秒</b><span>唤醒控制模式</span></div>
+            <div><b>食指移动</b><span>移动鼠标指针</span></div>
+            <div><b>拇指 + 食指捏合</b><span>点击或拖拽</span></div>
+            <div><b>拇指 + 中指捏合</b><span>右键点击</span></div>
+            <div><b>握拳 1 秒</b><span>退出控制模式</span></div>
+            <div><b>语音</b><span>启动、退出、打开网易云、点击</span></div>
+          </div>
+        </article>
+      </section>
+    </main>
+    <script src="/dashboard.js"></script>
+  </body>
+</html>

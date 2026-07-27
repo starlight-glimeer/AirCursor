@@ -2,13 +2,44 @@
   "name": "aircursor",
   "version": "0.2.0",
   "description": "Transparent macOS hand and voice control overlay.",
+  "author": "starlight-glimeer",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "web": "node server.js",
-    "check": "node --check electron/main.js && node --check electron/preload.js && node --check public/app.js"
+    "check": "node --check electron/main.js && node --check electron/preload.js && node --check public/dashboard.js && node --check public/overlay.js",
+    "dist:mac": "electron-builder --mac dmg"
+  },
+  "build": {
+    "appId": "com.starlightglimeer.aircursor",
+    "productName": "AirCursor",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "public/**/*",
+      "server.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/AirCursorPointer.swift",
+        "to": "native/AirCursorPointer.swift"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSCameraUsageDescription": "AirCursor uses the camera to recognize your hand gestures.",
+        "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
+        "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request."
+      },
+      "target": [
+        "dmg"
+      ]
+    }
   },
   "devDependencies": {
-    "electron": "^37.2.6"
+    "electron": "^43.2.0",
+    "electron-builder": "^26.0.12"
   }
 }
