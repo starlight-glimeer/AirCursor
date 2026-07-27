@@ -42,6 +42,10 @@ final class VoiceEngine {
     private var lastCommandAt = Date.distantPast
     private var lastTranscript = ""
     private var lastTranscriptAt = Date.distantPast
+    private var pulseActive = false
+    private var pulseStartedAt = Date.distantPast
+    private var lastPulseAt = Date.distantPast
+    private var quietFrames = 0
     private var restarting = false
 
     func requestAccessAndStart() {
@@ -90,8 +94,9 @@ final class VoiceEngine {
         let input = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak request] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self, weak request] buffer, _ in
             request?.append(buffer)
+            self?.handleAudioPulse(buffer)
         }
 
         audioEngine.prepare()
@@ -147,6 +152,59 @@ final class VoiceEngine {
                 return
             }
         }
+    }
+
+    private func handleAudioPulse(_ buffer: AVAudioPCMBuffer) {
+        guard let channel = buffer.floatChannelData?[0] else {
+            return
+        }
+
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else {
+            return
+        }
+
+        var sum: Float = 0
+        var peak: Float = 0
+        for index in 0..<frameCount {
+            let sample = abs(channel[index])
+            sum += sample * sample
+            peak = max(peak, sample)
+        }
+
+        let rms = sqrt(sum / Float(frameCount))
+        let loud = rms > 0.025 || peak > 0.12
+        let now = Date()
+
+        if loud {
+            quietFrames = 0
+            if !pulseActive {
+                pulseActive = true
+                pulseStartedAt = now
+            }
+            return
+        }
+
+        guard pulseActive else {
+            return
+        }
+
+        quietFrames += 1
+        guard quietFrames >= 3 else {
+            return
+        }
+
+        pulseActive = false
+        let duration = now.timeIntervalSince(pulseStartedAt)
+        guard duration >= 0.08 && duration <= 0.75 else {
+            return
+        }
+        guard now.timeIntervalSince(lastPulseAt) > 0.9 else {
+            return
+        }
+
+        lastPulseAt = now
+        emit("__AIRCURSOR_VOICE_TAP__")
     }
 
     private func restartSoon() {

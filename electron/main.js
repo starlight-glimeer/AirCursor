@@ -173,6 +173,10 @@ function startVoiceHelper() {
         const heard = phrase.replace("__AIRCURSOR_VOICE_HEARD__:", "");
         voiceStatus = `听到：${heard}`;
         broadcast("aircursor:overlay-status", { voice: voiceStatus });
+      } else if (phrase === "__AIRCURSOR_VOICE_TAP__") {
+        voiceStatus = "听到：短促确认";
+        broadcast("aircursor:overlay-status", { voice: voiceStatus });
+        broadcast("aircursor:voice-command", "点");
       } else {
         broadcast("aircursor:voice-command", phrase);
       }
