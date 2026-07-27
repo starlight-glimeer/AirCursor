@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, screen, session, shell } = require("electron");
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -233,6 +233,39 @@ function runRule(ruleId) {
   return result;
 }
 
+function quitApp() {
+  quitting = true;
+  app.quit();
+}
+
+function createApplicationMenu() {
+  const isMac = process.platform === "darwin";
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { label: "显示 AirCursor", accelerator: "CommandOrControl+0", click: showDashboard },
+              { type: "separator" },
+              { label: "退出 AirCursor", accelerator: "CommandOrControl+Q", click: quitApp },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "窗口",
+      submenu: [
+        { label: "显示 AirCursor", accelerator: "CommandOrControl+0", click: showDashboard },
+        { type: "separator" },
+        { role: "minimize", label: "最小化" },
+        { label: "退出 AirCursor", accelerator: isMac ? undefined : "Alt+F4", click: quitApp },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function createDashboardWindow() {
   dashboardWindow = new BrowserWindow({
     width: 1040,
@@ -255,11 +288,8 @@ function createDashboardWindow() {
     dashboardWindow.show();
     syncSettings();
   });
-  dashboardWindow.on("close", (event) => {
-    if (process.platform === "darwin" && !quitting) {
-      event.preventDefault();
-      dashboardWindow.hide();
-    }
+  dashboardWindow.on("close", () => {
+    if (!quitting) quitApp();
   });
 }
 
@@ -308,6 +338,12 @@ function showDashboard() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === "darwin") {
+    app.setActivationPolicy?.("regular");
+    app.dock?.show();
+  }
+  createApplicationMenu();
+
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === "media" || permission === "camera" || permission === "microphone");
   });
@@ -331,7 +367,7 @@ app.on("before-quit", () => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  app.quit();
 });
 
 ipcMain.handle("aircursor:get-state", () => ({
