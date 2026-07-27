@@ -108,27 +108,55 @@
           <div class="gesture-recorder">
             <div class="recorder-row" data-action="wake">
               <div><b>唤醒控制</b><span>录制后保持该手势 1 秒触发</span></div>
+              <select data-hands-action="wake">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
               <button type="button" data-record-action="wake">开始录制</button>
-              <button type="button" data-save-action="wake">确定保存</button>
               <button type="button" data-clear-action="wake">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="wake"></i></div>
+                <span data-hint-action="wake">未录制</span>
+              </div>
             </div>
             <div class="recorder-row" data-action="click">
               <div><b>点击/拖拽</b><span>录制后短触发点击，保持并移动触发拖拽</span></div>
+              <select data-hands-action="click">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
               <button type="button" data-record-action="click">开始录制</button>
-              <button type="button" data-save-action="click">确定保存</button>
               <button type="button" data-clear-action="click">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="click"></i></div>
+                <span data-hint-action="click">未录制</span>
+              </div>
             </div>
             <div class="recorder-row" data-action="rightClick">
               <div><b>右键</b><span>录制后触发一次右键点击</span></div>
+              <select data-hands-action="rightClick">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
               <button type="button" data-record-action="rightClick">开始录制</button>
-              <button type="button" data-save-action="rightClick">确定保存</button>
               <button type="button" data-clear-action="rightClick">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="rightClick"></i></div>
+                <span data-hint-action="rightClick">未录制</span>
+              </div>
             </div>
             <div class="recorder-row" data-action="exit">
               <div><b>退出控制</b><span>录制后保持该手势 1 秒退出</span></div>
+              <select data-hands-action="exit">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
               <button type="button" data-record-action="exit">开始录制</button>
-              <button type="button" data-save-action="exit">确定保存</button>
               <button type="button" data-clear-action="exit">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="exit"></i></div>
+                <span data-hint-action="exit">未录制</span>
+              </div>
             </div>
           </div>
           <div class="rules">

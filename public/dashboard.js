@@ -80,10 +80,21 @@ function render() {
 
   document.querySelectorAll(".recorder-row").forEach((row) => {
     const action = row.dataset.action;
-    row.classList.toggle("is-recording", recordingAction === action);
-    row.classList.toggle("is-saved", Boolean(settings.recordedGestures?.[action]));
-    row.querySelector("[data-save-action]").disabled = recordingAction !== action;
-    row.querySelector("[data-clear-action]").disabled = !settings.recordedGestures?.[action];
+    const recorded = settings.recordedGestures?.[action];
+    const isRecording = recordingAction === action;
+    row.classList.toggle("is-recording", isRecording);
+    row.classList.toggle("is-saved", Boolean(recorded));
+    row.querySelector("[data-record-action]").textContent = isRecording ? "取消录制" : "开始录制";
+    row.querySelector("[data-clear-action]").disabled = !recorded;
+    const handsSelect = row.querySelector("[data-hands-action]");
+    handsSelect.disabled = Boolean(recordingAction);
+    if (recorded?.hands && !recordingAction) handsSelect.value = String(recorded.hands);
+    if (!isRecording) {
+      row.querySelector("[data-progress-action]").style.width = "0%";
+      row.querySelector("[data-hint-action]").textContent = recorded
+        ? `已录制${recorded.hands === 2 ? "双手" : "单手"}手势`
+        : "未录制";
+    }
   });
 
   voiceRules.innerHTML = "";
@@ -152,24 +163,24 @@ exitGesture.addEventListener("change", () => {
   patchSettings({ gestureMap: { exit: exitGesture.value } });
 });
 document.querySelectorAll("[data-record-action]").forEach((button) => {
-  button.addEventListener("click", () => {
-    recordingAction = button.dataset.recordAction;
-    ruleState.textContent = `录制中：${actionLabels[recordingAction]}。打开骨架，摆好手势后点“确定保存”。`;
-    patchSettings({ overlayVisible: true, showHands: true });
-    render();
-  });
-});
-document.querySelectorAll("[data-save-action]").forEach((button) => {
   button.addEventListener("click", async () => {
-    const action = button.dataset.saveAction;
-    const result = await window.aircursor.saveRecordedGesture(action);
-    if (result.ok) {
-      settings = result.settings;
+    const action = button.dataset.recordAction;
+    if (recordingAction === action) {
+      await window.aircursor.cancelRecording();
       recordingAction = null;
-      ruleState.textContent = `已保存录制手势：${actionLabels[action]}`;
-    } else {
-      ruleState.textContent = `保存失败：${result.reason}`;
+      ruleState.textContent = `已取消录制：${actionLabels[action]}`;
+      render();
+      return;
     }
+
+    const hands = Number(document.querySelector(`[data-hands-action="${action}"]`).value);
+    const result = await window.aircursor.startRecording(action, hands);
+    if (!result.ok) {
+      ruleState.textContent = `无法录制：${result.reason}`;
+      return;
+    }
+    recordingAction = action;
+    ruleState.textContent = `录制中：${actionLabels[action]}。倒计时后摆好${hands === 2 ? "双手" : "单手"}手势并保持 2 秒。`;
     render();
   });
 });
@@ -188,6 +199,27 @@ document.querySelectorAll("[data-clear-action]").forEach((button) => {
   });
 });
 
+window.aircursor.onRecordingProgress((payload) => {
+  if (!payload || payload.action !== recordingAction) return;
+  const bar = document.querySelector(`[data-progress-action="${payload.action}"]`);
+  const hint = document.querySelector(`[data-hint-action="${payload.action}"]`);
+  if (payload.phase === "countdown") {
+    bar.style.width = "0%";
+    hint.textContent = `准备：${payload.countdown}`;
+    return;
+  }
+  bar.style.width = `${Math.round((payload.progress || 0) * 100)}%`;
+  hint.textContent = payload.hint || "";
+});
+window.aircursor.onRecordingResult((result) => {
+  if (!result) return;
+  if (result.settings) settings = result.settings;
+  recordingAction = null;
+  ruleState.textContent = result.ok
+    ? `已保存${result.hands === 2 ? "双手" : "单手"}手势：${actionLabels[result.action]}`
+    : `录制失败：${result.reason}`;
+  render();
+});
 window.aircursor.onSettings((nextSettings) => {
   settings = nextSettings;
   render();

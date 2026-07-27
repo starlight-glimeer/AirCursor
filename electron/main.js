@@ -22,7 +22,7 @@ let voiceBuffer = "";
 let voiceStatus = "等待";
 let quitting = false;
 let systemCursorHidden = false;
-let latestPoseTemplate = null;
+let recordingSession = null;
 
 const defaultSettings = {
   overlayVisible: true,
@@ -97,6 +97,14 @@ const ruleDefinitions = [
 ];
 
 const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, voice }));
+
+const recordableActions = ["wake", "click", "rightClick", "exit"];
+const defaultGestureMap = {
+  wake: "openPalm",
+  click: "pinch",
+  rightClick: "middlePinch",
+  exit: "fist",
+};
 
 function mergeSettings(base, incoming) {
   return {
@@ -275,6 +283,40 @@ function updateSettings(patch) {
   return settings;
 }
 
+// Recording needs both hands visible with the skeleton on, whatever the user's
+// normal settings are; the previous values come back when the session ends.
+function beginRecording(action, hands) {
+  if (!recordableActions.includes(action)) return { ok: false, reason: "未知动作" };
+  if (recordingSession) endRecording();
+
+  recordingSession = {
+    action,
+    hands,
+    restore: { twoHands: settings.twoHands, showHands: settings.showHands, controlEnabled: settings.controlEnabled },
+  };
+  updateSettings({ overlayVisible: true, showHands: true, twoHands: hands > 1 || settings.twoHands, controlEnabled: false });
+  broadcast("aircursor:recording", { type: "start", action, hands });
+  return { ok: true, action, hands };
+}
+
+function endRecording() {
+  const session = recordingSession;
+  recordingSession = null;
+  if (!session) return;
+  broadcast("aircursor:recording", { type: "stop", action: session.action });
+  updateSettings(session.restore);
+}
+
+function saveRecordedTemplate(action, template) {
+  if (!recordableActions.includes(action)) return;
+  updateSettings({
+    gestureMap: { [action]: `custom:${action}` },
+    recordedGestures: {
+      [action]: { at: Date.now(), hands: template.hands, template },
+    },
+  });
+}
+
 function openWithCandidates(candidates) {
   for (const args of candidates) {
     const result = spawnSync("/usr/bin/open", args, { stdio: "ignore" });
@@ -444,39 +486,20 @@ ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   updateSettings(patch);
   return { settings };
 });
-ipcMain.handle("aircursor:save-recorded-gesture", (_event, action) => {
-  if (!["wake", "click", "rightClick", "exit"].includes(action)) {
-    return { ok: false, reason: "未知动作" };
-  }
-  if (!latestPoseTemplate) {
-    return { ok: false, reason: "还没有检测到可保存的手势" };
-  }
-  updateSettings({
-    gestureMap: { [action]: `custom:${action}` },
-    recordedGestures: {
-      [action]: {
-        at: Date.now(),
-        points: latestPoseTemplate,
-      },
-    },
-  });
-  return { ok: true, settings };
+ipcMain.handle("aircursor:start-recording", (_event, action, hands) => beginRecording(action, hands === 2 ? 2 : 1));
+ipcMain.handle("aircursor:cancel-recording", () => {
+  endRecording();
+  return { ok: true };
 });
 ipcMain.handle("aircursor:clear-recorded-gesture", (_event, action) => {
-  if (!["wake", "click", "rightClick", "exit"].includes(action)) {
+  if (!recordableActions.includes(action)) {
     return { ok: false, reason: "未知动作" };
   }
   const recordedGestures = { ...settings.recordedGestures };
   delete recordedGestures[action];
-  const fallback = {
-    wake: "openPalm",
-    click: "pinch",
-    rightClick: "middlePinch",
-    exit: "fist",
-  };
   settings = {
     ...settings,
-    gestureMap: { ...settings.gestureMap, [action]: fallback[action] },
+    gestureMap: { ...settings.gestureMap, [action]: defaultGestureMap[action] },
     recordedGestures,
   };
   saveSettings();
@@ -498,8 +521,23 @@ ipcMain.on("aircursor:pointer", (_event, command) => {
   sendPointer(command);
 });
 ipcMain.on("aircursor:overlay-status", (_event, status) => {
-  if (status.poseTemplate) {
-    latestPoseTemplate = status.poseTemplate;
-  }
   broadcast("aircursor:overlay-status", status);
+});
+ipcMain.on("aircursor:recording-progress", (_event, payload) => {
+  if (!recordingSession) return;
+  broadcast("aircursor:recording-progress", payload);
+});
+ipcMain.on("aircursor:recording-result", (_event, result) => {
+  const session = recordingSession;
+  if (!session || result?.action !== session.action) return;
+  if (result.ok && result.template) saveRecordedTemplate(result.action, result.template);
+  recordingSession = null;
+  updateSettings(session.restore);
+  broadcast("aircursor:recording-result", {
+    ok: Boolean(result.ok),
+    action: result.action,
+    reason: result.reason,
+    hands: result.template?.hands,
+    settings,
+  });
 });

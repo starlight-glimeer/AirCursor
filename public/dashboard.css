@@ -177,10 +177,52 @@ h2 {
   background: #f8faff;
 }
 
-.recorder-row div {
+.recorder-row > div {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.recorder-row select {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #cbd4e2;
+  border-radius: 8px;
+  background: #fff;
+  color: #14151c;
+  font: inherit;
+  font-size: 13px;
+}
+
+.recorder-feedback {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.recorder-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #e3e9f3;
+  overflow: hidden;
+}
+
+.recorder-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: #0f72d4;
+  transition: width 120ms linear;
+}
+
+.recorder-feedback span {
+  min-width: 168px;
+  text-align: right;
+  color: #677083;
+  font-size: 13px;
 }
 
 .recorder-row span {

@@ -26,8 +26,11 @@ const aircursor = window.aircursor || {
   openNetease: async () => fetch("/api/open/netease", { method: "POST" }).then((response) => response.json()),
   pointer: () => {},
   status: () => {},
+  recordingProgress: () => {},
+  recordingResult: () => {},
   onSettings: () => {},
   onVoiceCommand: () => {},
+  onRecording: () => {},
 };
 
 const settings = {
@@ -54,9 +57,22 @@ const GESTURE_LABELS = {
   none: "关闭",
 };
 
+// Static pose matching. Recording demands a tighter fit than triggering, so a
+// recorded template stays usable when the hand drifts a little at runtime.
+const MATCH_THRESHOLD = 0.22;
+const STABLE_TOLERANCE = 0.1;
+const COUNTDOWN_MS = 3000;
+const HOLD_MS = 2000;
+const CAPTURE_TIMEOUT_MS = 15000;
+const MAX_SAMPLES = 90;
+// MediaPipe depth is the noisiest axis; keep it below the in-plane axes.
+const Z_WEIGHT = 0.5;
+
 const state = {
   hands: [],
+  handedness: [],
   gesture: null,
+  recording: null,
   particles: [],
   cameraReady: false,
   holdGesture: null,
@@ -153,32 +169,64 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function buildPoseTemplate(points, palmWidth) {
-  const wrist = points[0];
-  const scale = Math.max(40, palmWidth);
-  return points.flatMap((p) => [
-    Number(((p.x - wrist.x) / scale).toFixed(4)),
-    Number(((p.y - wrist.y) / scale).toFixed(4)),
-    Number(((p.z || 0) * 3).toFixed(4)),
-  ]);
+// Templates are position-sensitive, so the hands must always arrive in the same
+// slot order. MediaPipe emits detection order, which swaps between frames; label
+// order (Left before Right) is stable.
+function orderHands(handList, handedness) {
+  if (handList.length < 2) return handList;
+  return handList
+    .map((points, index) => ({ points, label: handedness?.[index]?.label || "" }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map((item) => item.points);
+}
+
+function palmWidthOf(points) {
+  return Math.max(60, dist(points[5], points[17]));
+}
+
+// One shared origin and one shared scale across every hand in the pose, so a
+// two-hand template keeps the distance between the hands instead of dividing it
+// away. Anchoring on the wrist of each hand separately would erase exactly the
+// information that makes a two-hand gesture distinct.
+function buildPoseTemplate(handList) {
+  if (!handList.length) return null;
+  const origin = handList.reduce(
+    (acc, points) => ({ x: acc.x + points[0].x / handList.length, y: acc.y + points[0].y / handList.length }),
+    { x: 0, y: 0 },
+  );
+  const scale = Math.max(
+    40,
+    handList.reduce((acc, points) => acc + palmWidthOf(points) / handList.length, 0),
+  );
+  const values = handList.flatMap((points) =>
+    points.flatMap((p) => [
+      Number(((p.x - origin.x) / scale).toFixed(4)),
+      Number(((p.y - origin.y) / scale).toFixed(4)),
+      Number(((p.z || 0) * Z_WEIGHT).toFixed(4)),
+    ]),
+  );
+  return { hands: handList.length, values };
 }
 
 function templateDistance(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return Infinity;
+  const left = Array.isArray(a?.values) ? a.values : null;
+  const right = Array.isArray(b?.values) ? b.values : null;
+  // A one-hand pose must never match a two-hand template, and vice versa.
+  if (!left || !right || a.hands !== b.hands || left.length !== right.length) return Infinity;
   let sum = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    const diff = a[i] - b[i];
+  for (let i = 0; i < left.length; i += 1) {
+    const diff = left[i] - right[i];
     sum += diff * diff;
   }
-  return Math.sqrt(sum / a.length);
+  return Math.sqrt(sum / left.length);
 }
 
 function gestureMatches(gesture, gestureId) {
   if (!gesture || !gestureId || gestureId === "none") return false;
   if (gestureId.startsWith("custom:")) {
     const action = gestureId.slice("custom:".length);
-    const template = settings.recordedGestures?.[action]?.points;
-    return templateDistance(gesture.poseTemplate, template) < 0.22;
+    const template = settings.recordedGestures?.[action]?.template;
+    return templateDistance(gesture.poseTemplate, template) < MATCH_THRESHOLD;
   }
   return Boolean(gesture[gestureId]);
 }
@@ -196,7 +244,7 @@ function palmCenter(points) {
   return { x: sum.x / ids.length, y: sum.y / ids.length };
 }
 
-function detectGesture(points) {
+function detectGesture(points, allHands = [points]) {
   const thumb = points[4];
   const index = points[8];
   const middle = points[12];
@@ -228,7 +276,7 @@ function detectGesture(points) {
     palm: palmCenter(points),
     index,
     palmWidth,
-    poseTemplate: buildPoseTemplate(points, palmWidth),
+    poseTemplate: buildPoseTemplate(allHands),
   };
   const clickGesture = settings.gestureMap?.click || "pinch";
   const rightClickGesture = settings.gestureMap?.rightClick || "middlePinch";
@@ -388,6 +436,131 @@ function updateSystemCursor(gesture) {
     }
     resetPinch();
   }
+}
+
+function medianTemplate(samples) {
+  const length = samples[0].values.length;
+  const values = new Array(length);
+  const column = new Array(samples.length);
+  for (let i = 0; i < length; i += 1) {
+    for (let s = 0; s < samples.length; s += 1) column[s] = samples[s].values[i];
+    column.sort((a, b) => a - b);
+    const mid = Math.floor(column.length / 2);
+    const value = column.length % 2 ? column[mid] : (column[mid - 1] + column[mid]) / 2;
+    values[i] = Number(value.toFixed(4));
+  }
+  return { hands: samples[0].hands, values };
+}
+
+function startRecording(action, wantedHands) {
+  state.recording = {
+    action,
+    wantedHands,
+    phase: "countdown",
+    startedAt: performance.now(),
+    holdStartedAt: 0,
+    samples: [],
+    reference: null,
+  };
+}
+
+function stopRecording() {
+  state.recording = null;
+}
+
+function finishRecording(recording) {
+  const template = medianTemplate(recording.samples);
+  state.recording = null;
+  aircursor.recordingResult({ ok: true, action: recording.action, template });
+}
+
+function failRecording(recording, reason) {
+  state.recording = null;
+  aircursor.recordingResult({ ok: false, action: recording.action, reason });
+}
+
+// Capture never depends on the user reaching for a button: two-hand poses make
+// that impossible. Hold the pose still for HOLD_MS and it saves itself.
+function updateRecording(gesture, handCount) {
+  const recording = state.recording;
+  if (!recording) return;
+
+  const now = performance.now();
+  const elapsed = now - recording.startedAt;
+
+  if (recording.phase === "countdown") {
+    const remaining = COUNTDOWN_MS - elapsed;
+    if (remaining > 0) {
+      aircursor.recordingProgress({
+        action: recording.action,
+        phase: "countdown",
+        countdown: Math.ceil(remaining / 1000),
+      });
+      return;
+    }
+    recording.phase = "capture";
+    recording.startedAt = now;
+  }
+
+  if (now - recording.startedAt > CAPTURE_TIMEOUT_MS) {
+    failRecording(recording, "超时未保持稳定手势，请重新录制");
+    return;
+  }
+
+  const pose = gesture?.poseTemplate;
+  const wrongHands = recording.wantedHands && handCount !== recording.wantedHands;
+  if (!pose || wrongHands) {
+    recording.holdStartedAt = 0;
+    recording.samples = [];
+    recording.reference = null;
+    aircursor.recordingProgress({
+      action: recording.action,
+      phase: "capture",
+      progress: 0,
+      hint: !handCount
+        ? "没有检测到手，把手放进摄像头画面"
+        : wrongHands
+          ? `需要 ${recording.wantedHands} 只手同时入镜`
+          : "识别中",
+    });
+    return;
+  }
+
+  // Drift is measured against the pose that opened this hold window, so slow
+  // creeping movement cannot accumulate frame by frame unnoticed.
+  const drift = recording.reference ? templateDistance(pose, recording.reference) : 0;
+  if (drift > STABLE_TOLERANCE) {
+    recording.holdStartedAt = now;
+    recording.samples = [pose];
+    recording.reference = pose;
+    aircursor.recordingProgress({
+      action: recording.action,
+      phase: "capture",
+      progress: 0,
+      hint: "手势有变动，保持不动",
+    });
+    return;
+  }
+
+  if (!recording.holdStartedAt) {
+    recording.holdStartedAt = now;
+    recording.reference = pose;
+  }
+  recording.samples.push(pose);
+  if (recording.samples.length > MAX_SAMPLES) recording.samples.shift();
+
+  const held = now - recording.holdStartedAt;
+  if (held >= HOLD_MS) {
+    finishRecording(recording);
+    return;
+  }
+
+  aircursor.recordingProgress({
+    action: recording.action,
+    phase: "capture",
+    progress: Math.min(1, held / HOLD_MS),
+    hint: `保持不动 ${((HOLD_MS - held) / 1000).toFixed(1)}s`,
+  });
 }
 
 function burst(x, y, count, color) {
@@ -573,12 +746,16 @@ function loop(now) {
   lastFrame = now;
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 
-  const hands = state.hands.map((hand) => hand.map(point));
-  const gesture = hands[0] ? detectGesture(hands[0]) : null;
+  const hands = orderHands(state.hands, state.handedness).map((hand) => hand.map(point));
+  const gesture = hands[0] ? detectGesture(hands[0], hands) : null;
   state.gesture = gesture;
 
-  updateHoldGesture(gesture);
-  updateSystemCursor(gesture);
+  updateRecording(gesture, hands.length);
+  // Recording must not fire the very action being recorded.
+  if (!state.recording) {
+    updateHoldGesture(gesture);
+    updateSystemCursor(gesture);
+  }
   hands.forEach((points, index) => drawHand(points, index, index === 0 ? gesture : null));
   drawCursor(gesture);
   drawParticles(dt);
@@ -587,14 +764,13 @@ function loop(now) {
     lastStatusAt = now;
     aircursor.status({
       camera: state.cameraReady ? "已开启" : "等待权限",
+      handCount: hands.length,
       hand: hands.length
         ? `${hands.length} 只手 / ${settings.showHands ? "骨架显示中" : "骨架隐藏"} / ${gesture?.label || "识别中"}`
         : settings.showHands
           ? "骨架已开，等待检测到手"
           : "未检测到手",
       controlEnabled: settings.controlEnabled,
-      poseTemplate: gesture?.poseTemplate,
-      poseAvailable: Boolean(gesture?.poseTemplate),
     });
   }
 
@@ -605,6 +781,7 @@ async function stopHandsRuntime() {
   const runtime = state.handRuntime;
   state.handRuntime = null;
   state.hands = [];
+  state.handedness = [];
   state.cameraReady = false;
   state.inferenceBusy = false;
   resetPinch();
@@ -641,6 +818,7 @@ async function setupHands() {
   hands.onResults((results) => {
     if (token !== state.handRestartToken) return;
     state.hands = results.multiHandLandmarks || [];
+    state.handedness = results.multiHandedness || [];
   });
 
   const camera = new Camera(video, {
@@ -752,6 +930,13 @@ aircursor.onSettings((next) => {
       aircursor.status({ camera: `切换失败：${error.message}` });
     });
   }
+});
+aircursor.onRecording((request) => {
+  if (!request || request.type === "stop") {
+    stopRecording();
+    return;
+  }
+  startRecording(request.action, request.hands);
 });
 aircursor.onVoiceCommand((phrase) => handleVoiceText(phrase, "系统语音"));
 window.addEventListener("resize", resize);
