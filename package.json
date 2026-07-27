@@ -1,0 +1,14 @@
+{
+  "name": "aircursor",
+  "version": "0.2.0",
+  "description": "Transparent macOS hand and voice control overlay.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "web": "node server.js",
+    "check": "node --check electron/main.js && node --check electron/preload.js && node --check public/app.js"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6"
+  }
+}

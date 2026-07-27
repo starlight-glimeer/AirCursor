@@ -8,25 +8,27 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #07080c;
+  background: transparent;
   color: #f7f1ff;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+  user-select: none;
 }
 
 .stage {
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 20% 20%, rgba(255, 60, 150, 0.2), transparent 24rem),
-    radial-gradient(circle at 80% 70%, rgba(70, 215, 255, 0.18), transparent 26rem),
-    #07080c;
+  background: transparent;
 }
 
 #camera {
-  display: none;
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 #scene {
@@ -34,83 +36,101 @@ body {
   inset: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none;
 }
 
 .hud {
   position: absolute;
-  top: 24px;
-  left: 24px;
-  right: 24px;
+  top: 20px;
+  left: 20px;
+  right: 20px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   pointer-events: none;
+  opacity: 0.86;
+  transition: opacity 220ms ease;
+}
+
+.is-asleep .hud {
+  opacity: 0.58;
 }
 
 .eyebrow {
   margin: 0 0 6px;
-  color: #ff79b5;
-  font-size: 13px;
+  color: #49e5ff;
+  font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-shadow: 0 0 18px rgba(73, 229, 255, 0.9);
 }
 
 h1 {
   margin: 0;
-  font-size: clamp(28px, 5vw, 72px);
-  line-height: 0.95;
-  text-shadow: 0 6px 32px rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: clamp(22px, 3.2vw, 46px);
+  line-height: 1;
+  text-shadow: 0 0 24px rgba(73, 229, 255, 0.45);
 }
 
 .status {
-  max-width: 380px;
-  padding: 14px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  max-width: 420px;
+  padding: 11px 14px;
+  border: 1px solid rgba(73, 229, 255, 0.2);
   border-radius: 8px;
-  background: rgba(7, 8, 12, 0.68);
-  color: #e9e1f1;
-  font-size: 15px;
+  background: rgba(7, 8, 12, 0.48);
+  color: #e9fbff;
+  font-size: 14px;
   line-height: 1.45;
+  box-shadow: 0 0 30px rgba(73, 229, 255, 0.14);
   backdrop-filter: blur(16px);
 }
 
 .panel {
   position: absolute;
-  left: 24px;
-  bottom: 24px;
-  width: min(420px, calc(100vw - 48px));
+  left: 20px;
+  bottom: 20px;
+  width: min(430px, calc(100vw - 40px));
   display: grid;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  background: rgba(7, 8, 12, 0.76);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+  background: rgba(7, 8, 12, 0.48);
+  box-shadow: 0 0 42px rgba(73, 229, 255, 0.12);
   backdrop-filter: blur(18px);
+  opacity: 0.72;
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.is-control .panel {
+  opacity: 0.9;
 }
 
 .label {
   display: block;
   margin-bottom: 5px;
   color: rgba(255, 255, 255, 0.58);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 strong {
-  font-size: 22px;
+  color: #f8fbff;
+  font-size: 20px;
+  text-shadow: 0 0 20px rgba(73, 229, 255, 0.45);
 }
 
 .meter {
   width: 100%;
-  height: 12px;
+  height: 9px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .meter i {
@@ -119,20 +139,33 @@ strong {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #49e5ff, #ff4ea3, #ffd76a);
+  box-shadow: 0 0 18px rgba(73, 229, 255, 0.75);
   transition: width 120ms linear;
 }
 
-button {
-  min-height: 48px;
-  border: 0;
-  border-radius: 8px;
-  background: #f4edf8;
-  color: #111118;
-  font-size: 16px;
-  font-weight: 800;
-  cursor: pointer;
+.commands {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
-button:active {
-  transform: translateY(1px);
+.commands span {
+  min-height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+}
+
+button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(244, 237, 248, 0.92);
+  color: #111118;
+  font-size: 14px;
+  font-weight: 800;
 }

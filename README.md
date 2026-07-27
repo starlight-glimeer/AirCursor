@@ -1,26 +1,33 @@
 # AirCursor
 
-Mac webcam gesture-control prototype. It recognizes a thumb-index pinch in the browser and asks a local Node server to open NetEase Cloud Music.
+Transparent macOS hand and voice control overlay.
+
+AirCursor uses the webcam to recognize hand landmarks, draws a translucent skeleton-hand overlay, and maps simple gestures to desktop actions.
 
 ## Run
 
 ```bash
-node server.js
+npm install
+npm start
 ```
 
-Open:
+The first run asks for camera permission. Real mouse movement/clicking requires macOS Accessibility permission for the terminal or packaged app that launches AirCursor.
 
-```text
-http://127.0.0.1:5177
+For the old browser fallback:
+
+```bash
+npm run web
 ```
 
-Allow camera access, put one hand in frame, then pinch thumb and index finger for about 1.2 seconds.
+Then open `http://127.0.0.1:5177`.
 
 ## Current Gesture
 
-- Pinch and hold: open NetEase Cloud Music.
-- Open palm near the character: pull the character toward the palm and show a shield effect.
-- Hand near the character: the character dodges.
-- Pinch near the character: catch and drag the character.
+- Open palm and hold: wake the transparent control layer.
+- Index finger: move the cursor.
+- Thumb-index pinch: mouse down/up for click and drag.
+- Thumb-middle pinch: right click.
+- Fist and hold: hide the control layer.
+- Voice: "启动/控制", "退出/停止", "打开网易云", "点击".
 
-The native action is intentionally handled by the local server because browsers cannot safely launch arbitrary macOS apps directly.
+The desktop build uses Electron for the transparent always-on-top overlay and a tiny Swift CoreGraphics helper for macOS pointer events.

@@ -1,32 +1,29 @@
 const video = document.getElementById("camera");
 const canvas = document.getElementById("scene");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", { alpha: true });
+const stage = document.getElementById("stage");
 const statusEl = document.getElementById("status");
 const gestureEl = document.getElementById("gesture");
 const meterEl = document.getElementById("meter");
-const testButton = document.getElementById("testButton");
+const accessibilityButton = document.getElementById("accessibilityButton");
 
-const avatar = new Image();
-avatar.src = "/avatar_moon.png";
+const isDesktop = Boolean(window.aircursor);
 
 const state = {
   hands: [],
   particles: [],
-  familiar: {
-    x: 0,
-    y: 0,
-    vx: 0,
-    vy: 0,
-    size: 150,
-    mood: "idle",
-    caught: false,
-  },
-  pinchStartedAt: 0,
-  launchCooldownUntil: 0,
-  launched: false,
+  cameraReady: false,
+  controlMode: false,
+  holdGesture: null,
+  holdStartedAt: 0,
+  toggleCooldownUntil: 0,
+  pointerDown: false,
+  lastPointerSentAt: 0,
+  cursor: { x: 0, y: 0, ready: false },
+  screen: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
   lastPalm: null,
   palmVelocity: { x: 0, y: 0, speed: 0 },
-  cameraReady: false,
+  voiceReady: false,
 };
 
 function resize() {
@@ -37,9 +34,10 @@ function resize() {
   canvas.style.height = `${window.innerHeight}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  if (!state.familiar.x || !state.familiar.y) {
-    state.familiar.x = window.innerWidth * 0.52;
-    state.familiar.y = window.innerHeight * 0.52;
+  if (!state.cursor.ready) {
+    state.cursor.x = window.innerWidth * 0.5;
+    state.cursor.y = window.innerHeight * 0.5;
+    state.cursor.ready = true;
   }
 }
 
@@ -76,19 +74,28 @@ function detectGesture(points) {
   const thumb = points[4];
   const index = points[8];
   const middle = points[12];
+  const ring = points[16];
+  const pinky = points[20];
   const wrist = points[0];
   const indexBase = points[5];
   const pinkyBase = points[17];
   const palm = palmCenter(points);
   const palmWidth = Math.max(60, dist(indexBase, pinkyBase));
   const pinchDistance = dist(thumb, index);
-  const pinch = pinchDistance < palmWidth * 0.48;
+  const middlePinchDistance = dist(thumb, middle);
+  const pinch = pinchDistance < palmWidth * 0.45;
+  const middlePinch = middlePinchDistance < palmWidth * 0.45 && !pinch;
   const openPalm =
-    dist(points[8], wrist) > palmWidth * 1.65 &&
-    dist(points[12], wrist) > palmWidth * 1.65 &&
-    dist(points[16], wrist) > palmWidth * 1.35 &&
-    dist(points[20], wrist) > palmWidth * 1.2 &&
+    dist(index, wrist) > palmWidth * 1.65 &&
+    dist(middle, wrist) > palmWidth * 1.65 &&
+    dist(ring, wrist) > palmWidth * 1.35 &&
+    dist(pinky, wrist) > palmWidth * 1.2 &&
     !pinch;
+  const fist =
+    dist(index, wrist) < palmWidth * 1.18 &&
+    dist(middle, wrist) < palmWidth * 1.15 &&
+    dist(ring, wrist) < palmWidth * 1.12 &&
+    dist(pinky, wrist) < palmWidth * 1.1;
 
   if (state.lastPalm) {
     state.palmVelocity.x = palm.x - state.lastPalm.x;
@@ -97,32 +104,130 @@ function detectGesture(points) {
   }
   state.lastPalm = palm;
 
+  let label = "手已识别";
+  if (state.controlMode) label = "控制中";
+  if (pinch) label = state.controlMode ? "捏合点击/拖拽" : "捏合";
+  if (middlePinch) label = "右键手势";
+  if (openPalm) label = state.controlMode ? "已唤醒" : "张开手掌唤醒";
+  if (fist) label = state.controlMode ? "握拳退出" : "握拳";
+
   return {
-    label: pinch ? "捏合中" : openPalm ? "张开手掌" : "手已识别",
+    label,
     pinch,
+    middlePinch,
     openPalm,
+    fist,
     palm,
     index,
     thumb,
     middle,
     palmWidth,
-    pinchDistance,
   };
 }
 
-async function launchNetease() {
-  if (Date.now() < state.launchCooldownUntil) return;
-  state.launchCooldownUntil = Date.now() + 4500;
+function setControlMode(enabled, reason) {
+  if (Date.now() < state.toggleCooldownUntil) return;
+  state.toggleCooldownUntil = Date.now() + 900;
+  state.controlMode = enabled;
+  stage.classList.toggle("is-control", enabled);
+  stage.classList.toggle("is-asleep", !enabled);
+  meterEl.style.width = "0%";
 
+  if (!enabled && state.pointerDown) {
+    sendPointer("up", state.cursor.x, state.cursor.y);
+    state.pointerDown = false;
+  }
+
+  burst(state.cursor.x || window.innerWidth / 2, state.cursor.y || window.innerHeight / 2, 60, enabled ? "#49e5ff" : "#ff4ea3");
+  statusEl.textContent = reason || (enabled ? "AirCursor 已接管：食指移动，捏合点击，握拳退出" : "AirCursor 已隐藏");
+}
+
+function updateHoldGesture(gesture) {
+  if (!gesture) {
+    state.holdGesture = null;
+    state.holdStartedAt = 0;
+    meterEl.style.width = "0%";
+    return;
+  }
+
+  const desired = !state.controlMode && gesture.openPalm ? "wake" : state.controlMode && gesture.fist ? "sleep" : null;
+  if (!desired) {
+    state.holdGesture = null;
+    state.holdStartedAt = 0;
+    meterEl.style.width = "0%";
+    return;
+  }
+
+  const now = Date.now();
+  if (state.holdGesture !== desired) {
+    state.holdGesture = desired;
+    state.holdStartedAt = now;
+  }
+
+  const progress = clamp((now - state.holdStartedAt) / 1000, 0, 1);
+  meterEl.style.width = `${Math.round(progress * 100)}%`;
+
+  if (progress >= 1) {
+    setControlMode(desired === "wake", desired === "wake" ? "AirCursor 已唤醒：食指移动，捏合点击" : "AirCursor 已隐藏");
+    state.holdGesture = null;
+    state.holdStartedAt = 0;
+  }
+}
+
+function screenPoint(localX, localY) {
+  return {
+    x: state.screen.x + clamp(localX, 0, window.innerWidth),
+    y: state.screen.y + clamp(localY, 0, window.innerHeight),
+  };
+}
+
+function sendPointer(type, x, y) {
+  if (!isDesktop) return;
+  const p = screenPoint(x, y);
+  window.aircursor.pointer({ type, x: p.x, y: p.y });
+}
+
+function updateSystemCursor(gesture) {
+  if (!gesture || !state.controlMode) return;
+
+  const target = gesture.index;
+  const smoothing = gesture.pinch ? 0.34 : 0.22;
+  state.cursor.x += (target.x - state.cursor.x) * smoothing;
+  state.cursor.y += (target.y - state.cursor.y) * smoothing;
+
+  const now = performance.now();
+  if (now - state.lastPointerSentAt > 24) {
+    sendPointer("move", state.cursor.x, state.cursor.y);
+    state.lastPointerSentAt = now;
+  }
+
+  if (gesture.middlePinch) {
+    sendPointer("rightClick", state.cursor.x, state.cursor.y);
+    burst(state.cursor.x, state.cursor.y, 28, "#ffd76a");
+    return;
+  }
+
+  if (gesture.pinch && !state.pointerDown) {
+    state.pointerDown = true;
+    sendPointer("down", state.cursor.x, state.cursor.y);
+    burst(state.cursor.x, state.cursor.y, 24, "#ff4ea3");
+  } else if (!gesture.pinch && state.pointerDown) {
+    state.pointerDown = false;
+    sendPointer("up", state.cursor.x, state.cursor.y);
+    burst(state.cursor.x, state.cursor.y, 18, "#49e5ff");
+  }
+}
+
+async function launchNetease() {
   statusEl.textContent = "正在打开网易云音乐...";
-  burst(state.familiar.x, state.familiar.y, 80, "#ff4ea3");
+  burst(state.cursor.x, state.cursor.y, 80, "#ff4ea3");
 
   try {
-    const response = await fetch("/api/open/netease", { method: "POST" });
-    const result = await response.json();
-    if (!result.ok) throw new Error(result.error || "启动失败");
+    const result = isDesktop
+      ? await window.aircursor.openNetease()
+      : await fetch("/api/open/netease", { method: "POST" }).then((response) => response.json());
+    if (!result.ok) throw new Error("启动失败");
     statusEl.textContent = "已执行：打开网易云音乐";
-    state.launched = true;
   } catch (error) {
     statusEl.textContent = `打开失败：${error.message}`;
   }
@@ -137,106 +242,12 @@ function burst(x, y, count, color) {
       y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      life: 0.8 + Math.random() * 0.8,
+      life: 0.5 + Math.random() * 0.7,
       age: 0,
-      size: 3 + Math.random() * 7,
+      size: 2 + Math.random() * 7,
       color,
     });
   }
-}
-
-function updateFamiliar(gesture, dt) {
-  const familiar = state.familiar;
-  familiar.size = clamp(window.innerWidth * 0.12, 110, 210);
-
-  if (!gesture) {
-    familiar.caught = false;
-    familiar.mood = "idle";
-    familiar.vx += (window.innerWidth * 0.52 - familiar.x) * 0.00045;
-    familiar.vy += (window.innerHeight * 0.52 - familiar.y) * 0.00045;
-  } else if (gesture.pinch && dist(gesture.index, familiar) < familiar.size * 0.9) {
-    familiar.caught = true;
-    familiar.mood = "caught";
-    familiar.x += (gesture.index.x - familiar.x) * 0.36;
-    familiar.y += (gesture.index.y - familiar.y - familiar.size * 0.18) * 0.36;
-    familiar.vx = state.palmVelocity.x * 0.32;
-    familiar.vy = state.palmVelocity.y * 0.32;
-  } else {
-    familiar.caught = false;
-    const handDistance = dist(gesture.palm, familiar);
-
-    if (gesture.openPalm && handDistance < familiar.size * 1.65) {
-      familiar.mood = "shield";
-      familiar.vx += (gesture.palm.x - familiar.x) * 0.006;
-      familiar.vy += (gesture.palm.y - familiar.y - familiar.size * 0.55) * 0.006;
-      if (Math.random() < 0.18) burst(familiar.x, familiar.y, 4, "#49e5ff");
-    } else if (handDistance < familiar.size * 1.35) {
-      familiar.mood = "dodge";
-      const dx = familiar.x - gesture.palm.x;
-      const dy = familiar.y - gesture.palm.y;
-      const length = Math.max(1, Math.hypot(dx, dy));
-      familiar.vx += (dx / length) * 4.2;
-      familiar.vy += (dy / length) * 4.2;
-    } else {
-      familiar.mood = "curious";
-      familiar.vx += (gesture.index.x - familiar.x) * 0.0009;
-      familiar.vy += (gesture.index.y - familiar.y) * 0.0009;
-    }
-  }
-
-  familiar.vy += Math.sin(performance.now() / 520) * 0.045;
-  familiar.vx *= 0.92;
-  familiar.vy *= 0.92;
-  familiar.x += familiar.vx * dt * 60;
-  familiar.y += familiar.vy * dt * 60;
-  familiar.x = clamp(familiar.x, familiar.size * 0.45, window.innerWidth - familiar.size * 0.45);
-  familiar.y = clamp(familiar.y, familiar.size * 0.45, window.innerHeight - familiar.size * 0.45);
-}
-
-function updateLaunchGesture(gesture) {
-  if (!gesture || !gesture.pinch) {
-    state.pinchStartedAt = 0;
-    meterEl.style.width = "0%";
-    return;
-  }
-
-  const now = Date.now();
-  if (!state.pinchStartedAt) state.pinchStartedAt = now;
-  const progress = clamp((now - state.pinchStartedAt) / 1200, 0, 1);
-  meterEl.style.width = `${Math.round(progress * 100)}%`;
-
-  if (progress >= 1) {
-    launchNetease();
-    state.pinchStartedAt = 0;
-  }
-}
-
-function drawCamera() {
-  const videoRatio = video.videoWidth / video.videoHeight || 16 / 9;
-  const canvasRatio = window.innerWidth / window.innerHeight;
-  let drawWidth = window.innerWidth;
-  let drawHeight = window.innerHeight;
-  let drawX = 0;
-  let drawY = 0;
-
-  if (videoRatio > canvasRatio) {
-    drawHeight = window.innerHeight;
-    drawWidth = drawHeight * videoRatio;
-    drawX = (window.innerWidth - drawWidth) / 2;
-  } else {
-    drawWidth = window.innerWidth;
-    drawHeight = drawWidth / videoRatio;
-    drawY = (window.innerHeight - drawHeight) / 2;
-  }
-
-  ctx.save();
-  ctx.translate(window.innerWidth, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(video, -drawX - drawWidth, drawY, drawWidth, drawHeight);
-  ctx.restore();
-
-  ctx.fillStyle = "rgba(7, 8, 12, 0.12)";
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 }
 
 function drawHand(gesture) {
@@ -251,11 +262,21 @@ function drawHand(gesture) {
     [5, 9, 13, 17],
   ];
 
+  const t = performance.now() / 1000;
+  const hue = gesture.pinch ? 325 : state.controlMode ? 188 + Math.sin(t * 2.2) * 32 : 205;
+  const stroke = `hsl(${hue}, 100%, 64%)`;
+  const core = `hsl(${hue + 25}, 100%, 82%)`;
+  const alpha = state.controlMode ? 0.96 : 0.72;
+
   ctx.save();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = gesture.pinch ? "#ff4ea3" : "#49e5ff";
-  ctx.shadowColor = ctx.strokeStyle;
-  ctx.shadowBlur = 16;
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = state.controlMode ? 5 : 3;
+  ctx.strokeStyle = stroke;
+  ctx.shadowColor = stroke;
+  ctx.shadowBlur = state.controlMode ? 28 : 16;
+  ctx.globalAlpha = alpha;
 
   for (const line of lines) {
     ctx.beginPath();
@@ -269,52 +290,35 @@ function drawHand(gesture) {
 
   for (const p of points) {
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.arc(p.x, p.y, state.controlMode ? 5 : 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = core;
     ctx.fill();
   }
 
   ctx.restore();
 }
 
-function drawFamiliar() {
-  const familiar = state.familiar;
-  const t = performance.now() / 1000;
-  const wobble = Math.sin(t * 7) * (familiar.mood === "caught" ? 8 : 4);
-  const scale = familiar.mood === "dodge" ? 1.08 : familiar.mood === "caught" ? 0.95 : 1;
-  const size = familiar.size * scale;
+function drawCursor(gesture) {
+  if (!state.controlMode) return;
+
+  const radius = gesture?.pinch ? 18 : 24;
+  const color = gesture?.pinch ? "#ff4ea3" : "#49e5ff";
 
   ctx.save();
-  ctx.translate(familiar.x, familiar.y);
-  ctx.rotate((familiar.vx * 0.01 + wobble * 0.004) * 0.35);
-
-  ctx.globalAlpha = 0.28;
-  ctx.fillStyle = "#05050a";
+  ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 18;
   ctx.beginPath();
-  ctx.ellipse(0, size * 0.42, size * 0.34, size * 0.08, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.globalAlpha = 1;
-  ctx.shadowColor = familiar.mood === "shield" ? "#49e5ff" : "#ff79b5";
-  ctx.shadowBlur = familiar.mood === "shield" ? 36 : 24;
-  if (avatar.complete) {
-    ctx.drawImage(avatar, -size / 2, -size / 2 + wobble, size, size);
-  } else {
-    ctx.fillStyle = "#ff79b5";
-    ctx.beginPath();
-    ctx.arc(0, 0, size / 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  if (familiar.mood === "shield") {
-    ctx.globalAlpha = 0.72;
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = "#49e5ff";
-    ctx.beginPath();
-    ctx.arc(0, 0, size * 0.62 + Math.sin(t * 8) * 8, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
+  ctx.arc(state.cursor.x, state.cursor.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(state.cursor.x - 8, state.cursor.y);
+  ctx.lineTo(state.cursor.x + 8, state.cursor.y);
+  ctx.moveTo(state.cursor.x, state.cursor.y - 8);
+  ctx.lineTo(state.cursor.x, state.cursor.y + 8);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -324,10 +328,11 @@ function drawParticles(dt) {
     p.age += dt;
     p.x += p.vx * dt * 60;
     p.y += p.vy * dt * 60;
-    p.vx *= 0.97;
-    p.vy *= 0.97;
+    p.vx *= 0.96;
+    p.vy *= 0.96;
 
     ctx.save();
+    ctx.globalCompositeOperation = "lighter";
     ctx.globalAlpha = 1 - p.age / p.life;
     ctx.fillStyle = p.color;
     ctx.shadowColor = p.color;
@@ -339,31 +344,32 @@ function drawParticles(dt) {
   }
 }
 
+function clearTransparent() {
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+}
+
 let lastFrame = performance.now();
 function loop(now) {
   const dt = Math.min(0.04, (now - lastFrame) / 1000);
   lastFrame = now;
 
-  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-  if (video.readyState >= 2) drawCamera();
-  else {
-    ctx.fillStyle = "#07080c";
-    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-  }
-
+  clearTransparent();
   const handPoints = state.hands[0] ? state.hands[0].map(point) : null;
   const gesture = handPoints ? detectGesture(handPoints) : null;
+
   gestureEl.textContent = gesture ? gesture.label : "未检测到手";
-  if (gesture && !state.launched) {
-    statusEl.textContent = "捏合拇指和食指并保持 1.2 秒，打开网易云音乐";
-  } else if (!gesture && !state.launched) {
+  if (!gesture) {
     statusEl.textContent = state.cameraReady ? "把手放进摄像头画面" : "等待摄像头权限";
+  } else if (!state.controlMode) {
+    statusEl.textContent = "张开手掌保持 1 秒，唤醒透明手势层";
+  } else {
+    statusEl.textContent = "控制中：食指移动，捏合点击/拖拽，握拳保持退出";
   }
 
-  updateLaunchGesture(gesture);
-  updateFamiliar(gesture, dt);
+  updateHoldGesture(gesture);
+  updateSystemCursor(gesture);
   drawHand(gesture);
-  drawFamiliar();
+  drawCursor(gesture);
   drawParticles(dt);
 
   requestAnimationFrame(loop);
@@ -397,11 +403,64 @@ async function setupHands() {
   state.cameraReady = true;
 }
 
-testButton.addEventListener("click", launchNetease);
+function setupVoice() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return;
+
+  const recognizer = new SpeechRecognition();
+  recognizer.lang = "zh-CN";
+  recognizer.continuous = true;
+  recognizer.interimResults = false;
+
+  recognizer.onresult = (event) => {
+    const result = event.results[event.results.length - 1];
+    const text = result[0].transcript.trim();
+
+    if (/启动|唤醒|开始|控制/.test(text)) {
+      setControlMode(true, `语音唤醒：${text}`);
+    } else if (/退出|停止|隐藏|关闭控制/.test(text)) {
+      setControlMode(false, `语音退出：${text}`);
+    } else if (/网易云|音乐/.test(text)) {
+      launchNetease();
+    } else if (/点击/.test(text)) {
+      sendPointer("click", state.cursor.x, state.cursor.y);
+      burst(state.cursor.x, state.cursor.y, 30, "#ffd76a");
+    }
+  };
+
+  recognizer.onend = () => recognizer.start();
+  recognizer.onerror = () => {
+    state.voiceReady = false;
+  };
+
+  try {
+    recognizer.start();
+    state.voiceReady = true;
+  } catch {
+    state.voiceReady = false;
+  }
+}
+
+accessibilityButton.addEventListener("click", () => {
+  if (isDesktop) window.aircursor.openAccessibilitySettings();
+});
+
 window.addEventListener("resize", resize);
 
-resize();
-requestAnimationFrame(loop);
-setupHands().catch((error) => {
-  statusEl.textContent = `摄像头或手势模型启动失败：${error.message}`;
-});
+async function boot() {
+  if (isDesktop) {
+    state.screen = await window.aircursor.getScreen();
+    window.aircursor.onHelperLog((message) => {
+      statusEl.textContent = message;
+    });
+  }
+
+  resize();
+  requestAnimationFrame(loop);
+  setupVoice();
+  setupHands().catch((error) => {
+    statusEl.textContent = `摄像头或手势模型启动失败：${error.message}`;
+  });
+}
+
+boot();

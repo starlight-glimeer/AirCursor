@@ -9,28 +9,34 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
   </head>
   <body>
-    <main class="stage">
+    <main id="stage" class="stage is-asleep">
       <video id="camera" playsinline muted></video>
       <canvas id="scene"></canvas>
       <section class="hud">
         <div>
           <p class="eyebrow">Palm Command</p>
-          <h1>捏合召唤网易云</h1>
+          <h1>AirCursor</h1>
         </div>
-        <div id="status" class="status">等待摄像头权限</div>
+        <div id="status" class="status">张开手掌保持 1 秒，唤醒透明手势层</div>
       </section>
       <section class="panel">
         <div>
-          <span class="label">手势</span>
+          <span class="label">当前状态</span>
           <strong id="gesture">未检测到手</strong>
         </div>
         <div>
-          <span class="label">触发进度</span>
+          <span class="label">手势进度</span>
           <div class="meter">
             <i id="meter"></i>
           </div>
         </div>
-        <button id="testButton" type="button">测试打开网易云</button>
+        <div class="commands">
+          <span>张开手掌：唤醒</span>
+          <span>食指：移动</span>
+          <span>捏合：点击/拖拽</span>
+          <span>握拳：退出</span>
+        </div>
+        <button id="accessibilityButton" type="button">打开辅助功能权限</button>
       </section>
     </main>
     <script src="/app.js"></script>
