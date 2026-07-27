@@ -117,49 +117,139 @@ function render() {
   controlState.textContent = settings.controlEnabled ? "开启" : "关闭";
   controlToggle.textContent = settings.controlEnabled ? "关闭控制" : "开启控制";
 
-  document.querySelectorAll(".recorder-row").forEach((row) => {
-    const action = row.dataset.action;
-    const recorded = settings.recordedGestures?.[action];
-    const isRecording = recordingAction === action;
-    row.classList.toggle("is-recording", isRecording);
-    row.classList.toggle("is-saved", Boolean(recorded));
-    row.querySelector("[data-record-action]").textContent = isRecording ? "取消录制" : "开始录制";
-    row.querySelector("[data-clear-action]").disabled = !recorded;
-    const handsSelect = row.querySelector("[data-hands-action]");
-    handsSelect.disabled = Boolean(recordingAction);
-    if (recorded?.hands && !recordingAction) handsSelect.value = String(recorded.hands);
-    if (!isRecording) {
-      row.querySelector("[data-progress-action]").style.width = "0%";
-      row.querySelector("[data-hint-action]").textContent = recorded
-        ? `已录制${recorded.hands === 2 ? "双手" : "单手"}手势`
-        : "未录制";
-    }
+  document.querySelectorAll(".gesture-recorder .recorder-row").forEach(paintRecorderRow);
+  renderRules();
+}
+
+// Rule rows are built from the list main owns, so adding a rule there gives it a
+// recorder here without touching this file.
+function renderRules() {
+  if (voiceRules.childElementCount !== rules.length) {
+    voiceRules.innerHTML = "";
+    for (const rule of rules) voiceRules.append(buildRuleRow(rule));
+  }
+  for (const rule of rules) {
+    const row = voiceRules.querySelector(`[data-action="${rule.id}"]`);
+    if (row) paintRecorderRow(row);
+  }
+}
+
+function buildRuleRow(rule) {
+  const row = document.createElement("div");
+  row.className = "recorder-row";
+  row.dataset.action = rule.id;
+
+  const copy = document.createElement("div");
+  const title = document.createElement("b");
+  const voice = document.createElement("span");
+  title.textContent = rule.label;
+  voice.textContent = `语音：${rule.voice}`;
+  copy.append(title, voice);
+
+  const handsSelect = document.createElement("select");
+  handsSelect.dataset.handsAction = rule.id;
+  for (const [value, text] of [["1", "单手"], ["2", "双手"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    handsSelect.append(option);
+  }
+
+  const recordButton = document.createElement("button");
+  recordButton.type = "button";
+  recordButton.dataset.recordAction = rule.id;
+  recordButton.textContent = "开始录制";
+  recordButton.addEventListener("click", () => toggleRecording(rule.id));
+
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.dataset.clearAction = rule.id;
+  clearButton.textContent = "清除";
+  clearButton.addEventListener("click", () => clearRecorded(rule.id));
+
+  const testButton = document.createElement("button");
+  testButton.type = "button";
+  testButton.textContent = "测试";
+  testButton.addEventListener("click", async () => {
+    ruleState.textContent = `执行中：${rule.label}`;
+    const result = await window.aircursor.runRule(rule.id);
+    ruleState.textContent = `${result.ok ? "已执行" : "失败"}：${rule.label}`;
   });
 
-  voiceRules.innerHTML = "";
-  for (const rule of rules) {
-    const row = document.createElement("div");
-    row.className = "rule-row";
+  const feedback = document.createElement("div");
+  feedback.className = "recorder-feedback";
+  const bar = document.createElement("div");
+  bar.className = "recorder-bar";
+  const fill = document.createElement("i");
+  fill.dataset.progressAction = rule.id;
+  bar.append(fill);
+  const hint = document.createElement("span");
+  hint.dataset.hintAction = rule.id;
+  hint.textContent = "未录制";
+  feedback.append(bar, hint);
 
-    const copy = document.createElement("div");
-    const title = document.createElement("b");
-    const voice = document.createElement("span");
-    title.textContent = rule.label;
-    voice.textContent = rule.voice;
-    copy.append(title, voice);
+  row.append(copy, handsSelect, recordButton, clearButton, testButton, feedback);
+  return row;
+}
 
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "测试";
-    button.addEventListener("click", async () => {
-      ruleState.textContent = `执行中：${rule.label}`;
-      const result = await window.aircursor.runRule(rule.id);
-      ruleState.textContent = `${result.ok ? "已执行" : "失败"}：${rule.label}`;
-    });
+// Shared by the four pointer actions and the seven rules: the row markup is the
+// same shape, so the state painting is one function instead of two that drift.
+function paintRecorderRow(row) {
+  const action = row.dataset.action;
+  const recorded = settings.recordedGestures?.[action];
+  const isRecording = recordingAction === action;
+  row.classList.toggle("is-recording", isRecording);
+  row.classList.toggle("is-saved", Boolean(recorded));
+  row.querySelector("[data-record-action]").textContent = isRecording ? "取消录制" : "开始录制";
+  row.querySelector("[data-clear-action]").disabled = !recorded;
+  const handsSelect = row.querySelector("[data-hands-action]");
+  handsSelect.disabled = Boolean(recordingAction);
+  if (recorded?.hands && !recordingAction) handsSelect.value = String(recorded.hands);
+  if (isRecording) return;
+  row.querySelector("[data-progress-action]").style.width = "0%";
+  row.querySelector("[data-hint-action]").textContent = recorded
+    ? `已录制${recorded.hands === 2 ? "双手" : "单手"}手势`
+    : "未录制";
+}
 
-    row.append(copy, button);
-    voiceRules.append(row);
+function labelFor(action) {
+  return actionLabels[action] || rules.find((rule) => rule.id === action)?.label || action;
+}
+
+async function toggleRecording(action) {
+  if (recordingAction === action) {
+    await window.aircursor.cancelRecording();
+    recordingAction = null;
+    ruleState.textContent = `已取消录制：${labelFor(action)}`;
+    render();
+    return;
   }
+  if (recordingAction) {
+    ruleState.textContent = `请先结束正在进行的录制：${labelFor(recordingAction)}`;
+    return;
+  }
+
+  const hands = Number(document.querySelector(`[data-hands-action="${action}"]`).value);
+  const result = await window.aircursor.startRecording(action, hands);
+  if (!result.ok) {
+    ruleState.textContent = `无法录制：${result.reason}`;
+    return;
+  }
+  recordingAction = action;
+  ruleState.textContent = `录制中：${labelFor(action)}。倒计时后摆好${hands === 2 ? "双手" : "单手"}手势并保持 2 秒。`;
+  render();
+}
+
+async function clearRecorded(action) {
+  const result = await window.aircursor.clearRecordedGesture(action);
+  if (result.ok) {
+    settings = result.settings;
+    if (recordingAction === action) recordingAction = null;
+    ruleState.textContent = `已清除录制手势：${labelFor(action)}`;
+  } else {
+    ruleState.textContent = `清除失败：${result.reason}`;
+  }
+  render();
 }
 
 async function patchSettings(patch) {
@@ -235,41 +325,13 @@ rightClickGesture.addEventListener("change", () => {
 exitGesture.addEventListener("change", () => {
   patchSettings({ gestureMap: { exit: exitGesture.value } });
 });
-document.querySelectorAll("[data-record-action]").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const action = button.dataset.recordAction;
-    if (recordingAction === action) {
-      await window.aircursor.cancelRecording();
-      recordingAction = null;
-      ruleState.textContent = `已取消录制：${actionLabels[action]}`;
-      render();
-      return;
-    }
-
-    const hands = Number(document.querySelector(`[data-hands-action="${action}"]`).value);
-    const result = await window.aircursor.startRecording(action, hands);
-    if (!result.ok) {
-      ruleState.textContent = `无法录制：${result.reason}`;
-      return;
-    }
-    recordingAction = action;
-    ruleState.textContent = `录制中：${actionLabels[action]}。倒计时后摆好${hands === 2 ? "双手" : "单手"}手势并保持 2 秒。`;
-    render();
-  });
+// Only the four static rows are wired here; rule rows bind their own handlers as
+// they are built, since they do not exist when this runs.
+document.querySelectorAll(".gesture-recorder [data-record-action]").forEach((button) => {
+  button.addEventListener("click", () => toggleRecording(button.dataset.recordAction));
 });
-document.querySelectorAll("[data-clear-action]").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const action = button.dataset.clearAction;
-    const result = await window.aircursor.clearRecordedGesture(action);
-    if (result.ok) {
-      settings = result.settings;
-      if (recordingAction === action) recordingAction = null;
-      ruleState.textContent = `已清除录制手势：${actionLabels[action]}`;
-    } else {
-      ruleState.textContent = `清除失败：${result.reason}`;
-    }
-    render();
-  });
+document.querySelectorAll(".gesture-recorder [data-clear-action]").forEach((button) => {
+  button.addEventListener("click", () => clearRecorded(button.dataset.clearAction));
 });
 
 window.aircursor.onMetrics((m) => {
@@ -281,10 +343,14 @@ window.aircursor.onMetrics((m) => {
   setMetric("mJitter", m.jitterPx, `${m.jitterPx} px${m.cursorHeld ? " · 静止锁定" : ""}`);
   setMetric("mLag", m.lagPx, `${m.lagPx} px`);
   setMetric("mTracking", m.trackingRate, `${m.trackingRate}% · ${m.hands} 手`);
+  // Which gesture is closest matters as soon as more than one is bound: a
+  // distance alone cannot tell you the wrong template is the one winning.
   setMetric(
     "mMatch",
     m.matchDistance,
-    m.matchDistance === null ? "未使用自定义手势" : `${m.matchDistance} / 最近 ${m.matchBestDistance}`,
+    m.matchDistance === null
+      ? "未使用自定义手势"
+      : `${m.matchDistance} / 最近 ${m.matchBestDistance}${m.closestAction ? ` · ${labelFor(m.closestAction)}` : ""}`,
   );
 });
 window.aircursor.onOverlayLog((entry) => {
@@ -297,6 +363,7 @@ window.aircursor.onRecordingProgress((payload) => {
   if (!payload || payload.action !== recordingAction) return;
   const bar = document.querySelector(`[data-progress-action="${payload.action}"]`);
   const hint = document.querySelector(`[data-hint-action="${payload.action}"]`);
+  if (!bar || !hint) return;
   if (payload.phase === "countdown") {
     bar.style.width = "0%";
     hint.textContent = `准备：${payload.countdown}`;
@@ -310,7 +377,7 @@ window.aircursor.onRecordingResult((result) => {
   if (result.settings) settings = result.settings;
   recordingAction = null;
   ruleState.textContent = result.ok
-    ? `已保存${result.hands === 2 ? "双手" : "单手"}手势：${actionLabels[result.action]}`
+    ? `已保存${result.hands === 2 ? "双手" : "单手"}手势：${labelFor(result.action)}`
     : `录制失败：${result.reason}`;
   render();
 });

@@ -192,6 +192,9 @@ class TrackingMetrics {
     this.lastFrameAt = 0;
     this.lastDrawAt = 0;
     this.startedAt = 0;
+    this.frameBest = null;
+    this.frameBestAction = null;
+    this.closestAction = null;
   }
 
   markFrame(now) {
@@ -228,8 +231,25 @@ class TrackingMetrics {
     this.counters.pointerEvents += 1;
   }
 
-  markMatchDistance(distance) {
-    if (Number.isFinite(distance)) this.matchDistance.push(distance);
+  // With several gestures bound at once, every frame produces one distance per
+  // template. Averaging them all would report a blend that belongs to no
+  // gesture, so only the closest match of each frame is recorded — that is the
+  // one that decides whether anything fires.
+  markMatchDistance(distance, action) {
+    if (!Number.isFinite(distance)) return;
+    if (this.frameBest === null || distance < this.frameBest) {
+      this.frameBest = distance;
+      this.frameBestAction = action || null;
+    }
+  }
+
+  commitMatchDistance() {
+    if (this.frameBest !== null) {
+      this.matchDistance.push(this.frameBest);
+      this.closestAction = this.frameBestAction;
+    }
+    this.frameBest = null;
+    this.frameBestAction = null;
   }
 
   // Jitter is only meaningful while the hand is parked, so the raw landmark
@@ -265,6 +285,7 @@ class TrackingMetrics {
       lagPx: Number(this.lagPx.mean().toFixed(1)),
       matchDistance: this.matchDistance.length ? Number(this.matchDistance.mean().toFixed(3)) : null,
       matchBestDistance: this.matchDistance.length ? Number(this.matchDistance.percentile(5).toFixed(3)) : null,
+      closestAction: this.closestAction,
       trackingRate: total ? Number(((this.counters.handFrames / total) * 100).toFixed(1)) : 0,
       skippedFrames: this.counters.skipped,
       inferences: this.counters.inferences,
@@ -290,6 +311,9 @@ class TrackingMetrics {
     this.lastFrameAt = 0;
     this.lastDrawAt = 0;
     this.startedAt = 0;
+    this.frameBest = null;
+    this.frameBestAction = null;
+    this.closestAction = null;
   }
 }
 

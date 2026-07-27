@@ -165,10 +165,12 @@ h2 {
   margin-bottom: 16px;
 }
 
+/* Flex, not grid: rule rows carry an extra 测试 button, and a fixed column count
+   would either leave a phantom gap on the shorter rows or need two rulesets. */
 .recorder-row {
   min-height: 64px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
@@ -181,6 +183,7 @@ h2 {
   display: grid;
   gap: 4px;
   min-width: 0;
+  flex: 1 1 220px;
 }
 
 .recorder-row select {
@@ -195,7 +198,7 @@ h2 {
 }
 
 .recorder-feedback {
-  grid-column: 1 / -1;
+  flex: 1 1 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -256,36 +259,10 @@ h2 {
   background: #f8faff;
 }
 
+/* Rule rows are recorder rows now, so .rule-row styling went with them. */
 .rule-list {
   display: grid;
   gap: 10px;
-}
-
-.rule-row {
-  min-height: 62px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
-  border: 1px solid #eef1f6;
-  border-radius: 8px;
-  background: #f8faff;
-}
-
-.rule-row div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.rule-row span {
-  color: #677083;
-  font-size: 14px;
-}
-
-.rule-row button {
-  min-width: 72px;
 }
 
 .panel-hint {

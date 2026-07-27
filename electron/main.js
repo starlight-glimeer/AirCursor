@@ -110,7 +110,18 @@ const ruleDefinitions = [
 
 const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, voice }));
 
-const recordableActions = ["wake", "click", "rightClick", "exit"];
+// Pointer actions have a built-in gesture to fall back on; rules only ever fire
+// from a recorded one, so they have no default and get removed on clear.
+const coreActions = ["wake", "click", "rightClick", "exit"];
+const ruleActions = ruleDefinitions.map((rule) => rule.id);
+const recordableActions = [...coreActions, ...ruleActions];
+const actionLabels = {
+  wake: "唤醒控制",
+  click: "点击/拖拽",
+  rightClick: "右键",
+  exit: "退出控制",
+  ...Object.fromEntries(ruleDefinitions.map((rule) => [rule.id, rule.label])),
+};
 const defaultGestureMap = {
   wake: "openPalm",
   click: "pinch",
@@ -118,12 +129,23 @@ const defaultGestureMap = {
   exit: "fist",
 };
 
+// A spread can only add or overwrite keys, and clearing a rule's gesture has to
+// remove one: leaving `open_chrome: null` behind would keep the entry alive in
+// settings.json forever. An explicit null in a patch means delete.
+function mergeMap(base, incoming) {
+  const merged = { ...base, ...(incoming || {}) };
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === null || value === undefined) delete merged[key];
+  }
+  return merged;
+}
+
 function mergeSettings(base, incoming) {
   return {
     ...base,
     ...incoming,
-    gestureMap: { ...base.gestureMap, ...(incoming?.gestureMap || {}) },
-    recordedGestures: { ...base.recordedGestures, ...(incoming?.recordedGestures || {}) },
+    gestureMap: mergeMap(base.gestureMap, incoming?.gestureMap),
+    recordedGestures: mergeMap(base.recordedGestures, incoming?.recordedGestures),
     tuning: { ...base.tuning, ...(incoming?.tuning || {}) },
   };
 }
@@ -356,10 +378,18 @@ function buildReport(note) {
     display: screen.getPrimaryDisplay().bounds,
     settings: { twoHands: settings.twoHands, effects: settings.effects, showHands: settings.showHands, controlEnabled: settings.controlEnabled },
     tuning: settings.tuning,
+    gestureMap: settings.gestureMap,
     recordedGestures: Object.fromEntries(
       Object.entries(settings.recordedGestures || {}).map(([action, entry]) => [
         action,
-        { hands: entry.hands, dims: entry.template?.values?.length, at: entry.at },
+        {
+          hands: entry.hands,
+          dims: entry.template?.values?.length,
+          // The angle explains rotation-tolerance behaviour after the fact, so
+          // it belongs in the report rather than only in settings.json.
+          angle: entry.template?.angle,
+          at: entry.at,
+        },
       ]),
     ),
     sampleCount: samples.length,
@@ -622,15 +652,12 @@ ipcMain.handle("aircursor:clear-recorded-gesture", (_event, action) => {
   if (!recordableActions.includes(action)) {
     return { ok: false, reason: "未知动作" };
   }
-  const recordedGestures = { ...settings.recordedGestures };
-  delete recordedGestures[action];
-  settings = {
-    ...settings,
-    gestureMap: { ...settings.gestureMap, [action]: defaultGestureMap[action] },
-    recordedGestures,
-  };
-  saveSettings();
-  syncSettings();
+  // Core actions fall back to their built-in gesture; a rule has none, so its
+  // mapping goes away entirely and the rule becomes voice-only again.
+  updateSettings({
+    gestureMap: { [action]: defaultGestureMap[action] ?? null },
+    recordedGestures: { [action]: null },
+  });
   return { ok: true, settings };
 });
 ipcMain.handle("aircursor:get-rules", () => ({ rules: publicRules }));
@@ -691,10 +718,15 @@ ipcMain.on("aircursor:recording-result", (_event, result) => {
   if (result.ok && result.template) saveRecordedTemplate(result.action, result.template);
   recordingSession = null;
   updateSettings(session.restore);
+  // The overlay knows the geometry but not the labels, so it reports which
+  // action clashed and main turns that into something readable.
+  const reason = result.conflictWith
+    ? `与「${actionLabels[result.conflictWith] || result.conflictWith}」的手势太接近（距离 ${result.distance}），换一个差别更大的姿势`
+    : result.reason;
   broadcast("aircursor:recording-result", {
     ok: Boolean(result.ok),
     action: result.action,
-    reason: result.reason,
+    reason,
     hands: result.template?.hands,
     settings,
   });

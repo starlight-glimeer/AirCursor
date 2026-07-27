@@ -15,6 +15,49 @@ function palmWidthOf(points) {
   return Math.max(60, dist(points[5], points[17]));
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function wrapAngle(angle) {
+  return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+// Rotation reference: wrist -> middle-finger base, averaged over the hands in
+// the pose. One global axis rather than one per hand, so the hands' relative
+// orientation stays part of the signature.
+function poseAngle(handList) {
+  let vx = 0;
+  let vy = 0;
+  let span = 0;
+  for (const points of handList) {
+    const dx = points[9].x - points[0].x;
+    const dy = points[9].y - points[0].y;
+    vx += dx / handList.length;
+    vy += dy / handList.length;
+    span += Math.hypot(dx, dy) / handList.length;
+  }
+  // Mirrored hands can cancel out. An axis much shorter than the mean hand span
+  // is noise, so leave the pose unrotated instead of spinning it on an angle
+  // that flips between frames.
+  if (span <= 0 || Math.hypot(vx, vy) < span * 0.34) return 0;
+  return Math.atan2(vy, vx);
+}
+
+function rotateValues(values, angle) {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const out = new Array(values.length);
+  for (let i = 0; i < values.length; i += 3) {
+    const x = values[i];
+    const y = values[i + 1];
+    out[i] = x * cos - y * sin;
+    out[i + 1] = x * sin + y * cos;
+    out[i + 2] = values[i + 2];
+  }
+  return out;
+}
+
 // Templates are position-sensitive, so hands must always arrive in the same
 // slot order. MediaPipe emits detection order, which swaps between frames;
 // handedness labels (Left before Right) are stable.
@@ -51,20 +94,37 @@ function buildPoseTemplate(handList) {
       Number(((p.z || 0) * Z_WEIGHT).toFixed(4)),
     ]),
   );
-  return { hands: handList.length, values };
+  // The angle rides along instead of being baked in: matching decides how much
+  // rotation to forgive, and a stored template keeps working when that changes.
+  return { hands: handList.length, angle: Number(poseAngle(handList).toFixed(4)), values };
 }
 
-function templateDistance(a, b) {
-  const left = Array.isArray(a?.values) ? a.values : null;
-  const right = Array.isArray(b?.values) ? b.values : null;
-  // A one-hand pose must never match a two-hand template, and vice versa.
-  if (!left || !right || a.hands !== b.hands || left.length !== right.length) return Infinity;
+function rms(left, right) {
   let sum = 0;
   for (let i = 0; i < left.length; i += 1) {
     const diff = left[i] - right[i];
     sum += diff * diff;
   }
   return Math.sqrt(sum / left.length);
+}
+
+// Rotation is forgiven up to a limit, not ignored. Full invariance would make
+// thumbs-up and thumbs-down the same gesture; zero tolerance makes a tilted
+// wrist a miss. `rotationTolerance` is the half-width in radians: the live pose
+// is de-rotated onto the template's axis, but only by as much as allowed.
+function templateDistance(a, b, rotationTolerance = 0) {
+  const left = Array.isArray(a?.values) ? a.values : null;
+  const right = Array.isArray(b?.values) ? b.values : null;
+  // A one-hand pose must never match a two-hand template, and vice versa.
+  if (!left || !right || a.hands !== b.hands || left.length !== right.length) return Infinity;
+  if (!(rotationTolerance > 0)) return rms(left, right);
+
+  // Templates recorded before angles existed have none; without a reference
+  // axis there is nothing to align to, so compare as-is rather than guessing.
+  if (!Number.isFinite(a.angle) || !Number.isFinite(b.angle)) return rms(left, right);
+  const delta = wrapAngle(b.angle - a.angle);
+  const applied = clamp(delta, -rotationTolerance, rotationTolerance);
+  return rms(rotateValues(left, applied), right);
 }
 
 // Median rather than mean: a single mistracked frame inside the hold window
@@ -81,8 +141,30 @@ function medianTemplate(samples) {
     const value = column.length % 2 ? column[mid] : (column[mid - 1] + column[mid]) / 2;
     values[i] = Number(value.toFixed(4));
   }
-  return { hands: samples[0].hands, values };
+  return { hands: samples[0].hands, angle: medianAngle(samples), values };
 }
 
-root.AirCursorPose = { Z_WEIGHT, dist, palmWidthOf, orderHands, buildPoseTemplate, templateDistance, medianTemplate };
+// Angles wrap, so a plain median of samples straddling ±π lands near zero — the
+// opposite direction. Take the median of the offsets from one reference angle.
+function medianAngle(samples) {
+  const angles = samples.map((s) => s.angle).filter((a) => Number.isFinite(a));
+  if (!angles.length) return 0;
+  const reference = angles[0];
+  const offsets = angles.map((a) => wrapAngle(a - reference)).sort((x, y) => x - y);
+  const mid = Math.floor(offsets.length / 2);
+  const offset = offsets.length % 2 ? offsets[mid] : (offsets[mid - 1] + offsets[mid]) / 2;
+  return Number(wrapAngle(reference + offset).toFixed(4));
+}
+
+root.AirCursorPose = {
+  Z_WEIGHT,
+  dist,
+  palmWidthOf,
+  orderHands,
+  poseAngle,
+  buildPoseTemplate,
+  templateDistance,
+  medianTemplate,
+  medianAngle,
+};
 })(typeof window === "undefined" ? globalThis : window);

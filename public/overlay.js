@@ -71,6 +71,7 @@ const DEFAULT_TUNING = {
   deadzone: 1.6,
   prediction: 0.35,
   matchThreshold: 0.22,
+  rotationTolerance: 20,
   inferenceIntervalMs: 20,
   moveIntervalMs: 8,
 };
@@ -79,11 +80,17 @@ const pointerFilter = new PointerFilter(DEFAULT_TUNING);
 // Recording demands a tighter fit than triggering, so a recorded template stays
 // usable when the hand drifts a little at runtime.
 let MATCH_THRESHOLD = 0.22;
+// Degrees in settings because that is what a tester can reason about; radians
+// here because that is what the geometry wants.
+let ROTATION_TOLERANCE = 0;
 const STABLE_TOLERANCE = 0.1;
 const COUNTDOWN_MS = 3000;
 const HOLD_MS = 2000;
 const CAPTURE_TIMEOUT_MS = 15000;
 const MAX_SAMPLES = 90;
+// Longer than the wake/exit hold: opening an app by accident is more annoying
+// than a stray cursor move, so it asks for more intent.
+const RULE_HOLD_MS = 1200;
 
 const state = {
   hands: [],
@@ -95,6 +102,11 @@ const state = {
   holdGesture: null,
   holdStartedAt: 0,
   toggleCooldownUntil: 0,
+  // Which rules exist is main's business; the overlay reads the list it is
+  // handed rather than keeping a second copy that can drift out of step.
+  ruleIds: [],
+  ruleHold: { id: null, startedAt: 0 },
+  ruleCooldownUntil: 0,
   pointerDown: false,
   pinch: {
     active: false,
@@ -166,6 +178,7 @@ function tuning() {
 function applyTuning() {
   const active = tuning();
   MATCH_THRESHOLD = active.matchThreshold;
+  ROTATION_TOLERANCE = ((active.rotationTolerance || 0) * Math.PI) / 180;
   pointerFilter.setTuning(active);
 }
 
@@ -205,8 +218,8 @@ function gestureMatches(gesture, gestureId) {
   if (gestureId.startsWith("custom:")) {
     const action = gestureId.slice("custom:".length);
     const template = settings.recordedGestures?.[action]?.template;
-    const distance = templateDistance(gesture.poseTemplate, template);
-    if (Number.isFinite(distance)) metrics.markMatchDistance(distance);
+    const distance = templateDistance(gesture.poseTemplate, template, ROTATION_TOLERANCE);
+    metrics.markMatchDistance(distance, action);
     return distance < MATCH_THRESHOLD;
   }
   return Boolean(gesture[gestureId]);
@@ -347,6 +360,47 @@ function updateHoldGesture(gesture) {
   }
 }
 
+// Launching an app is not a mouse move: it cannot be undone by moving back, and
+// a pose held for a second would otherwise fire it every frame. So rules need a
+// deliberate hold plus a cooldown, and only ever fire from a recorded gesture —
+// the built-in poses stay reserved for the pointer.
+function updateRuleGestures(gesture) {
+  const hold = state.ruleHold;
+  if (!gesture) {
+    hold.id = null;
+    hold.startedAt = 0;
+    return;
+  }
+
+  const now = Date.now();
+  const bound = state.ruleIds.find((id) => {
+    const mapped = settings.gestureMap?.[id];
+    return mapped?.startsWith("custom:") && gestureMatches(gesture, mapped);
+  });
+
+  if (!bound) {
+    hold.id = null;
+    hold.startedAt = 0;
+    return;
+  }
+  if (now < state.ruleCooldownUntil) return;
+
+  if (hold.id !== bound) {
+    hold.id = bound;
+    hold.startedAt = now;
+    return;
+  }
+  if (now - hold.startedAt < RULE_HOLD_MS) return;
+
+  hold.id = null;
+  hold.startedAt = 0;
+  // Long enough that releasing the pose is not a race, since the launched app
+  // takes the foreground and the hand is usually still mid-frame.
+  state.ruleCooldownUntil = now + 2500;
+  burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 32 : 12, "#8affc1");
+  aircursor.runRule(bound);
+}
+
 function resetPinch() {
   state.pinch.active = false;
   state.pinch.startedAt = 0;
@@ -438,9 +492,34 @@ function stopRecording() {
   state.recording = null;
 }
 
+// Two poses closer together than the match threshold are not two gestures: at
+// runtime whichever is checked first wins and the other looks broken. Better to
+// refuse at save time, while the user still knows what they just did, than to
+// ship a mapping that silently never fires.
+function conflictingAction(action, template) {
+  const entries = Object.entries(settings.recordedGestures || {});
+  for (const [other, entry] of entries) {
+    if (other === action || !entry?.template) continue;
+    if (!settings.gestureMap?.[other]?.startsWith("custom:")) continue;
+    const distance = templateDistance(template, entry.template, ROTATION_TOLERANCE);
+    if (distance < MATCH_THRESHOLD * 1.35) return { action: other, distance: Number(distance.toFixed(3)) };
+  }
+  return null;
+}
+
 function finishRecording(recording) {
   const template = medianTemplate(recording.samples);
+  const conflict = conflictingAction(recording.action, template);
   state.recording = null;
+  if (conflict) {
+    aircursor.recordingResult({
+      ok: false,
+      action: recording.action,
+      conflictWith: conflict.action,
+      distance: conflict.distance,
+    });
+    return;
+  }
   aircursor.recordingResult({ ok: true, action: recording.action, template });
 }
 
@@ -726,8 +805,14 @@ function loop(now) {
   // Recording must not fire the very action being recorded.
   if (!state.recording) {
     updateHoldGesture(gesture);
+    // Rules do not require control mode: opening an app should not demand that
+    // you wake the pointer first.
+    updateRuleGestures(gesture);
     updateSystemCursor(gesture);
   }
+  // All template comparisons for this frame are done, so the closest one can be
+  // recorded as the frame's match distance.
+  metrics.commitMatchDistance();
   hands.forEach((points, index) => drawHand(points, index, index === 0 ? gesture : null));
   drawCursor(gesture);
   drawParticles(dt);
@@ -945,6 +1030,7 @@ async function boot() {
   const bootState = await aircursor.getState();
   Object.assign(settings, bootState.settings);
   state.screen = bootState.screen;
+  state.ruleIds = (bootState.rules || []).map((rule) => rule.id);
   applyTuning();
   resize();
   setupVoice();

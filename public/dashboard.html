@@ -116,6 +116,11 @@
               <em>越大越容错，越易误触</em>
             </label>
             <label>
+              <span>旋转容差 <b data-tuning-value="rotationTolerance"></b></span>
+              <input type="range" data-tuning="rotationTolerance" min="0" max="90" step="5" />
+              <em>手腕倾斜多少度内仍算同一手势，过大会混淆方向相反的手势</em>
+            </label>
+            <label>
               <span>推理间隔 <b data-tuning-value="inferenceIntervalMs"></b></span>
               <input type="range" data-tuning="inferenceIntervalMs" min="8" max="60" step="2" />
               <em>越小越跟手，CPU 占用越高</em>
@@ -235,6 +240,10 @@
 
         <article class="panel wide">
           <h2>常用规则</h2>
+          <p class="panel-hint">
+            每条规则都能用语音触发；录制手势后，保持该手势 1.2 秒也会触发，不需要先开启控制模式。
+            清除手势后这条规则回到只用语音。
+          </p>
           <div id="voiceRules" class="rule-list"></div>
         </article>
       </section>
