@@ -45,7 +45,10 @@ final class VoiceEngine {
     private var pulseActive = false
     private var pulseStartedAt = Date.distantPast
     private var lastPulseAt = Date.distantPast
+    private var loudFrames = 0
     private var quietFrames = 0
+    private var noiseFloor: Float = 0.006
+    private var pulsePeak: Float = 0
     private var restarting = false
 
     func requestAccessAndStart() {
@@ -173,15 +176,32 @@ final class VoiceEngine {
         }
 
         let rms = sqrt(sum / Float(frameCount))
-        let loud = rms > 0.025 || peak > 0.12
+        let rmsThreshold = max(Float(0.010), noiseFloor * 2.35)
+        let peakThreshold = max(Float(0.050), noiseFloor * 7.0)
+        let loud = rms > rmsThreshold || peak > peakThreshold
         let now = Date()
 
         if loud {
             quietFrames = 0
-            if !pulseActive {
+            pulsePeak = max(pulsePeak, peak)
+            if pulseActive {
+                return
+            }
+
+            loudFrames += 1
+            if loudFrames >= 2 || peak > 0.09 {
                 pulseActive = true
                 pulseStartedAt = now
+                pulsePeak = peak
             }
+            return
+        }
+
+        if !pulseActive {
+            loudFrames = 0
+            pulsePeak = 0
+            let bounded = min(max(rms, 0.001), 0.05)
+            noiseFloor = noiseFloor * 0.985 + bounded * 0.015
             return
         }
 
@@ -195,15 +215,23 @@ final class VoiceEngine {
         }
 
         pulseActive = false
+        loudFrames = 0
         let duration = now.timeIntervalSince(pulseStartedAt)
-        guard duration >= 0.08 && duration <= 0.75 else {
+        guard duration >= 0.045 && duration <= 1.15 else {
+            pulsePeak = 0
             return
         }
-        guard now.timeIntervalSince(lastPulseAt) > 0.9 else {
+        guard pulsePeak > 0.035 else {
+            pulsePeak = 0
+            return
+        }
+        guard now.timeIntervalSince(lastPulseAt) > 0.6 else {
+            pulsePeak = 0
             return
         }
 
         lastPulseAt = now
+        pulsePeak = 0
         emit("__AIRCURSOR_VOICE_TAP__")
     }
 
