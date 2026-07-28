@@ -57,10 +57,18 @@
   <script src="wall.js"></script>
   <script>
     // Hide the placeholder as soon as any layer has an image.
-    window.gw.onConfig((c) => {
-      const any = c.layers.background || c.layers.subject || c.layers.shard;
-      document.getElementById('empty').classList.toggle('hide', !!any);
-    });
+    //
+    // Both paths matter: onConfig covers later changes, but a freshly created
+    // window (every ⌃⇧L press makes a new one) gets its config by asking, and
+    // without the second call the placeholder flashed black over an already
+    // configured wallpaper on every strategy switch.
+    const empty = document.getElementById('empty');
+    function syncPlaceholder(c) {
+      const any = c && (c.layers.background || c.layers.subject || c.layers.shard);
+      empty.classList.toggle('hide', !!any);
+    }
+    window.gw.onConfig(syncPlaceholder);
+    window.gw.getConfig().then(syncPlaceholder);
   </script>
 </body>
 </html>

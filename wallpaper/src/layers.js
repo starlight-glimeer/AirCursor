@@ -24,9 +24,9 @@ function visibleHeightAt(z) {
   return 2 * Math.tan((FOV * Math.PI) / 360) * distance;
 }
 
-// Fit an image into the frame at its depth, cover-style (fill, crop overflow).
-// Contain would letterbox the background, which for a wallpaper is worse than
-// losing the edges of the photo.
+// Fit an image into the frame at its depth, cover-style (fill, crop the overflow).
+// Right for the background: letterboxing a wallpaper is worse than losing the edges
+// of the photo.
 function coverSize(aspect, z, viewportAspect) {
   const height = visibleHeightAt(z);
   const width = height * viewportAspect;
@@ -34,6 +34,19 @@ function coverSize(aspect, z, viewportAspect) {
   return aspect > width / height
     ? { width: height * aspect, height }
     : { width, height: width / aspect };
+}
+
+// Fit inside the frame instead, preserving aspect. Right for the subject and the
+// shards, and the fix for a real failure: a 420x554 portrait cut-out fitted
+// cover-style came out 225% of the screen height, so only a slice of the middle was
+// on screen and the subject read as missing. A cut-out figure has to be *seen*,
+// which is the opposite requirement to a background that has to *fill*.
+function containSize(aspect, z, viewportAspect) {
+  const height = visibleHeightAt(z);
+  const width = height * viewportAspect;
+  return aspect > width / height
+    ? { width, height: width / aspect }
+    : { width: height * aspect, height };
 }
 
 class Layer {
@@ -236,6 +249,12 @@ function stepView(view, dt, config) {
 
 const DEG = Math.PI / 180;
 
+// Fraction of a cover-fitted plane that one shard occupies before the user's own
+// size setting is applied. Calibrated against a real screen: at 0.26 a single
+// shard spanned 16-29% of the display and five of them left nothing of the subject
+// visible. 0.075 puts them at roughly 5-8%, which reads as debris around a figure.
+const SHARD_BASE_SCALE = 0.075;
+
 // Place every layer for the current view. Pure: same inputs, same output.
 function applyView(scene, view, config, timeSec) {
   const parallax = config.parallax ?? 1;
@@ -253,7 +272,9 @@ function applyView(scene, view, config, timeSec) {
     if (!layer.mesh.visible) return;
     const depth = (config.depth && config.depth[depthKey]) ?? layer.depth;
     const tf = (config.transform && config.transform[depthKey]) || { scale: 1, x: 0, y: 0 };
-    const size = coverSize(layer.aspect, depth, scene.viewportAspect);
+    // Only the background fills; everything else fits. See containSize.
+    const fit = depthKey === 'background' ? coverSize : containSize;
+    const size = fit(layer.aspect, depth, scene.viewportAspect);
     const scale = tf.scale * (extra && extra.scale ? extra.scale : 1);
     layer.mesh.scale.set(size.width * scale, size.height * scale, 1);
 
@@ -288,13 +309,18 @@ function applyView(scene, view, config, timeSec) {
   place(scene.subject, 'subject', { rotWeight: 1 });
 
   const cfg = config.shards || { spread: 1.7, drift: 1 };
+  // Shards are accents, not a second background. The first default here made each
+  // one 16-29% of the screen width, so five of them buried the subject completely —
+  // measured against a real screenshot, not guessed. `SHARD_BASE_SCALE` keeps them
+  // in the 4-8% range at the default shard size of 1.0, which leaves the subject
+  // readable and makes "turn the size up" the user's choice rather than a rescue.
   for (const shard of scene.shards) {
     // Drift speed scales with mood, so shards hang almost still on a calm track
     // and swarm on an intense one.
     const speed = 0.22 + mood * 0.85;
     const t = timeSec * speed * (cfg.drift ?? 1) + shard.phase;
     place(shard, 'shard', {
-      scale: 0.26 * shard.scaleJitter,
+      scale: SHARD_BASE_SCALE * shard.scaleJitter,
       x: shard.restX * cfg.spread + Math.sin(t) * 0.09 * (cfg.drift ?? 1),
       y: shard.restY * cfg.spread + Math.cos(t * 0.83) * 0.11 * (cfg.drift ?? 1),
       z: shard.restZ * 0.8,
@@ -309,6 +335,7 @@ root.GestureWallLayers = {
   FOV,
   visibleHeightAt,
   coverSize,
+  containSize,
   Layer,
   Shard,
   WallScene,

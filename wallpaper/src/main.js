@@ -41,6 +41,9 @@ const WALL_STRATEGIES = [
     id: 'bottom-normal',
     label: '普通窗口压到最底（能收鼠标，会出现在 Mission Control）',
     options: {},
+    // Plain windows get clamped to the work area, so this one needs the explicit
+    // full-screen pass to reach under the menu bar.
+    fullScreen: true,
     apply: (win) => {
       win.setAlwaysOnTop(false);
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -50,8 +53,13 @@ const WALL_STRATEGIES = [
     id: 'floating',
     label: '悬浮最上层（一定看得见，用来验渲染，不是壁纸）',
     options: {},
+    fullScreen: true,
     apply: (win) => {
-      win.setAlwaysOnTop(true, 'floating');
+      // 'screen-saver' rather than 'floating': floating sits *below* the Dock and
+      // the menu bar, which is exactly the strip that was left uncovered. This
+      // level is only for checking the rendering, so covering everything is the
+      // point.
+      win.setAlwaysOnTop(true, 'screen-saver');
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     },
   },
@@ -170,6 +178,22 @@ function createWallWindow(strategyId) {
     strategy.apply(win);
   } catch (error) {
     console.warn(`[wall] strategy ${strategy.id} apply failed:`, error.message);
+  }
+
+  // Reassert the frame after the strategy has run. Constructor bounds are a
+  // request, and macOS shrinks a plain window to the work area — measured, the top
+  // strip under the menu bar was left uncovered. setBounds afterwards is honoured
+  // where the constructor was not.
+  //
+  // simpleFullScreen rather than setFullScreen: the real fullscreen API moves the
+  // window into its own Space, which is the opposite of what a wallpaper wants.
+  try {
+    win.setBounds(bounds);
+    if (typeof win.setSimpleFullScreen === 'function' && strategy.fullScreen) {
+      win.setSimpleFullScreen(true);
+    }
+  } catch (error) {
+    console.warn(`[wall] bounds reassert failed:`, error.message);
   }
 
   win.webContents.on('did-finish-load', () => {

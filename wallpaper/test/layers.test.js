@@ -88,6 +88,35 @@ check('每层在自己景深上都填满画面', () => {
   }
 });
 
+// 主体是"要被看见"的，背景是"要铺满"的 —— 两个相反的需求。实测踩过：420×554 的
+// 竖版人物按 cover 算出来占屏高 225%，只有中间一条在画面里，看起来像主体没加载。
+check('主体完整在画面内（不被裁切）', () => {
+  const cfg = baseConfig();
+  const scene = new L.WallScene({});
+  scene.resize(2940, 1724, 1);   // 用户的实际屏幕
+  scene.subject.setTexture({}, 420 / 554);   // 用户的实际主体图
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 0);
+  const visibleH = L.visibleHeightAt(cfg.depth.subject);
+  const visibleW = visibleH * scene.viewportAspect;
+  assert.ok(scene.subject.mesh.scale.y <= visibleH + 1e-6,
+    `主体高 ${scene.subject.mesh.scale.y.toFixed(2)} 超过可见 ${visibleH.toFixed(2)}`);
+  assert.ok(scene.subject.mesh.scale.x <= visibleW + 1e-6, '主体宽超出可见区域');
+});
+
+check('背景仍然铺满（不留黑边）', () => {
+  const cfg = baseConfig();
+  const scene = new L.WallScene({});
+  scene.resize(2940, 1724, 1);
+  scene.background.setTexture({}, 1080 / 2376);   // 用户的实际背景是竖图
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 0);
+  const visibleH = L.visibleHeightAt(cfg.depth.background);
+  const visibleW = visibleH * scene.viewportAspect;
+  assert.ok(scene.background.mesh.scale.x >= visibleW - 1e-6, '背景宽度不够，会露黑边');
+  assert.ok(scene.background.mesh.scale.y >= visibleH - 1e-6, '背景高度不够，会露黑边');
+});
+
 check('越远的层平面越大（景深方向正确）', () => {
   const bg = L.coverSize(VP, -4.5, VP);
   const subject = L.coverSize(VP, 0, VP);
@@ -189,6 +218,33 @@ check('碎片数量增减不泄漏', () => {
   assert.strictEqual(scene.shards.length, 2);
   scene.setShardCount(0, 2.2);
   assert.strictEqual(scene.shards.length, 0);
+});
+
+// 回归守卫：碎片默认尺寸曾经是 0.26，实测下单片占屏宽 16-29%，5 片把主体埋没了。
+// 这条钉的是"碎片是点缀不是第二层背景"。
+check('碎片默认尺寸是点缀级（占屏宽 < 12%）', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 0);
+  const visibleWidth = L.visibleHeightAt(cfg.depth.shard) * scene.viewportAspect;
+  for (const shard of scene.shards) {
+    const ratio = shard.mesh.scale.x / visibleWidth;
+    assert.ok(ratio < 0.12, `碎片 ${shard.index} 占屏宽 ${(ratio * 100).toFixed(1)}% —— 太大了`);
+    assert.ok(ratio > 0.01, `碎片 ${shard.index} 只占 ${(ratio * 100).toFixed(1)}% —— 看不见了`);
+  }
+});
+
+check('调大碎片尺寸设置能真的变大', () => {
+  const small = baseConfig();
+  const big = baseConfig();
+  big.transform.shard.scale = 3;
+  const a = buildScene(small);
+  const b = buildScene(big);
+  const view = L.createViewState();
+  L.applyView(a, view, small, 0);
+  L.applyView(b, view, big, 0);
+  assert.ok(b.shards[0].mesh.scale.x > a.shards[0].mesh.scale.x * 2.5, '尺寸设置没生效');
 });
 
 check('情绪越高画面越亮', () => {

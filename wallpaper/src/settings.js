@@ -23,7 +23,10 @@ const TUNING = [
   { path: 'shards.count', label: '碎片数量', min: 0, max: 16, step: 1 },
   { path: 'shards.spread', label: '碎片散布', min: 0.2, max: 3.5, step: 0.05 },
   { path: 'shards.drift', label: '碎片漂浮', min: 0, max: 3, step: 0.05 },
-  { path: 'transform.shard.scale', label: '碎片大小', min: 0.3, max: 3, step: 0.05 },
+  // Up to 6x rather than 3x: the base scale is deliberately small (see
+  // SHARD_BASE_SCALE), so the useful range for someone who wants big dramatic
+  // shards runs higher than for the other layers.
+  { path: 'transform.shard.scale', label: '碎片大小', min: 0.2, max: 6, step: 0.1 },
   { path: 'tilt.maxYaw', label: '左右转幅度°', min: 0, max: 70, step: 1 },
   { path: 'tilt.maxPitch', label: '上下转幅度°', min: 0, max: 50, step: 1 },
 ];
