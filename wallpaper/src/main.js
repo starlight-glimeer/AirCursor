@@ -78,12 +78,14 @@ const WALL_STRATEGIES = [
 //
 // The retry on a timer is not superstition: the clamp is applied when the window
 // joins a Space, which happens after apply() returns.
+//
+// Bounds are read fresh on every call rather than captured once, because this is
+// also what runs when the display changes resolution.
 function liftOverMenuBar(win) {
-  const { bounds } = screen.getPrimaryDisplay();
   const push = () => {
     if (!win || win.isDestroyed()) return;
     try {
-      win.setBounds(bounds);
+      win.setBounds(screen.getPrimaryDisplay().bounds);
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
     }
@@ -93,9 +95,60 @@ function liftOverMenuBar(win) {
   setTimeout(push, 350);
 }
 
+// Follow the display when it changes.
+//
+// Without this the wallpaper keeps the frame it was born with: change resolution,
+// plug in a monitor, or open the lid on a clamshell setup, and it is suddenly the
+// wrong size — either leaving a strip of real desktop showing or hanging off the
+// edge. The renderer already handles its own canvas on resize, so this only has to
+// fix the window frame; the canvas follows.
+//
+// Debounced because macOS emits a burst of these during a resolution change, and
+// each setBounds during the burst is work thrown away.
+let displayFollowTimer = null;
+
+function followDisplayChanges() {
+  const schedule = (reason) => {
+    if (displayFollowTimer) clearTimeout(displayFollowTimer);
+    displayFollowTimer = setTimeout(() => {
+      displayFollowTimer = null;
+      if (!wallWindow || wallWindow.isDestroyed()) return;
+      const { bounds } = screen.getPrimaryDisplay();
+      liftOverMenuBar(wallWindow);
+      console.log(`[wall] 屏幕变化（${reason}）→ ${bounds.width}x${bounds.height}`);
+      // Re-send so the HUD's frame line reflects the new display rather than the
+      // one the window was created on.
+      sendStrategy(wallWindow, currentStrategy);
+    }, 220);
+  };
+  screen.on('display-metrics-changed', () => schedule('metrics'));
+  screen.on('display-added', () => schedule('added'));
+  screen.on('display-removed', () => schedule('removed'));
+}
+
 function strategyIndexById(id) {
   const i = WALL_STRATEGIES.findIndex((s) => s.id === id);
   return i < 0 ? 0 : i;
+}
+
+// Tell a window which strategy is live, and what frame it actually got versus what
+// was asked for. The HUD names the gap in pixels — a 25px shortfall under the menu
+// bar is not something anyone can eyeball from a screenshot, and one round was
+// already spent comparing images when a number would have said it outright.
+// `frameOf` defaults to the recipient, but the settings window needs the *wall's*
+// frame reported — its own has no business being fullscreen.
+function sendStrategy(win, strategy, frameOf) {
+  if (!win || win.isDestroyed() || !strategy) return;
+  const measured = frameOf && !frameOf.isDestroyed() ? frameOf : win;
+  let got = null;
+  try { got = measured.getBounds(); } catch { /* window may be gone */ }
+  win.webContents.send('strategy', {
+    id: strategy.id,
+    label: strategy.label,
+    wanted: screen.getPrimaryDisplay().bounds,
+    got,
+    all: WALL_STRATEGIES.map((s) => ({ id: s.id, label: s.label })),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -235,17 +288,7 @@ function createWallWindow(strategyId) {
 
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('config', config);
-    // Ship the requested-vs-actual frame to the HUD. If the menu bar strip is still
-    // showing through, the numbers say so directly instead of the two of us
-    // comparing screenshots.
-    let got = null;
-    try { got = win.getBounds(); } catch { /* window may already be gone */ }
-    win.webContents.send('strategy', {
-      id: strategy.id,
-      label: strategy.label,
-      wanted: bounds,
-      got,
-    });
+    sendStrategy(win, strategy);
   });
 
   console.log(`[wall] 壁纸层策略: ${strategy.id} — ${strategy.label}`);
@@ -259,11 +302,11 @@ function recreateWall(strategyId) {
   wallWindow = createWallWindow(strategyId);
   if (old && !old.isDestroyed()) old.destroy();
   broadcast('config', config);
-  broadcast('strategy', {
-    id: currentStrategy.id,
-    label: currentStrategy.label,
-    all: WALL_STRATEGIES.map((s) => ({ id: s.id, label: s.label })),
-  });
+  // Both windows, one builder: this payload was assembled by hand in three places
+  // and one of them left out the strategy list, so the settings dropdown silently
+  // emptied itself after a ⌃⇧L press.
+  sendStrategy(wallWindow, currentStrategy);
+  sendStrategy(settingsWindow, currentStrategy, wallWindow);
 }
 
 function cycleStrategy() {
@@ -291,11 +334,9 @@ function openSettings() {
   settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
   settingsWindow.webContents.on('did-finish-load', () => {
     settingsWindow.webContents.send('config', config);
-    settingsWindow.webContents.send('strategy', {
-      id: currentStrategy && currentStrategy.id,
-      label: currentStrategy && currentStrategy.label,
-      all: WALL_STRATEGIES.map((s) => ({ id: s.id, label: s.label })),
-    });
+    // Deliberately reports the *wall's* frame, not the settings window's — the
+    // settings window has no business being fullscreen.
+    sendStrategy(settingsWindow, currentStrategy, wallWindow);
   });
   settingsWindow.on('closed', () => { settingsWindow = null; });
 }
@@ -406,6 +447,7 @@ require('./nowplaying').install({
 app.whenReady().then(() => {
   config = readConfig();
   wallWindow = createWallWindow(config.wallStrategy);
+  followDisplayChanges();
   openSettings();
   if (config.gestures.enabled) ensureSensor();
 
