@@ -1,8 +1,11 @@
-// 摄像头 → 手势事件。跑在隐藏窗口里，只发不画。
+// 摄像头 → 手势事件，以及录制。跑在隐藏窗口里，只发不画。
 //
-// 判定全部在 input.js（它委托给 AirCursor 的 pose/motion/tracking），这里只负责：
-// 接 MediaPipe 的结果、节流、发事件、把"现在什么情况"报给设置窗口。
-const { GestureInput } = window.GestureWallInput;
+// 判定在 input.js，录制在 recorder.js，这里只负责：接 MediaPipe 的结果、按当前模式
+// 分流（正常 or 录制）、发事件、报状态。
+const { GestureInput, toPixels, mirror } = window.GestureWallInput;
+const { Recorder, conflictingAction } = window.GestureWallRecorder;
+const T = window.GestureWallTemplates;
+const Pose = window.AirCursorPose;
 
 // ~30/s。渲染侧自己有平滑，发更快买不到手感。
 const SEND_INTERVAL_MS = 33;
@@ -11,22 +14,147 @@ let hands = null;
 let camera = null;
 let lastSend = 0;
 let input = null;
-let tuning = null;
+let recorder = null;
+let config = null;
 
 function status(text, extra) {
   window.gw.sendSensorStatus({ text, ...(extra || {}) });
 }
 
+function tuningOf() {
+  return (config && config.gestureTuning) || {};
+}
+
 function onResults(results) {
   const now = performance.now();
+  const list = results.multiHandLandmarks || [];
+
+  // 录制中：整帧交给 recorder，不发任何手势事件 —— 否则做录制动作时会顺带触发
+  // 已绑的动作，那正是 AirCursor 真机踩过的"录制被已有手势打断"。
+  if (recorder && recorder.active) {
+    tickRecording(list, now);
+    return;
+  }
+
   if (now - lastSend < SEND_INTERVAL_MS) return;
   lastSend = now;
 
-  const { events, status: text } = input.update(results.multiHandLandmarks, now, tuning);
+  const { events, status: text } = input.update(list, now, tuningOf());
   for (const event of events) window.gw.sendGesture({ v: 1, at: Date.now(), ...event });
   status(text);
 }
 
+// ---------------------------------------------------------------------------
+// 录制
+// ---------------------------------------------------------------------------
+let recordingAction = null;
+
+function tickRecording(list, now) {
+  // 关键点升到像素空间：recorder 下游是 AirCursor 的模块，那些常数按像素标定
+  // （palmWidthOf 有 60px 下限）。和 input.js 同一个理由。
+  const mirrored = list.map((lm) => toPixels(mirror(lm)));
+  const pose = mirrored.length ? Pose.buildPoseTemplate(mirrored) : null;
+  const result = recorder.update(pose, mirrored.length, now);
+  if (!result) return;
+
+  if (result.error) {
+    window.gw.sendRecordingResult({ ok: false, action: recordingAction, error: result.error });
+    recordingAction = null;
+    return;
+  }
+
+  if (result.done) {
+    finishRecording(result.result);
+    return;
+  }
+
+  window.gw.sendRecordingProgress({
+    action: recordingAction,
+    phase: result.phase,
+    progress: result.progress || 0,
+    countdown: result.countdown,
+    hint: result.hint,
+  });
+}
+
+function finishRecording(entry) {
+  const action = recordingAction;
+  recordingAction = null;
+
+  // 冲突检测：两个姿势太近不是两个手势，实时姿势会去离它更近的那个，于是用户得到的
+  // 是另一个动作，而这个看起来就是坏的。在保存时拒绝 —— 那时用户还记得自己刚做了什么。
+  const conflict = conflictingAction(
+    action,
+    entry.template,
+    config && config.recorded,
+    matchThreshold(),
+    rotationTolerance(),
+  );
+  if (conflict) {
+    window.gw.sendRecordingResult({
+      ok: false,
+      action,
+      conflictWith: conflict.action,
+      distance: conflict.distance,
+    });
+    return;
+  }
+
+  window.gw.sendRecordingResult({
+    ok: true,
+    action,
+    entry: {
+      hands: entry.hands,
+      template: entry.template,
+      dynamic: entry.dynamic,
+      law: entry.law,
+      // 只存关键帧数量给 UI 显示，完整关键帧也一起存 —— 匹配时要用。
+      keyframes: entry.keyframes ? entry.keyframes.length : 0,
+      keyframeData: entry.keyframes || null,
+      trigger: entry.trigger || 0,
+    },
+  });
+}
+
+function matchThreshold() {
+  return (config && config.gestureTuning && config.gestureTuning.matchThreshold) || 0.28;
+}
+
+function rotationTolerance() {
+  const deg = (config && config.gestureTuning && config.gestureTuning.rotationTolerance) || 20;
+  return (deg * Math.PI) / 180;
+}
+
+window.gw.onStartRecording(({ action }) => {
+  const meta = T.ACTIONS[action];
+  if (!meta) {
+    window.gw.sendRecordingResult({ ok: false, action, error: '未知动作' });
+    return;
+  }
+  recordingAction = action;
+  recorder = new Recorder({
+    matchThreshold: matchThreshold(),
+    rotationTolerance: rotationTolerance(),
+  });
+  // 有律的动作（挥动/倾斜）只需要一个静态姿势当门；没律的要录一段动作。
+  recorder.start(action, {
+    hands: 1,
+    dynamic: !meta.law,
+    law: meta.law,
+    now: performance.now(),
+  });
+  status(`开始录制「${meta.label}」`);
+});
+
+window.gw.onCancelRecording(() => {
+  if (recorder) recorder.cancel();
+  recordingAction = null;
+  status('录制已取消');
+});
+
+// ---------------------------------------------------------------------------
+// 启动
+// ---------------------------------------------------------------------------
 async function start() {
   status('正在加载手势模型');
   if (!window.Hands || !window.Camera) {
@@ -34,13 +162,12 @@ async function start() {
     return;
   }
 
-  const config = await window.gw.getConfig();
-  tuning = config && config.gestureTuning;
-  input = new GestureInput(tuning);
+  config = await window.gw.getConfig();
+  input = new GestureInput(tuningOf());
 
   window.gw.onConfig((next) => {
-    tuning = next && next.gestureTuning;
-    if (input) input.setTuning(tuning);
+    config = next;
+    if (input) input.setTuning(tuningOf());
   });
 
   hands = new Hands({ locateFile: (file) => `vendor/mediapipe/hands/${file}` });

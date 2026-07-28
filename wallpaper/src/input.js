@@ -109,8 +109,25 @@ class GestureInput {
     // 所以两个实例喂同样的输入只会同时报同一个方向 —— 我第一版就是那么写的，
     // "各管一个方向"听着合理但机制上不成立。
     this.ratchet = new Motion.TiltRatchet();
+    // 用户录的手势：动作 id → 序列匹配器。按需创建，因为序列带进度状态，两个动作
+    // 共用一个匹配器会互相污染。
+    this.sequences = new Map();
+    this.statics = new Map();
     this.blocked = null;
     this.lastSeenAt = 0;
+  }
+
+  sequenceFor(action) {
+    if (!this.sequences.has(action)) this.sequences.set(action, new Motion.SequenceMatcher());
+    return this.sequences.get(action);
+  }
+
+  // 静态录制手势的"武装"状态。自己管而不是借 SequenceMatcher.lastFiredAt —— 那个字段
+  // 是给序列进度用的，借它的语义会让两种匹配互相干扰（第一版就是这么写的，结果是
+  // 保持一个手型会每个冷却期触发一次）。
+  staticState(action) {
+    if (!this.statics.has(action)) this.statics.set(action, { armed: true });
+    return this.statics.get(action);
   }
 
   // 把壁纸的调参映射成 PointerFilter 的像素量级参数。deadzone / prediction 在配置里
@@ -135,6 +152,8 @@ class GestureInput {
     this.path.reset();
     this.swipe.reset();
     this.ratchet.reset();
+    for (const matcher of this.sequences.values()) matcher.reset();
+    for (const state of this.statics.values()) state.armed = true;
   }
 
   // hands: MediaPipe 的 multiHandLandmarks（未镜像）。now: 毫秒。
@@ -194,6 +213,13 @@ class GestureInput {
       return { events, status: `挥动 ${direction > 0 ? '→ 右转' : '← 左转'}` };
     }
 
+    // 用户录的手势：优先于内置律。录了就说明用户要用自己那套，而不是我们猜的。
+    const recorded = this.updateRecorded(mirrored, now, config);
+    if (recorded) {
+      events.push(recorded);
+      return { events, status: `触发「${recorded.action}」（录制的手势）` };
+    }
+
     // 棘轮：手掌相对录制姿势倾斜一次 = 动一格，手回到中位才能再来一次。
     // 需要一根轴，而单手的腕→中指根就是；双手镜像会抵消，那时 poseAngle 返回 null，
     // TiltRatchet 自己会报 noAxis 而不是拿假角度算。
@@ -207,6 +233,65 @@ class GestureInput {
       events,
       status: `${hint} · ${(palm.x * 100).toFixed(0)}%, ${(palm.y * 100).toFixed(0)}%${why}`,
     };
+  }
+
+  // 匹配用户录的手势。
+  //
+  // 这一段一开始漏了 —— 录制能存下来，但这里从不读它，所以用户录完手势不生效。
+  // "功能打通了但没接上"，而且不报错。是靠 grep `config.recorded` 在 input.js 里
+  // 零命中发现的，不是靠读代码。
+  //
+  // 两类分开处理：
+  //   有 keyframeData → 序列匹配（用户录了一段动作）
+  //   只有 template   → 静态姿势匹配（用户录了一个手型，配合内置律用）
+  updateRecorded(mirrored, now, config) {
+    const recorded = config && config.recorded;
+    if (!recorded) return null;
+    const pose = Pose.buildPoseTemplate(mirrored);
+    if (!pose) return null;
+
+    const threshold = (config && config.matchThreshold) || 0.28;
+    const rotation = (config && config.rotationTolerance) || 0;
+
+    for (const [action, entry] of Object.entries(recorded)) {
+      if (!entry || !entry.template) continue;
+      // 手数必须对得上：单手模板不该被双手姿势匹配，反之亦然。templateDistance 自己
+      // 会返回 Infinity，但显式跳过省掉一次距离计算。
+      if (entry.hands !== mirrored.length) continue;
+
+      if (entry.keyframeData && entry.keyframeData.length) {
+        const matcher = this.sequenceFor(action);
+        const fired = matcher.update({
+          pose,
+          keyframes: entry.keyframeData,
+          threshold,
+          rotationTolerance: rotation,
+          distance: Pose.templateDistance,
+          now,
+        });
+        if (fired) return { action };
+        continue;
+      }
+
+      // 静态姿势：这里只报"姿势对上了"，具体触发交给律（挥动/倾斜）—— 所以有律的
+      // 动作录制只是加了一道"必须是这个手型"的门，不改变触发方式。
+      // 没有律又没有关键帧的，就当纯静态手势直接触发。
+      if (!entry.law) {
+        const distance = Pose.templateDistance(pose, entry.template, rotation);
+        const state = this.staticState(action);
+        if (distance >= threshold) {
+          // 离开了姿势才重新武装。这一条是"保持住不连发"的真正机制 —— 光靠时间冷却
+          // 不够：一直摆着的手型会每过一个冷却期就再触发一次，而用户只做了一个动作。
+          state.armed = true;
+          continue;
+        }
+        if (state.armed) {
+          state.armed = false;
+          return { action };
+        }
+      }
+    }
+    return null;
   }
 
   // 手掌上下倾斜 → 视角上看/下看，走棘轮所以可重复。

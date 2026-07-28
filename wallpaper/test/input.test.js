@@ -277,4 +277,111 @@ check('双手在场时不做倾斜判定', () => {
   assert.strictEqual(eventsOf(r, 'tiltUp').length + eventsOf(r, 'tiltDown').length, 0);
 });
 
+console.log('\n  录制的手势（这一段一开始整个漏了）');
+
+// 缺口：录制能存下来，但 input.js 从不读 config.recorded，所以用户录完手势不生效，
+// 而且不报错。靠 grep 在 input.js 里零命中发现的，不是靠读代码。
+check('录的静态手势能触发', () => {
+  const input = new I.GestureInput();
+  const target = hand({ centerX: 0.5, palm: 0.12, pinchGap: 1.4 });
+  const template = globalThis.AirCursorPose.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    recorded: { spin: { hands: 1, template, law: null } },
+    matchThreshold: 0.28,
+  };
+  let fired = false;
+  for (let f = 0; f < 6 && !fired; f += 1) {
+    const r = input.update([target], f * 33, config);
+    if (eventsOf(r, 'spin').length) fired = true;
+  }
+  assert.ok(fired, '录了手势但摆出来不触发 —— 接线又断了');
+});
+
+check('不同的姿势不会误触发录的手势', () => {
+  const input = new I.GestureInput();
+  // ⚠️ 两个姿势的距离必须真的超过阈值。第一版夹具只动了拇指和食指两个点，距离
+  // 0.257 < 0.28，所以"完全不同的手型"其实还在匹配范围内 —— 断言红了，但代码是
+  // 对的。夹具造的假手太规则，真手的差别大得多。
+  const recordedPose = hand({ centerX: 0.5, palm: 0.12, pinchGap: 0.2 });
+  const template = globalThis.AirCursorPose.buildPoseTemplate([px(I.mirror(recordedPose))]);
+  const Pose = globalThis.AirCursorPose;
+
+  // 换整只手的形状：所有指尖位置都变，不只是捏合那两个点。
+  const different = hand({ centerX: 0.5, palm: 0.12, pinchGap: 0.2 });
+  for (const id of [4, 8, 12, 16, 20]) {
+    different[id] = { x: 0.5 + (id - 12) * 0.03, y: 0.5 + 0.14, z: 0 };
+  }
+  const otherTemplate = Pose.buildPoseTemplate([px(I.mirror(different))]);
+  const gap = Pose.templateDistance(template, otherTemplate, 0);
+  assert.ok(gap > 0.28, `夹具的两个姿势只差 ${gap.toFixed(3)}，构造不出"明显不同"`);
+
+  const config = { recorded: { spin: { hands: 1, template, law: null } }, matchThreshold: 0.28 };
+  let fired = 0;
+  for (let f = 0; f < 10; f += 1) {
+    fired += eventsOf(input.update([different], f * 33, config), 'spin').length;
+  }
+  assert.strictEqual(fired, 0, '不相干的姿势触发了录的手势');
+});
+
+// 保持住一个手型不该每帧都触发 —— 那会让一次抬手变成几十次动作。
+check('保持住录的手型不会连发', () => {
+  const input = new I.GestureInput();
+  const target = hand({ centerX: 0.5, palm: 0.12, pinchGap: 1.4 });
+  const template = globalThis.AirCursorPose.buildPoseTemplate([px(I.mirror(target))]);
+  const config = { recorded: { spin: { hands: 1, template, law: null } }, matchThreshold: 0.28 };
+  let fired = 0;
+  for (let f = 0; f < 30; f += 1) {
+    fired += eventsOf(input.update([target], f * 33, config), 'spin').length;
+  }
+  assert.strictEqual(fired, 1, `保持一个手型触发了 ${fired} 次`);
+});
+
+// 手数必须对得上：单手模板不该被双手姿势匹配。
+check('手数不符的录制手势不参与匹配', () => {
+  const input = new I.GestureInput();
+  const target = hand({ centerX: 0.5, palm: 0.12, pinchGap: 1.4 });
+  const template = globalThis.AirCursorPose.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    // 标成两只手，但只会喂一只
+    recorded: { spin: { hands: 2, template, law: null } },
+    matchThreshold: 0.28,
+  };
+  let fired = 0;
+  for (let f = 0; f < 10; f += 1) {
+    fired += eventsOf(input.update([target], f * 33, config), 'spin').length;
+  }
+  assert.strictEqual(fired, 0, '单手姿势匹配了双手模板');
+});
+
+// 有律的动作（挥动/倾斜）录制只是加一道"必须是这个手型"的门，触发方式仍由律决定 ——
+// 所以它不该走静态直接触发那条路。
+check('有律的录制手势不走静态触发', () => {
+  const input = new I.GestureInput();
+  const target = hand({ centerX: 0.5, palm: 0.12, pinchGap: 1.4 });
+  const template = globalThis.AirCursorPose.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    recorded: { yawLeft: { hands: 1, template, law: 'swipe' } },
+    matchThreshold: 0.28,
+  };
+  let fired = 0;
+  for (let f = 0; f < 15; f += 1) {
+    fired += eventsOf(input.update([target], f * 33, config), 'yawLeft').length;
+  }
+  assert.strictEqual(fired, 0, '有律的手势被静态直接触发了');
+});
+
+check('没有 recorded 字段时不崩', () => {
+  const input = new I.GestureInput();
+  const r = input.update([hand({ centerX: 0.5 })], 100, {});
+  assert.ok(r.events.length > 0, '基本事件都没了');
+});
+
+check('reset 清掉序列匹配器的进度', () => {
+  const input = new I.GestureInput();
+  const matcher = input.sequenceFor('spin');
+  matcher.lastFiredAt = 12345;
+  input.reset();
+  assert.strictEqual(matcher.lastFiredAt, null, '序列匹配器没被重置');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

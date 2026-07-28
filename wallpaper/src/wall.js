@@ -76,7 +76,12 @@ function loadLayer(key, filePath, onDone) {
 }
 
 function applyConfig(next) {
-  config = next;
+  // 把模板的槽位选择摊平成渲染参数。渲染层不认识"模块"，只认数 —— 这一步是唯一需要
+  // 知道两者关系的地方（templates.js 里的 resolveSlots）。
+  config = {
+    ...next,
+    modules: window.GestureWallTemplates.resolveSlots(next.template, next.slots),
+  };
   loadLayer('background', config.layers.background, (tex, aspect) => {
     if (tex) scene.background.setTexture(tex, aspect); else scene.background.clear();
   });

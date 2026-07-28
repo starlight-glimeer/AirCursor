@@ -286,9 +286,13 @@ function applyView(scene, view, config, timeSec) {
       tf.y + view.pointerY * lever + (extra && extra.y ? extra.y : 0),
       depth + (extra && extra.z ? extra.z : 0),
     );
+    // lean：视差偏移也贡献一点转动。视觉上这是"物体跟着视角转"而不是"平移"，而人对
+    // 前者的立体感知强得多 —— 所以这是最便宜的立体感来源。
+    const lean = (extra && extra.lean) || 0;
+    const rotWeight = extra && extra.rotWeight !== undefined ? extra.rotWeight : 1;
     layer.mesh.rotation.set(
-      view.pitch * tilt.maxPitch * DEG * (extra && extra.rotWeight !== undefined ? extra.rotWeight : 1),
-      view.yaw * tilt.maxYaw * DEG * (extra && extra.rotWeight !== undefined ? extra.rotWeight : 1),
+      view.pitch * tilt.maxPitch * DEG * rotWeight - view.pointerY * lean * 0.22,
+      view.yaw * tilt.maxYaw * DEG * rotWeight + view.pointerX * lean * 0.3,
       (extra && extra.roll) || 0,
     );
 
@@ -303,12 +307,42 @@ function applyView(scene, view, config, timeSec) {
     );
   };
 
+  // 槽位模块的参数。渲染层不认识"模块"这个概念，只认这些数 —— 换模块就是换数，
+  // 所以加一个模块不用改这里。
+  const mods = config.modules || {};
+  const bgMod = mods.background || {};
+  const subjectMod = mods.subject || {};
+  const shardMod = mods.shard || {};
+
   // The background barely rotates: a full-frame photo swinging with the subject
   // looks like the room is tilting, not like the subject is turning.
-  place(scene.background, 'background', { rotWeight: 0.12 });
-  place(scene.subject, 'subject', { rotWeight: 1 });
+  //
+  // drift 是极慢的整体平移，moodScale 让它随氛围轻微缩放 —— 两者都是"呼吸"感的来源，
+  // 频率刻意取得比人注意得到的更低（0.06Hz 上下），否则壁纸会变成一个持续动的东西。
+  const bgBreath = bgMod.drift
+    ? { x: Math.sin(timeSec * 0.055) * bgMod.drift * 0.16, y: Math.cos(timeSec * 0.041) * bgMod.drift * 0.1 }
+    : { x: 0, y: 0 };
+  place(scene.background, 'background', {
+    rotWeight: 0.12,
+    x: bgBreath.x,
+    y: bgBreath.y,
+    scale: 1 + (bgMod.moodScale || 0) * mood,
+  });
+
+  // 主体：float 是缓慢上下浮动（像悬着），leanWithParallax 让它在视差时也侧一点身 ——
+  // 后者是"立体感"最便宜的来源，因为人对"物体跟着视角转"比对平移更敏感。
+  const floatY = subjectMod.float
+    ? Math.sin(timeSec * (subjectMod.floatSpeed || 0.5) * Math.PI) * subjectMod.float
+    : 0;
+  place(scene.subject, 'subject', {
+    rotWeight: 1,
+    y: floatY,
+    lean: subjectMod.leanWithParallax || 0,
+  });
 
   const cfg = config.shards || { spread: 1.7, drift: 1 };
+  const layout = shardMod.layout || 'orbit';
+  const drift = (cfg.drift ?? 1) * (shardMod.drift ?? 1);
   // Shards are accents, not a second background. The first default here made each
   // one 16-29% of the screen width, so five of them buried the subject completely —
   // measured against a real screenshot, not guessed. `SHARD_BASE_SCALE` keeps them
@@ -318,16 +352,45 @@ function applyView(scene, view, config, timeSec) {
     // Drift speed scales with mood, so shards hang almost still on a calm track
     // and swarm on an intense one.
     const speed = 0.22 + mood * 0.85;
-    const t = timeSec * speed * (cfg.drift ?? 1) + shard.phase;
+    const t = timeSec * speed * drift + shard.phase;
+    const rest = shardRest(shard, layout, cfg.spread);
     place(shard, 'shard', {
       scale: SHARD_BASE_SCALE * shard.scaleJitter,
-      x: shard.restX * cfg.spread + Math.sin(t) * 0.09 * (cfg.drift ?? 1),
-      y: shard.restY * cfg.spread + Math.cos(t * 0.83) * 0.11 * (cfg.drift ?? 1),
-      z: shard.restZ * 0.8,
+      x: rest.x + Math.sin(t) * 0.09 * drift,
+      y: rest.y + Math.cos(t * 0.83) * 0.11 * drift,
+      z: rest.z,
       roll: shard.phase + t * shard.spin,
       rotWeight: 1.35,   // shards react more than the subject — they are closest
     });
   }
+}
+
+// 碎片的静止位置，按布局模块决定。
+//
+// 三种布局都建立在 Shard 那组确定性的 rest 值上（见 Shard 构造函数：不用 Math.random，
+// 否则每次重启壁纸都重新洗牌）—— 布局只是把同一组点重新映射，所以切布局是可预测的
+// 变化而不是重新抽一次。
+function shardRest(shard, layout, spread) {
+  const s = spread ?? 1.7;
+  if (layout === 'cluster') {
+    // 单侧聚集：全部推到右侧，纵向压扁。留出左边给主体，适合主体偏左的构图。
+    return {
+      x: (0.55 + Math.abs(shard.restX) * 0.8) * s,
+      y: shard.restY * s * 0.7,
+      z: shard.restZ * 0.5,
+    };
+  }
+  if (layout === 'depth') {
+    // 前后穿插：把 z 拉开到主体两侧（有的在前有的在后），x/y 收一点免得散太开。
+    // 纵深最强，但也最容易挡住主体，所以横向收窄到 0.8。
+    return {
+      x: shard.restX * s * 0.8,
+      y: shard.restY * s * 0.8,
+      z: shard.restZ * 3.2,
+    };
+  }
+  // orbit：均匀散在四周，默认。
+  return { x: shard.restX * s, y: shard.restY * s, z: shard.restZ * 0.8 };
 }
 
 root.GestureWallLayers = {
@@ -335,6 +398,7 @@ root.GestureWallLayers = {
   FOV,
   visibleHeightAt,
   coverSize,
+  shardRest,
   containSize,
   Layer,
   Shard,

@@ -295,4 +295,103 @@ check('时间只影响碎片，不影响背景和主体', () => {
   assert.notStrictEqual(scene.shards[0].mesh.position.x, sh0, '碎片没有漂浮');
 });
 
+console.log('\n  槽位模块');
+
+// 三种布局必须产出**明显不同**的排布，否则"组合"这个功能是假的 —— 用户点了换布局
+// 看不出变化，比没有这个功能更糟。
+check('三种碎片布局产出不同的位置', () => {
+  const shard = new L.Shard(3, 2.2);
+  const positions = ['orbit', 'cluster', 'depth'].map((layout) => L.shardRest(shard, layout, 1.7));
+  const keys = positions.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`);
+  assert.strictEqual(new Set(keys).size, 3, `三种布局有重复：${keys.join(' | ')}`);
+});
+
+check('cluster 把碎片推到一侧', () => {
+  // 取几个 index，全部应该落在正 x 侧 —— 那是"留出主体"的意思
+  for (const i of [0, 1, 2, 3, 4]) {
+    const rest = L.shardRest(new L.Shard(i, 2.2), 'cluster', 1.7);
+    assert.ok(rest.x > 0, `碎片 ${i} 在 x=${rest.x.toFixed(2)}，没聚到一侧`);
+  }
+});
+
+check('depth 布局的 z 跨度最大（纵深最强）', () => {
+  const spans = {};
+  for (const layout of ['orbit', 'cluster', 'depth']) {
+    const zs = [0, 1, 2, 3, 4, 5].map((i) => L.shardRest(new L.Shard(i, 2.2), layout, 1.7).z);
+    spans[layout] = Math.max(...zs) - Math.min(...zs);
+  }
+  assert.ok(spans.depth > spans.orbit, `depth 的 z 跨度 ${spans.depth.toFixed(2)} 没超过 orbit 的 ${spans.orbit.toFixed(2)}`);
+  assert.ok(spans.depth > spans.cluster);
+});
+
+check('未知布局落回 orbit，不产生 NaN', () => {
+  const rest = L.shardRest(new L.Shard(2, 2.2), '不存在的布局', 1.7);
+  for (const v of [rest.x, rest.y, rest.z]) assert.ok(Number.isFinite(v), `出现 ${v}`);
+});
+
+// 主体的 float 是缓慢上下浮动。它必须随时间变化，否则"呼吸浮动"这个模块名是骗人的。
+check('主体 float 模块让它随时间浮动', () => {
+  const cfg = baseConfig();
+  cfg.modules = { subject: { float: 0.05, floatSpeed: 0.5, leanWithParallax: 0 } };
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 0);
+  const y0 = scene.subject.mesh.position.y;
+  L.applyView(scene, view, cfg, 1.0);
+  assert.notStrictEqual(scene.subject.mesh.position.y, y0, '主体没有浮动');
+});
+
+check('float=0 时主体完全不动', () => {
+  const cfg = baseConfig();
+  cfg.modules = { subject: { float: 0, floatSpeed: 0, leanWithParallax: 0 } };
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 0);
+  const y0 = scene.subject.mesh.position.y;
+  L.applyView(scene, view, cfg, 3.7);
+  assert.strictEqual(scene.subject.mesh.position.y, y0, '静止模块下主体还在动');
+});
+
+// lean 是"物体跟着视角转"，人对它的立体感知比对平移强得多 —— 最便宜的立体感来源。
+check('lean 让主体在视差时也转动', () => {
+  const cfg = baseConfig();
+  const view = L.createViewState();
+  view.pointerX = 1;
+
+  cfg.modules = { subject: { float: 0, floatSpeed: 0, leanWithParallax: 0 } };
+  const flat = buildScene(cfg);
+  L.applyView(flat, view, cfg, 0);
+
+  cfg.modules = { subject: { float: 0, floatSpeed: 0, leanWithParallax: 0.5 } };
+  const leaning = buildScene(cfg);
+  L.applyView(leaning, view, cfg, 0);
+
+  assert.ok(Math.abs(leaning.subject.mesh.rotation.y) > Math.abs(flat.subject.mesh.rotation.y),
+    'lean 没有产生额外转动');
+});
+
+check('背景 moodScale 让它随氛围缩放', () => {
+  const cfg = baseConfig();
+  cfg.modules = { background: { drift: 0, tintFromCover: true, moodScale: 0.06 } };
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  view.mood = 0;
+  L.applyView(scene, view, cfg, 0);
+  const small = scene.background.mesh.scale.x;
+  view.mood = 1;
+  L.applyView(scene, view, cfg, 0);
+  assert.ok(scene.background.mesh.scale.x > small, '氛围没影响背景缩放');
+});
+
+check('没有 modules 字段时不崩（旧配置兼容）', () => {
+  const cfg = baseConfig();
+  delete cfg.modules;
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 1.5);
+  for (const v of [scene.subject.mesh.position.y, scene.background.mesh.scale.x]) {
+    assert.ok(Number.isFinite(v), `出现 ${v}`);
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

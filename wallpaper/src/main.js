@@ -11,10 +11,29 @@ const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme
 const fs = require('node:fs');
 const path = require('node:path');
 
+// 图库的纯逻辑（无 DOM、无 Electron），主进程和 dashboard 共用同一份 —— 两份实现
+// 只要有一点不同，就会出现"面板里显示的和实际存的不一样"。
+require('./library.js');
+const Library = globalThis.GestureWallLibrary;
+
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
+// 广播前给图库条目标上"文件还在不在"。
+//
+// 不在写盘的配置里存这个标记：它是运行时事实，存下来就会过期（用户在别处删了文件，
+// 配置里还写着 missing: false）。每次广播现算，代价是几个 statSync。
+function withLibraryStatus(cfg) {
+  if (!cfg.library || !cfg.library.length) return cfg;
+  return {
+    ...cfg,
+    library: Library.markMissing(cfg.library, (p) => {
+      try { return fs.existsSync(p); } catch { return false; }
+    }),
+  };
+}
+
 let wallWindow = null;
-let settingsWindow = null;
+let dashboardWindow = null;
 let sensorWindow = null;
 let currentStrategy = null;
 
@@ -194,6 +213,15 @@ const defaultConfig = {
   // 用户存的排布预设，名字 → 视觉参数。必须在这里声明，因为 mergeConfig 只遍历
   // defaultConfig 的键 —— 不声明的话存进去的预设在下次启动时被静默丢掉。
   presets: {},
+  // 当前模板，以及三个槽位各选了哪个模块。空对象表示用模板自己的默认。
+  template: 'depthStage',
+  slots: {},
+  // 进阶动作是否显示。默认关：普通用户不该一上来看到八个动作。
+  proTier: false,
+  // 图库：用户上传的素材。数组而不是字典，因为顺序有意义（新加的在后面）。
+  library: [],
+  // 已录制的手势，动作 id → { hands, template, keyframes, trigger, ... }。
+  recorded: {},
   debug: { showHud: true },
 };
 
@@ -212,7 +240,7 @@ function readConfig() {
 // mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
 // 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
 // 预设都在下次启动时被静默丢掉。
-const OPAQUE_DICTS = new Set(['presets']);
+const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded']);
 
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
@@ -235,9 +263,12 @@ function writeConfig() {
   }
 }
 
+// config 的图库状态在这里统一附加，而不是在每个调用点 —— 那有十几处，漏一处就是
+// "面板上有的条目不标缺失"，而那种不一致查起来比缺功能烦。
 function broadcast(channel, payload) {
-  for (const win of [wallWindow, settingsWindow, sensorWindow]) {
-    if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  const body = channel === 'config' ? withLibraryStatus(payload) : payload;
+  for (const win of [wallWindow, dashboardWindow, sensorWindow]) {
+    if (win && !win.isDestroyed()) win.webContents.send(channel, body);
   }
 }
 
@@ -331,7 +362,7 @@ function recreateWall(strategyId) {
   // and one of them left out the strategy list, so the settings dropdown silently
   // emptied itself after a ⌃⇧L press.
   sendStrategy(wallWindow, currentStrategy);
-  sendStrategy(settingsWindow, currentStrategy, wallWindow);
+  sendStrategy(dashboardWindow, currentStrategy, wallWindow);
 }
 
 function cycleStrategy() {
@@ -339,15 +370,17 @@ function cycleStrategy() {
   recreateWall(WALL_STRATEGIES[next].id);
 }
 
-function openSettings() {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.show();
-    settingsWindow.focus();
+function openDashboard() {
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    dashboardWindow.show();
+    dashboardWindow.focus();
     return;
   }
-  settingsWindow = new BrowserWindow({
-    width: 480,
-    height: 820,
+  dashboardWindow = new BrowserWindow({
+    width: 940,
+    height: 700,
+    minWidth: 780,
+    minHeight: 560,
     title: 'GestureWall',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#141418' : '#f4f4f6',
     webPreferences: {
@@ -356,14 +389,14 @@ function openSettings() {
       nodeIntegration: false,
     },
   });
-  settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
-  settingsWindow.webContents.on('did-finish-load', () => {
-    settingsWindow.webContents.send('config', config);
+  dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html'));
+  dashboardWindow.webContents.on('did-finish-load', () => {
+    dashboardWindow.webContents.send('config', config);
     // Deliberately reports the *wall's* frame, not the settings window's — the
     // settings window has no business being fullscreen.
-    sendStrategy(settingsWindow, currentStrategy, wallWindow);
+    sendStrategy(dashboardWindow, currentStrategy, wallWindow);
   });
-  settingsWindow.on('closed', () => { settingsWindow = null; });
+  dashboardWindow.on('closed', () => { dashboardWindow = null; });
 }
 
 // The camera lives in its own hidden window rather than in the wall: a
@@ -408,7 +441,7 @@ ipcMain.handle('set-config', (_event, patch) => {
 const LAYER_LABEL = { background: '背景', subject: '主体', shard: '碎片' };
 
 ipcMain.handle('pick-image', async (_event, layer) => {
-  const result = await dialog.showOpenDialog(settingsWindow || undefined, {
+  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
     title: `选择${LAYER_LABEL[layer] || ''}图片`,
     properties: ['openFile'],
     filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
@@ -425,6 +458,54 @@ ipcMain.handle('clear-image', (_event, layer) => {
   writeConfig();
   broadcast('config', config);
   return config;
+});
+
+// 从图库直接指派到某一层，不开文件对话框。
+ipcMain.handle('set-layer', (_event, layer, filePath) => {
+  if (!LAYER_LABEL[layer]) return { ok: false };
+  config.layers[layer] = filePath || null;
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true };
+});
+
+// ---------------------------------------------------------------------------
+// 图库
+// ---------------------------------------------------------------------------
+
+// 一次多选：攒素材这件事是批量的，一张一张开对话框是纯摩擦。
+ipcMain.handle('library-add', async () => {
+  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
+    title: '添加素材到图库',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
+  });
+  if (result.canceled) return { ok: false };
+  let items = config.library || [];
+  for (const filePath of result.filePaths) {
+    // 按文件名猜槽位：带 alpha 的 PNG 大概率是抠好的主体。猜错代价很小（用户在下拉里
+    // 改一下），而每张都要手选槽位的代价是真实的。
+    const guess = /\.png$/i.test(filePath) ? 'subject' : 'background';
+    items = Library.add(items, filePath, guess);
+  }
+  config.library = items;
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true, added: result.filePaths.length };
+});
+
+ipcMain.handle('library-remove', (_event, id) => {
+  config.library = Library.remove(config.library || [], id);
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true };
+});
+
+ipcMain.handle('library-set-slot', (_event, id, slot) => {
+  config.library = Library.setSlot(config.library || [], id, slot);
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true };
 });
 
 ipcMain.handle('set-strategy', (_event, id) => {
@@ -494,10 +575,61 @@ ipcMain.handle('delete-preset', (_event, name) => {
 // there is one place to look when something fires that should not have.
 ipcMain.on('gesture', (_event, payload) => {
   if (wallWindow && !wallWindow.isDestroyed()) wallWindow.webContents.send('gesture', payload);
-  if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('gesture', payload);
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.webContents.send('gesture', payload);
 });
 
 ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
+
+// ---------------------------------------------------------------------------
+// 手势录制
+//
+// 录制发生在 sensor 窗口（它有摄像头），UI 在 dashboard。主进程转发指令、转发进度、
+// 并在成功时把模板写进配置 —— 写盘归主进程，因为 sensor 那边没有配置的所有权。
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('start-recording', (_event, action) => {
+  if (!config.gestures.enabled) return { ok: false, error: '先开启摄像头手势' };
+  const sensor = ensureSensor();
+  if (!sensor || sensor.isDestroyed()) return { ok: false, error: '摄像头窗口没起来' };
+  sensor.webContents.send('start-recording', { action });
+  return { ok: true };
+});
+
+ipcMain.handle('cancel-recording', () => {
+  if (sensorWindow && !sensorWindow.isDestroyed()) {
+    sensorWindow.webContents.send('cancel-recording', {});
+  }
+  broadcast('recording-result', { ok: false, cancelled: true });
+  return { ok: true };
+});
+
+ipcMain.handle('clear-recording', (_event, action) => {
+  if (!config.recorded || !(action in config.recorded)) return { ok: false };
+  const next = { ...config.recorded };
+  delete next[action];
+  // 整个替换：recorded 在 OPAQUE_DICTS 里，传一个缺键的对象删不掉它。
+  config.recorded = next;
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true };
+});
+
+ipcMain.on('recording-progress', (_event, payload) => {
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    dashboardWindow.webContents.send('recording-progress', payload);
+  }
+});
+
+ipcMain.on('recording-result', (_event, payload) => {
+  // 成功就落盘。sensor 只负责产出模板，不碰配置 —— 两边都能写配置的话，"谁把它改了"
+  // 就会变成一个需要查的问题。
+  if (payload && payload.ok && payload.action && payload.entry) {
+    config.recorded = { ...(config.recorded || {}), [payload.action]: payload.entry };
+    writeConfig();
+    broadcast('config', config);
+  }
+  broadcast('recording-result', payload);
+});
 
 // ---------------------------------------------------------------------------
 // Now playing (macOS)
@@ -516,12 +648,12 @@ app.whenReady().then(() => {
   config = readConfig();
   wallWindow = createWallWindow(config.wallStrategy);
   followDisplayChanges();
-  openSettings();
+  openDashboard();
   if (config.gestures.enabled) ensureSensor();
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.
-  globalShortcut.register('Control+Shift+W', openSettings);
+  globalShortcut.register('Control+Shift+W', openDashboard);
   globalShortcut.register('Control+Shift+L', cycleStrategy);
   globalShortcut.register('Control+Shift+R', () => broadcast('reset-view', {}));
   globalShortcut.register('Control+Shift+Q', () => app.quit());
