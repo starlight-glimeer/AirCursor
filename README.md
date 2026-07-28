@@ -61,6 +61,23 @@ A new recording is refused when it lands within one threshold of a gesture you a
 
 ## Motion Gestures
 
+**Every direction is its own action**: 向上滚动, 向下滚动, 切到左边桌面, 切到右边桌面.
+One "scroll" action deciding up from down by the sign of the tilt was a leftover
+from treating this as a continuous mapping — it meant the recording only ever
+captured one of the two movements and the other was inferred mirrored, which is
+not what "record the movement you want" means, and it denied the obvious choice of
+two unrelated gestures for the two directions. Which direction fires is now which
+action the gesture is bound to, never the sign of the movement.
+
+**Every action has an enable switch.** Turning one off stops it firing and keeps
+its recording — different from 清除, which throws the recording away. The switch is
+enforced inside the matcher rather than per consumer, because the built-in poses
+never go through the custom-gesture resolver: gating only there would have left the
+switch working for recorded gestures and silently doing nothing for the default
+pinch/palm/fist ones. Absent means enabled, so re-enabling deletes the entry rather
+than storing `false`, and an action added later is on by default rather than dead
+for everyone with an existing settings file.
+
 **静态姿势 or 动态动作 is a choice on every row.** It used to be a hardcoded list —
 scroll and desktop switching were dynamic, everything else static — which decided
 for the user twice over: no moving gesture for a rule ("draw a circle to open
@@ -92,7 +109,7 @@ the recorded movement, because they need something keyframes cannot express — 
 direction, and the ability to repeat without re-performing the whole movement.
 They are two different laws, deliberately not one mechanism:
 
-**上下滚动 is a ratchet.** Park the wrist, tilt the palm up, and one notch of
+**Scrolling is a ratchet.** Park the wrist, tilt the palm up, and one notch of
 scrolling fires; tilt further and nothing more happens until the hand returns to
 the pose it was recorded in, which re-arms it. Scrolling more is one more tilt.
 The alternative — mapping continuous hand displacement onto scroll position — has
@@ -126,13 +143,20 @@ tolerance would make the pose stop matching at exactly the angle it should fire
 at. 滚动触发角 is therefore clamped, and 抬压角度 in the diagnostics panel says so
 when it happens rather than leaving a slider that silently does nothing.
 
-**左右切换桌面 is a swipe**, one desktop per stroke, sent as Ctrl+Left/Right —
+**Desktop switching is a swipe**, one desktop per stroke, sent as Ctrl+Left/Right —
 macOS Spaces have no synthesisable gesture event, so the keyboard shortcut is the
 only route. The hard part is not detecting the stroke, it is the return: swiping
 right means the hand comes back, and that return is a fast leftward stroke. So
 firing again requires both the cooldown to expire and the wrist to actually stop.
 A stroke also has to be sideways and straight — a hand being carried somewhere is
 not a gesture.
+
+Swiping keeps a speed law rather than becoming an ordinary keyframe sequence, and
+that was settled by measurement rather than taste: **a sideways swipe is almost
+pure translation, and templates normalize translation away**, so every frame of a
+swipe measures 0.0000 from the first. Recorded as a sequence it collapses to a
+single keyframe and gets refused as too small a movement. The information in a
+swipe lives in the wrist path, not in the hand's shape.
 
 The two laws never compete for one motion, and not because of a priority order:
 the ratchet requires a wrist below 1.1 palm widths per second, the swipe one
@@ -167,7 +191,7 @@ Turn on 诊断与调参 in the dashboard (or press Command+D) to get the panel t
 | 手势距离 | distance to the nearest recorded template, the closest seen, and which gesture it is | — |
 | 保持进度 | which gesture is accumulating hold time and for how long, or that a pinch is waiting for release, or that a drag is holding the button | — |
 | 抬压角度 | palm tilt away from the recorded pose, against the trigger angle, and whether that angle was clamped | — |
-| 动态手势 | why the ratchet and the swipe each did nothing this frame, plus wrist speed | — |
+| 动态手势 | which scroll and swipe direction was active, why each did nothing this frame, plus wrist speed | — |
 | 动作进度 | how far through a recorded movement the hand has got, and what is blocking it | — |
 
 动态手势 exists because these two gestures have several distinct ways to do

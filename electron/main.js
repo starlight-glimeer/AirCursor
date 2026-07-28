@@ -61,6 +61,14 @@ const defaultSettings = {
     exit: "fist",
   },
   recordedGestures: {},
+  // Which actions are allowed to fire at all. Absent means enabled, so an action
+  // added in a later version is on by default rather than silently dead for
+  // everyone who already has a settings file — and so this stays empty until the
+  // user actually turns something off.
+  //
+  // Separate from clearing the gesture: clearing throws the recording away, and
+  // "stop this from firing for now" should not cost the user their recording.
+  disabledActions: {},
   diagnostics: false,
   tuning: {
     minCutoff: 1.2,
@@ -80,7 +88,7 @@ const defaultSettings = {
     // notches one tilt sends, so a single flick can move more than one step.
     scrollNotches: 3,
     // Wrist speed, palm widths per second, for a sideways stroke to count as a
-    // desktop switch.
+    // desktop switch. A fallback: a recorded swipe carries its own measured speed.
     swipeSpeed: 2.6,
   },
 };
@@ -152,41 +160,76 @@ const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, 
 // "click pose plus movement" collided with the motion gestures — those move the
 // hand on purpose, so any pose still matching click would have started a drag.
 //
-// `scroll` and `spaceSwitch` are always dynamic: they need a direction, which
-// only a movement carries. Scroll additionally needs a measurable rotation axis,
-// so a pose with no usable axis (mirrored two-hand) is refused at record time.
-const coreActions = ["wake", "click", "drag", "rightClick", "scroll", "spaceSwitch", "exit"];
+// Each direction is its own action, because each is its own gesture.
+//
+// One "scroll" action deciding up from down by the sign of the tilt was a leftover
+// from treating this as a continuous mapping: it meant the recording only ever
+// captured one of the two movements and the other was inferred, so the gesture you
+// recorded for scrolling up silently also had to serve as the one for scrolling
+// down, mirrored. That is not what "record the movement you want" means, and it
+// denied the obvious choice of two unrelated gestures for the two directions.
+const coreActions = [
+  "wake",
+  "click",
+  "drag",
+  "rightClick",
+  "scrollUp",
+  "scrollDown",
+  "spaceLeft",
+  "spaceRight",
+  "exit",
+];
 const ruleActions = ruleDefinitions.map((rule) => rule.id);
 const recordableActions = [...coreActions, ...ruleActions];
 
 // Static or dynamic is the user's choice, not a property of the action.
 //
-// It used to be a hardcoded list — scroll and spaceSwitch were dynamic, everything
-// else static — which decided for the user twice over: it denied a moving gesture
-// to actions that would suit one (a flick to switch app, a circle to open a rule)
-// and it forced one on scrolling. Any action can now be bound to either kind, so
-// the recorder asks.
+// It used to be a hardcoded list — the scroll and desktop actions dynamic,
+// everything else static — which decided for the user twice over: it denied a
+// moving gesture to actions that would suit one (a circle to open a rule) and it
+// forced one where a still pose would do. Any action can now be bound to either
+// kind, so the recorder asks.
 const RECORDING_KINDS = ["static", "dynamic"];
 
-// Scroll and desktop switching keep a physical law on top of the recorded
-// movement, because they need something a trajectory cannot express: a direction
-// (up vs down, left vs right) and the ability to repeat without re-performing the
-// whole movement. For those, a dynamic recording measures the extent of the
-// movement and the law drives it; for every other action a dynamic recording is
-// matched as a sequence and fires once when it completes.
-const lawDrivenActions = { scroll: "tilt", spaceSwitch: "swipe" };
+// Which actions keep a physical law on top of the recorded movement.
+//
+// Scrolling needs one because it has to repeat without re-performing the whole
+// movement: tilt again to scroll again, with the hand returning to rest between.
+//
+// Swiping needs one for a more basic reason, which measurement settled rather than
+// intuition: a sideways swipe is almost pure translation, and templates normalize
+// translation away, so every frame of a swipe is distance 0.0000 from the first.
+// Recorded as a sequence it collapses to a single keyframe and is refused as "too
+// small a movement" — the information in a swipe lives in the wrist path, not in
+// the hand's shape. So it stays a wrist-speed law.
+//
+// What both no longer do is infer direction from the movement. Which direction
+// fires is which action the gesture is bound to.
+const lawDrivenActions = {
+  scrollUp: "tilt",
+  scrollDown: "tilt",
+  spaceLeft: "swipe",
+  spaceRight: "swipe",
+};
+// What a completed law-driven or sequence action sends. Keeping this here rather
+// than in the overlay means main owns "what the action does" and the overlay owns
+// "when it fires".
+const actionDirection = { scrollUp: -1, scrollDown: 1, spaceLeft: -1, spaceRight: 1 };
 const actionLabels = {
   wake: "唤醒控制",
   click: "点击",
   drag: "拖拽（按住不放）",
   rightClick: "右键",
-  scroll: "上下滚动（手掌抬压）",
-  spaceSwitch: "左右切换桌面（横向挥动）",
+  scrollUp: "向上滚动",
+  scrollDown: "向下滚动",
+  spaceLeft: "切到左边桌面",
+  spaceRight: "切到右边桌面",
   exit: "退出控制",
   ...Object.fromEntries(ruleDefinitions.map((rule) => [rule.id, rule.label])),
 };
-// Motion gestures have no built-in pose: there is no sensible default palm shape
-// for "scroll", and picking one would silently steal a pose from click or wake.
+// The scroll and desktop actions have no built-in pose: there is no sensible
+// default palm shape for "scroll up", and picking one would silently steal a pose
+// from click or wake.
 const defaultGestureMap = {
   wake: "openPalm",
   click: "pinch",
@@ -211,6 +254,10 @@ function mergeSettings(base, incoming) {
     ...incoming,
     gestureMap: mergeMap(base.gestureMap, incoming?.gestureMap),
     recordedGestures: mergeMap(base.recordedGestures, incoming?.recordedGestures),
+    // mergeMap so re-enabling deletes the key rather than storing `false`: the
+    // absence of an entry is what "enabled" means, and two ways to say the same
+    // thing is how a stale `false` outlives the flag it belonged to.
+    disabledActions: mergeMap(base.disabledActions, incoming?.disabledActions),
     tuning: { ...base.tuning, ...(incoming?.tuning || {}) },
   };
 }
@@ -244,6 +291,34 @@ function migrateTuning(saved) {
 // landmarks, so a two-hand pose whose axis cancels stops being de-rotated by the
 // difference to a live frame's real angle — which is what made a held two-hand
 // gesture show up on the status line and still never fire.
+// `scroll` and `spaceSwitch` each became two actions, one per direction. Without
+// this a saved recording for either would simply stop being referenced: the action
+// no longer exists, so the gesture the user recorded would vanish from the UI with
+// nothing said about it.
+//
+// The recording moves to one direction and the other is left empty for the user to
+// record. Which one it lands on cannot be recovered from the recording: `peak` is
+// an absolute extent, so a palm tilted up and one tilted down look identical here,
+// and the old code decided direction at runtime from the live sign. So it goes to
+// the first direction and the migration note says so — inventing the second from
+// the first is exactly the behaviour this change removes.
+const splitActions = { scroll: "scrollUp", spaceSwitch: "spaceRight" };
+
+function migrateSplitActions(saved) {
+  if (!saved?.recordedGestures) return saved;
+  for (const [old, target] of Object.entries(splitActions)) {
+    const entry = saved.recordedGestures[old];
+    if (!entry) continue;
+    if (!saved.recordedGestures[target]) {
+      saved.recordedGestures[target] = entry;
+      if (saved.gestureMap?.[old]) saved.gestureMap[target] = `custom:${target}`;
+    }
+    delete saved.recordedGestures[old];
+    if (saved.gestureMap) delete saved.gestureMap[old];
+  }
+  return saved;
+}
+
 function migrateRecordedTemplates(saved) {
   for (const entry of Object.values(saved?.recordedGestures || {})) {
     if (!entry?.template || entry.template.angle !== 0) continue;
@@ -255,7 +330,7 @@ function migrateRecordedTemplates(saved) {
 function loadSettings() {
   try {
     const saved = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
-    settings = mergeSettings(defaultSettings, migrateRecordedTemplates(migrateTuning(saved)));
+    settings = mergeSettings(defaultSettings, migrateSplitActions(migrateRecordedTemplates(migrateTuning(saved))));
   } catch {
     settings = JSON.parse(JSON.stringify(defaultSettings));
   }
@@ -674,7 +749,7 @@ function motionSummary(samples) {
   return {
     frames: frames.length,
     scrollBlocked: tally("scrollBlocked"),
-    swipeBlocked: tally("swipeBlocked"),
+    sequenceBlocked: tally("sequenceBlocked"),
     // Peak tilt against the trigger is the whole diagnosis for "scrolling never
     // happens": short of the trigger is a threshold problem, past it with nothing
     // firing is a latch or matching problem.
@@ -683,7 +758,7 @@ function motionSummary(samples) {
     triggerClamped: Boolean(last?.clampedTrigger),
     maxWristSpeed: speeds.length ? Number(Math.max(...speeds).toFixed(2)) : null,
     scrollNotches: last?.scrollNotches ?? 0,
-    swipes: last?.swipes ?? 0,
+    sequences: last?.sequences ?? 0,
   };
 }
 

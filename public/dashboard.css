@@ -283,6 +283,34 @@ h2 {
   background: #1f9d63;
 }
 
+/* First in the row, so it reads as "does this row apply at all" before any of its
+   settings. Greyed rather than hidden when off: the recording is still there. */
+.recorder-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #677083;
+  white-space: nowrap;
+}
+
+.recorder-toggle input {
+  width: 34px;
+  height: 20px;
+  margin: 0;
+}
+
+.recorder-row.is-disabled {
+  background: #f6f7f9;
+  border-color: #e6e9ef;
+}
+
+/* The toggle itself stays at full strength — it is the way back. */
+.recorder-row.is-disabled > *:not(.recorder-toggle) {
+  opacity: 0.45;
+}
+
 .recorder-row.is-saved {
   background: #f5fbf8;
   border-color: #bfe4d1;

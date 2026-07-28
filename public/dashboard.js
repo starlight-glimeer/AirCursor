@@ -36,6 +36,7 @@ let settings = {
     exit: "fist",
   },
   recordedGestures: {},
+  disabledActions: {},
   diagnostics: false,
   tuning: {},
 };
@@ -47,8 +48,10 @@ const actionLabels = {
   click: "点击",
   drag: "拖拽（按住不放）",
   rightClick: "右键",
-  scroll: "上下滚动（手掌抬压）",
-  spaceSwitch: "左右切换桌面（横向挥动）",
+  scrollUp: "向上滚动",
+  scrollDown: "向下滚动",
+  spaceLeft: "切到左边桌面",
+  spaceRight: "切到右边桌面",
   exit: "退出控制",
 };
 
@@ -250,6 +253,18 @@ function buildRuleRow(rule) {
   voice.textContent = `语音：${rule.voice}`;
   copy.append(title, voice);
 
+  const toggle = document.createElement("label");
+  toggle.className = "recorder-toggle";
+  toggle.title = "关掉只是先不触发，录好的手势不会丢";
+  const toggleInput = document.createElement("input");
+  toggleInput.type = "checkbox";
+  toggleInput.dataset.enabledAction = rule.id;
+  toggleInput.checked = true;
+  toggleInput.addEventListener("change", () => setActionEnabled(rule.id, toggleInput.checked));
+  const toggleText = document.createElement("span");
+  toggleText.textContent = "启用";
+  toggle.append(toggleInput, toggleText);
+
   // Rules can be dynamic too: "draw a circle to open Chrome" is exactly the kind
   // of thing a recorded movement is for.
   const kindSelect = document.createElement("select");
@@ -315,7 +330,7 @@ function buildRuleRow(rule) {
   hint.textContent = "未录制";
   feedback.append(bar, hint);
 
-  row.append(copy, kindSelect, handsSelect, recordButton, clearButton, testButton, preview, feedback);
+  row.append(toggle, copy, kindSelect, handsSelect, recordButton, clearButton, testButton, preview, feedback);
   return row;
 }
 
@@ -341,6 +356,15 @@ function paintRecorderRow(row) {
     if (!locked && recorded && !recordingAction) {
       kindSelect.value = recorded.keyframes?.length ? "dynamic" : "static";
     }
+  }
+  const toggle = row.querySelector("[data-enabled-action]");
+  if (toggle) {
+    const enabled = !settings.disabledActions?.[action];
+    toggle.checked = enabled;
+    toggle.disabled = Boolean(recordingAction);
+    // Greyed rather than hidden: a disabled action still has a recording worth
+    // looking at, and hiding the row would make the switch feel like a delete.
+    row.classList.toggle("is-disabled", !enabled);
   }
   paintPreview(row, recorded);
   if (isRecording) return;
@@ -539,12 +563,25 @@ async function toggleRecording(action) {
   }
   recordingAction = action;
   const which = hands === 2 ? "双手" : "单手";
-  // Main resolves the kind (scroll/spaceSwitch are forced dynamic), so the
+  // Main resolves the kind (the scroll directions default to dynamic), so the
   // instruction comes from what it decided, not from what the select said.
   ruleState.textContent =
     result.kind === "dynamic"
       ? `录制中：${labelFor(action)}。倒计时后先摆好${which}起始姿势保持 2 秒，然后把动作做出来。`
       : `录制中：${labelFor(action)}。倒计时后摆好${which}手势并保持 2 秒。`;
+  render();
+}
+
+// Enabling writes `null` rather than `false`, so the map only ever holds the
+// actions that are actually off. Storing `false` would leave a stale entry behind
+// for every action the user ever toggled, and then "absent means enabled" would
+// have two spellings.
+async function setActionEnabled(action, enabled) {
+  const result = await window.aircursor.updateSettings({
+    disabledActions: { [action]: enabled ? null : true },
+  });
+  if (result?.settings) settings = result.settings;
+  ruleState.textContent = `${enabled ? "已启用" : "已停用"}：${labelFor(action)}`;
   render();
 }
 
@@ -641,6 +678,9 @@ document.querySelectorAll(".gesture-recorder [data-record-action]").forEach((but
 document.querySelectorAll(".gesture-recorder [data-clear-action]").forEach((button) => {
   button.addEventListener("click", () => clearRecorded(button.dataset.clearAction));
 });
+document.querySelectorAll(".gesture-recorder [data-enabled-action]").forEach((input) => {
+  input.addEventListener("change", () => setActionEnabled(input.dataset.enabledAction, input.checked));
+});
 
 window.aircursor.onMetrics((m) => {
   if (!m) return;
@@ -695,6 +735,8 @@ const MOTION_BLOCKED_TEXT = {
   wristMoving: "手腕在移动，先停稳",
   waitingReturn: "等手回到录制姿势才能再滚",
   waitingStill: "等手停下来才能再挥",
+  disabled: "这个动作被关掉了",
+  wrongDirection: "挥的方向和这个动作相反",
   cooldown: "冷却中",
   noPath: "轨迹不足",
   tooShort: "挥动距离不够",
@@ -731,7 +773,9 @@ function renderMotion(motion) {
   setMetric(
     "mMotion",
     null,
-    `滚动 ${motionReason(motion.scrollBlocked)} · 挥动 ${motionReason(motion.swipeBlocked)} · 手速 ${motion.wristSpeed}`,
+    `${motion.scrollAction ? labelFor(motion.scrollAction) : "滚动"} ${motionReason(motion.scrollBlocked)}` +
+      ` · ${motion.swipeAction ? labelFor(motion.swipeAction) : "挥动"} ${motionReason(motion.swipeBlocked)}` +
+      ` · 手速 ${motion.wristSpeed}`,
   );
   // Sequence progress is the readout for a recorded movement: a partly-performed
   // gesture shows how far it got, which separates "wrong starting pose" from

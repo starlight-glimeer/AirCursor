@@ -145,14 +145,14 @@
               <em>兜底值：录过手势就以录制时抬到的幅度为准，这里不生效（抬压角度那格会标是哪个）。超过旋转容差会被自动压回</em>
             </label>
             <label>
+              <span>挥动速度门限 <b data-tuning-value="swipeSpeed"></b></span>
+              <input type="range" data-tuning="swipeSpeed" min="1.4" max="5" step="0.1" />
+              <em>兜底值：录过手势就以录制时挥的速度为准。挥动靠手腕速度判定（挥手几乎是纯平移，手型不变，所以量不出形状变化）</em>
+            </label>
+            <label>
               <span>每次滚动量 <b data-tuning-value="scrollNotches"></b></span>
               <input type="range" data-tuning="scrollNotches" min="1" max="10" step="1" />
               <em>一次抬压滚多少，越大越快越难停在想要的位置</em>
-            </label>
-            <label>
-              <span>挥动速度门限 <b data-tuning-value="swipeSpeed"></b></span>
-              <input type="range" data-tuning="swipeSpeed" min="1.4" max="5" step="0.1" />
-              <em>兜底值：录过手势就以录制时挥的速度为准。越小越容易误触，越大越费力</em>
             </label>
           </div>
           <div class="diag-actions">
@@ -209,6 +209,10 @@
           <div id="gestureConflicts" class="conflict-banner" hidden></div>
           <div class="gesture-recorder">
             <div class="recorder-row" data-action="wake">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="wake" checked />
+                <span>启用</span>
+              </label>
               <div><b>唤醒控制</b><span>录制后保持该手势 1 秒触发</span></div>
               <select data-kind-action="wake">
                 <option value="static">静态姿势</option>
@@ -230,6 +234,10 @@
               </div>
             </div>
             <div class="recorder-row" data-action="click">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="click" checked />
+                <span>启用</span>
+              </label>
               <div><b>点击</b><span>摆出该手势再松开，触发一次左键点击</span></div>
               <select data-kind-action="click">
                 <option value="static">静态姿势</option>
@@ -251,6 +259,10 @@
               </div>
             </div>
             <div class="recorder-row" data-action="drag">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="drag" checked />
+                <span>启用</span>
+              </label>
               <div><b>拖拽（按住不放）</b><span>保持该手势期间左键一直按住，松手即放下</span></div>
               <select data-kind-action="drag">
                 <option value="static">静态姿势</option>
@@ -273,50 +285,111 @@
             </div>
             <!-- The two motion gestures. Their pose only selects the control law;
                  what happens is decided by how the hand moves afterwards. -->
-            <div class="recorder-row" data-action="scroll">
-              <div>
-                <b>上下滚动（手掌抬压）</b>
-                <span>手腕不动，手掌上抬滚一段、下压滚回来；回到录制姿势后可再抬一次。需要单手（双手镜像姿势测不出角度）</span>
-              </div>
-              <select data-kind-action="scroll" disabled title="这个动作必须靠移动的方向来判断，只能录动态">
+            <div class="recorder-row" data-action="scrollUp">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="scrollUp" checked />
+                <span>启用</span>
+              </label>
+              <div><b>向上滚动</b><span>每个方向是一个独立动作，各录各的手势。录成动态且是手掌抬压时会「棘轮」：抬一次滚一段，手回到起始姿势才能再抬（抬压需要单手，双手镜像测不出角度）</span></div>
+              <select data-kind-action="scrollUp">
                 <option value="dynamic">动态动作</option>
+                <option value="static">静态姿势</option>
               </select>
-              <select data-hands-action="scroll">
+              <select data-hands-action="scrollUp">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
               </select>
-              <button type="button" data-record-action="scroll">开始录制</button>
-              <button type="button" data-clear-action="scroll">清除</button>
-              <div class="recorder-preview" data-preview-action="scroll">
+              <button type="button" data-record-action="scrollUp">开始录制</button>
+              <button type="button" data-clear-action="scrollUp">清除</button>
+              <div class="recorder-preview" data-preview-action="scrollUp">
                 <canvas data-preview-rest width="76" height="62"></canvas>
                 <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
               </div>
               <div class="recorder-feedback">
-                <div class="recorder-bar"><i data-progress-action="scroll"></i></div>
-                <span data-hint-action="scroll">未录制</span>
+                <div class="recorder-bar"><i data-progress-action="scrollUp"></i></div>
+                <span data-hint-action="scrollUp">未录制</span>
               </div>
             </div>
-            <div class="recorder-row" data-action="spaceSwitch">
-              <div><b>左右切换桌面（横向挥动）</b><span>保持该手势横向快速挥一下切一个桌面；手停下来才能再挥</span></div>
-              <select data-kind-action="spaceSwitch" disabled title="这个动作必须靠移动的方向来判断，只能录动态">
+            <div class="recorder-row" data-action="scrollDown">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="scrollDown" checked />
+                <span>启用</span>
+              </label>
+              <div><b>向下滚动</b><span>和向上滚动完全独立，可以录一个毫不相关的手势</span></div>
+              <select data-kind-action="scrollDown">
                 <option value="dynamic">动态动作</option>
+                <option value="static">静态姿势</option>
               </select>
-              <select data-hands-action="spaceSwitch">
+              <select data-hands-action="scrollDown">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
               </select>
-              <button type="button" data-record-action="spaceSwitch">开始录制</button>
-              <button type="button" data-clear-action="spaceSwitch">清除</button>
-              <div class="recorder-preview" data-preview-action="spaceSwitch">
+              <button type="button" data-record-action="scrollDown">开始录制</button>
+              <button type="button" data-clear-action="scrollDown">清除</button>
+              <div class="recorder-preview" data-preview-action="scrollDown">
                 <canvas data-preview-rest width="76" height="62"></canvas>
                 <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
               </div>
               <div class="recorder-feedback">
-                <div class="recorder-bar"><i data-progress-action="spaceSwitch"></i></div>
-                <span data-hint-action="spaceSwitch">未录制</span>
+                <div class="recorder-bar"><i data-progress-action="scrollDown"></i></div>
+                <span data-hint-action="scrollDown">未录制</span>
+              </div>
+            </div>
+            <div class="recorder-row" data-action="spaceLeft">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="spaceLeft" checked />
+                <span>启用</span>
+              </label>
+              <div><b>切到左边桌面</b><span>做完这个动作切一个桌面。需要系统「调度中心」快捷键是开着的</span></div>
+              <select data-kind-action="spaceLeft">
+                <option value="dynamic">动态动作</option>
+                <option value="static">静态姿势</option>
+              </select>
+              <select data-hands-action="spaceLeft">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
+              <button type="button" data-record-action="spaceLeft">开始录制</button>
+              <button type="button" data-clear-action="spaceLeft">清除</button>
+              <div class="recorder-preview" data-preview-action="spaceLeft">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="spaceLeft"></i></div>
+                <span data-hint-action="spaceLeft">未录制</span>
+              </div>
+            </div>
+            <div class="recorder-row" data-action="spaceRight">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="spaceRight" checked />
+                <span>启用</span>
+              </label>
+              <div><b>切到右边桌面</b><span>和切左边独立，各录各的</span></div>
+              <select data-kind-action="spaceRight">
+                <option value="dynamic">动态动作</option>
+                <option value="static">静态姿势</option>
+              </select>
+              <select data-hands-action="spaceRight">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
+              <button type="button" data-record-action="spaceRight">开始录制</button>
+              <button type="button" data-clear-action="spaceRight">清除</button>
+              <div class="recorder-preview" data-preview-action="spaceRight">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="spaceRight"></i></div>
+                <span data-hint-action="spaceRight">未录制</span>
               </div>
             </div>
             <div class="recorder-row" data-action="rightClick">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="rightClick" checked />
+                <span>启用</span>
+              </label>
               <div><b>右键</b><span>录制后触发一次右键点击</span></div>
               <select data-kind-action="rightClick">
                 <option value="static">静态姿势</option>
@@ -338,6 +411,10 @@
               </div>
             </div>
             <div class="recorder-row" data-action="exit">
+              <label class="recorder-toggle" title="关掉只是先不触发，录好的手势不会丢">
+                <input type="checkbox" data-enabled-action="exit" checked />
+                <span>启用</span>
+              </label>
               <div><b>退出控制</b><span>录制后保持该手势 1 秒退出</span></div>
               <select data-kind-action="exit">
                 <option value="static">静态姿势</option>

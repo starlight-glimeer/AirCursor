@@ -49,6 +49,7 @@ const settings = {
     exit: "fist",
   },
   recordedGestures: {},
+  disabledActions: {},
   tuning: {},
   diagnostics: false,
 };
@@ -80,8 +81,17 @@ const {
 const metrics = new TrackingMetrics();
 const resolver = new GestureResolver();
 const wristPath = new WristPath();
-const scrollRatchet = new TiltRatchet();
-const swipeDetector = new SwipeDetector();
+
+// What each directional action sends. The direction belongs to the action, not to
+// the shape of the movement that triggered it.
+const ACTION_DIRECTION = { scrollUp: -1, scrollDown: 1, spaceLeft: -1, spaceRight: 1 };
+
+// An action the user has switched off must not fire, but must keep its recording:
+// turning something off for now and throwing the recording away are different
+// intents, and only one of them is reversible without re-recording.
+function actionDisabled(action) {
+  return Boolean(settings.disabledActions?.[action]);
+}
 
 const DEFAULT_TUNING = {
   minCutoff: 1.2,
@@ -164,15 +174,18 @@ const state = {
     triggerDeg: 0,
     clampedTrigger: false,
     triggerFromRecording: false,
-    swipeSpeedThreshold: 0,
     wristSpeed: 0,
     scrollBlocked: null,
-    swipeBlocked: null,
+    scrollAction: null,
     scrollNotches: 0,
-    swipes: 0,
     lastScrollAt: 0,
+    lastScrollAction: null,
+    swipeBlocked: null,
+    swipeAction: null,
+    swipeSpeedThreshold: 0,
+    swipes: 0,
     lastSwipeAt: 0,
-    lastSwipeDirection: 0,
+    lastSwipeAction: null,
     // Law-less recorded movements, matched as sequences.
     sequences: 0,
     lastSequenceAction: null,
@@ -297,13 +310,18 @@ function resolveCustomGesture(gesture) {
   const candidates = [];
   for (const [action, mapped] of Object.entries(settings.gestureMap || {})) {
     if (!mapped?.startsWith("custom:")) continue;
+    if (actionDisabled(action)) continue;
     const entry = settings.recordedGestures?.[mapped.slice("custom:".length)];
     if (!entry?.template) continue;
     // A sequence gesture's stored template is the pose the movement *starts*
     // from, so treating it as a static candidate would fire the action the moment
     // the user struck the starting pose — before performing the movement at all.
     // Its matching runs through the sequence matcher instead.
-    if (entry.keyframes?.length && !lawDriven(action)) continue;
+    // A sequence's stored template is the pose the movement starts from, so
+    // matching it statically would fire the action the moment the user struck the
+    // starting pose. A tilt recording is different: the ratchet needs the pose to
+    // match in order to read its angle at all.
+    if (entry.keyframes?.length && !entry.motion?.measure) continue;
     candidates.push({ action, template: entry.template });
   }
   return resolver.resolve(
@@ -315,7 +333,12 @@ function resolveCustomGesture(gesture) {
   );
 }
 
-function gestureMatches(gesture, gestureId) {
+// Takes the action so the enable switch is enforced in one place. Built-in poses
+// never go through resolveCustomGesture, so gating only there would have left the
+// switch working for recorded gestures and silently doing nothing for the default
+// pinch/palm/fist ones.
+function gestureMatches(gesture, gestureId, action) {
+  if (action && actionDisabled(action)) return false;
   if (!gesture || !gestureId || gestureId === "none") return false;
   if (gestureId.startsWith("custom:")) {
     // The winner is decided for the whole frame and carried on the gesture, so
@@ -497,9 +520,9 @@ function holdElapsedMs() {
 function updateHoldGesture(gesture) {
   const desired = !gesture
     ? null
-    : !settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.wake)
+    : !settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.wake, "wake")
       ? "wake"
-      : settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.exit)
+      : settings.controlEnabled && gestureMatches(gesture, settings.gestureMap?.exit, "exit")
         ? "sleep"
         : null;
 
@@ -536,10 +559,15 @@ function resolveSequenceGesture(gesture, now) {
   let fired = null;
   for (const [action, mapped] of Object.entries(settings.gestureMap || {})) {
     if (!mapped?.startsWith("custom:")) continue;
-    if (lawDriven(action)) continue;
+    if (actionDisabled(action)) continue;
     const entry = settings.recordedGestures?.[mapped.slice("custom:".length)];
     const keyframes = entry?.keyframes;
     if (!keyframes?.length) continue;
+    // Keyed off what was recorded, not off the action: a scroll direction recorded
+    // as a tilt is driven by the ratchet, but the same action recorded as a plain
+    // movement has no law and must fall through to here. Keying on the action name
+    // would have made that recording impossible to trigger.
+    if (entry.motion?.measure) continue;
 
     const matcher = sequenceMatcherFor(action);
     const done = matcher.update({
@@ -556,10 +584,6 @@ function resolveSequenceGesture(gesture, now) {
     if (done && !fired) fired = action;
   }
   return fired;
-}
-
-function lawDriven(action) {
-  return action === "scroll" || action === "spaceSwitch";
 }
 
 // A sequence has its own ways to do nothing — never reached the starting pose,
@@ -617,6 +641,18 @@ function performSequenceAction(action) {
       sendPointer("rightClick", state.cursor.x, state.cursor.y);
       burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 24 : 8, "#ffd76a");
       return;
+    // Reachable when a directional action is recorded as a plain movement rather
+    // than with its law: it then fires once per movement instead of repeating.
+    case "spaceLeft":
+    case "spaceRight":
+      sendKey(action);
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 28 : 10, "#49e5ff");
+      return;
+    case "scrollUp":
+    case "scrollDown":
+      sendScroll(ACTION_DIRECTION[action] * tuning().scrollNotches);
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 20 : 8, "#8affc1");
+      return;
     case "drag":
       // A movement cannot express "keep holding", so it toggles: perform it to
       // pick up, perform it again to drop. Better than a drag that ends the
@@ -644,7 +680,7 @@ function updateRuleGestures(gesture) {
     ? null
     : state.ruleIds.find((id) => {
         const mapped = settings.gestureMap?.[id];
-        return mapped?.startsWith("custom:") && gestureMatches(gesture, mapped);
+        return mapped?.startsWith("custom:") && gestureMatches(gesture, mapped, id);
       });
 
   const held = trackHold(hold, bound || null, now);
@@ -710,13 +746,12 @@ function endDrag() {
 // means one motion can never satisfy both. Ordering decided a gesture conflict
 // once before and the loser could never fire at all — not repeating that.
 function updateMotionGestures(gesture, now) {
-  const active = tuning();
   const m = state.motion;
 
   if (!settings.controlEnabled || !gesture) {
     wristPath.reset();
-    scrollRatchet.reset();
-    swipeDetector.reset();
+    for (const ratchet of scrollRatchets.values()) ratchet.reset();
+    for (const detector of swipeDetectors.values()) detector.reset();
     m.tiltDeg = 0;
     m.wristSpeed = 0;
     m.scrollBlocked = settings.controlEnabled ? "noHand" : "controlOff";
@@ -725,83 +760,153 @@ function updateMotionGestures(gesture, now) {
   }
 
   // The wrist, not the fingertip: fingers move within a held pose, and the
-  // question here is whether the hand as a whole is parked or travelling.
+  // question here is whether the hand as a whole is parked or travelling. The
+  // ratchet needs that to refuse firing while the hand is being carried somewhere.
   const wrist = gesture.wrist;
   wristPath.push(wrist.x, wrist.y, gesture.palmWidth, now);
   const displacement = wristPath.displacement();
   m.wristSpeed = Number((displacement?.speed ?? 0).toFixed(2));
 
-  const scrollBinding = settings.gestureMap?.scroll;
-  const scrollTemplate = scrollBinding?.startsWith("custom:")
-    ? settings.recordedGestures?.[scrollBinding.slice("custom:".length)]?.template
+  // Each direction is its own gesture with its own ratchet. Sharing one would
+  // make scrolling up latch scrolling down, since the latch exists to stop one
+  // held pose from repeating — and these are two different held poses.
+  m.scrollBlocked = null;
+  let scrollMatched = false;
+  for (const action of SCROLL_ACTIONS) {
+    if (updateScrollRatchet(action, gesture, displacement, now) !== null) scrollMatched = true;
+  }
+  if (!scrollMatched) m.tiltDeg = 0;
+
+  m.swipeBlocked = null;
+  for (const action of SWIPE_ACTIONS) updateSwipe(action, displacement, gesture, now);
+}
+
+const SCROLL_ACTIONS = ["scrollUp", "scrollDown"];
+const SWIPE_ACTIONS = ["spaceLeft", "spaceRight"];
+
+// One detector per direction, created on demand. Sharing one across directions
+// would let a leftward swipe's cooldown block a rightward one, which are two
+// different gestures and have no reason to gate each other.
+const scrollRatchets = new Map();
+const swipeDetectors = new Map();
+
+function swipeDetectorFor(action) {
+  if (!swipeDetectors.has(action)) swipeDetectors.set(action, new SwipeDetector());
+  return swipeDetectors.get(action);
+}
+
+// A sideways swipe is almost pure translation, and templates normalize translation
+// away — measured: every frame of a swipe sits 0.0000 from the first, so recorded
+// as a sequence it collapses to one keyframe and gets refused. The information is
+// in the wrist path, so this stays a speed law. Only the direction changed: it is
+// the action bound to the gesture, not the sign of dx.
+function updateSwipe(action, displacement, gesture, now) {
+  const active = tuning();
+  const m = state.motion;
+  const binding = settings.gestureMap?.[action];
+  const entry = binding?.startsWith("custom:")
+    ? settings.recordedGestures?.[binding.slice("custom:".length)]
     : null;
 
-  if (scrollTemplate && gestureMatches(gesture, scrollBinding)) {
-    // The trigger comes from the movement the user recorded, when there is one:
-    // "how far do I tilt" is a question their own recording already answered, and
-    // a global slider cannot answer it for two differently-recorded gestures.
-    const recorded = settings.recordedGestures?.[scrollBinding.slice("custom:".length)]?.motion;
-    const wanted = recorded?.measure === "tilt" ? recorded.trigger : active.scrollTriggerDeg;
-    // Clamped against the rotation tolerance either way: past that limit the
-    // tilted pose no longer matches its own template, so a trigger beyond it
-    // would make the gesture disappear at exactly the angle it should fire at.
-    // Measured on a hand-shaped pose, leftover rotation costs ~0.0196 per degree.
-    const ceiling = maxUsableTiltDeg(active.rotationTolerance, active.matchThreshold);
-    const trigger = Math.min(wanted, ceiling);
-    m.clampedTrigger = trigger < wanted;
-    m.triggerFromRecording = recorded?.measure === "tilt";
-    m.triggerDeg = Number(trigger.toFixed(1));
-
-    const direction = scrollRatchet.update({
-      liveAngle: gesture.poseTemplate?.angle,
-      templateAngle: scrollTemplate.angle,
-      wristSpeed: displacement?.speed ?? 0,
-      triggerDeg: trigger,
-      now,
-    });
-    m.tiltDeg = Number(scrollRatchet.deltaDeg.toFixed(1));
-    m.scrollBlocked = scrollRatchet.blocked;
-    if (direction) {
-      sendScroll(direction * active.scrollNotches);
-      m.scrollNotches += 1;
-      m.lastScrollAt = now;
-      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 20 : 8, "#8affc1");
+  if (!entry?.template || actionDisabled(action) || !gestureMatches(gesture, binding)) {
+    swipeDetectorFor(action).reset();
+    if (!m.swipeBlocked) {
+      m.swipeBlocked = !entry?.template ? "notBound" : actionDisabled(action) ? "disabled" : "poseNotMatched";
     }
-  } else {
-    scrollRatchet.reset();
-    m.tiltDeg = 0;
-    m.scrollBlocked = scrollTemplate ? "poseNotMatched" : "notBound";
+    return;
   }
 
-  const swipeBinding = settings.gestureMap?.spaceSwitch;
-  if (swipeBinding?.startsWith("custom:") && gestureMatches(gesture, swipeBinding)) {
-    const recordedSwipe = settings.recordedGestures?.[swipeBinding.slice("custom:".length)]?.motion;
-    // Same idea as the tilt, with one extra floor: a swipe threshold below the
-    // parked-wrist limit would let one motion satisfy both laws, which is the
-    // dead band the two gestures rely on to not need an arbitration order.
-    const speedThreshold =
-      recordedSwipe?.measure === "swipe"
-        ? Math.max(recordedSwipe.trigger, RATCHET_MAX_SPEED + 0.2)
-        : active.swipeSpeed;
-    m.swipeSpeedThreshold = Number(speedThreshold.toFixed(2));
-    const direction = swipeDetector.update({
-      displacement,
-      speedThreshold,
-      now,
-    });
-    m.swipeBlocked = swipeDetector.blocked;
-    if (direction) {
-      // A rightward hand sends the desktop rightward, matching the trackpad.
-      sendKey(direction > 0 ? "spaceRight" : "spaceLeft");
-      m.swipes += 1;
-      m.lastSwipeAt = now;
-      m.lastSwipeDirection = direction;
-      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 28 : 10, "#49e5ff");
-    }
-  } else {
-    swipeDetector.reset();
-    m.swipeBlocked = swipeBinding ? "poseNotMatched" : "notBound";
+  const recorded = entry.motion;
+  // Floored above the parked-wrist limit: a threshold below it would let one
+  // motion satisfy both the ratchet and the swipe, and that dead band is what
+  // spares this from needing an arbitration order.
+  const speedThreshold =
+    recorded?.measure === "swipe"
+      ? Math.max(recorded.trigger, RATCHET_MAX_SPEED + 0.2)
+      : active.swipeSpeed;
+  m.swipeSpeedThreshold = Number(speedThreshold.toFixed(2));
+
+  const detector = swipeDetectorFor(action);
+  // Direction is checked against the action rather than accepted from the
+  // detector: swiping left must not switch right just because the detector saw
+  // movement, and the user recorded these two separately for exactly that reason.
+  const seen = detector.update({ displacement, speedThreshold, now });
+  m.swipeBlocked = detector.blocked;
+  m.swipeAction = action;
+  if (seen && seen === ACTION_DIRECTION[action]) {
+    sendKey(action);
+    m.swipes += 1;
+    m.lastSwipeAt = now;
+    m.lastSwipeAction = action;
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 28 : 10, "#49e5ff");
+  } else if (seen) {
+    // The gesture matched and the wrist was fast enough, but the hand went the
+    // other way. Naming it stops this reading as "the swipe did nothing".
+    m.swipeBlocked = "wrongDirection";
   }
+}
+
+function scrollRatchetFor(action) {
+  if (!scrollRatchets.has(action)) scrollRatchets.set(action, new TiltRatchet());
+  return scrollRatchets.get(action);
+}
+
+// Returns null when this direction's gesture is not the one being held, so the
+// caller can tell "no scroll gesture active" from "active but blocked".
+function updateScrollRatchet(action, gesture, displacement, now) {
+  const active = tuning();
+  const m = state.motion;
+  const binding = settings.gestureMap?.[action];
+  const entry = binding?.startsWith("custom:")
+    ? settings.recordedGestures?.[binding.slice("custom:".length)]
+    : null;
+
+  if (!entry?.template || actionDisabled(action) || !gestureMatches(gesture, binding)) {
+    scrollRatchetFor(action).reset();
+    if (!m.scrollBlocked) {
+      m.scrollBlocked = !entry?.template ? "notBound" : actionDisabled(action) ? "disabled" : "poseNotMatched";
+    }
+    return null;
+  }
+
+  // The trigger comes from the movement the user recorded, when there is one:
+  // "how far do I tilt" is a question their own recording already answered, and
+  // a global slider cannot answer it for two differently-recorded gestures.
+  const recorded = entry.motion;
+  const wanted = recorded?.measure === "tilt" ? recorded.trigger : active.scrollTriggerDeg;
+  // Clamped against the rotation tolerance either way: past that limit the tilted
+  // pose no longer matches its own template, so a trigger beyond it would make the
+  // gesture disappear at exactly the angle it should fire at. Measured on a
+  // hand-shaped pose, leftover rotation costs ~0.0196 distance per degree.
+  const ceiling = maxUsableTiltDeg(active.rotationTolerance, active.matchThreshold);
+  const trigger = Math.min(wanted, ceiling);
+  m.clampedTrigger = trigger < wanted;
+  m.triggerFromRecording = recorded?.measure === "tilt";
+  m.triggerDeg = Number(trigger.toFixed(1));
+
+  const ratchet = scrollRatchetFor(action);
+  const fired = ratchet.update({
+    liveAngle: gesture.poseTemplate?.angle,
+    templateAngle: entry.template.angle,
+    wristSpeed: displacement?.speed ?? 0,
+    triggerDeg: trigger,
+    now,
+  });
+  m.tiltDeg = Number(ratchet.deltaDeg.toFixed(1));
+  m.scrollBlocked = ratchet.blocked;
+  m.scrollAction = action;
+
+  if (fired) {
+    // The direction is the action, not the sign of the tilt. Inferring it from the
+    // movement meant one recording had to serve both directions mirrored, which is
+    // the opposite of "the gesture you recorded is the gesture that fires".
+    sendScroll(ACTION_DIRECTION[action] * active.scrollNotches);
+    m.scrollNotches += 1;
+    m.lastScrollAt = now;
+    m.lastScrollAction = action;
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 20 : 8, "#8affc1");
+  }
+  return fired;
 }
 
 function updateSystemCursor(gesture) {
@@ -848,9 +953,9 @@ function updateSystemCursor(gesture) {
     metrics.markPointerEvent();
   }
 
-  const rightClickActive = gestureMatches(gesture, settings.gestureMap?.rightClick);
-  const clickActive = gestureMatches(gesture, settings.gestureMap?.click);
-  const dragActive = gestureMatches(gesture, settings.gestureMap?.drag);
+  const rightClickActive = gestureMatches(gesture, settings.gestureMap?.rightClick, "rightClick");
+  const clickActive = gestureMatches(gesture, settings.gestureMap?.click, "click");
+  const dragActive = gestureMatches(gesture, settings.gestureMap?.drag, "drag");
 
   // Drag runs before the click branches and returns: while the button is down,
   // a frame that also matches click must not start a competing pinch.
@@ -1485,8 +1590,9 @@ function loop(now) {
     // Recording must not fire the action being recorded, and the motion state
     // must not carry the recording session's hand movement into the next frame.
     wristPath.reset();
-    scrollRatchet.reset();
-    swipeDetector.reset();
+    for (const ratchet of scrollRatchets.values()) ratchet.reset();
+    for (const detector of swipeDetectors.values()) detector.reset();
+    for (const matcher of sequenceMatchers.values()) matcher.reset();
   }
   // All template comparisons for this frame are done, so the closest one can be
   // recorded as the frame's match distance.
