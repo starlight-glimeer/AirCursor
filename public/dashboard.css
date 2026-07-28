@@ -108,6 +108,10 @@ h2 {
   color: #677083;
 }
 
+.status strong.is-bad {
+  color: #b3261e;
+}
+
 .switch {
   min-height: 50px;
   display: flex;
@@ -283,6 +287,29 @@ h2 {
 }
 
 .conflict-banner p + p {
+  margin-top: 6px;
+}
+
+/* Red, not amber: the click pipeline being dead is not a degraded experience,
+   it is a total one. Nothing the user tunes in this window can help until it is
+   fixed, so it must not read as another advisory. */
+.pointer-banner {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #e79a9a;
+  border-radius: 8px;
+  background: #fff2f2;
+  color: #8a2f2f;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+.pointer-banner p {
+  margin: 0;
+}
+
+.pointer-banner p + p {
   margin-top: 6px;
 }
 

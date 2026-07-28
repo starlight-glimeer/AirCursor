@@ -1,5 +1,6 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, screen, session, shell, systemPreferences } = require("electron");
 const { spawn, spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -28,6 +29,23 @@ let voiceStatus = "等待";
 let quitting = false;
 let systemCursorHidden = false;
 let recordingSession = null;
+// Everything about the process that actually delivers clicks. Without this a
+// dead helper is indistinguishable from a gesture that never matched: the
+// overlay draws its own click animation and returns, so the UI looks identical
+// either way. Three real reports were spent on the CV layer because of that.
+let pointerHealth = {
+  state: "starting",
+  detail: "尚未启动",
+  binary: null,
+  compiled: null,
+  trusted: null,
+  sent: 0,
+  failed: 0,
+  lastError: null,
+  startedAt: null,
+  exitedAt: null,
+  exits: 0,
+};
 
 const defaultSettings = {
   overlayVisible: true,
@@ -207,52 +225,157 @@ function saveSettings() {
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
 }
 
-function helperBinaryPath(binaryName) {
-  return path.join(app.getPath("userData"), `${binaryName}-${app.getVersion()}`);
+// Keyed on the source contents, NOT on the app version.
+//
+// Version-keying (v0.2.16-v0.3.1) meant every release wrote a brand-new binary
+// path even when the Swift source was byte-identical. On macOS the Accessibility
+// grant is per-binary, so each bump silently dropped the permission that makes
+// CGEvent.post work — the helper still ran and still posted events, and the
+// system discarded every one of them. That is why clicking worked on v0.2.x and
+// then "stopped working" with no error: nothing was broken in the CV layer.
+// Hashing the source means an unchanged helper keeps one path (and one grant)
+// forever, and a genuinely edited helper gets a new one exactly once.
+function helperBinaryPath(binaryName, ...sources) {
+  const hash = crypto.createHash("sha256");
+  for (const file of sources) hash.update(fs.readFileSync(file));
+  return path.join(app.getPath("userData"), `${binaryName}-${hash.digest("hex").slice(0, 12)}`);
 }
 
 function compilePointerHelper() {
-  const helperBinary = helperBinaryPath("AirCursorPointer");
-  const needsBuild =
-    !fs.existsSync(helperBinary) ||
-    fs.statSync(helperBinary).mtimeMs < fs.statSync(helperSource).mtimeMs;
-
-  if (!needsBuild) return helperBinary;
+  const helperBinary = helperBinaryPath("AirCursorPointer", helperSource);
+  // Existence is the whole gate: the path already encodes the source contents,
+  // so a file at that path cannot be stale. mtime comparison would rebuild on
+  // every `git checkout`, which is what made this churn constantly.
+  if (fs.existsSync(helperBinary)) return { helperBinary, compiled: false };
 
   const result = spawnSync("/usr/bin/swiftc", [helperSource, "-o", helperBinary], {
     encoding: "utf8",
   });
 
   if (result.status !== 0) {
-    throw new Error(result.stderr || "Failed to compile AirCursorPointer.");
+    throw new Error(result.stderr?.trim() || "swiftc 编译 AirCursorPointer 失败");
   }
 
-  return helperBinary;
+  return { helperBinary, compiled: true };
+}
+
+function setPointerHealth(patch) {
+  pointerHealth = { ...pointerHealth, ...patch };
+  broadcast("aircursor:pointer-health", pointerHealth);
+}
+
+// Reports whether this process may post synthetic events at all. Without the
+// Accessibility grant CGEvent.post is silently dropped by the OS: the helper
+// sees no error, so this is the only place the truth is available.
+function refreshTrustState() {
+  if (process.platform !== "darwin") return true;
+  const trusted = systemPreferences.isTrustedAccessibilityClient(false);
+  if (trusted !== pointerHealth.trusted) {
+    setPointerHealth({
+      trusted,
+      ...(trusted
+        ? {}
+        : { state: "untrusted", detail: "缺少辅助功能权限：点击不会生效，请在系统设置里勾选后重启 AirCursor" }),
+    });
+  }
+  return trusted;
 }
 
 function startPointerHelper() {
-  const helperBinary = compilePointerHelper();
-  pointerHelper = spawn(helperBinary, [], { stdio: ["pipe", "ignore", "pipe"] });
+  let helperBinary;
+  let compiled;
+  try {
+    ({ helperBinary, compiled } = compilePointerHelper());
+  } catch (error) {
+    // Used to throw out of app.whenReady() and leave pointerHelper undefined
+    // forever, so every later click threw inside an ipcMain handler where
+    // nothing was listening. The UI kept drawing click animations regardless.
+    setPointerHealth({
+      state: "compile-failed",
+      detail: `编译失败：${error.message}`,
+      lastError: error.message,
+      binary: null,
+    });
+    return false;
+  }
+
+  try {
+    pointerHelper = spawn(helperBinary, [], { stdio: ["pipe", "pipe", "pipe"] });
+  } catch (error) {
+    setPointerHealth({
+      state: "spawn-failed",
+      detail: `无法启动 helper：${error.message}`,
+      lastError: error.message,
+      binary: helperBinary,
+    });
+    return false;
+  }
+
+  setPointerHealth({
+    state: "running",
+    detail: compiled ? "helper 已重新编译并启动" : "helper 已启动（复用已授权的二进制）",
+    binary: helperBinary,
+    compiled,
+    lastError: null,
+    startedAt: Date.now(),
+  });
+
   if (systemCursorHidden) {
     pointerHelper.stdin.write(`${JSON.stringify({ type: "hideCursor" })}\n`);
   }
+  // The helper answers a ping with its AXIsProcessTrusted() verdict, so "can we
+  // actually click" is a fact from the process that posts the events rather than
+  // an inference from this side of the pipe.
+  pointerHelper.stdin.write(`${JSON.stringify({ type: "ping" })}\n`);
+  pointerHelper.stdout.on("data", (chunk) => {
+    for (const line of chunk.toString().split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text.startsWith("{")) continue;
+      try {
+        const message = JSON.parse(text);
+        if (message.type === "pong") {
+          setPointerHealth({
+            trusted: Boolean(message.trusted),
+            ...(message.trusted
+              ? { state: "running", detail: "helper 正常，已获辅助功能权限" }
+              : {
+                  state: "untrusted",
+                  detail: "helper 在运行，但缺少辅助功能权限：系统会丢弃所有点击事件",
+                }),
+          });
+        }
+      } catch {
+        // A malformed line is not worth killing the pipe over.
+      }
+    }
+  });
   pointerHelper.stderr.on("data", (chunk) => {
-    broadcast("aircursor:helper-log", chunk.toString());
+    const message = chunk.toString().trim();
+    setPointerHealth({ lastError: message });
+    broadcast("aircursor:helper-log", message);
   });
-  pointerHelper.on("exit", () => {
+  pointerHelper.on("exit", (code, signal) => {
     pointerHelper = null;
+    if (quitting) return;
+    setPointerHealth({
+      state: "exited",
+      detail: `helper 退出（code ${code ?? "null"} / signal ${signal ?? "null"}）`,
+      exitedAt: Date.now(),
+      exits: pointerHealth.exits + 1,
+    });
   });
+  return true;
 }
 
+// Same contract as compilePointerHelper: the voice helper holds Microphone and
+// Speech Recognition grants, which macOS also keys per binary. Rebuilding it at
+// an mtime-triggered moment rewrote those bytes and dropped both grants, and
+// mtime moves on every `git checkout` — so the source contents decide the path
+// here too, and existence alone decides whether to build.
 function compileSwiftHelper(source, binaryName) {
-  const helperBinary = helperBinaryPath(binaryName);
   const extraInputs = binaryName === "AirCursorVoice" ? [voiceInfoSource] : [];
-  const needsBuild =
-    !fs.existsSync(helperBinary) ||
-    fs.statSync(helperBinary).mtimeMs < fs.statSync(source).mtimeMs ||
-    extraInputs.some((file) => fs.statSync(helperBinary).mtimeMs < fs.statSync(file).mtimeMs);
-
-  if (!needsBuild) return helperBinary;
+  const helperBinary = helperBinaryPath(binaryName, source, ...extraInputs);
+  if (fs.existsSync(helperBinary)) return helperBinary;
 
   const args = [source, "-o", helperBinary];
   if (binaryName === "AirCursorVoice") {
@@ -318,9 +441,30 @@ function startVoiceHelper() {
   });
 }
 
+// Returns whether the command reached the helper's stdin. Callers used to get no
+// signal at all: this threw a TypeError inside an ipcMain listener when the
+// helper was missing, which Electron swallows, so a completely dead pointer
+// pipeline looked exactly like a working one from the renderer.
 function sendPointer(command) {
-  if (!pointerHelper || pointerHelper.killed) startPointerHelper();
-  pointerHelper.stdin.write(`${JSON.stringify(command)}\n`);
+  if (!pointerHelper || pointerHelper.killed) {
+    if (!startPointerHelper()) {
+      pointerHealth.failed += 1;
+      return false;
+    }
+  }
+  try {
+    pointerHelper.stdin.write(`${JSON.stringify(command)}\n`);
+    pointerHealth.sent += 1;
+    return true;
+  } catch (error) {
+    setPointerHealth({
+      state: "write-failed",
+      detail: `写入 helper 失败：${error.message}`,
+      lastError: error.message,
+      failed: pointerHealth.failed + 1,
+    });
+    return false;
+  }
 }
 
 function setSystemCursorHidden(hidden) {
@@ -355,6 +499,9 @@ function updateSettings(patch) {
   settings = mergeSettings(settings, patch);
   if (settings.controlEnabled !== previousControlEnabled) {
     setSystemCursorHidden(settings.controlEnabled);
+    // Turning control on is the moment the permission starts mattering, and it
+    // is also when the user is most likely to have just granted it.
+    if (settings.controlEnabled) refreshTrustState();
   }
   saveSettings();
   syncSettings();
@@ -466,6 +613,10 @@ function buildReport(note) {
       ]),
     ),
     gestureConflicts: gestureConflicts(),
+    // The single most load-bearing fact in a "nothing happens" report, and the
+    // one three earlier reports had no field for: whether the process that posts
+    // the clicks is alive, and whether the OS will honour what it posts.
+    pointer: { ...pointerHealth, trusted: refreshTrustState() },
     sampleCount: samples.length,
     metrics: {
       cameraFps: stat("cameraFps"),
@@ -693,6 +844,7 @@ app.whenReady().then(() => {
   createDashboardWindow();
   createOverlayWindow();
   startPointerHelper();
+  refreshTrustState();
   startVoiceHelper();
 
   app.on("activate", showDashboard);
@@ -717,6 +869,7 @@ ipcMain.handle("aircursor:get-state", () => ({
   // A conflict recorded in an earlier run is still a conflict on launch, so the
   // dashboard must not have to wait for a settings change to hear about it.
   gestureConflicts: gestureConflicts(),
+  pointer: { ...pointerHealth, trusted: refreshTrustState() },
 }));
 ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   updateSettings(patch);

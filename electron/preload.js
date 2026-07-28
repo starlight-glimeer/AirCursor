@@ -55,4 +55,7 @@ contextBridge.exposeInMainWorld("aircursor", {
   onHelperLog: (handler) => {
     ipcRenderer.on("aircursor:helper-log", (_event, message) => handler(message));
   },
+  onPointerHealth: (handler) => {
+    ipcRenderer.on("aircursor:pointer-health", (_event, payload) => handler(payload));
+  },
 });

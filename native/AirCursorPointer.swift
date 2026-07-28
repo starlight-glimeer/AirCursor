@@ -13,9 +13,23 @@ let source = CGEventSource(stateID: .hidSystemState)
 var lastPoint = CGPoint(x: 0, y: 0)
 var cursorHidden = false
 
-if !AXIsProcessTrusted() {
-    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件可能不会生效。\n".data(using: .utf8)!)
+// Answered on stdout so the main process can tell "the helper is running" from
+// "the helper is running and the OS will actually deliver its events". Without
+// the Accessibility grant CGEvent.post fails silently — no error, no exception,
+// the events simply never arrive — so this verdict is the only way to know.
+func emit(_ payload: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+          var line = String(data: data, encoding: .utf8) else {
+        return
+    }
+    line.append("\n")
+    FileHandle.standardOutput.write(line.data(using: .utf8)!)
 }
+
+if !AXIsProcessTrusted() {
+    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件不会生效。\n".data(using: .utf8)!)
+}
+emit(["type": "ready", "trusted": AXIsProcessTrusted()])
 
 func currentMousePoint() -> CGPoint {
     CGEvent(source: nil)?.location ?? lastPoint
@@ -64,6 +78,10 @@ while let line = readLine() {
     let point = CGPoint(x: command.x ?? Double(lastPoint.x), y: command.y ?? Double(lastPoint.y))
 
     switch command.type {
+    case "ping":
+        // Re-read the trust state rather than caching it: the user can grant the
+        // permission while the app is already running.
+        emit(["type": "pong", "trusted": AXIsProcessTrusted()])
     case "hideCursor":
         hideSystemCursor()
     case "showCursor":

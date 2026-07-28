@@ -16,6 +16,8 @@ const controlState = document.getElementById("controlState");
 const ruleState = document.getElementById("ruleState");
 const voiceRules = document.getElementById("voiceRules");
 const gestureConflicts = document.getElementById("gestureConflicts");
+const pointerState = document.getElementById("pointerState");
+const pointerBanner = document.getElementById("pointerBanner");
 const diagnostics = document.getElementById("diagnostics");
 const diagnosticsPanel = document.getElementById("diagnosticsPanel");
 const overlayLog = document.getElementById("overlayLog");
@@ -232,6 +234,41 @@ function renderConflicts(conflicts) {
   }
 }
 
+// "Gesture recognised" and "the OS moved the mouse" are different claims, and
+// three real reports were spent conflating them. This renders the second one, so
+// a dead click pipeline can no longer look like a gesture-tuning problem.
+function renderPointerHealth(health) {
+  if (!health) return;
+  const dead =
+    health.trusted === false ||
+    ["compile-failed", "spawn-failed", "write-failed", "exited"].includes(health.state);
+
+  pointerState.textContent = health.trusted === false
+    ? "无权限"
+    : health.state === "running"
+      ? "正常"
+      : health.state === "starting"
+        ? "启动中"
+        : "异常";
+  pointerState.classList.toggle("is-bad", dead);
+
+  pointerBanner.hidden = !dead;
+  if (!dead) return;
+
+  pointerBanner.innerHTML = "";
+  const line = document.createElement("p");
+  line.textContent =
+    health.trusted === false
+      ? "点击通道不可用：AirCursor 没有辅助功能权限，系统会丢弃所有合成的鼠标事件。手势和语音都会「识别成功但毫无反应」。"
+      : `点击通道不可用：${health.detail || "helper 未运行"}。手势和语音都会「识别成功但毫无反应」。`;
+  const how = document.createElement("p");
+  how.textContent =
+    health.trusted === false
+      ? "点上方「打开辅助功能权限」，勾选 AirCursor（开发模式下条目名可能是 Electron），然后完全退出并重启 AirCursor。"
+      : "先看下方诊断面板的日志；若是编译失败，确认已安装 Xcode 命令行工具（xcode-select --install）。";
+  pointerBanner.append(line, how);
+}
+
 function labelFor(action) {
   return actionLabels[action] || rules.find((rule) => rule.id === action)?.label || action;
 }
@@ -431,14 +468,22 @@ window.aircursor.onStatus((status) => {
     render();
   }
 });
+// Helper output goes to the diagnostics log, NOT to the 识别 line. It used to
+// overwrite that line, where the 500ms status loop then erased it — so the
+// helper's "缺少辅助功能权限" warning was visible for under half a second and
+// three reports never carried it. Permission state now lives in its own row.
 window.aircursor.onHelperLog((message) => {
-  handState.textContent = message.trim();
+  const line = `[pointer] ${message.trim()}\n`;
+  overlayLog.textContent = (overlayLog.textContent + line).split("\n").slice(-60).join("\n");
+  overlayLog.scrollTop = overlayLog.scrollHeight;
 });
+window.aircursor.onPointerHealth(renderPointerHealth);
 
 window.aircursor.getState().then((state) => {
   settings = state.settings;
   rules = state.rules || [];
   if (state.status?.voice) voiceState.textContent = state.status.voice;
   renderConflicts(state.gestureConflicts);
+  renderPointerHealth(state.pointer);
   render();
 });

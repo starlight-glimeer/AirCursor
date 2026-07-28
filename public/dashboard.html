@@ -18,6 +18,10 @@
           <button id="controlToggle" class="primary" type="button">开启控制</button>
           <button id="accessibilityButton" type="button">打开辅助功能权限</button>
         </div>
+        <!-- Red, unlike the amber gesture-conflict banner: when this shows, no
+             gesture and no voice command can move the mouse at all, so it is not
+             a tuning problem the user should keep debugging. -->
+        <div id="pointerBanner" class="pointer-banner" hidden></div>
       </section>
 
       <section class="grid">
@@ -38,6 +42,10 @@
           <div class="status">
             <span>控制模式</span>
             <strong id="controlState">关闭</strong>
+          </div>
+          <div class="status">
+            <span>点击通道</span>
+            <strong id="pointerState">检查中</strong>
           </div>
           <div class="status">
             <span>规则</span>

@@ -71,6 +71,11 @@ Turn on 诊断与调参 in the dashboard (or press Command+D) to get the panel t
 | 跟随滞后 | how far the cursor trails the raw fingertip | > 26 px |
 | 识别率 | share of frames with a hand, plus hand count | < 85% |
 | 手势距离 | distance to the nearest recorded template, the closest seen, and which gesture it is | — |
+| 保持进度 | which gesture is accumulating hold time and for how long, or that a pinch is waiting for release | — |
+
+**点击通道 in 运行状态 is the first row to read when nothing happens.** Gesture recognition and mouse delivery are two separate claims, and only 识别 speaks for the first: macOS discards synthesised events from a process without the Accessibility grant, silently — no error, no exception, and the helper cannot tell. So a live gesture, a click animation and a dead mouse are all mutually consistent, and no amount of gesture tuning helps. 正常 means the helper is running and trusted; 无权限 and 异常 raise a red banner that names the fix. Reports carry the same verdict under `pointer`, including which binary is running (`pointer.binary`) and how many commands were written versus dropped.
+
+The helper binary is named after a hash of its Swift source, not the app version, because the Accessibility grant is per binary — a version-keyed name silently revoked the permission on every release, which is why clicking worked up to 0.2.15 and did nothing from 0.2.16 to 0.3.1. `pointer.binary` keeping the same suffix across an upgrade is the check that this stays fixed.
 
 If two bound gestures are too close together, an amber banner in 手势规则 names the pair and their distance — that fault presents as "the action does nothing" because a different action fires instead, so it is called out rather than left to be inferred. Reports carry the same list under `gestureConflicts`.
 
