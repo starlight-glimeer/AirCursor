@@ -116,6 +116,20 @@ The alternative — mapping continuous hand displacement onto scroll position �
 no defined rest position, so the hand has to hover mid-air and there is no moment
 that clearly means "stop".
 
+Recording a movement is deliberately cheap to attempt. An earlier version added a
+guard for every failure mode it could see — a round-trip refusal, a longer settle
+window, a ready beat, a 3s countdown — each defensible on its own, and together they
+made one attempt cost 7.5 seconds with several ways to lose all of it. Reported as
+"现在的录制变得更加困难了". Now: 2s countdown, a 400ms ready beat that ends the moment
+the hand starts moving, and a timed-out attempt that contained a real movement is
+saved rather than discarded, since the rest pose alone took four seconds to capture.
+
+A movement that ends where it began still saves, with a warning on the row. It is
+genuinely harder to recognise — its final pose is reachable without having moved —
+but most people finish a gesture by putting their hand back, so refusing it rejected
+the natural way to record. The risk is handled where it bites: the matcher requires
+the midpoint between keyframes to be crossed.
+
 **Nothing fires while recording.** Not a reduced set — nothing: recorded gestures,
 built-in poses, sequences and voice commands are all frozen for the duration. This
 is not defensive coding, it is a fix: performing a movement takes the hand through

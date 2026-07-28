@@ -123,7 +123,11 @@ let ROTATION_TOLERANCE = 0;
 // sit at "手势有变动" forever. Half the match threshold keeps the template
 // tighter than what will later be accepted, without fighting the tracker.
 const STABLE_TOLERANCE_RATIO = 0.5;
-const COUNTDOWN_MS = 3000;
+// 3s was set when recording meant one still pose. A dynamic recording now costs
+// countdown + hold + the movement, and the whole thing has to be repeated on any
+// mistake — reported as "现在的录制变得更加困难了". 2s is still enough time to get
+// into frame, and the hold is where accuracy actually comes from.
+const COUNTDOWN_MS = 2000;
 const HOLD_MS = 2000;
 const CAPTURE_TIMEOUT_MS = 15000;
 const MAX_SAMPLES = 90;
@@ -1282,7 +1286,12 @@ function updateRecording(gesture, handCount) {
 const MOTION_SETTLE_MS = 900;
 // A beat between "your rest pose is captured" and "start moving", so the hand's
 // travel to the movement's starting point is not recorded as part of it.
-const MOVE_READY_MS = 1200;
+//
+// Short, and it ends early once the hand actually moves: 1200ms of forced waiting
+// made recording feel worse than the problem it solved ("现在的录制变得更加困难
+// 了"). The point is only to not charge the approach to the movement, and a user
+// who is already moving has clearly finished approaching.
+const MOVE_READY_MS = 400;
 // Below this there was no movement worth calling a gesture, so recording says so
 // rather than saving a trigger of ~0 that would fire on tracking noise.
 const MIN_TILT_DEG = 6;
@@ -1300,15 +1309,23 @@ function updateMotionRecording(recording, gesture, handCount, now) {
   // until it elapses. The timeout clock is reset with it so the pause does not eat
   // into the capture window.
   if (recording.readyUntil && now < recording.readyUntil) {
-    aircursor.recordingProgress({
-      action: recording.action,
-      phase: "capture",
-      stage: "ready",
-      progress: 0,
-      hint: `准备好了就开始做动作：${recording.hints.moveHint}`,
-      countdown: Math.ceil((recording.readyUntil - now) / 1000),
-    });
-    return;
+    // Ends early if the hand has already left the rest pose — waiting out a timer
+    // while the user is mid-gesture is exactly what made this feel harder.
+    const pose = gesture?.poseTemplate;
+    const moving =
+      pose && recording.restTemplate
+        ? templateDistance(pose, recording.restTemplate, 0) > MATCH_THRESHOLD * 0.5
+        : false;
+    if (!moving) {
+      aircursor.recordingProgress({
+        action: recording.action,
+        phase: "capture",
+        stage: "ready",
+        progress: 0,
+        hint: `${recording.hints.moveHint}（可以直接开始）`,
+      });
+      return;
+    }
   }
   if (recording.readyUntil) {
     recording.readyUntil = 0;
@@ -1316,6 +1333,14 @@ function updateMotionRecording(recording, gesture, handCount, now) {
   }
 
   if (now - recording.startedAt > CAPTURE_TIMEOUT_MS) {
+    // If a real movement was seen, save it instead of throwing the whole session
+    // away: the rest pose took 4 seconds to capture and is perfectly good, and
+    // making the user redo all of it because the *end* was ambiguous is what makes
+    // recording feel punishing. Only a session with no movement at all fails.
+    if (recording.peak > 0 && recording.movedAt) {
+      saveMotionRecording(recording, law, recording.lastFloor ?? 0);
+      return;
+    }
     const what = law === "tilt" ? "抬压" : law === "swipe" ? "挥动" : "";
     failRecording(recording, `超时没有捕捉到${what}动作，请重新录制`);
     return;
@@ -1373,6 +1398,7 @@ function updateMotionRecording(recording, gesture, handCount, now) {
     floor = MATCH_THRESHOLD * MIN_SHAPE_TRAVEL_RATIO;
   }
 
+  recording.lastFloor = floor;
   recording.trace.push(Number(extent.toFixed(2)));
   if (recording.trace.length > MAX_SAMPLES) recording.trace.shift();
 
@@ -1459,16 +1485,20 @@ function saveMotionRecording(recording, law, floor) {
     failRecording(recording, "这个动作幅度太小，看起来更像一个静态姿势。换成「静态」录制，或者把动作做大一些");
     return;
   }
-  // A movement that ends where it began cannot be told from one that never
-  // happened: its final pose is reachable without moving. Refused with the reason
-  // rather than saved as a gesture that could only misfire.
-  if (!law && sequenceSpan(keyframes, MATCH_THRESHOLD, templateDistance) < MIN_SEQUENCE_SPAN) {
-    failRecording(
-      recording,
-      "这个动作结束时又回到了起始姿势（挥手、画圈这类往复动作），只靠姿势序列分不出「做完了」和「没动过」。请让动作停在一个和起点明显不同的姿势上，或者改用左右挥动那两个动作",
-    );
-    return;
-  }
+  // A movement that ends where it began is genuinely harder to recognise — its
+  // final pose is reachable without having moved — but refusing it outright was
+  // the wrong call. Most people finish a gesture by putting their hand back, so
+  // this rejected the natural way to record, and combined with MIN_KEYFRAMES it
+  // left a very narrow window where anything could be saved at all. Being usable
+  // and occasionally over-eager beats being correct and unrecordable.
+  //
+  // So it saves, and the risk is handled where it actually bites: the matcher
+  // requires passing the midpoint between keyframes, and a returning sequence is
+  // flagged so the panel can say why it might misfire. `roundTrip` rides along on
+  // the recording rather than being recomputed, since the templates are already
+  // here.
+  const span = sequenceSpan(keyframes, MATCH_THRESHOLD, templateDistance);
+  const roundTrip = !law && span < MIN_SEQUENCE_SPAN;
   finishRecording(
     recording,
     {
@@ -1481,6 +1511,9 @@ function saveMotionRecording(recording, law, floor) {
       trigger: law ? Number((recording.peak * 0.75).toFixed(2)) : null,
       peak: Number(recording.peak.toFixed(2)),
       floor: Number(floor.toFixed(2)),
+      // Recorded so the panel can warn instead of the recording being refused.
+      span: Number(span.toFixed(2)),
+      roundTrip,
       durationMs: keyframes.length ? keyframes[keyframes.length - 1].offsetMs : 0,
     },
     keyframes,

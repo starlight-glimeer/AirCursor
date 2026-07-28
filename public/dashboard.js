@@ -386,7 +386,12 @@ function describeRecorded(recorded) {
     return `${hands}动态 · 挥动到 ${motion.peak.toFixed(1)} 掌宽/秒，超过 ${motion.trigger.toFixed(1)} 就切桌面`;
   }
   if (recorded.keyframes?.length) {
-    return `${hands}动态 · ${recorded.keyframes.length} 帧 / ${motion?.durationMs || 0}ms，做完整个动作触发`;
+    const base = `${hands}动态 · ${recorded.keyframes.length} 帧 / ${motion?.durationMs || 0}ms，做完整个动作触发`;
+    // Saved rather than refused, but the risk is real and stated: a movement that
+    // ends where it began has a final pose the hand can be in without having
+    // moved, so it is easier to misfire. Refusing it outright rejected the natural
+    // way to record (most people put their hand back), which was worse.
+    return motion?.roundTrip ? `${base}｜⚠️ 结束姿势和起始接近，可能误触` : base;
   }
   return `${hands}静态姿势`;
 }
@@ -855,7 +860,10 @@ function describeSaved(result) {
   const motion = result.motion;
   if (motion?.measure === "tilt") return `（${hands}，抬压 ${Math.round(motion.peak)}°）`;
   if (motion?.measure === "swipe") return `（${hands}，挥动 ${motion.peak.toFixed(1)} 掌宽/秒）`;
-  if (result.keyframes?.length) return `（${hands}动态，${result.keyframes.length} 帧）`;
+  if (result.keyframes?.length) {
+    const warn = result.motion?.roundTrip ? "，⚠️ 结束姿势和起始接近，可能误触" : "";
+    return `（${hands}动态，${result.keyframes.length} 帧${warn}）`;
+  }
   return `（${hands}静态）`;
 }
 window.aircursor.onSettings((nextSettings) => {
