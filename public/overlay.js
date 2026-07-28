@@ -64,8 +64,18 @@ const GESTURE_LABELS = {
 const { PointerFilter, TrackingMetrics } = window.AirCursorTracking;
 const { orderHands, buildPoseTemplate, templateDistance, medianTemplate, GestureResolver, SEPARATION_FACTOR } =
   window.AirCursorPose;
-const { WristPath, TiltRatchet, SwipeDetector, maxUsableTiltDeg, wrapAngle, toDegrees, RATCHET_MAX_SPEED } =
-  window.AirCursorMotion;
+const {
+  WristPath,
+  TiltRatchet,
+  SwipeDetector,
+  SequenceMatcher,
+  maxUsableTiltDeg,
+  wrapAngle,
+  toDegrees,
+  buildKeyframes,
+  MIN_KEYFRAMES,
+  RATCHET_MAX_SPEED,
+} = window.AirCursorMotion;
 
 const metrics = new TrackingMetrics();
 const resolver = new GestureResolver();
@@ -163,6 +173,12 @@ const state = {
     lastScrollAt: 0,
     lastSwipeAt: 0,
     lastSwipeDirection: 0,
+    // Law-less recorded movements, matched as sequences.
+    sequences: 0,
+    lastSequenceAction: null,
+    lastSequenceAt: 0,
+    sequenceProgress: 0,
+    sequenceBlocked: null,
   },
   drag: { active: false, missingSince: 0 },
   pinch: {
@@ -281,8 +297,14 @@ function resolveCustomGesture(gesture) {
   const candidates = [];
   for (const [action, mapped] of Object.entries(settings.gestureMap || {})) {
     if (!mapped?.startsWith("custom:")) continue;
-    const template = settings.recordedGestures?.[mapped.slice("custom:".length)]?.template;
-    if (template) candidates.push({ action, template });
+    const entry = settings.recordedGestures?.[mapped.slice("custom:".length)];
+    if (!entry?.template) continue;
+    // A sequence gesture's stored template is the pose the movement *starts*
+    // from, so treating it as a static candidate would fire the action the moment
+    // the user struck the starting pose — before performing the movement at all.
+    // Its matching runs through the sequence matcher instead.
+    if (entry.keyframes?.length && !lawDriven(action)) continue;
+    candidates.push({ action, template: entry.template });
   }
   return resolver.resolve(
     gesture.poseTemplate,
@@ -495,6 +517,126 @@ function updateHoldGesture(gesture) {
 // a pose held for a second would otherwise fire it every frame. So rules need a
 // deliberate hold plus a cooldown, and only ever fire from a recorded gesture —
 // the built-in poses stay reserved for the pointer.
+// One matcher per action, created on demand: a sequence carries progress state,
+// and two actions stepping through the same matcher would corrupt each other.
+const sequenceMatchers = new Map();
+
+function sequenceMatcherFor(action) {
+  if (!sequenceMatchers.has(action)) sequenceMatchers.set(action, new SequenceMatcher());
+  return sequenceMatchers.get(action);
+}
+
+// Dynamic gestures with no physical law: the recorded movement itself is the
+// trigger. Any action can be bound to one, which is the point — a flick to open
+// an app, a circle to right-click. Scroll and desktop switching are excluded
+// because they run their own law (they need a direction and they repeat).
+//
+// Returns the action that completed this frame, or null.
+function resolveSequenceGesture(gesture, now) {
+  let fired = null;
+  for (const [action, mapped] of Object.entries(settings.gestureMap || {})) {
+    if (!mapped?.startsWith("custom:")) continue;
+    if (lawDriven(action)) continue;
+    const entry = settings.recordedGestures?.[mapped.slice("custom:".length)];
+    const keyframes = entry?.keyframes;
+    if (!keyframes?.length) continue;
+
+    const matcher = sequenceMatcherFor(action);
+    const done = matcher.update({
+      pose: gesture?.poseTemplate,
+      keyframes,
+      threshold: MATCH_THRESHOLD,
+      rotationTolerance: ROTATION_TOLERANCE,
+      distance: templateDistance,
+      now,
+    });
+    // First completion wins the frame, but every matcher is still stepped, so a
+    // partly-performed gesture keeps its progress instead of being starved by
+    // whichever action happens to be earlier in the map.
+    if (done && !fired) fired = action;
+  }
+  return fired;
+}
+
+function lawDriven(action) {
+  return action === "scroll" || action === "spaceSwitch";
+}
+
+// A sequence has its own ways to do nothing — never reached the starting pose,
+// stalled halfway, took too long — and they need opposite fixes, so the furthest
+// along matcher reports for the frame. Without this a half-recognised movement is
+// indistinguishable from one that was never recognised at all.
+function recordSequenceDiagnostics() {
+  const m = state.motion;
+  let best = null;
+  for (const [action, matcher] of sequenceMatchers) {
+    if (!best || matcher.progress > best.matcher.progress) best = { action, matcher };
+  }
+  if (!best) {
+    m.sequenceProgress = 0;
+    m.sequenceBlocked = sequenceMatchers.size ? null : "notBound";
+    m.sequenceAction = null;
+    return;
+  }
+  m.sequenceProgress = Number(best.matcher.progress.toFixed(2));
+  m.sequenceBlocked = best.matcher.blocked;
+  m.sequenceAction = best.action;
+}
+
+// What a completed movement does. A sequence is inherently one-shot — it fires
+// when the movement finishes — so the actions that are inherently held (drag) or
+// modal (wake/exit) map onto it as a toggle or a single event rather than
+// pretending the pose is still being held.
+function performSequenceAction(action) {
+  state.motion.lastSequenceAction = action;
+  state.motion.lastSequenceAt = performance.now();
+  state.motion.sequences += 1;
+
+  if (state.ruleIds.includes(action)) {
+    aircursor.runRule(action);
+    burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 32 : 12, "#8affc1");
+    return;
+  }
+
+  switch (action) {
+    case "wake":
+      setControlMode(true);
+      return;
+    case "exit":
+      setControlMode(false);
+      return;
+    // Requires control mode for the same reason the pose versions do: these move
+    // or press the real mouse.
+    case "click":
+      if (!settings.controlEnabled) return;
+      sendPointer("click", state.cursor.x, state.cursor.y);
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#ffd76a");
+      return;
+    case "rightClick":
+      if (!settings.controlEnabled) return;
+      sendPointer("rightClick", state.cursor.x, state.cursor.y);
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 24 : 8, "#ffd76a");
+      return;
+    case "drag":
+      // A movement cannot express "keep holding", so it toggles: perform it to
+      // pick up, perform it again to drop. Better than a drag that ends the
+      // instant the movement does, which would make dragging anywhere impossible.
+      if (!settings.controlEnabled) return;
+      if (state.drag.active) {
+        endDrag();
+      } else {
+        state.drag.active = true;
+        state.drag.missingSince = 0;
+        state.pointerDown = true;
+        sendPointer("down", state.cursor.x, state.cursor.y);
+        burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#ff4ea3");
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 function updateRuleGestures(gesture) {
   const hold = state.ruleHold;
   const now = Date.now();
@@ -774,30 +916,35 @@ function updateSystemCursor(gesture) {
 // Stage 2 records the movement itself: perform the action, and its measured
 // extent becomes this gesture's trigger, so "how far do I have to tilt" is
 // answered by what the user actually did instead of by guessing at a slider.
-const MOTION_RECORDING = {
-  scroll: {
+// Wording per law, for the actions that keep one. A dynamic recording without a
+// law is an arbitrary movement, so it gets generic wording — there is nothing
+// specific to say about a gesture the user invented.
+const LAW_HINTS = {
+  tilt: {
     restHint: "先摆好中位：手掌摆正、手腕别动。这是之后「手回到这儿才能再滚一次」的位置",
     moveHint: "现在把手掌往上抬到你觉得该滚一段的位置，然后停一下",
-    // What the movement stage measures. Tilt is an angle; a swipe is travel.
-    measure: "tilt",
   },
-  spaceSwitch: {
+  swipe: {
     restHint: "先把手停稳，摆好准备挥动的姿势",
     moveHint: "现在横向快速挥一下，像拨开东西那样",
-    measure: "swipe",
   },
 };
+const SEQUENCE_HINTS = {
+  restHint: "先摆好动作的起始姿势，保持住",
+  moveHint: "现在把整个动作做出来，做完停一下",
+};
 
-function isMotionAction(action) {
-  return Boolean(MOTION_RECORDING[action]);
-}
-
-function startRecording(action, wantedHands) {
+function startRecording(action, wantedHands, kind, law) {
+  const dynamic = kind === "dynamic";
   state.recording = {
     action,
     wantedHands,
-    motion: MOTION_RECORDING[action] || null,
-    // Motion recordings run rest -> move; static ones only ever have one stage.
+    // The user's choice, not a lookup by action name. A law only applies to the
+    // two actions that need a direction; everything else dynamic is a sequence.
+    dynamic,
+    law: dynamic ? law || null : null,
+    hints: dynamic ? LAW_HINTS[law] || SEQUENCE_HINTS : null,
+    // Dynamic recordings run rest -> move; static ones only ever have one stage.
     stage: "rest",
     phase: "countdown",
     startedAt: performance.now(),
@@ -812,6 +959,10 @@ function startRecording(action, wantedHands) {
     peakAt: 0,
     movedAt: 0,
     trace: [],
+    // Every frame of the movement, thinned to keyframes on save. This is what
+    // makes the preview an animation instead of a number to imagine, and what
+    // lets a movement with no law be matched as a sequence.
+    frames: [],
   };
 }
 
@@ -841,7 +992,7 @@ function conflictingAction(action, template) {
   return null;
 }
 
-function finishRecording(recording, motion) {
+function finishRecording(recording, motion, keyframes) {
   const template = medianTemplate(recording.samples);
   const conflict = conflictingAction(recording.action, template);
   state.recording = null;
@@ -854,7 +1005,7 @@ function finishRecording(recording, motion) {
     });
     return;
   }
-  aircursor.recordingResult({ ok: true, action: recording.action, template, motion });
+  aircursor.recordingResult({ ok: true, action: recording.action, template, motion, keyframes });
 }
 
 function failRecording(recording, reason) {
@@ -941,9 +1092,9 @@ function updateRecording(gesture, handCount) {
 
   const held = now - recording.holdStartedAt;
   if (held >= HOLD_MS) {
-    // A static gesture is done. A motion gesture has only just captured the
-    // position it starts and returns to; the action itself is still to come.
-    if (recording.motion) {
+    // A static gesture is done. A dynamic one has only just captured the pose it
+    // starts from and returns to; the action itself is still to come.
+    if (recording.dynamic) {
       recording.stage = "move";
       recording.restTemplate = medianTemplate(recording.samples);
       recording.startedAt = now;
@@ -951,6 +1102,7 @@ function updateRecording(gesture, handCount) {
       recording.peakAt = 0;
       recording.movedAt = 0;
       recording.trace = [];
+      recording.frames = [];
       wristPath.reset();
       return;
     }
@@ -963,8 +1115,8 @@ function updateRecording(gesture, handCount) {
     phase: "capture",
     stage: recording.stage,
     progress: Math.min(1, held / HOLD_MS),
-    hint: recording.motion
-      ? `${recording.motion.restHint} · 保持 ${((HOLD_MS - held) / 1000).toFixed(1)}s`
+    hint: recording.hints
+      ? `${recording.hints.restHint} · 保持 ${((HOLD_MS - held) / 1000).toFixed(1)}s`
       : `保持不动 ${((HOLD_MS - held) / 1000).toFixed(1)}s`,
   });
 }
@@ -981,19 +1133,25 @@ const MOTION_SETTLE_MS = 450;
 const MIN_TILT_DEG = 6;
 const MIN_SWIPE_SPEED = 1.4;
 
+// How far the pose must travel from the rest pose for a law-less movement to
+// count as having moved at all. In match-threshold units, like every other shape
+// distance, so it scales with the tolerance.
+const MIN_SHAPE_TRAVEL_RATIO = 1.1;
+
 function updateMotionRecording(recording, gesture, handCount, now) {
-  const spec = recording.motion;
+  const law = recording.law;
 
   if (now - recording.startedAt > CAPTURE_TIMEOUT_MS) {
-    failRecording(recording, `超时没有捕捉到${spec.measure === "tilt" ? "抬压" : "挥动"}动作，请重新录制`);
+    const what = law === "tilt" ? "抬压" : law === "swipe" ? "挥动" : "";
+    failRecording(recording, `超时没有捕捉到${what}动作，请重新录制`);
     return;
   }
 
   const pose = gesture?.poseTemplate;
   const wrongHands = recording.wantedHands && handCount !== recording.wantedHands;
   if (!pose || wrongHands) {
-    // Losing the hand mid-movement does not throw the recording away: the peak
-    // seen so far is still the best evidence of what the user did, and at a
+    // Losing the hand mid-movement does not throw the recording away: what has
+    // been captured is still the best evidence of what the user did, and at a
     // 40-60% tracking rate a movement is guaranteed to have gaps.
     aircursor.recordingProgress({
       action: recording.action,
@@ -1006,8 +1164,15 @@ function updateMotionRecording(recording, gesture, handCount, now) {
     return;
   }
 
+  // Every frame of the movement is kept, whatever drives the gesture: this is the
+  // recording the preview animates, and it is also what a law-less gesture is
+  // matched against. Thinning to keyframes happens once, on save.
+  recording.frames.push({ template: pose, at: now });
+  if (recording.frames.length > MAX_SAMPLES) recording.frames.shift();
+
   let extent = 0;
-  if (spec.measure === "tilt") {
+  let floor = 0;
+  if (law === "tilt") {
     const rest = recording.restTemplate?.angle;
     const live = pose.angle;
     if (!Number.isFinite(rest) || !Number.isFinite(live)) {
@@ -1018,33 +1183,35 @@ function updateMotionRecording(recording, gesture, handCount, now) {
       return;
     }
     extent = Math.abs(toDegrees(wrapAngle(live - rest)));
-  } else {
+    floor = MIN_TILT_DEG;
+  } else if (law === "swipe") {
     wristPath.push(gesture.wrist.x, gesture.wrist.y, gesture.palmWidth, now);
     extent = wristPath.displacement()?.speed ?? 0;
+    floor = MIN_SWIPE_SPEED;
+  } else {
+    // No law: "how far along" is how far the shape has travelled from the rest
+    // pose, which is also what the sequence matcher will step through.
+    extent = templateDistance(pose, recording.restTemplate, 0);
+    if (!Number.isFinite(extent)) extent = 0;
+    floor = MATCH_THRESHOLD * MIN_SHAPE_TRAVEL_RATIO;
   }
 
   recording.trace.push(Number(extent.toFixed(2)));
   if (recording.trace.length > MAX_SAMPLES) recording.trace.shift();
 
-  const floor = spec.measure === "tilt" ? MIN_TILT_DEG : MIN_SWIPE_SPEED;
   if (extent > recording.peak) {
     recording.peak = extent;
     recording.peakAt = now;
   }
   if (extent > floor) recording.movedAt = now;
 
-  // Done when a real movement has happened and has since settled back: for the
-  // tilt that is the hand coming down, for the swipe the wrist stopping.
+  // Done when a real movement has happened and has since settled: for the tilt
+  // the hand coming down, for the swipe the wrist stopping, for a sequence the
+  // shape returning near where it started. A gesture that ends somewhere else
+  // entirely still completes — the timeout is the backstop.
   const settled = recording.movedAt && extent < floor && now - recording.movedAt > MOTION_SETTLE_MS;
   if (recording.peak > floor && settled) {
-    finishRecording(recording, {
-      measure: spec.measure,
-      // Fire a little before the extent the user demonstrated, so reproducing
-      // the same movement reliably crosses it rather than landing exactly on the
-      // edge — the same reason a hold has a grace window.
-      trigger: Number((recording.peak * 0.75).toFixed(2)),
-      peak: Number(recording.peak.toFixed(2)),
-    });
+    saveMotionRecording(recording, law, floor);
     return;
   }
 
@@ -1058,11 +1225,51 @@ function updateMotionRecording(recording, gesture, handCount, now) {
     hint: recording.movedAt
       ? extent < floor
         ? "很好，保持住让它记下来"
-        : `记录中：${spec.measure === "tilt" ? `${extent.toFixed(0)}°` : `${extent.toFixed(1)} 掌宽/秒`}`
-      : spec.moveHint,
+        : `记录中：${formatExtent(extent, law)}`
+      : recording.hints.moveHint,
     measured: Number(recording.peak.toFixed(2)),
-    unit: spec.measure === "tilt" ? "°" : "掌宽/秒",
+    unit: extentUnit(law),
+    frames: recording.frames.length,
   });
+}
+
+function extentUnit(law) {
+  if (law === "tilt") return "°";
+  if (law === "swipe") return " 掌宽/秒";
+  return "";
+}
+
+function formatExtent(extent, law) {
+  if (law === "tilt") return `${extent.toFixed(0)}°`;
+  if (law === "swipe") return `${extent.toFixed(1)} 掌宽/秒`;
+  return `幅度 ${extent.toFixed(2)}`;
+}
+
+function saveMotionRecording(recording, law, floor) {
+  const keyframes = buildKeyframes(recording.frames, MATCH_THRESHOLD, templateDistance);
+  // A law-driven gesture is still usable with one keyframe: the law decides when
+  // it fires. A sequence is not — a single frame is just a static pose, and
+  // saving it would produce a gesture that fires without any movement at all.
+  if (!law && keyframes.length < MIN_KEYFRAMES) {
+    failRecording(recording, "这个动作幅度太小，看起来更像一个静态姿势。换成「静态」录制，或者把动作做大一些");
+    return;
+  }
+  finishRecording(
+    recording,
+    {
+      // null for a sequence: there is no single number that describes an
+      // arbitrary movement, and inventing one would be a number nobody can act on.
+      measure: law,
+      // Fire a little before the extent the user demonstrated, so reproducing the
+      // same movement reliably crosses it rather than landing exactly on the edge
+      // — the same reason a hold has a grace window.
+      trigger: law ? Number((recording.peak * 0.75).toFixed(2)) : null,
+      peak: Number(recording.peak.toFixed(2)),
+      floor: Number(floor.toFixed(2)),
+      durationMs: keyframes.length ? keyframes[keyframes.length - 1].offsetMs : 0,
+    },
+    keyframes,
+  );
 }
 
 function burst(x, y, count, color) {
@@ -1269,6 +1476,11 @@ function loop(now) {
     // pose before the motion laws look at it, and `now` matches the same clock
     // updateSystemCursor used.
     updateMotionGestures(gesture, now);
+    // Sequences last: a completed movement is a one-shot action, and running it
+    // after the pointer means it cannot fight a drag or click that is mid-flight.
+    const completed = resolveSequenceGesture(gesture, now);
+    if (completed) performSequenceAction(completed);
+    recordSequenceDiagnostics();
   } else {
     // Recording must not fire the action being recorded, and the motion state
     // must not carry the recording session's hand movement into the next frame.
@@ -1499,7 +1711,7 @@ aircursor.onRecording((request) => {
     stopRecording();
     return;
   }
-  startRecording(request.action, request.hands);
+  startRecording(request.action, request.hands, request.kind, request.law);
 });
 aircursor.onVoiceCommand((phrase) => handleVoiceText(phrase, "系统语音"));
 window.addEventListener("resize", resize);

@@ -47,7 +47,7 @@ The four actions above are fixed in code; which gesture triggers each one is you
 3. Hold the pose still. The progress bar fills over 2 seconds and the template saves itself — no button to press, which is the point when both hands are busy.
 4. Moving out of the pose, dropping a hand, or showing the wrong number of hands restarts the 2 seconds and says why. After 15 seconds it gives up rather than saving something wrong.
 
-Every recorder row draws the pose it saved, so you can see what was captured instead of performing the gesture to find out. A tilt gesture draws two frames: the rest pose, and the position the tilt reaches. A saved row also states what it measured — "抬压到 26°，超过 19° 就滚一段" — because a gesture confirmed only by "已录制" is a gesture you still have to go and test.
+Every recorder row draws what it saved, so you can see the recording instead of performing the gesture to find out what it captured. A static gesture draws its pose. A dynamic one **plays the movement back on a loop**, interpolated between keyframes so it reads as the movement rather than a stutter — a dynamic gesture shown as a still frame says nothing at all about what the gesture is. Rows also state what was captured in the terms it was performed in ("抬压到 26°，超过 19° 就滚一段", "7 帧 / 480ms，做完整个动作触发"), because a gesture confirmed only by "已录制" is a gesture you still have to go and test.
 
 The saved template is the median of the frames you held, so one mistracked frame cannot poison it. Matching normalizes translation and scale, so the same pose works closer to or further from the camera; two-hand templates share one origin and one scale across both hands, so the distance between your hands stays part of the signature. A one-hand pose can never match a two-hand template.
 
@@ -61,9 +61,35 @@ A new recording is refused when it lands within one threshold of a gesture you a
 
 ## Motion Gestures
 
-Scrolling and desktop switching are not poses. A pose is a single frame, and both
-of these need to know what the hand has been *doing*, so the recorded pose only
-selects which control law is active and the movement afterwards decides the rest.
+**静态姿势 or 动态动作 is a choice on every row.** It used to be a hardcoded list —
+scroll and desktop switching were dynamic, everything else static — which decided
+for the user twice over: no moving gesture for a rule ("draw a circle to open
+Chrome"), and no still pose where one would do. Any action can now be bound to
+either kind. The two exceptions are scroll and desktop switching, which stay
+dynamic because they need a *direction*, and only a movement carries one.
+
+A dynamic recording stores the movement as **keyframes** — the frames that carry
+its shape, thinned from the raw stream so 30 near-identical frames do not become
+30 stored ones. That is what makes the preview an animation rather than a number
+to imagine, and it is what lets an arbitrary movement drive an action: a gesture
+with no physical law behind it is matched by stepping through its keyframes, and
+fires when the last one is reached. Stepping is monotonic — it only ever asks "has
+the hand reached the next pose yet" — which makes it naturally immune to dropped
+frames, and frame-drop immunity is not optional at a measured 40-60% tracking
+rate.
+
+A sequence gesture's stored pose is the one the movement *starts* from, so it is
+deliberately excluded from static matching. Otherwise striking the starting pose
+would fire the action before the movement had happened at all.
+
+Because a movement is inherently one-shot, the actions that are inherently held
+map onto it differently: a dynamic 拖拽 toggles (perform to pick up, perform again
+to drop) rather than ending the instant the movement does, which would make
+dragging anywhere impossible.
+
+Scrolling and desktop switching go further: they keep a physical law on top of
+the recorded movement, because they need something keyframes cannot express — a
+direction, and the ability to repeat without re-performing the whole movement.
 They are two different laws, deliberately not one mechanism:
 
 **上下滚动 is a ratchet.** Park the wrist, tilt the palm up, and one notch of
@@ -142,6 +168,7 @@ Turn on 诊断与调参 in the dashboard (or press Command+D) to get the panel t
 | 保持进度 | which gesture is accumulating hold time and for how long, or that a pinch is waiting for release, or that a drag is holding the button | — |
 | 抬压角度 | palm tilt away from the recorded pose, against the trigger angle, and whether that angle was clamped | — |
 | 动态手势 | why the ratchet and the swipe each did nothing this frame, plus wrist speed | — |
+| 动作进度 | how far through a recorded movement the hand has got, and what is blocking it | — |
 
 动态手势 exists because these two gestures have several distinct ways to do
 nothing — the wrist was moving, the hand has not returned to rest, the cooldown is

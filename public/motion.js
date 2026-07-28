@@ -299,7 +299,168 @@ class SwipeDetector {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Recorded movement as a sequence of poses.
+//
+// A tilt angle and a swipe speed are two hardcoded physical laws. They are the
+// right ones for scrolling and desktop switching — those need a *direction* and
+// they need to repeat, which a single trajectory match cannot express — but they
+// cannot describe an arbitrary movement, and they cannot be drawn. Storing the
+// movement as keyframes fixes both: any action can be driven by any movement, and
+// the recording can be played back so the user sees what was captured instead of
+// reading a number and imagining it.
+// ---------------------------------------------------------------------------
+
+// How different two frames must be to both be kept. A movement recorded at 30fps
+// is ~30 frames of which most are nearly identical; keeping them all would store
+// a stutter and animate a pose that barely moves. Expressed as a fraction of the
+// match threshold so it scales with the tolerance everything else uses.
+const KEYFRAME_SPACING = 0.55;
+const MAX_KEYFRAMES = 10;
+// Below this a "movement" is a hand sitting still, and saving it would produce a
+// gesture that fires on tracking noise.
+const MIN_KEYFRAMES = 3;
+
+// Reduce a recorded stream to the frames that carry the shape of the movement.
+// Always keeps the first and last: those are where it starts and where it ends,
+// which are the two the user is most likely to check in the preview.
+function buildKeyframes(samples, threshold, distance) {
+  if (!samples?.length) return [];
+  const spacing = threshold * KEYFRAME_SPACING;
+  const frames = [{ template: samples[0].template, at: samples[0].at }];
+  for (const sample of samples.slice(1)) {
+    const last = frames[frames.length - 1];
+    if (distance(sample.template, last.template, 0) < spacing) continue;
+    frames.push({ template: sample.template, at: sample.at });
+  }
+  const tail = samples[samples.length - 1];
+  const last = frames[frames.length - 1];
+  if (last.at !== tail.at && distance(tail.template, last.template, 0) > spacing * 0.4) {
+    frames.push({ template: tail.template, at: tail.at });
+  }
+  // Too many frames is a slow or wandering recording. Thin from the middle, never
+  // the ends, so the start and end poses survive.
+  while (frames.length > MAX_KEYFRAMES) {
+    let closest = 1;
+    let best = Infinity;
+    for (let i = 1; i < frames.length - 1; i += 1) {
+      const d = distance(frames[i].template, frames[i + 1].template, 0);
+      if (d < best) {
+        best = d;
+        closest = i;
+      }
+    }
+    frames.splice(closest, 1);
+  }
+  const start = frames[0].at;
+  return frames.map((f) => ({ template: f.template, offsetMs: Math.round(f.at - start) }));
+}
+
+// Walks a recorded sequence, one keyframe at a time, and fires when the last one
+// is reached.
+//
+// Monotonic progress rather than any kind of elastic matching: it only ever asks
+// "has the hand reached the next pose yet", which is naturally immune to dropped
+// frames (a missed frame just means the step is recognised slightly later) and
+// costs one distance computation per frame. Frame-drop immunity is not optional
+// here — the measured tracking rate on real hardware is 40-60%.
+class SequenceMatcher {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.index = 0;
+    this.startedAt = null;
+    this.lastAdvanceAt = null;
+    this.lastFiredAt = null;
+    this.blocked = null;
+    // Set when a blocked reason must survive the frames after it, so a
+    // half-second panel refresh cannot miss the one frame that explained a
+    // failure. reset() deliberately leaves it alone — it outlives the attempt.
+    this.blockedUntil = 0;
+    this.progress = 0;
+  }
+
+  // `slack` multiplies the recorded timings: a movement performed a bit slower
+  // than it was recorded still counts, one performed at half speed does not (by
+  // then it is a different gesture, or the hand is doing something else).
+  update({ pose, keyframes, threshold, rotationTolerance, distance, now, slack = 2.2, cooldownMs = 500 }) {
+    if (!pose || !keyframes?.length) {
+      this.blocked = "notBound";
+      return false;
+    }
+    if (this.lastFiredAt !== null && now - this.lastFiredAt < cooldownMs) {
+      this.blocked = "cooldown";
+      return false;
+    }
+
+    const total = keyframes[keyframes.length - 1].offsetMs || 1;
+    const budget = total * slack;
+
+    // Waiting to start: the hand has to arrive at the movement's first pose.
+    if (this.index === 0) {
+      if (distance(pose, keyframes[0].template, rotationTolerance) < threshold) {
+        this.blockedUntil = 0;
+        this.index = 1;
+        this.startedAt = now;
+        this.lastAdvanceAt = now;
+        this.progress = 1 / keyframes.length;
+        this.blocked = null;
+        // A single-keyframe sequence is a static pose; treat reaching it as done.
+        if (keyframes.length === 1) return this.fire(now);
+        return false;
+      }
+      if (now >= this.blockedUntil) this.blocked = "waitingStart";
+      this.progress = 0;
+      return false;
+    }
+
+    // Started: too slow overall, or stalled on one step, and it was not this
+    // gesture after all. Reported distinctly from "never started", because the
+    // two need opposite fixes.
+    if (now - this.startedAt > budget) {
+      // Reaching here at all means the starting pose already matched (that is
+      // what set index to 1), so this is always "started but did not finish in
+      // time". Reporting it as waitingStart would send the user to change their
+      // starting pose when what they need to change is the speed.
+      this.reset();
+      this.blocked = "tooSlow";
+      // Sticky, because the panel refreshes twice a second and the frames right
+      // after a timeout report "waiting for the starting pose" — true, but it
+      // overwrites the only frame that said why the attempt failed. The user
+      // would see the wrong advice and go change their starting pose.
+      this.blockedUntil = now + 1200;
+      return false;
+    }
+
+    if (distance(pose, keyframes[this.index].template, rotationTolerance) < threshold) {
+      this.index += 1;
+      this.lastAdvanceAt = now;
+      this.progress = this.index / keyframes.length;
+      this.blocked = null;
+      if (this.index >= keyframes.length) return this.fire(now);
+      return false;
+    }
+
+    this.blocked = "midMovement";
+    return false;
+  }
+
+  fire(now) {
+    this.reset();
+    this.lastFiredAt = now;
+    this.blocked = null;
+    return true;
+  }
+}
+
 root.AirCursorMotion = {
+  KEYFRAME_SPACING,
+  MAX_KEYFRAMES,
+  MIN_KEYFRAMES,
+  buildKeyframes,
+  SequenceMatcher,
   RATCHET_MAX_SPEED,
   SWIPE_MIN_SPEED,
   RATCHET_REARM_FRACTION,

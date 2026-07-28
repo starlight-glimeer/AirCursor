@@ -250,6 +250,17 @@ function buildRuleRow(rule) {
   voice.textContent = `语音：${rule.voice}`;
   copy.append(title, voice);
 
+  // Rules can be dynamic too: "draw a circle to open Chrome" is exactly the kind
+  // of thing a recorded movement is for.
+  const kindSelect = document.createElement("select");
+  kindSelect.dataset.kindAction = rule.id;
+  for (const [value, text] of [["static", "静态姿势"], ["dynamic", "动态动作"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    kindSelect.append(option);
+  }
+
   const handsSelect = document.createElement("select");
   handsSelect.dataset.handsAction = rule.id;
   for (const [value, text] of [["1", "单手"], ["2", "双手"]]) {
@@ -304,7 +315,7 @@ function buildRuleRow(rule) {
   hint.textContent = "未录制";
   feedback.append(bar, hint);
 
-  row.append(copy, handsSelect, recordButton, clearButton, testButton, preview, feedback);
+  row.append(copy, kindSelect, handsSelect, recordButton, clearButton, testButton, preview, feedback);
   return row;
 }
 
@@ -321,6 +332,16 @@ function paintRecorderRow(row) {
   const handsSelect = row.querySelector("[data-hands-action]");
   handsSelect.disabled = Boolean(recordingAction);
   if (recorded?.hands && !recordingAction) handsSelect.value = String(recorded.hands);
+  const kindSelect = row.querySelector("[data-kind-action]");
+  if (kindSelect) {
+    // Left alone for the two actions that can only be dynamic, so the select does
+    // not appear to offer a choice that will be overridden.
+    const locked = kindSelect.options.length === 1;
+    kindSelect.disabled = locked || Boolean(recordingAction);
+    if (!locked && recorded && !recordingAction) {
+      kindSelect.value = recorded.keyframes?.length ? "dynamic" : "static";
+    }
+  }
   paintPreview(row, recorded);
   if (isRecording) return;
   row.querySelector("[data-progress-action]").style.width = "0%";
@@ -333,24 +354,102 @@ function describeRecorded(recorded) {
   const hands = recorded.hands === 2 ? "双手" : "单手";
   const motion = recorded.motion;
   if (motion?.measure === "tilt") {
-    return `${hands} · 抬压到 ${Math.round(motion.peak)}°，超过 ${Math.round(motion.trigger)}° 就滚一段`;
+    return `${hands}动态 · 抬压到 ${Math.round(motion.peak)}°，超过 ${Math.round(motion.trigger)}° 就滚一段`;
   }
   if (motion?.measure === "swipe") {
-    return `${hands} · 挥动到 ${motion.peak.toFixed(1)} 掌宽/秒，超过 ${motion.trigger.toFixed(1)} 就切桌面`;
+    return `${hands}动态 · 挥动到 ${motion.peak.toFixed(1)} 掌宽/秒，超过 ${motion.trigger.toFixed(1)} 就切桌面`;
   }
-  return `已录制${hands}手势`;
+  if (recorded.keyframes?.length) {
+    return `${hands}动态 · ${recorded.keyframes.length} 帧 / ${motion?.durationMs || 0}ms，做完整个动作触发`;
+  }
+  return `${hands}静态姿势`;
+}
+
+// One animation loop per row that has keyframes, driven by rAF. A dynamic gesture
+// shown as a still frame is unreadable — the whole content of the gesture is the
+// movement — so the preview plays the recording back.
+const previewLoops = new Map();
+
+function stopPreviewLoop(action) {
+  const handle = previewLoops.get(action);
+  if (handle) cancelAnimationFrame(handle);
+  previewLoops.delete(action);
+}
+
+// Plays the keyframes at their recorded timings, then holds the final pose for a
+// beat before looping, so the start and end are distinguishable. Interpolating
+// between keyframes rather than cutting: the keyframes are a thinned sample of a
+// continuous movement, and cutting between them reads as a stutter that the real
+// gesture does not have.
+function startPreviewLoop(action, canvas, keyframes) {
+  stopPreviewLoop(action);
+  if (keyframes.length < 2) return;
+  const total = keyframes[keyframes.length - 1].offsetMs || 1;
+  const hold = 420;
+  const cycle = total + hold;
+  let start = null;
+
+  const tick = (nowMs) => {
+    // Cheap self-cancel: the loop stops when the canvas leaves the document,
+    // rather than needing every caller to remember to tear it down.
+    if (!canvas.isConnected) {
+      previewLoops.delete(action);
+      return;
+    }
+    if (start === null) start = nowMs;
+    const t = (nowMs - start) % cycle;
+    const at = Math.min(t, total);
+
+    let i = 0;
+    while (i < keyframes.length - 2 && keyframes[i + 1].offsetMs < at) i += 1;
+    const a = keyframes[i];
+    const b = keyframes[i + 1];
+    const span = Math.max(1, b.offsetMs - a.offsetMs);
+    const k = Math.max(0, Math.min(1, (at - a.offsetMs) / span));
+
+    drawTemplate(canvas, lerpTemplate(a.template, b.template, k), {
+      accent: t > total ? "#1f9d63" : "#0f72d4",
+    });
+    previewLoops.set(action, requestAnimationFrame(tick));
+  };
+  previewLoops.set(action, requestAnimationFrame(tick));
+}
+
+// Straight-line interpolation in normalized landmark space. Not physically exact
+// for a rotating hand, but the keyframes are close enough together that the
+// difference is invisible, and it keeps the preview honest: every frame drawn is
+// derived from stored data, not synthesised movement.
+function lerpTemplate(a, b, k) {
+  if (!a?.values || !b?.values || a.values.length !== b.values.length) return a;
+  const values = new Array(a.values.length);
+  for (let i = 0; i < a.values.length; i += 1) values[i] = a.values[i] + (b.values[i] - a.values[i]) * k;
+  return { hands: a.hands, angle: a.angle, values };
 }
 
 function paintPreview(row, recorded) {
   const preview = row.querySelector("[data-preview-action]");
   if (!preview) return;
+  const action = row.dataset.action;
   const rest = preview.querySelector("[data-preview-rest]");
   const move = preview.querySelector("[data-preview-move]");
+  const keyframes = recorded?.keyframes;
+
+  // A recorded movement animates in the first cell; there is no "the pose" to
+  // show beside it, since the pose is different in every frame.
+  if (keyframes?.length > 1) {
+    rest.classList.add("is-animated");
+    rest.title = `录下的动作（${keyframes.length} 帧，${recorded.motion?.durationMs || 0}ms），循环播放`;
+    startPreviewLoop(action, rest, keyframes);
+    move.hidden = true;
+    return;
+  }
+
+  stopPreviewLoop(action);
+  rest.classList.remove("is-animated");
   drawTemplate(rest, recorded?.template);
   rest.title = recorded ? "录下的姿势（匹配就是拿它比的）" : "还没录";
-  // Only a tilt gesture has a second position worth drawing; a swipe's extent is
-  // a speed, which a still frame cannot show, so its cell stays hidden rather
-  // than showing a duplicate of the rest pose and implying otherwise.
+  // A tilt gesture recorded before keyframes existed still has an extent worth
+  // drawing as a second frame.
   const tilt = recorded?.motion?.measure === "tilt" ? recorded.motion.peak : null;
   move.hidden = tilt === null;
   if (tilt !== null) {
@@ -431,13 +530,21 @@ async function toggleRecording(action) {
   }
 
   const hands = Number(document.querySelector(`[data-hands-action="${action}"]`).value);
-  const result = await window.aircursor.startRecording(action, hands);
+  const kindSelect = document.querySelector(`[data-kind-action="${action}"]`);
+  const kind = kindSelect?.value || "static";
+  const result = await window.aircursor.startRecording(action, hands, kind);
   if (!result.ok) {
     ruleState.textContent = `无法录制：${result.reason}`;
     return;
   }
   recordingAction = action;
-  ruleState.textContent = `录制中：${labelFor(action)}。倒计时后摆好${hands === 2 ? "双手" : "单手"}手势并保持 2 秒。`;
+  const which = hands === 2 ? "双手" : "单手";
+  // Main resolves the kind (scroll/spaceSwitch are forced dynamic), so the
+  // instruction comes from what it decided, not from what the select said.
+  ruleState.textContent =
+    result.kind === "dynamic"
+      ? `录制中：${labelFor(action)}。倒计时后先摆好${which}起始姿势保持 2 秒，然后把动作做出来。`
+      : `录制中：${labelFor(action)}。倒计时后摆好${which}手势并保持 2 秒。`;
   render();
 }
 
@@ -593,6 +700,12 @@ const MOTION_BLOCKED_TEXT = {
   tooShort: "挥动距离不够",
   notHorizontal: "不够横向",
   notStraight: "轨迹不够直",
+  // Sequence-specific. "Never started" and "stalled halfway" need opposite fixes
+  // — a different starting pose versus a movement performed differently — so they
+  // are never collapsed into one message.
+  waitingStart: "还没摆到动作的起始姿势",
+  midMovement: "动作进行中",
+  tooSlow: "动作做得太慢，超时重来",
 };
 
 function motionReason(blocked) {
@@ -619,6 +732,17 @@ function renderMotion(motion) {
     "mMotion",
     null,
     `滚动 ${motionReason(motion.scrollBlocked)} · 挥动 ${motionReason(motion.swipeBlocked)} · 手速 ${motion.wristSpeed}`,
+  );
+  // Sequence progress is the readout for a recorded movement: a partly-performed
+  // gesture shows how far it got, which separates "wrong starting pose" from
+  // "started but never finished the movement".
+  const pct = Math.round((motion.sequenceProgress || 0) * 100);
+  setMetric(
+    "mSequence",
+    null,
+    motion.sequenceAction
+      ? `${labelFor(motion.sequenceAction)} ${pct}% · ${motionReason(motion.sequenceBlocked)}`
+      : "没有动态动作手势",
   );
 }
 window.aircursor.onOverlayLog((entry) => {
@@ -665,7 +789,8 @@ function describeSaved(result) {
   const motion = result.motion;
   if (motion?.measure === "tilt") return `（${hands}，抬压 ${Math.round(motion.peak)}°）`;
   if (motion?.measure === "swipe") return `（${hands}，挥动 ${motion.peak.toFixed(1)} 掌宽/秒）`;
-  return `（${hands}）`;
+  if (result.keyframes?.length) return `（${hands}动态，${result.keyframes.length} 帧）`;
+  return `（${hands}静态）`;
 }
 window.aircursor.onSettings((nextSettings) => {
   settings = nextSettings;

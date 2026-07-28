@@ -231,6 +231,14 @@ h2 {
   border-color: #bfe4d1;
 }
 
+/* A recorded movement plays back rather than showing a frozen frame: a dynamic
+   gesture shown as a still image says nothing about what the gesture is. */
+.recorder-preview canvas.is-animated {
+  width: 96px;
+  border-color: #a8c8ea;
+  background: linear-gradient(180deg, #fff 0%, #f7fbff 100%);
+}
+
 .recorder-bar {
   height: 6px;
   border-radius: 999px;

@@ -101,6 +101,7 @@
                  ways to do nothing, and all of them look like "识别到了但没反应". -->
             <div class="metric"><span>抬压角度</span><strong id="mTilt">-</strong><em>相对录制姿势，达到触发角才滚一段</em></div>
             <div class="metric"><span>动态手势</span><strong id="mMotion">-</strong><em>没反应时这里说明卡在哪一步</em></div>
+            <div class="metric"><span>动作进度</span><strong id="mSequence">-</strong><em>录的动作做到第几步了</em></div>
           </div>
           <div class="tuning-grid">
             <label>
@@ -209,6 +210,10 @@
           <div class="gesture-recorder">
             <div class="recorder-row" data-action="wake">
               <div><b>唤醒控制</b><span>录制后保持该手势 1 秒触发</span></div>
+              <select data-kind-action="wake">
+                <option value="static">静态姿势</option>
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="wake">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -226,6 +231,10 @@
             </div>
             <div class="recorder-row" data-action="click">
               <div><b>点击</b><span>摆出该手势再松开，触发一次左键点击</span></div>
+              <select data-kind-action="click">
+                <option value="static">静态姿势</option>
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="click">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -243,6 +252,10 @@
             </div>
             <div class="recorder-row" data-action="drag">
               <div><b>拖拽（按住不放）</b><span>保持该手势期间左键一直按住，松手即放下</span></div>
+              <select data-kind-action="drag">
+                <option value="static">静态姿势</option>
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="drag">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -265,6 +278,9 @@
                 <b>上下滚动（手掌抬压）</b>
                 <span>手腕不动，手掌上抬滚一段、下压滚回来；回到录制姿势后可再抬一次。需要单手（双手镜像姿势测不出角度）</span>
               </div>
+              <select data-kind-action="scroll" disabled title="这个动作必须靠移动的方向来判断，只能录动态">
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="scroll">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -282,6 +298,9 @@
             </div>
             <div class="recorder-row" data-action="spaceSwitch">
               <div><b>左右切换桌面（横向挥动）</b><span>保持该手势横向快速挥一下切一个桌面；手停下来才能再挥</span></div>
+              <select data-kind-action="spaceSwitch" disabled title="这个动作必须靠移动的方向来判断，只能录动态">
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="spaceSwitch">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -299,6 +318,10 @@
             </div>
             <div class="recorder-row" data-action="rightClick">
               <div><b>右键</b><span>录制后触发一次右键点击</span></div>
+              <select data-kind-action="rightClick">
+                <option value="static">静态姿势</option>
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="rightClick">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -316,6 +339,10 @@
             </div>
             <div class="recorder-row" data-action="exit">
               <div><b>退出控制</b><span>录制后保持该手势 1 秒退出</span></div>
+              <select data-kind-action="exit">
+                <option value="static">静态姿势</option>
+                <option value="dynamic">动态动作</option>
+              </select>
               <select data-hands-action="exit">
                 <option value="1">单手</option>
                 <option value="2">双手</option>

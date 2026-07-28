@@ -152,17 +152,29 @@ const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, 
 // "click pose plus movement" collided with the motion gestures — those move the
 // hand on purpose, so any pose still matching click would have started a drag.
 //
-// `scroll` and `spaceSwitch` are motion gestures: the pose only selects which
-// control law is active, and the movement afterwards decides what happens. They
-// need an axis to measure tilt against, so a pose with no usable axis (mirrored
-// two-hand) is refused for `scroll` at record time.
+// `scroll` and `spaceSwitch` are always dynamic: they need a direction, which
+// only a movement carries. Scroll additionally needs a measurable rotation axis,
+// so a pose with no usable axis (mirrored two-hand) is refused at record time.
 const coreActions = ["wake", "click", "drag", "rightClick", "scroll", "spaceSwitch", "exit"];
 const ruleActions = ruleDefinitions.map((rule) => rule.id);
 const recordableActions = [...coreActions, ...ruleActions];
-const motionActions = ["scroll", "spaceSwitch"];
-// Actions whose gesture must have a measurable rotation axis, because the action
-// is driven by how far the pose tilts away from the recorded one.
-const axisRequiredActions = ["scroll"];
+
+// Static or dynamic is the user's choice, not a property of the action.
+//
+// It used to be a hardcoded list — scroll and spaceSwitch were dynamic, everything
+// else static — which decided for the user twice over: it denied a moving gesture
+// to actions that would suit one (a flick to switch app, a circle to open a rule)
+// and it forced one on scrolling. Any action can now be bound to either kind, so
+// the recorder asks.
+const RECORDING_KINDS = ["static", "dynamic"];
+
+// Scroll and desktop switching keep a physical law on top of the recorded
+// movement, because they need something a trajectory cannot express: a direction
+// (up vs down, left vs right) and the ability to repeat without re-performing the
+// whole movement. For those, a dynamic recording measures the extent of the
+// movement and the law drives it; for every other action a dynamic recording is
+// matched as a sequence and fires once when it completes.
+const lawDrivenActions = { scroll: "tilt", spaceSwitch: "swipe" };
 const actionLabels = {
   wake: "唤醒控制",
   click: "点击",
@@ -539,18 +551,32 @@ function updateSettings(patch) {
 
 // Recording needs both hands visible with the skeleton on, whatever the user's
 // normal settings are; the previous values come back when the session ends.
-function beginRecording(action, hands) {
+function beginRecording(action, hands, kind) {
   if (!recordableActions.includes(action)) return { ok: false, reason: "未知动作" };
   if (recordingSession) endRecording();
+
+  // Scroll and desktop switching are the two actions that cannot work from a
+  // still pose at all — they need a direction, which only a movement carries.
+  const wanted = RECORDING_KINDS.includes(kind) ? kind : "static";
+  const resolved = lawDrivenActions[action] ? "dynamic" : wanted;
 
   recordingSession = {
     action,
     hands,
+    kind: resolved,
     restore: { twoHands: settings.twoHands, showHands: settings.showHands, controlEnabled: settings.controlEnabled },
   };
   updateSettings({ overlayVisible: true, showHands: true, twoHands: hands > 1 || settings.twoHands, controlEnabled: false });
-  broadcast("aircursor:recording", { type: "start", action, hands });
-  return { ok: true, action, hands };
+  broadcast("aircursor:recording", {
+    type: "start",
+    action,
+    hands,
+    kind: resolved,
+    // Only the law-driven actions need the extent measured; everything else
+    // matches the movement as a sequence.
+    law: lawDrivenActions[action] || null,
+  });
+  return { ok: true, action, hands, kind: resolved };
 }
 
 function endRecording() {
@@ -570,21 +596,30 @@ function endRecording() {
 // than an edge case. Refuse at save time, while the user still knows what they
 // just held.
 function axisRejection(action, template) {
-  if (!axisRequiredActions.includes(action)) return null;
+  if (lawDrivenActions[action] !== "tilt") return null;
   if (Number.isFinite(template?.angle)) return null;
   return "这个动作靠手掌抬压的角度触发，但刚录的姿势测不出方向轴（双手镜像姿势会互相抵消）。换一个单手姿势，或让两手不对称。";
 }
 
-function saveRecordedTemplate(action, template, motion) {
+function saveRecordedTemplate(action, template, motion, keyframes) {
   if (!recordableActions.includes(action)) return;
   updateSettings({
     gestureMap: { [action]: `custom:${action}` },
     recordedGestures: {
-      // `motion` carries the trigger measured from the movement the user just
-      // performed, so this gesture fires at the extent they demonstrated rather
-      // than at whatever a global slider happens to say. The slider stays as the
-      // fallback for gestures recorded before this existed.
-      [action]: { at: Date.now(), hands: template.hands, template, motion: motion || null },
+      // `motion` carries the extent measured from the movement the user just
+      // performed, so a law-driven gesture fires at the extent they demonstrated
+      // rather than at whatever a global slider happens to say.
+      //
+      // `keyframes` is the movement itself. It is what makes the preview an
+      // animation rather than a number to imagine, and it is what lets any action
+      // be driven by an arbitrary movement instead of only the two hardcoded laws.
+      [action]: {
+        at: Date.now(),
+        hands: template.hands,
+        template,
+        motion: motion || null,
+        keyframes: keyframes?.length ? keyframes : null,
+      },
     },
   });
 }
@@ -962,7 +997,9 @@ ipcMain.handle("aircursor:update-settings", (_event, patch) => {
   updateSettings(patch);
   return { settings };
 });
-ipcMain.handle("aircursor:start-recording", (_event, action, hands) => beginRecording(action, hands === 2 ? 2 : 1));
+ipcMain.handle("aircursor:start-recording", (_event, action, hands, kind) =>
+  beginRecording(action, hands === 2 ? 2 : 1, kind),
+);
 ipcMain.handle("aircursor:cancel-recording", () => {
   endRecording();
   return { ok: true };
@@ -1038,7 +1075,9 @@ ipcMain.on("aircursor:recording-result", (_event, result) => {
   // owns which actions exist and what they require.
   const axisReason = result.ok && result.template ? axisRejection(result.action, result.template) : null;
   const ok = Boolean(result.ok) && !axisReason;
-  if (ok && result.template) saveRecordedTemplate(result.action, result.template, result.motion);
+  if (ok && result.template) {
+    saveRecordedTemplate(result.action, result.template, result.motion, result.keyframes);
+  }
   recordingSession = null;
   updateSettings(session.restore);
   // The overlay knows the geometry but not the labels, so it reports which
