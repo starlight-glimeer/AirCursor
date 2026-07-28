@@ -1,0 +1,18 @@
+{
+  "name": "gesturewall",
+  "productName": "GestureWall",
+  "version": "0.1.0",
+  "description": "macOS 手势音乐壁纸：三层用户自备图片按景深排布，手势控制，跟随正在播放的音乐。",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "vendor": "bash scripts/fetch-vendor.sh",
+    "postinstall": "bash scripts/fetch-vendor.sh",
+    "start": "electron .",
+    "test": "node test/run.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/nowplaying.js && node --check src/layers.js && node --check src/mood.js && node --check src/gestures.js && node --check src/wall.js && node --check src/settings.js && node --check src/sensor.js"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0"
+  }
+}

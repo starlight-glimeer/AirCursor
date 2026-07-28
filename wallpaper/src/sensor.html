@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>GestureWall Sensor</title>
+<style>
+  body { margin: 0; background: #111; }
+  /* Kept in the DOM because MediaPipe needs a real playing video element, but
+     never shown: this window exists only to turn frames into events. */
+  #cam { width: 320px; height: 240px; transform: scaleX(-1); }
+</style>
+</head>
+<body>
+  <video id="cam" playsinline muted autoplay></video>
+  <script src="vendor/mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="vendor/mediapipe/hands/hands.js"></script>
+  <script src="gestures.js"></script>
+  <script src="sensor.js"></script>
+</body>
+</html>
