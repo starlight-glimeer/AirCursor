@@ -1,0 +1,242 @@
+// layers.js 的几何与控制律，纯逻辑跑，不需要 Electron / WebGL / 摄像头。
+//
+//   node test/layers.test.js
+//
+// 失败时 exit code 非 0 —— 这是守卫不是日志。只打印 ✓/✗ 却永远返回 0 的"测试"
+// 在改坏之后仍然一片绿，等于没有。
+//
+// 用最小 THREE 替身：断言测的是几何和数值，不是渲染，所以不需要真 three.js
+// （也因此能在没有 GPU 的地方跑）。⚠️ 反过来说，它证不了"画出来好不好看"。
+const assert = require('node:assert');
+
+class V3 {
+  constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+  set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+  copy(o) { return this.set(o.x, o.y, o.z); }
+}
+class Col {
+  constructor() { this.r = 1; this.g = 1; this.b = 1; }
+  setRGB(r, g, b) { this.r = r; this.g = g; this.b = b; return this; }
+}
+globalThis.THREE = {
+  PlaneGeometry: class { dispose() {} },
+  MeshBasicMaterial: class { constructor(o) { Object.assign(this, o); this.color = new Col(); } dispose() {} },
+  Mesh: class {
+    constructor(geo, mat) {
+      this.geometry = geo; this.material = mat;
+      this.position = new V3(); this.scale = new V3(1, 1, 1);
+      this.rotation = new V3(); this.visible = false;
+    }
+  },
+  Scene: class { constructor() { this.children = []; } add(o) { this.children.push(o); } remove() {} },
+  PerspectiveCamera: class {
+    constructor(fov, aspect) { this.fov = fov; this.aspect = aspect; this.position = new V3(); this.rotation = new V3(); }
+    updateProjectionMatrix() {} updateMatrixWorld() {}
+  },
+  WebGLRenderer: class { setClearColor() {} setPixelRatio() {} setSize() {} render() {} },
+};
+
+require('../src/layers.js');
+const L = globalThis.GestureWallLayers;
+
+const VP = 16 / 9;
+const baseConfig = () => JSON.parse(JSON.stringify({
+  depth: { background: -4.5, subject: 0, shard: 2.2 },
+  transform: {
+    background: { scale: 1, x: 0, y: 0 },
+    subject: { scale: 1, x: 0, y: 0 },
+    shard: { scale: 1, x: 0, y: 0 },
+  },
+  shards: { count: 3, spread: 1.7, drift: 1 },
+  parallax: 1,
+  tilt: { maxYaw: 30, maxPitch: 18 },
+  zoom: { min: 0.7, max: 2.4 },
+}));
+
+function buildScene(cfg) {
+  const scene = new L.WallScene({});
+  scene.resize(1920, 1080, 1);
+  scene.background.setTexture({}, VP);
+  scene.subject.setTexture({}, 1);
+  scene.setShardCount(cfg.shards.count, cfg.depth.shard);
+  scene.setShardTexture({}, 1);
+  return scene;
+}
+
+let passed = 0;
+function check(name, fn) {
+  try {
+    fn();
+    passed += 1;
+    console.log(`  ✓ ${name}`);
+  } catch (error) {
+    console.error(`  ✗ ${name}\n    ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+console.log('\nlayers.js');
+
+// 每层的平面必须在它自己的景深上填满画面，远的层要更大。这条错了就是"背景铺不满"
+// 或"主体溢出屏幕"。
+check('每层在自己景深上都填满画面', () => {
+  for (const z of [-4.5, 0, 2.2]) {
+    const h = L.visibleHeightAt(z);
+    const s = L.coverSize(VP, z, VP);
+    assert.ok(s.width >= h * VP - 1e-6, `z=${z} 宽度不够 (${s.width} < ${h * VP})`);
+    assert.ok(s.height >= h - 1e-6, `z=${z} 高度不够`);
+  }
+});
+
+check('越远的层平面越大（景深方向正确）', () => {
+  const bg = L.coverSize(VP, -4.5, VP);
+  const subject = L.coverSize(VP, 0, VP);
+  const shard = L.coverSize(VP, 2.2, VP);
+  assert.ok(bg.width > subject.width, '背景没有比主体大');
+  assert.ok(subject.width > shard.width, '主体没有比碎片大');
+});
+
+// 视差的全部意义：三层不能同向等量移动，否则只是一张平图在平移。
+check('视差：背景落后、碎片领先（反向）', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  view.pointerX = 1;
+  L.applyView(scene, view, cfg, 0);
+  const bgX = scene.background.mesh.position.x;
+  const shard = scene.shards[0];
+  const offset = shard.mesh.position.x - shard.restX * cfg.shards.spread;
+  assert.ok(bgX < -1e-3, `背景没有落后 (x=${bgX})`);
+  assert.ok(offset > 1e-3, `碎片没有领先 (偏移=${offset})`);
+});
+
+check('视差强度 0 时三层完全不动', () => {
+  const cfg = baseConfig();
+  cfg.parallax = 0;
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  view.pointerX = 1;
+  L.applyView(scene, view, cfg, 0);
+  assert.strictEqual(scene.background.mesh.position.x, 0);
+});
+
+// zoom 必须是相机推进而不是层缩放：推镜头会同时改变层间视差，那才是"进去了"的
+// 感觉；缩放层只是把图放大。
+check('zoom 是相机推进，层不被缩放', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  view.zoom = 1;
+  L.applyView(scene, view, cfg, 0);
+  const z1 = scene.camera.position.z;
+  const s1 = scene.subject.mesh.scale.x;
+  view.zoom = 2;
+  L.applyView(scene, view, cfg, 0);
+  assert.ok(scene.camera.position.z < z1, '相机没有推进');
+  assert.strictEqual(scene.subject.mesh.scale.x, s1, '层被缩放了（应该只动相机）');
+});
+
+// 帧率无关：120Hz 屏上不该比 30Hz 收敛快四倍，否则手感随显示器变。
+check('平滑与帧率无关', () => {
+  const cfg = baseConfig();
+  const converge = (fps) => {
+    const v = L.createViewState();
+    v.target.zoom = 2;
+    for (let i = 0; i < Math.round(fps); i += 1) L.stepView(v, 1 / fps, cfg);
+    return v.zoom;
+  };
+  assert.ok(Math.abs(converge(30) - converge(120)) < 0.01, '30fps 和 120fps 收敛不一致');
+});
+
+check('zoom 被夹在上下限内', () => {
+  const cfg = baseConfig();
+  const hi = L.createViewState();
+  hi.target.zoom = 99;
+  L.stepView(hi, 0.016, cfg);
+  assert.strictEqual(hi.target.zoom, cfg.zoom.max);
+  const lo = L.createViewState();
+  lo.target.zoom = -5;
+  L.stepView(lo, 0.016, cfg);
+  assert.strictEqual(lo.target.zoom, cfg.zoom.min);
+});
+
+check('yaw / pitch 被夹在 ±1', () => {
+  const cfg = baseConfig();
+  const v = L.createViewState();
+  v.target.yaw = 5;
+  v.target.pitch = -5;
+  L.stepView(v, 0.016, cfg);
+  assert.strictEqual(v.target.yaw, 1);
+  assert.strictEqual(v.target.pitch, -1);
+});
+
+// 碎片位置必须是 index 的函数，不能用 Math.random()：随机的话每次重启壁纸都
+// 重新洗牌，用户永远调不出一个满意的排布。
+check('碎片布局确定性（重启不重排）', () => {
+  const a = new L.Shard(3, 2.2);
+  const b = new L.Shard(3, 2.2);
+  assert.strictEqual(a.restX, b.restX);
+  assert.strictEqual(a.restY, b.restY);
+  assert.notStrictEqual(new L.Shard(4, 2.2).restX, a.restX, '不同 index 应该在不同位置');
+});
+
+check('碎片数量增减不泄漏', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  scene.setShardCount(9, 2.2);
+  assert.strictEqual(scene.shards.length, 9);
+  scene.setShardCount(2, 2.2);
+  assert.strictEqual(scene.shards.length, 2);
+  scene.setShardCount(0, 2.2);
+  assert.strictEqual(scene.shards.length, 0);
+});
+
+check('情绪越高画面越亮', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  view.mood = 0;
+  L.applyView(scene, view, cfg, 0);
+  const dark = scene.subject.material.color.r;
+  view.mood = 1;
+  L.applyView(scene, view, cfg, 0);
+  assert.ok(scene.subject.material.color.r > dark, '情绪没有影响亮度');
+});
+
+// 背景整张跟着主体一起摇，看起来会像房间在倾斜而不是主体在转身。
+check('背景转动幅度远小于主体', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  view.yaw = 1;
+  L.applyView(scene, view, cfg, 0);
+  const bg = Math.abs(scene.background.mesh.rotation.y);
+  const subject = Math.abs(scene.subject.mesh.rotation.y);
+  assert.ok(bg < subject * 0.3, `背景转太多 (${bg} vs ${subject})`);
+  assert.ok(subject > 0.01, '主体没有转');
+});
+
+check('缺图的层不参与布局', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  scene.subject.clear();
+  const view = L.createViewState();
+  view.pointerX = 1;
+  L.applyView(scene, view, cfg, 0);
+  assert.strictEqual(scene.subject.mesh.visible, false);
+});
+
+// 时间只该驱动碎片漂浮；背景和主体自己动起来会像有鬼。
+check('时间只影响碎片，不影响背景和主体', () => {
+  const cfg = baseConfig();
+  const scene = buildScene(cfg);
+  const view = L.createViewState();
+  L.applyView(scene, view, cfg, 0);
+  const bg0 = scene.background.mesh.position.x;
+  const sh0 = scene.shards[0].mesh.position.x;
+  L.applyView(scene, view, cfg, 3.7);
+  assert.strictEqual(scene.background.mesh.position.x, bg0, '背景随时间动了');
+  assert.notStrictEqual(scene.shards[0].mesh.position.x, sh0, '碎片没有漂浮');
+});
+
+console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
