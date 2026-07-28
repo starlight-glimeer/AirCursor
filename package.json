@@ -1,13 +1,13 @@
 {
   "name": "aircursor",
-  "version": "0.2.17",
+  "version": "0.4.2",
   "description": "Transparent macOS hand and voice control overlay.",
   "author": "starlight-glimeer",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "web": "node server.js",
-    "check": "node --check electron/main.js && node --check electron/preload.js && node --check public/dashboard.js && node --check public/overlay.js",
+    "check": "node --check electron/main.js && node --check electron/preload.js && node --check public/dashboard.js && node --check public/overlay.js && node --check public/pose.js && node --check public/motion.js && node --check public/tracking.js",
     "dist:mac": "electron-builder --mac dmg"
   },
   "build": {

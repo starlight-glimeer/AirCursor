@@ -103,9 +103,12 @@ h2 {
   border-top: 1px solid #eef1f6;
 }
 
-.status span,
-.rules span {
+.status span {
   color: #677083;
+}
+
+.status strong.is-bad {
+  color: #b3261e;
 }
 
 .switch {
@@ -120,12 +123,6 @@ h2 {
 .switch input {
   width: 42px;
   height: 24px;
-}
-
-.rules {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
 }
 
 .gesture-settings {
@@ -165,10 +162,12 @@ h2 {
   margin-bottom: 16px;
 }
 
+/* Flex, not grid: rule rows carry an extra 测试 button, and a fixed column count
+   would either leave a phantom gap on the shorter rows or need two rulesets. */
 .recorder-row {
   min-height: 64px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
@@ -177,10 +176,101 @@ h2 {
   background: #f8faff;
 }
 
-.recorder-row div {
+.recorder-row > div {
   display: grid;
   gap: 4px;
   min-width: 0;
+  flex: 1 1 220px;
+}
+
+.recorder-row select {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #cbd4e2;
+  border-radius: 8px;
+  background: #fff;
+  color: #14151c;
+  font: inherit;
+  font-size: 13px;
+}
+
+.recorder-feedback {
+  flex: 1 1 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A saved gesture is 63 numbers; without drawing them back the only way to find
+   out what got recorded is to go and try it. The preview draws the stored
+   template itself, so what is on screen is what will be matched against. */
+.recorder-preview {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Portrait, because a hand is: measured on a real template the normalized shape
+   spans 1.73 x 2.67, i.e. taller than it is wide. In the original 76x62 landscape
+   box the drawing fit by height and used only half the width, so every preview came
+   out small and off-centre — worse for two-hand templates, which are wider still
+   and got squashed. */
+.recorder-preview canvas {
+  width: 60px;
+  height: 84px;
+  border: 1px solid #dfe6f1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+/* Two hands side by side are wider than tall, so that shape gets its own box
+   rather than being fit into the one-hand one. */
+.recorder-preview canvas.is-wide {
+  width: 104px;
+  height: 84px;
+}
+
+.recorder-preview canvas.is-empty {
+  border-style: dashed;
+  background: #f4f6fa;
+}
+
+/* The rest pose and the movement extent are two separate things to check, so a
+   motion gesture shows both frames side by side. */
+.recorder-preview canvas.is-move {
+  border-color: #bfe4d1;
+}
+
+/* A recorded movement plays back rather than showing a frozen frame: a dynamic
+   gesture shown as a still image says nothing about what the gesture is. */
+.recorder-preview canvas.is-animated {
+  border-color: #a8c8ea;
+  background: linear-gradient(180deg, #fff 0%, #f7fbff 100%);
+}
+
+.recorder-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #e3e9f3;
+  overflow: hidden;
+}
+
+.recorder-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: #0f72d4;
+  transition: width 120ms linear;
+}
+
+.recorder-feedback span {
+  min-width: 168px;
+  text-align: right;
+  color: #677083;
+  font-size: 13px;
 }
 
 .recorder-row span {
@@ -193,6 +283,45 @@ h2 {
   box-shadow: 0 0 0 3px rgba(15, 114, 212, 0.12);
 }
 
+/* The movement stage is not "hold still", so it does not look like it: green
+   rather than blue, because the instruction is the opposite one. */
+.recorder-row.is-moving {
+  border-color: #1f9d63;
+  box-shadow: 0 0 0 3px rgba(31, 157, 99, 0.14);
+}
+
+.recorder-row.is-moving .recorder-bar i {
+  background: #1f9d63;
+}
+
+/* First in the row, so it reads as "does this row apply at all" before any of its
+   settings. Greyed rather than hidden when off: the recording is still there. */
+.recorder-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #677083;
+  white-space: nowrap;
+}
+
+.recorder-toggle input {
+  width: 34px;
+  height: 20px;
+  margin: 0;
+}
+
+.recorder-row.is-disabled {
+  background: #f6f7f9;
+  border-color: #e6e9ef;
+}
+
+/* The toggle itself stays at full strength — it is the way back. */
+.recorder-row.is-disabled > *:not(.recorder-toggle) {
+  opacity: 0.45;
+}
+
 .recorder-row.is-saved {
   background: #f5fbf8;
   border-color: #bfe4d1;
@@ -203,45 +332,167 @@ h2 {
   padding: 0 12px;
 }
 
-.rules div {
-  min-height: 86px;
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  padding: 14px;
-  border: 1px solid #eef1f6;
-  border-radius: 8px;
-  background: #f8faff;
-}
-
+/* Rule rows are recorder rows now, so .rule-row styling went with them. */
 .rule-list {
   display: grid;
   gap: 10px;
 }
 
-.rule-row {
-  min-height: 62px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
+/* Amber like a warned metric, not red: the app still works, but two gestures are
+   competing and the user needs to know which pair before they debug further. */
+.conflict-banner {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #f0c98a;
+  border-radius: 8px;
+  background: #fff9ef;
+  color: #7a5320;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.conflict-banner p {
+  margin: 0;
+}
+
+.conflict-banner p + p {
+  margin-top: 6px;
+}
+
+/* Red, not amber: the click pipeline being dead is not a degraded experience,
+   it is a total one. Nothing the user tunes in this window can help until it is
+   fixed, so it must not read as another advisory. */
+.pointer-banner {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #e79a9a;
+  border-radius: 8px;
+  background: #fff2f2;
+  color: #8a2f2f;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+.pointer-banner p {
+  margin: 0;
+}
+
+.pointer-banner p + p {
+  margin-top: 6px;
+}
+
+.panel-hint {
+  margin: 0 0 14px;
+  color: #677083;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.metric {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
   border: 1px solid #eef1f6;
   border-radius: 8px;
   background: #f8faff;
 }
 
-.rule-row div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.rule-row span {
+.metric span {
   color: #677083;
-  font-size: 14px;
+  font-size: 12px;
 }
 
-.rule-row button {
-  min-width: 72px;
+.metric strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric em {
+  color: #8a93a5;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.metric.is-warn {
+  border-color: #f0c98a;
+  background: #fff9ef;
+}
+
+.tuning-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.tuning-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.tuning-grid span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.tuning-grid b {
+  font-variant-numeric: tabular-nums;
+  color: #0f72d4;
+}
+
+.tuning-grid em {
+  color: #8a93a5;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.tuning-grid input[type="range"] {
+  width: 100%;
+  accent-color: #0f72d4;
+}
+
+.diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.diag-actions input[type="text"] {
+  flex: 1 1 240px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #cbd4e2;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.overlay-log {
+  max-height: 160px;
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid #eef1f6;
+  border-radius: 8px;
+  background: #10131a;
+  color: #cfe3ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.overlay-log:empty {
+  display: none;
 }

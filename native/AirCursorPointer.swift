@@ -7,15 +7,33 @@ struct PointerCommand: Decodable {
     let type: String
     let x: Double?
     let y: Double?
+    // Scroll notches (positive scrolls content down) and the key to press for
+    // desktop switching, both optional so existing mouse commands are unchanged.
+    let dy: Double?
+    let key: String?
 }
 
 let source = CGEventSource(stateID: .hidSystemState)
 var lastPoint = CGPoint(x: 0, y: 0)
 var cursorHidden = false
 
-if !AXIsProcessTrusted() {
-    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件可能不会生效。\n".data(using: .utf8)!)
+// Answered on stdout so the main process can tell "the helper is running" from
+// "the helper is running and the OS will actually deliver its events". Without
+// the Accessibility grant CGEvent.post fails silently — no error, no exception,
+// the events simply never arrive — so this verdict is the only way to know.
+func emit(_ payload: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+          var line = String(data: data, encoding: .utf8) else {
+        return
+    }
+    line.append("\n")
+    FileHandle.standardOutput.write(line.data(using: .utf8)!)
 }
+
+if !AXIsProcessTrusted() {
+    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件不会生效。\n".data(using: .utf8)!)
+}
+emit(["type": "ready", "trusted": AXIsProcessTrusted()])
 
 func currentMousePoint() -> CGPoint {
     CGEvent(source: nil)?.location ?? lastPoint
@@ -31,6 +49,45 @@ func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton = .
         return
     }
     event.post(tap: .cghidEventTap)
+}
+
+// Pixel units, not lines: `.line` scrolls by whole rows, which reads as a jump
+// on a trackpad-smooth desktop. One notch is a screenful fraction, so a tilt
+// moves a readable amount rather than a fixed row count that means something
+// different in every app.
+func postScroll(_ notches: Double) {
+    let pixels = Int32((notches * 90).rounded())
+    guard pixels != 0,
+          let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: pixels,
+            wheel2: 0,
+            wheel3: 0
+          ) else {
+        return
+    }
+    event.post(tap: .cghidEventTap)
+}
+
+// Desktop switching has no synthesisable gesture event — NSEvent swipes cannot
+// be constructed — so it goes through the keyboard shortcut macOS binds to it.
+// Ctrl+Left / Ctrl+Right move between Spaces (requires "Mission Control"
+// keyboard shortcuts to be enabled, which is the macOS default).
+let leftArrow: CGKeyCode = 123
+let rightArrow: CGKeyCode = 124
+
+func postKeyWithControl(_ code: CGKeyCode) {
+    guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+          let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
+        return
+    }
+    down.flags = .maskControl
+    up.flags = .maskControl
+    down.post(tap: .cghidEventTap)
+    usleep(20_000)
+    up.post(tap: .cghidEventTap)
 }
 
 func hideSystemCursor() {
@@ -64,6 +121,10 @@ while let line = readLine() {
     let point = CGPoint(x: command.x ?? Double(lastPoint.x), y: command.y ?? Double(lastPoint.y))
 
     switch command.type {
+    case "ping":
+        // Re-read the trust state rather than caching it: the user can grant the
+        // permission while the app is already running.
+        emit(["type": "pong", "trusted": AXIsProcessTrusted()])
     case "hideCursor":
         hideSystemCursor()
     case "showCursor":
@@ -89,6 +150,17 @@ while let line = readLine() {
         postMouse(.leftMouseDown, at: current)
         usleep(45_000)
         postMouse(.leftMouseUp, at: current)
+    case "scroll":
+        postScroll(command.dy ?? 0)
+    case "key":
+        switch command.key {
+        case "spaceLeft":
+            postKeyWithControl(leftArrow)
+        case "spaceRight":
+            postKeyWithControl(rightArrow)
+        default:
+            continue
+        }
     case "rightClick":
         lastPoint = point
         postMouse(.mouseMoved, at: point)
