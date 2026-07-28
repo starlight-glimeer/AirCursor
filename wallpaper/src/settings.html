@@ -38,6 +38,13 @@
   select { width: 100%; padding: 5px; font-size: 12px; }
   #live { font-family: ui-monospace, monospace; font-size: 11px; min-height: 3em;
           background: rgba(128,128,140,.1); border-radius: 6px; padding: 8px; }
+
+  .preset-bar { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 8px; }
+  .preset-bar input { padding: 5px 7px; font-size: 12px; }
+  .preset { display: grid; grid-template-columns: 1fr auto auto; gap: 6px;
+            align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .preset span { font-size: 12px; font-weight: 600; }
+  .preset button { font-size: 11px; padding: 3px 8px; }
 </style>
 </head>
 <body>
@@ -50,13 +57,23 @@
 <select id="strategy"></select>
 <p class="hint">看不见壁纸就换一个。<b>desktop</b> 是真壁纸层但收不到鼠标；<b>悬浮最上层</b>一定看得见，用来先验渲染效果。也可以按 <kbd>⌃⇧L</kbd> 直接循环。</p>
 
+<h2>排布预设</h2>
+<div class="preset-bar">
+  <input id="preset-name" type="text" placeholder="给当前排布起个名字" maxlength="20">
+  <button id="preset-save" type="button">存为预设</button>
+</div>
+<div id="presets"></div>
+<p class="hint">调出一套满意的就存下来，可以存几套一键切换对比 —— 比用文字描述"哪里不对"准得多。<b>只存视觉参数，不动三张图。</b></p>
+
 <h2>景深与排布</h2>
 <div id="tuning"></div>
 
 <h2>手势</h2>
 <div class="toggle"><input type="checkbox" id="gestures"><label for="gestures">开启摄像头手势</label></div>
-<p class="hint"><b>双手</b>拇指+食指捏合，两手<b>拉开</b> = 推进放大，<b>合拢</b> = 拉远缩小。<br><b>单手</b>移动 = 视差跟随，<b>快速横挥</b> = 主体左右转。</p>
+<p class="hint"><b>双手</b>拇指+食指捏合，两手<b>拉开</b> = 推进放大，<b>合拢</b> = 拉远缩小。<br><b>单手</b>移动 = 视差跟随，<b>快速横挥</b> = 主体左右转，<b>手掌上下倾斜</b> = 视角上看下看（抬一次动一格）。</p>
 <div id="live">手势未开启</div>
+<div id="gestureTuning"></div>
+<p class="hint">手感调不顺就动这些。<b>平滑强度</b>越大越稳越迟钝；<b>快速跟随</b>越大越跟手但越抖；<b>静止死区</b>是手停住的判定门槛。用的是 AirCursor 那套滤波器，所以那边的调参经验通用。</p>
 
 <h2>音乐</h2>
 <div class="toggle"><input type="checkbox" id="music"><label for="music">跟随正在播放的音乐</label></div>

@@ -37,6 +37,24 @@ if [ -n "$aircursor" ]; then
   if [ -f "$aircursor/public/vendor/three.r128.min.js" ]; then
     cp "$aircursor/public/vendor/three.r128.min.js" "$vendor/"
   fi
+
+  # AirCursor 的手势判定：pose.js / motion.js / tracking.js。
+  #
+  # 拷贝而不是从 ../public/ 直接引用，有两个理由：①  引用会让壁纸依赖仓库目录结构，
+  # 那是脆的；② 这三个文件是另一个 agent 维护的，拷贝一份意味着**我这边永远不改它们**
+  # —— 要改就得改源头，两边不会悄悄分叉。
+  #
+  # 拷不到就是硬失败：One Euro 平滑和挥动判定是壁纸手感的核心，没有它们不如不跑。
+  mkdir -p "$vendor/aircursor"
+  for f in pose.js motion.js tracking.js; do
+    if [ -f "$aircursor/public/$f" ]; then
+      cp "$aircursor/public/$f" "$vendor/aircursor/$f"
+    else
+      echo "❌ 找不到 $aircursor/public/$f —— 手势判定拿不到，手感会退化"
+      exit 1
+    fi
+  done
+  echo "手势判定：已取 pose.js / motion.js / tracking.js"
 else
   echo "找不到 AirCursor，从 CDN 下载（需要联网）"
   echo "  提示：也可以用 AIRCURSOR_REPO=<路径> 指定"
@@ -47,6 +65,8 @@ else
   # hands.js 运行时还会自己去取 .wasm / .data / .tflite，所以只下这两个不够 ——
   # 剩下的靠 locateFile 落回 CDN。这条路能跑但要联网，不如从 AirCursor 拷。
   echo "  ⚠️ CDN 路线只下了 js，模型文件会在运行时联网取"
+  echo "  ⚠️ 手势判定（pose/motion/tracking）只在 AirCursor 仓库里，CDN 拿不到"
+  echo "     → 手势会不可用。用 AIRCURSOR_REPO=<路径> 指定仓库位置。"
 fi
 
 # three.js 是 MIT，独立取。

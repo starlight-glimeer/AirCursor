@@ -10,7 +10,7 @@
     "postinstall": "bash scripts/fetch-vendor.sh",
     "start": "electron .",
     "test": "node test/run.js",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/nowplaying.js && node --check src/layers.js && node --check src/mood.js && node --check src/gestures.js && node --check src/wall.js && node --check src/settings.js && node --check src/sensor.js"
+    "check": "for f in src/main.js src/preload.js src/nowplaying.js src/layers.js src/mood.js src/input.js src/wall.js src/settings.js src/sensor.js; do node --check $f || exit 1; done"
   },
   "devDependencies": {
     "electron": "^43.2.0"

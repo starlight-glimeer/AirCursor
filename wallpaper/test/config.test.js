@@ -10,13 +10,19 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-// 从 main.js 里抠出 mergeConfig 的源码来跑，而不是手抄一遍：手抄的副本会和源码
-// 悄悄分叉，那时测试还是绿的，但守的已经不是真代码了。
+// 从 main.js 里抠出 mergeConfig 和它依赖的 OPAQUE_DICTS 来跑，而不是手抄一遍：
+// 手抄的副本会和源码悄悄分叉，那时测试还是绿的，但守的已经不是真代码了。
+//
+// 参数列表用 [^)]* 匹配而不是写死 `(base, saved)`：加 key 参数那次这里精确失败了，
+// 报"函数被改名或删了" —— 守卫生效了，但报错指向错的原因。宽松匹配签名、严格匹配
+// 函数名，是这里想要的平衡。
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-const match = source.match(/function mergeConfig\(base, saved\) \{[\s\S]*?\n\}/);
+const dicts = source.match(/const OPAQUE_DICTS = new Set\([^)]*\);/);
+assert.ok(dicts, '在 main.js 里找不到 OPAQUE_DICTS');
+const match = source.match(/function mergeConfig\([^)]*\) \{[\s\S]*?\n\}/);
 assert.ok(match, '在 main.js 里找不到 mergeConfig —— 函数被改名或删了');
 // eslint-disable-next-line no-new-func
-const mergeConfig = new Function(`${match[0]}; return mergeConfig;`)();
+const mergeConfig = new Function(`${dicts[0]}\n${match[0]}; return mergeConfig;`)();
 
 let passed = 0;
 function check(name, fn) {
@@ -96,6 +102,33 @@ check('存档里多出来的未知键被忽略', () => {
 check('数组整体替换而不是逐项合并', () => {
   const out = mergeConfig({ list: [1, 2, 3] }, { list: [9] });
   assert.deepStrictEqual(out.list, [9]);
+});
+
+// 回归守卫：预设是用户自己起名的字典，默认值是 {}。逐键合并的话每一个存下来的预设
+// 都会在下次启动时被静默丢掉 —— 用户存了三套排布，重开发现全没了，而且不报错。
+check('presets 整体保留（用户起的名字不会被丢）', () => {
+  const out = mergeConfig(
+    { presets: {}, depth: { a: 1 } },
+    { presets: { 我的一号: { depth: { a: 5 } }, 二号: { depth: { a: 9 } } }, depth: { a: 2 } },
+  );
+  assert.deepStrictEqual(Object.keys(out.presets).sort(), ['二号', '我的一号'].sort());
+  assert.strictEqual(out.presets['我的一号'].depth.a, 5, '预设内容被改了');
+});
+
+check('presets 是深拷贝，不与存档共享引用', () => {
+  const saved = { presets: { a: { depth: { v: 1 } } } };
+  const out = mergeConfig({ presets: {} }, saved);
+  out.presets.a.depth.v = 99;
+  assert.strictEqual(saved.presets.a.depth.v, 1, '改返回值污染了输入');
+});
+
+check('普通配置块仍然逐键深合并（没被 opaque 波及）', () => {
+  const out = mergeConfig(
+    { depth: { background: -4.5, shard: 2.2 }, presets: {} },
+    { depth: { background: -8 } },
+  );
+  assert.strictEqual(out.depth.background, -8);
+  assert.strictEqual(out.depth.shard, 2.2, '没存的键该保持默认');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

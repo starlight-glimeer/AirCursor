@@ -177,6 +177,23 @@ const defaultConfig = {
   zoom: { min: 0.7, max: 2.4 },
   music: { enabled: true, moodFromCover: true, coverInfluence: 0.55, pollMs: 1500 },
   gestures: { enabled: false },
+  // 手势判定的调参，透给 AirCursor 的 PointerFilter / SwipeDetector / TiltRatchet。
+  //
+  // deadzone 和 maxPrediction 在这里是**归一化**的（占屏幕的比例），input.js 会换算
+  // 成 PointerFilter 期望的像素量级 —— 那边的默认值 1.6px / 26px 是给屏幕指针标的，
+  // 直接套在 0..1 坐标上等于死区盖住半个屏幕。
+  gestureTuning: {
+    minCutoff: 1.2,       // One Euro 静止时的截止频率，越小越稳越迟钝
+    beta: 0.045,          // 手速对截止频率的影响，越大越跟手
+    deadzone: 0.0016,     // 低于这个位移算手停住了
+    prediction: 0.35,     // 按速度外推补延迟
+    maxPrediction: 0.026, // 外推上限，防止一次丢跟踪把画面甩出去
+    swipeSpeed: 2.6,      // 挥动速度门，掌宽/秒
+    tiltTriggerDeg: 22,   // 手掌倾斜多少度算一格
+  },
+  // 用户存的排布预设，名字 → 视觉参数。必须在这里声明，因为 mergeConfig 只遍历
+  // defaultConfig 的键 —— 不声明的话存进去的预设在下次启动时被静默丢掉。
+  presets: {},
   debug: { showHud: true },
 };
 
@@ -190,14 +207,22 @@ function readConfig() {
   }
 }
 
+// 键名任意的字典：这些整体替换，不逐键合并。
+//
+// mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
+// 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
+// 预设都在下次启动时被静默丢掉。
+const OPAQUE_DICTS = new Set(['presets']);
+
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
 // undefined downstream. Arrays and primitives are replaced wholesale.
-function mergeConfig(base, saved) {
+function mergeConfig(base, saved, key) {
   if (saved === null || saved === undefined) return JSON.parse(JSON.stringify(base));
   if (Array.isArray(base) || typeof base !== 'object') return saved;
+  if (OPAQUE_DICTS.has(key)) return JSON.parse(JSON.stringify(saved));
   const out = {};
-  for (const key of Object.keys(base)) out[key] = mergeConfig(base[key], saved[key]);
+  for (const k of Object.keys(base)) out[k] = mergeConfig(base[k], saved[k], k);
   return out;
 }
 
@@ -418,6 +443,49 @@ ipcMain.handle('set-gestures', (_event, enabled) => {
 
 ipcMain.handle('reset-view', () => {
   broadcast('reset-view', {});
+  return { ok: true };
+});
+
+// 预设：存几套排布，一键切换对比。
+//
+// 存在的理由是沟通效率而不是功能：调壁纸手感的循环是"我改一个数 → 用户看 → 用户用
+// 文字描述哪里不对"，而形容词（"太大""不够立体"）在两个人脑中的画面可能差很远。
+// 能存三套并当场切，用户就能直接说"第二套那个感觉对" —— 那是精确的。
+//
+// 只存视觉参数不存图片路径：三张图是"我的壁纸"的身份，不该被切预设换掉。
+const PRESET_KEYS = ['depth', 'transform', 'shards', 'parallax', 'tilt', 'zoom'];
+
+function currentPreset() {
+  const out = {};
+  for (const key of PRESET_KEYS) out[key] = JSON.parse(JSON.stringify(config[key]));
+  return out;
+}
+
+ipcMain.handle('save-preset', (_event, name) => {
+  const label = String(name || '').trim() || `预设 ${Object.keys(config.presets || {}).length + 1}`;
+  config.presets = { ...(config.presets || {}), [label]: currentPreset() };
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true, name: label };
+});
+
+ipcMain.handle('load-preset', (_event, name) => {
+  const preset = config.presets && config.presets[name];
+  if (!preset) return { ok: false, error: 'NOT_FOUND' };
+  config = mergeConfig(config, preset);
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true };
+});
+
+ipcMain.handle('delete-preset', (_event, name) => {
+  if (!config.presets || !(name in config.presets)) return { ok: false };
+  const next = { ...config.presets };
+  delete next[name];
+  // 整个替换而不是改单键：mergeConfig 是深合并，传一个缺了某键的对象删不掉它。
+  config.presets = next;
+  writeConfig();
+  broadcast('config', config);
   return { ok: true };
 });
 

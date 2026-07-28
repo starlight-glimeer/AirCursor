@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('gw', {
   setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
+  savePreset: (name) => ipcRenderer.invoke('save-preset', name),
+  loadPreset: (name) => ipcRenderer.invoke('load-preset', name),
+  deletePreset: (name) => ipcRenderer.invoke('delete-preset', name),
 
   // Sensor -> main -> wall. Fire and forget: a dropped gesture is better than a
   // stalled camera loop waiting for an ack.
