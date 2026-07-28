@@ -116,14 +116,36 @@ The alternative — mapping continuous hand displacement onto scroll position �
 no defined rest position, so the hand has to hover mid-air and there is no moment
 that clearly means "stop".
 
-**Recording a motion gesture has two stages**, because asking someone to hold a
-movement still for two seconds is a contradiction. Stage 1 captures the rest
+**Nothing fires while recording.** Not a reduced set — nothing: recorded gestures,
+built-in poses, sequences and voice commands are all frozen for the duration. This
+is not defensive coding, it is a fix: performing a movement takes the hand through
+a lot of intermediate poses, and on a Mac with nine gestures already recorded,
+capturing a new one exited control mode, opened Terminal and scrolled the page
+mid-capture. It gets worse the more gestures exist, since any movement then almost
+certainly passes through one of them. The guard sits at the top of matching rather
+than at each consumer, because "which consumer did I forget" is how the first
+version leaked.
+
+A spurious extra hand no longer discards a capture either. MediaPipe intermittently
+reports a second hand at certain angles — noticed while recording the sideways
+swipes — and treating that as the wrong hand count reset the capture every time it
+blinked. Only *too few* hands resets now, and while recording the pose is built
+from exactly the number of hands being recorded, so a one-hand recording that
+momentarily saw two does not capture a two-hand shape it could never match again.
+
+**Recording a motion gesture has two stages**, plus a beat between them, because
+asking someone to hold a movement still for two seconds is a contradiction. Stage 1 captures the rest
 pose — that one genuinely is static, since it is the position the hand returns to
 in order to re-arm. Stage 2 asks for the action itself: perform the tilt (or the
 swipe), and the extent it reaches becomes this gesture's trigger, at 75% of what
 was demonstrated so repeating the same movement crosses it rather than landing on
-the edge. The stage ends when the movement settles, not on a timer, and a dropped
-frame mid-movement does not discard it — at a 40-60% tracking rate a movement is
+the edge. The beat matters: without it capture began the instant the hold finished, so the
+hand's travel from the rest pose to wherever the movement starts was recorded as
+part of the movement. The stage ends when the movement settles, not on a timer —
+after 900ms of no change, which is longer than a pause inside one gesture (reaching
+the far point, changing direction) but short enough not to feel stuck. 450ms was
+too short against a real hand and ended recordings early, reported as "这个动作本身
+的时间太短了". A dropped frame mid-movement does not discard the capture — at a 40-60% tracking rate a movement is
 guaranteed to have gaps.
 
 So 滚动触发角 and 挥动速度门限 are fallbacks for gestures recorded before this

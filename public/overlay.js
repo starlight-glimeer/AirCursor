@@ -305,7 +305,17 @@ function clamp(value, min, max) {
 // each consumer "does this match?" in turn let the first asker win a pose that
 // belonged to someone else.
 function resolveCustomGesture(gesture) {
-  if (!gesture?.poseTemplate) {
+  // Nothing matches while recording. The frame loop already skips the trigger
+  // calls, but that was not enough: performing a movement takes the hand through
+  // a lot of intermediate poses, and those were still being matched here — so on
+  // a real Mac with nine gestures recorded, recording a new one exited control
+  // mode, opened Terminal and scrolled the page, all mid-capture. It gets worse
+  // the more gestures exist, since any movement then almost certainly passes
+  // through one of them.
+  //
+  // Guarding at the top of matching rather than at each consumer, because "which
+  // consumer did I forget" is exactly how the first version leaked.
+  if (state.recording || !gesture?.poseTemplate) {
     resolver.reset();
     return null;
   }
@@ -340,6 +350,10 @@ function resolveCustomGesture(gesture) {
 // switch working for recorded gestures and silently doing nothing for the default
 // pinch/palm/fist ones.
 function gestureMatches(gesture, gestureId, action) {
+  // Same reason as resolveCustomGesture: the built-in poses (pinch/palm/fist) do
+  // not go through it, so without this a recording session could still be
+  // interrupted by whichever built-in pose the hand passed through.
+  if (state.recording) return false;
   if (action && actionDisabled(action)) return false;
   if (!gesture || !gestureId || gestureId === "none") return false;
   if (gestureId.startsWith("custom:")) {
@@ -558,6 +572,10 @@ function sequenceMatcherFor(action) {
 //
 // Returns the action that completed this frame, or null.
 function resolveSequenceGesture(gesture, now) {
+  if (state.recording) {
+    for (const matcher of sequenceMatchers.values()) matcher.reset();
+    return null;
+  }
   let fired = null;
   for (const [action, mapped] of Object.entries(settings.gestureMap || {})) {
     if (!mapped?.startsWith("custom:")) continue;
@@ -1069,6 +1087,7 @@ function startRecording(action, wantedHands, kind, law) {
     // "the movement finished" is detected without demanding the hand come back.
     lastExtent: null,
     stillSince: 0,
+    readyUntil: 0,
     trace: [],
     // Every frame of the movement, thinned to keyframes on save. This is what
     // makes the preview an animation instead of a number to imagine, and what
@@ -1160,18 +1179,25 @@ function updateRecording(gesture, handCount) {
   }
 
   const pose = gesture?.poseTemplate;
-  const wrongHands = recording.wantedHands && handCount !== recording.wantedHands;
-  if (!pose || wrongHands) {
+  // Too many hands is a tracker artifact, not a user error: recording a one-hand
+  // gesture, MediaPipe intermittently reports a second hand at certain angles —
+  // reported while recording the sideways swipes ("某些角度显示了两只手"). Treating
+  // that as "wrong hand count" wiped the capture every time it blinked, so only
+  // *too few* hands resets. Extra hands are ignored, and the template is built from
+  // the hands actually wanted.
+  const missingHands = recording.wantedHands && handCount < recording.wantedHands;
+  if (!pose || missingHands) {
     recording.holdStartedAt = 0;
     recording.samples = [];
     recording.reference = null;
     aircursor.recordingProgress({
       action: recording.action,
       phase: "capture",
+      stage: recording.stage,
       progress: 0,
       hint: !handCount
         ? "没有检测到手，把手放进摄像头画面"
-        : wrongHands
+        : missingHands
           ? `需要 ${recording.wantedHands} 只手同时入镜`
           : "识别中",
     });
@@ -1209,6 +1235,12 @@ function updateRecording(gesture, handCount) {
       recording.stage = "move";
       recording.restTemplate = medianTemplate(recording.samples);
       recording.startedAt = now;
+      // A beat before capture starts, because the previous version began the
+      // instant the hold finished: the hand's travel from the rest pose to wherever
+      // the movement begins was captured as part of the movement, and the user had
+      // no moment to register that the instruction had changed. Real feedback:
+      // "录制的动作，这个动作本身的时间太短了".
+      recording.readyUntil = now + MOVE_READY_MS;
       recording.peak = 0;
       recording.peakAt = 0;
       recording.movedAt = 0;
@@ -1240,7 +1272,17 @@ function updateRecording(gesture, handCount) {
 // means the tilt stopped growing and came back down, for the swipe it means the
 // wrist parked again. A fixed window would either cut a slow movement short or
 // make a fast one wait.
-const MOTION_SETTLE_MS = 450;
+// How long the movement must have stopped changing before capture ends.
+//
+// 450ms was too short against a real hand: a deliberate gesture takes 300-500ms
+// to perform, so a brief pause partway through — reaching the far point, changing
+// direction — read as "finished". Reported as "这个动作本身的时间太短了", i.e. the
+// recording ended before the user thought they were done. 900ms is longer than any
+// pause inside one movement and still short enough not to feel stuck.
+const MOTION_SETTLE_MS = 900;
+// A beat between "your rest pose is captured" and "start moving", so the hand's
+// travel to the movement's starting point is not recorded as part of it.
+const MOVE_READY_MS = 1200;
 // Below this there was no movement worth calling a gesture, so recording says so
 // rather than saving a trigger of ~0 that would fire on tracking noise.
 const MIN_TILT_DEG = 6;
@@ -1254,6 +1296,25 @@ const MIN_SHAPE_TRAVEL_RATIO = 1.1;
 function updateMotionRecording(recording, gesture, handCount, now) {
   const law = recording.law;
 
+  // The ready beat: say what is about to be asked for, and do not start measuring
+  // until it elapses. The timeout clock is reset with it so the pause does not eat
+  // into the capture window.
+  if (recording.readyUntil && now < recording.readyUntil) {
+    aircursor.recordingProgress({
+      action: recording.action,
+      phase: "capture",
+      stage: "ready",
+      progress: 0,
+      hint: `准备好了就开始做动作：${recording.hints.moveHint}`,
+      countdown: Math.ceil((recording.readyUntil - now) / 1000),
+    });
+    return;
+  }
+  if (recording.readyUntil) {
+    recording.readyUntil = 0;
+    recording.startedAt = now;
+  }
+
   if (now - recording.startedAt > CAPTURE_TIMEOUT_MS) {
     const what = law === "tilt" ? "抬压" : law === "swipe" ? "挥动" : "";
     failRecording(recording, `超时没有捕捉到${what}动作，请重新录制`);
@@ -1261,8 +1322,11 @@ function updateMotionRecording(recording, gesture, handCount, now) {
   }
 
   const pose = gesture?.poseTemplate;
-  const wrongHands = recording.wantedHands && handCount !== recording.wantedHands;
-  if (!pose || wrongHands) {
+  // Only too few hands pauses capture, for the same reason as the rest stage: a
+  // spurious extra hand is a tracker artifact and pausing on it made a moving hand
+  // impossible to record.
+  const missingHands = recording.wantedHands && handCount < recording.wantedHands;
+  if (!pose || missingHands) {
     // Losing the hand mid-movement does not throw the recording away: what has
     // been captured is still the best evidence of what the user did, and at a
     // 40-60% tracking rate a movement is guaranteed to have gaps.
@@ -1609,13 +1673,19 @@ function loop(now) {
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 
   const hands = orderHands(state.hands, state.handedness).map((hand) => hand.map(point));
-  const gesture = hands[0] ? detectGesture(hands[0], hands) : null;
+  // While recording, build the pose from exactly the number of hands being
+  // recorded. Tolerating a spurious extra hand is only useful if it does not then
+  // corrupt the template: a one-hand recording that momentarily saw two would
+  // otherwise capture a two-hand shape, which can never match afterwards.
+  const wanted = state.recording?.wantedHands;
+  const posed = wanted && hands.length > wanted ? hands.slice(0, wanted) : hands;
+  const gesture = posed[0] ? detectGesture(posed[0], posed) : null;
   // Without this the resolver's sticky winner survives the hand leaving frame,
   // and hysteresis would then bias the next pose toward whatever was held last.
   if (!gesture) resolver.reset();
   state.gesture = gesture;
 
-  updateRecording(gesture, hands.length);
+  updateRecording(gesture, posed.length);
   // Recording must not fire the very action being recorded.
   if (!state.recording) {
     updateHoldGesture(gesture);
@@ -1768,6 +1838,14 @@ async function setupHands() {
 
 function handleVoiceText(rawText, source = "语音") {
   if (!settings.voiceEnabled) return;
+  // A fourth path that bypasses the gesture matcher entirely, and it can exit
+  // control mode or launch an app — both of which would derail a capture in
+  // progress. Recording is a moment the user is deliberately moving their hands
+  // and may well be talking; nothing should fire from either.
+  if (state.recording) {
+    aircursor.status({ rule: `录制中，已忽略${source}：${rawText.trim()}` });
+    return;
+  }
   const text = rawText.trim().replace(/\s+/g, "");
   if (!text) return;
 

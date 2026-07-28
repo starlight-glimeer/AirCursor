@@ -823,9 +823,16 @@ window.aircursor.onRecordingProgress((payload) => {
   bar.style.width = `${Math.round((payload.progress || 0) * 100)}%`;
   // In the movement stage the bar is a readout of how far the movement has got,
   // not a countdown to a save, and the row says which stage it is in so "hold
-  // still" never appears while a movement is being asked for.
+  // still" never appears while a movement is being asked for. The ready stage is a
+  // beat between the two — it exists so the hand's travel to the movement's
+  // starting point is not captured as part of the movement.
   const row = bar.closest(".recorder-row");
-  if (row) row.classList.toggle("is-moving", payload.stage === "move");
+  if (row) row.classList.toggle("is-moving", payload.stage === "move" || payload.stage === "ready");
+  if (payload.stage === "ready") {
+    bar.style.width = "0%";
+    hint.textContent = `${payload.countdown}… ${payload.hint || ""}`;
+    return;
+  }
   const measured =
     payload.stage === "move" && payload.measured ? ` · 最大 ${payload.measured}${payload.unit || ""}` : "";
   hint.textContent = `${payload.hint || ""}${measured}`;

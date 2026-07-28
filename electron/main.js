@@ -729,6 +729,31 @@ function gestureConflicts() {
   return conflicts;
 }
 
+// Distances between consecutive keyframes, in match-threshold units. A gap below
+// 1.0 means the keyframes are closer together than the radius used to detect
+// them, which is what let a motionless hand walk a sequence forward.
+function keyframeGaps(keyframes) {
+  if (!keyframes || keyframes.length < 2) return null;
+  const threshold = settings.tuning?.matchThreshold ?? defaultSettings.tuning.matchThreshold;
+  const gaps = [];
+  for (let i = 0; i + 1 < keyframes.length; i += 1) {
+    const d = templateDistance(keyframes[i].template, keyframes[i + 1].template, 0);
+    gaps.push(Number.isFinite(d) ? Number((d / threshold).toFixed(2)) : null);
+  }
+  return gaps;
+}
+
+// How far the movement ends from where it began, in threshold units. Below 1.0 it
+// is a round trip, whose end pose is reachable without having moved.
+function sequenceSpanOf(keyframes) {
+  const threshold = settings.tuning?.matchThreshold ?? defaultSettings.tuning.matchThreshold;
+  const first = keyframes[0]?.template;
+  const last = keyframes[keyframes.length - 1]?.template;
+  if (!first || !last) return 0;
+  const d = templateDistance(last, first, 0);
+  return Number.isFinite(d) ? d / threshold : 0;
+}
+
 // Counts of why each motion gesture was blocked, over the sample window, plus
 // how far the tilt actually got. "It never fired" needs the reason to be
 // actionable, and the reason changes frame to frame.
@@ -799,6 +824,19 @@ function buildReport(note) {
           // it belongs in the report rather than only in settings.json.
           angle: entry.template?.angle,
           at: entry.at,
+          // Whether this is a static pose or a recorded movement, and what the
+          // movement measured. Omitting these made "did my dynamic recording
+          // actually save as dynamic?" unanswerable from a report — the first
+          // real session of dynamic gestures produced five reports that could
+          // not distinguish "saved as static" from "saved as dynamic", which is
+          // the single most load-bearing fact when a recorded action misbehaves.
+          kind: entry.keyframes?.length ? "dynamic" : "static",
+          keyframes: entry.keyframes?.length ?? 0,
+          // Gaps between consecutive keyframes, in threshold units: this is what
+          // decides whether a still hand can walk the sequence on its own.
+          keyframeGaps: keyframeGaps(entry.keyframes),
+          span: entry.keyframes?.length ? Number(sequenceSpanOf(entry.keyframes).toFixed(3)) : null,
+          motion: entry.motion || null,
         },
       ]),
     ),
