@@ -71,6 +71,17 @@ const defaultSettings = {
     rotationTolerance: 20,
     inferenceIntervalMs: 20,
     moveIntervalMs: 8,
+    // Palm tilt, in degrees from the recorded pose, that emits one scroll notch.
+    // Clamped at use against the rotation tolerance: past that the tilted pose
+    // stops matching its own template, so a larger value here would make the
+    // gesture vanish exactly when it should fire (see motion.js).
+    scrollTriggerDeg: 16,
+    // Screenfuls-ish per notch is decided in the helper; this is how many
+    // notches one tilt sends, so a single flick can move more than one step.
+    scrollNotches: 3,
+    // Wrist speed, palm widths per second, for a sideways stroke to count as a
+    // desktop switch.
+    swipeSpeed: 2.6,
   },
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
@@ -136,16 +147,34 @@ const publicRules = ruleDefinitions.map(({ id, label, voice }) => ({ id, label, 
 
 // Pointer actions have a built-in gesture to fall back on; rules only ever fire
 // from a recorded one, so they have no default and get removed on clear.
-const coreActions = ["wake", "click", "rightClick", "exit"];
+// `drag` is its own action rather than a long `click`: holding the mouse button
+// down is a distinct intent (move a file, select text), and inferring it from
+// "click pose plus movement" collided with the motion gestures — those move the
+// hand on purpose, so any pose still matching click would have started a drag.
+//
+// `scroll` and `spaceSwitch` are motion gestures: the pose only selects which
+// control law is active, and the movement afterwards decides what happens. They
+// need an axis to measure tilt against, so a pose with no usable axis (mirrored
+// two-hand) is refused for `scroll` at record time.
+const coreActions = ["wake", "click", "drag", "rightClick", "scroll", "spaceSwitch", "exit"];
 const ruleActions = ruleDefinitions.map((rule) => rule.id);
 const recordableActions = [...coreActions, ...ruleActions];
+const motionActions = ["scroll", "spaceSwitch"];
+// Actions whose gesture must have a measurable rotation axis, because the action
+// is driven by how far the pose tilts away from the recorded one.
+const axisRequiredActions = ["scroll"];
 const actionLabels = {
   wake: "唤醒控制",
-  click: "点击/拖拽",
+  click: "点击",
+  drag: "拖拽（按住不放）",
   rightClick: "右键",
+  scroll: "上下滚动（手掌抬压）",
+  spaceSwitch: "左右切换桌面（横向挥动）",
   exit: "退出控制",
   ...Object.fromEntries(ruleDefinitions.map((rule) => [rule.id, rule.label])),
 };
+// Motion gestures have no built-in pose: there is no sensible default palm shape
+// for "scroll", and picking one would silently steal a pose from click or wake.
 const defaultGestureMap = {
   wake: "openPalm",
   click: "pinch",
@@ -532,6 +561,20 @@ function endRecording() {
   updateSettings(session.restore);
 }
 
+// A tilt-driven action measures the live pose's axis against the template's, so
+// a template with no axis makes the action unmeasurable — and it would fail the
+// way this project has already been bitten by three times: pose recognised,
+// nothing happens, nothing to look at. Two mirrored hands cancel to no axis
+// (poseAngle returns null), and both two-hand templates in the last real report
+// were exactly that, so this is the common case for two-hand recordings rather
+// than an edge case. Refuse at save time, while the user still knows what they
+// just held.
+function axisRejection(action, template) {
+  if (!axisRequiredActions.includes(action)) return null;
+  if (Number.isFinite(template?.angle)) return null;
+  return "这个动作靠手掌抬压的角度触发，但刚录的姿势测不出方向轴（双手镜像姿势会互相抵消）。换一个单手姿势，或让两手不对称。";
+}
+
 function saveRecordedTemplate(action, template) {
   if (!recordableActions.includes(action)) return;
   updateSettings({
@@ -570,6 +613,39 @@ function gestureConflicts() {
     }
   }
   return conflicts;
+}
+
+// Counts of why each motion gesture was blocked, over the sample window, plus
+// how far the tilt actually got. "It never fired" needs the reason to be
+// actionable, and the reason changes frame to frame.
+function motionSummary(samples) {
+  const frames = samples.map((s) => s.motion).filter(Boolean);
+  if (!frames.length) return null;
+  const tally = (key) => {
+    const counts = {};
+    for (const frame of frames) {
+      const reason = frame[key] || "ok";
+      counts[reason] = (counts[reason] || 0) + 1;
+    }
+    return counts;
+  };
+  const tilts = frames.map((f) => Math.abs(f.tiltDeg)).filter((v) => Number.isFinite(v));
+  const speeds = frames.map((f) => f.wristSpeed).filter((v) => Number.isFinite(v));
+  const last = frames[frames.length - 1];
+  return {
+    frames: frames.length,
+    scrollBlocked: tally("scrollBlocked"),
+    swipeBlocked: tally("swipeBlocked"),
+    // Peak tilt against the trigger is the whole diagnosis for "scrolling never
+    // happens": short of the trigger is a threshold problem, past it with nothing
+    // firing is a latch or matching problem.
+    maxTiltDeg: tilts.length ? Number(Math.max(...tilts).toFixed(1)) : null,
+    triggerDeg: last?.triggerDeg ?? null,
+    triggerClamped: Boolean(last?.clampedTrigger),
+    maxWristSpeed: speeds.length ? Number(Math.max(...speeds).toFixed(2)) : null,
+    scrollNotches: last?.scrollNotches ?? 0,
+    swipes: last?.swipes ?? 0,
+  };
 }
 
 // A tuning report is the unit of feedback from a real Mac: numbers plus the
@@ -631,6 +707,13 @@ function buildReport(note) {
       holdMs: stat("holdMs"),
       pointerEvents: stat("pointerEvents"),
     },
+    // The motion gestures fail silently by nature: every blocked reason presents
+    // as "the pose is recognised and nothing moves". A single `latest` snapshot
+    // catches whatever the last frame happened to say, so the reasons seen across
+    // the whole sample window are counted — a gesture that never fired because
+    // the wrist was always moving looks completely different from one that was
+    // never bound, and the tally distinguishes them without a live session.
+    motion: motionSummary(samples),
     latest: latestMetrics,
   };
 }
@@ -947,16 +1030,22 @@ ipcMain.on("aircursor:recording-progress", (_event, payload) => {
 ipcMain.on("aircursor:recording-result", (_event, result) => {
   const session = recordingSession;
   if (!session || result?.action !== session.action) return;
-  if (result.ok && result.template) saveRecordedTemplate(result.action, result.template);
+  // Checked here rather than in the overlay: the overlay owns geometry, main
+  // owns which actions exist and what they require.
+  const axisReason = result.ok && result.template ? axisRejection(result.action, result.template) : null;
+  const ok = Boolean(result.ok) && !axisReason;
+  if (ok && result.template) saveRecordedTemplate(result.action, result.template);
   recordingSession = null;
   updateSettings(session.restore);
   // The overlay knows the geometry but not the labels, so it reports which
   // action clashed and main turns that into something readable.
-  const reason = result.conflictWith
-    ? `与「${actionLabels[result.conflictWith] || result.conflictWith}」的手势太接近（距离 ${result.distance}），换一个差别更大的姿势`
-    : result.reason;
+  const reason = axisReason
+    ? axisReason
+    : result.conflictWith
+      ? `与「${actionLabels[result.conflictWith] || result.conflictWith}」的手势太接近（距离 ${result.distance}），换一个差别更大的姿势`
+      : result.reason;
   broadcast("aircursor:recording-result", {
-    ok: Boolean(result.ok),
+    ok,
     action: result.action,
     reason,
     hands: result.template?.hands,

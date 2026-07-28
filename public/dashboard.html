@@ -97,6 +97,10 @@
             <div class="metric"><span>识别率</span><strong id="mTracking">-</strong><em>有手帧占比</em></div>
             <div class="metric"><span>手势距离</span><strong id="mMatch">-</strong><em>低于阈值才触发</em></div>
             <div class="metric"><span>保持进度</span><strong id="mHold">-</strong><em>匹配上之后攒够时间才触发</em></div>
+            <!-- These two exist because the motion gestures have several distinct
+                 ways to do nothing, and all of them look like "识别到了但没反应". -->
+            <div class="metric"><span>抬压角度</span><strong id="mTilt">-</strong><em>相对录制姿势，达到触发角才滚一段</em></div>
+            <div class="metric"><span>动态手势</span><strong id="mMotion">-</strong><em>没反应时这里说明卡在哪一步</em></div>
           </div>
           <div class="tuning-grid">
             <label>
@@ -134,6 +138,21 @@
               <input type="range" data-tuning="inferenceIntervalMs" min="8" max="60" step="2" />
               <em>越小越跟手，CPU 占用越高</em>
             </label>
+            <label>
+              <span>滚动触发角 <b data-tuning-value="scrollTriggerDeg"></b></span>
+              <input type="range" data-tuning="scrollTriggerDeg" min="6" max="40" step="1" />
+              <em>手掌抬压多少度滚一段；超过旋转容差会被自动压回，抬压角度那格会标注</em>
+            </label>
+            <label>
+              <span>每次滚动量 <b data-tuning-value="scrollNotches"></b></span>
+              <input type="range" data-tuning="scrollNotches" min="1" max="10" step="1" />
+              <em>一次抬压滚多少，越大越快越难停在想要的位置</em>
+            </label>
+            <label>
+              <span>挥动速度门限 <b data-tuning-value="swipeSpeed"></b></span>
+              <input type="range" data-tuning="swipeSpeed" min="1.4" max="5" step="0.1" />
+              <em>横向挥多快才算切桌面；越小越容易误触，越大越费力</em>
+            </label>
           </div>
           <div class="diag-actions">
             <input id="reportNote" type="text" placeholder="现象描述，例如：双手录制时光标漂" />
@@ -158,7 +177,7 @@
               </select>
             </label>
             <label>
-              <span>点击/拖拽</span>
+              <span>点击</span>
               <select id="clickGesture">
                 <option value="pinch">拇指 + 食指捏合</option>
                 <option value="middlePinch">拇指 + 中指捏合</option>
@@ -198,7 +217,7 @@
               </div>
             </div>
             <div class="recorder-row" data-action="click">
-              <div><b>点击/拖拽</b><span>录制后短触发点击，保持并移动触发拖拽</span></div>
+              <div><b>点击</b><span>摆出该手势再松开，触发一次左键点击</span></div>
               <select data-hands-action="click">
                 <option value="1">单手</option>
                 <option value="2">双手</option>
@@ -208,6 +227,50 @@
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="click"></i></div>
                 <span data-hint-action="click">未录制</span>
+              </div>
+            </div>
+            <div class="recorder-row" data-action="drag">
+              <div><b>拖拽（按住不放）</b><span>保持该手势期间左键一直按住，松手即放下</span></div>
+              <select data-hands-action="drag">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
+              <button type="button" data-record-action="drag">开始录制</button>
+              <button type="button" data-clear-action="drag">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="drag"></i></div>
+                <span data-hint-action="drag">未录制</span>
+              </div>
+            </div>
+            <!-- The two motion gestures. Their pose only selects the control law;
+                 what happens is decided by how the hand moves afterwards. -->
+            <div class="recorder-row" data-action="scroll">
+              <div>
+                <b>上下滚动（手掌抬压）</b>
+                <span>手腕不动，手掌上抬滚一段、下压滚回来；回到录制姿势后可再抬一次。需要单手（双手镜像姿势测不出角度）</span>
+              </div>
+              <select data-hands-action="scroll">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
+              <button type="button" data-record-action="scroll">开始录制</button>
+              <button type="button" data-clear-action="scroll">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="scroll"></i></div>
+                <span data-hint-action="scroll">未录制</span>
+              </div>
+            </div>
+            <div class="recorder-row" data-action="spaceSwitch">
+              <div><b>左右切换桌面（横向挥动）</b><span>保持该手势横向快速挥一下切一个桌面；手停下来才能再挥</span></div>
+              <select data-hands-action="spaceSwitch">
+                <option value="1">单手</option>
+                <option value="2">双手</option>
+              </select>
+              <button type="button" data-record-action="spaceSwitch">开始录制</button>
+              <button type="button" data-clear-action="spaceSwitch">清除</button>
+              <div class="recorder-feedback">
+                <div class="recorder-bar"><i data-progress-action="spaceSwitch"></i></div>
+                <span data-hint-action="spaceSwitch">未录制</span>
               </div>
             </div>
             <div class="recorder-row" data-action="rightClick">

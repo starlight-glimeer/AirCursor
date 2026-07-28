@@ -64,9 +64,13 @@ const GESTURE_LABELS = {
 const { PointerFilter, TrackingMetrics } = window.AirCursorTracking;
 const { orderHands, buildPoseTemplate, templateDistance, medianTemplate, GestureResolver, SEPARATION_FACTOR } =
   window.AirCursorPose;
+const { WristPath, TiltRatchet, SwipeDetector, maxUsableTiltDeg } = window.AirCursorMotion;
 
 const metrics = new TrackingMetrics();
 const resolver = new GestureResolver();
+const wristPath = new WristPath();
+const scrollRatchet = new TiltRatchet();
+const swipeDetector = new SwipeDetector();
 
 const DEFAULT_TUNING = {
   minCutoff: 1.2,
@@ -77,6 +81,9 @@ const DEFAULT_TUNING = {
   rotationTolerance: 20,
   inferenceIntervalMs: 20,
   moveIntervalMs: 8,
+  scrollTriggerDeg: 16,
+  scrollNotches: 3,
+  swipeSpeed: 2.6,
 };
 const pointerFilter = new PointerFilter(DEFAULT_TUNING);
 
@@ -136,12 +143,30 @@ const state = {
   ruleHold: { id: null, startedAt: 0, missingSince: 0 },
   ruleCooldownUntil: 0,
   pointerDown: false,
+  // What the motion layer did on the most recent frame, for the diagnostics
+  // panel and the report. These gestures have several distinct ways to do
+  // nothing (wrist moving, waiting to return to rest, cooling down, no axis),
+  // and the symptom of every one of them is "the pose shows up and the screen
+  // does not move" — the exact fault that has cost three rounds already.
+  motion: {
+    tiltDeg: 0,
+    triggerDeg: 0,
+    clampedTrigger: false,
+    wristSpeed: 0,
+    scrollBlocked: null,
+    swipeBlocked: null,
+    scrollNotches: 0,
+    swipes: 0,
+    lastScrollAt: 0,
+    lastSwipeAt: 0,
+    lastSwipeDirection: 0,
+  },
+  drag: { active: false, missingSince: 0 },
   pinch: {
     active: false,
     startedAt: 0,
     startX: 0,
     startY: 0,
-    dragging: false,
     missingSince: 0,
   },
   rightClickCooldownUntil: 0,
@@ -320,6 +345,10 @@ function detectGesture(points, allHands = [points]) {
     fist,
     palm: palmCenter(points),
     index,
+    // The motion laws track the wrist, not the fingertip: fingers move within a
+    // held pose, and what matters there is whether the hand as a whole is parked
+    // or travelling.
+    wrist,
     palmWidth,
     poseTemplate: buildPoseTemplate(allHands),
   };
@@ -354,6 +383,16 @@ function screenPoint(localX, localY) {
 function sendPointer(type, x, y) {
   const p = screenPoint(x, y);
   aircursor.pointer({ type, x: p.x, y: p.y });
+}
+
+// Scroll and key carry no coordinate: they go to whatever is focused, the same
+// way a trackpad two-finger scroll and Ctrl+Arrow do.
+function sendScroll(notches) {
+  aircursor.pointer({ type: "scroll", dy: notches });
+}
+
+function sendKey(key) {
+  aircursor.pointer({ type: "key", key });
 }
 
 function setControlMode(enabled) {
@@ -486,22 +525,123 @@ function resetPinch() {
   state.pinch.startedAt = 0;
   state.pinch.startX = 0;
   state.pinch.startY = 0;
-  state.pinch.dragging = false;
   state.pinch.missingSince = 0;
 }
 
-// Finish a pinch the way a deliberate release would: a click if the pose never
-// turned into a drag, otherwise the pointer-up that ends the drag.
+// A click fires on release, at the point the pose was formed rather than wherever
+// the hand has drifted to since: aiming happens before the click, and charging
+// the drift to the click made small targets unhittable.
 function releasePinch() {
-  if (state.pinch.dragging || state.pointerDown) {
+  sendPointer("click", state.pinch.startX, state.pinch.startY);
+  burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ffd76a");
+  resetPinch();
+}
+
+function resetDrag() {
+  state.drag.active = false;
+  state.drag.missingSince = 0;
+}
+
+// Drag is its own gesture now, so it is simply "button down while the pose is
+// held". It used to be inferred from a click pose that moved far enough, which
+// had to guess at intent and, worse, collided with the motion gestures: those
+// move the hand deliberately, so any pose still matching click would have
+// started dragging mid-scroll.
+function endDrag() {
+  if (state.pointerDown) {
     sendPointer("up", state.cursor.x, state.cursor.y);
     state.pointerDown = false;
     burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#49e5ff");
-  } else {
-    sendPointer("click", state.pinch.startX, state.pinch.startY);
-    burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ffd76a");
   }
-  resetPinch();
+  resetDrag();
+}
+
+// The two motion laws. The pose only says which law is active; the movement
+// afterwards decides what happens, which is why neither can be expressed as a
+// static template match alone.
+//
+// Wrist speed separates them with no arbitration: the ratchet needs a parked
+// wrist, the swipe a travelling one, and the dead band between the thresholds
+// means one motion can never satisfy both. Ordering decided a gesture conflict
+// once before and the loser could never fire at all — not repeating that.
+function updateMotionGestures(gesture, now) {
+  const active = tuning();
+  const m = state.motion;
+
+  if (!settings.controlEnabled || !gesture) {
+    wristPath.reset();
+    scrollRatchet.reset();
+    swipeDetector.reset();
+    m.tiltDeg = 0;
+    m.wristSpeed = 0;
+    m.scrollBlocked = settings.controlEnabled ? "noHand" : "controlOff";
+    m.swipeBlocked = m.scrollBlocked;
+    return;
+  }
+
+  // The wrist, not the fingertip: fingers move within a held pose, and the
+  // question here is whether the hand as a whole is parked or travelling.
+  const wrist = gesture.wrist;
+  wristPath.push(wrist.x, wrist.y, gesture.palmWidth, now);
+  const displacement = wristPath.displacement();
+  m.wristSpeed = Number((displacement?.speed ?? 0).toFixed(2));
+
+  const scrollBinding = settings.gestureMap?.scroll;
+  const scrollTemplate = scrollBinding?.startsWith("custom:")
+    ? settings.recordedGestures?.[scrollBinding.slice("custom:".length)]?.template
+    : null;
+
+  if (scrollTemplate && gestureMatches(gesture, scrollBinding)) {
+    // Clamped against the rotation tolerance: past that limit the tilted pose no
+    // longer matches its own template, so a trigger set beyond it would make the
+    // gesture disappear at exactly the angle it should fire at. Measured on a
+    // hand-shaped pose, leftover rotation costs ~0.0196 distance per degree.
+    const ceiling = maxUsableTiltDeg(active.rotationTolerance, active.matchThreshold);
+    const trigger = Math.min(active.scrollTriggerDeg, ceiling);
+    m.clampedTrigger = trigger < active.scrollTriggerDeg;
+    m.triggerDeg = Number(trigger.toFixed(1));
+
+    const direction = scrollRatchet.update({
+      liveAngle: gesture.poseTemplate?.angle,
+      templateAngle: scrollTemplate.angle,
+      wristSpeed: displacement?.speed ?? 0,
+      triggerDeg: trigger,
+      now,
+    });
+    m.tiltDeg = Number(scrollRatchet.deltaDeg.toFixed(1));
+    m.scrollBlocked = scrollRatchet.blocked;
+    if (direction) {
+      sendScroll(direction * active.scrollNotches);
+      m.scrollNotches += 1;
+      m.lastScrollAt = now;
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 20 : 8, "#8affc1");
+    }
+  } else {
+    scrollRatchet.reset();
+    m.tiltDeg = 0;
+    m.scrollBlocked = scrollTemplate ? "poseNotMatched" : "notBound";
+  }
+
+  const swipeBinding = settings.gestureMap?.spaceSwitch;
+  if (swipeBinding?.startsWith("custom:") && gestureMatches(gesture, swipeBinding)) {
+    const direction = swipeDetector.update({
+      displacement,
+      speedThreshold: active.swipeSpeed,
+      now,
+    });
+    m.swipeBlocked = swipeDetector.blocked;
+    if (direction) {
+      // A rightward hand sends the desktop rightward, matching the trackpad.
+      sendKey(direction > 0 ? "spaceRight" : "spaceLeft");
+      m.swipes += 1;
+      m.lastSwipeAt = now;
+      m.lastSwipeDirection = direction;
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 28 : 10, "#49e5ff");
+    }
+  } else {
+    swipeDetector.reset();
+    m.swipeBlocked = swipeBinding ? "poseNotMatched" : "notBound";
+  }
 }
 
 function updateSystemCursor(gesture) {
@@ -511,18 +651,19 @@ function updateSystemCursor(gesture) {
   // clicking. Losing the hand is not: the click fires on release, so treating a
   // dropped frame as "no gesture" threw away a click the user had already made.
   if (!settings.controlEnabled) {
-    if (state.pointerDown) {
-      sendPointer("up", state.cursor.x, state.cursor.y);
-      state.pointerDown = false;
-    }
+    endDrag();
     resetPinch();
     pointerFilter.reset();
     return;
   }
 
-  // No hand at all: hold the pinch through a short dropout, then release it as
+  // No hand at all: hold both poses through a short dropout, then finish them as
   // if the user had let go — which, if the hand really is gone, they have.
   if (!gesture) {
+    if (state.drag.active) {
+      if (!state.drag.missingSince) state.drag.missingSince = now;
+      if (now - state.drag.missingSince > PINCH_GRACE_MS) endDrag();
+    }
     if (!state.pinch.active) {
       pointerFilter.reset();
       return;
@@ -536,7 +677,9 @@ function updateSystemCursor(gesture) {
 
   const moved = moveCursorToward(gesture, now);
 
-  const canSendMove = !state.pinch.active || state.pinch.dragging;
+  // A pinch waiting to become a click parks the cursor so the click lands where
+  // it was aimed; a drag has to keep moving, that is the point of it.
+  const canSendMove = !state.pinch.active || state.drag.active;
   // A held cursor is intentionally parked, so re-sending the same coordinate
   // would only add pointer traffic without moving anything.
   if (canSendMove && !moved.held && now - state.lastPointerSentAt > tuning().moveIntervalMs) {
@@ -547,6 +690,29 @@ function updateSystemCursor(gesture) {
 
   const rightClickActive = gestureMatches(gesture, settings.gestureMap?.rightClick);
   const clickActive = gestureMatches(gesture, settings.gestureMap?.click);
+  const dragActive = gestureMatches(gesture, settings.gestureMap?.drag);
+
+  // Drag runs before the click branches and returns: while the button is down,
+  // a frame that also matches click must not start a competing pinch.
+  if (dragActive) {
+    state.drag.missingSince = 0;
+    if (!state.drag.active) {
+      state.drag.active = true;
+      state.pointerDown = true;
+      sendPointer("down", state.cursor.x, state.cursor.y);
+      burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 18 : 6, "#ff4ea3");
+    }
+    return;
+  }
+
+  if (state.drag.active) {
+    // Same grace as the click: a held pose flickers off for a frame or two, and
+    // a two-hand pose loses its match whenever either hand is missed. Dropping
+    // the button on the first such frame would end the drag mid-movement.
+    if (!state.drag.missingSince) state.drag.missingSince = now;
+    if (now - state.drag.missingSince <= PINCH_GRACE_MS) return;
+    endDrag();
+  }
 
   if (rightClickActive && now > state.rightClickCooldownUntil) {
     state.rightClickCooldownUntil = now + 650;
@@ -561,20 +727,12 @@ function updateSystemCursor(gesture) {
     state.pinch.startedAt = now;
     state.pinch.startX = state.cursor.x;
     state.pinch.startY = state.cursor.y;
-    state.pinch.dragging = false;
     burst(state.pinch.startX, state.pinch.startY, settings.effects === "rich" ? 18 : 6, "#ff4ea3");
     return;
   }
 
   if (clickActive && state.pinch.active) {
     state.pinch.missingSince = 0;
-    const moved = Math.hypot(state.cursor.x - state.pinch.startX, state.cursor.y - state.pinch.startY);
-    const held = now - state.pinch.startedAt;
-    if (!state.pinch.dragging && moved > 28 && held > 140) {
-      state.pinch.dragging = true;
-      state.pointerDown = true;
-      sendPointer("down", state.pinch.startX, state.pinch.startY);
-    }
     return;
   }
 
@@ -933,6 +1091,16 @@ function loop(now) {
     // you wake the pointer first.
     updateRuleGestures(gesture);
     updateSystemCursor(gesture);
+    // After the pointer, so a frame that starts a drag has already claimed the
+    // pose before the motion laws look at it, and `now` matches the same clock
+    // updateSystemCursor used.
+    updateMotionGestures(gesture, now);
+  } else {
+    // Recording must not fire the action being recorded, and the motion state
+    // must not carry the recording session's hand movement into the next frame.
+    wristPath.reset();
+    scrollRatchet.reset();
+    swipeDetector.reset();
   }
   // All template comparisons for this frame are done, so the closest one can be
   // recorded as the frame's match distance.
@@ -954,6 +1122,12 @@ function loop(now) {
       holdId: state.modeHold.id || state.ruleHold.id || null,
       holdMs: holdElapsedMs(),
       pinchActive: state.pinch.active,
+      dragActive: state.drag.active,
+      // The motion gestures each have several distinct ways to do nothing, and
+      // every one of them presents as "the pose is recognised and the screen
+      // does not move" — the fault this project has already chased three times.
+      // So the reason is reported, not just the numbers.
+      motion: { ...state.motion },
       tuning: tuning(),
     });
   }

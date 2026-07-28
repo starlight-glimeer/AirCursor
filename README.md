@@ -25,10 +25,16 @@ Then open `http://127.0.0.1:5177`.
 
 - Open palm and hold: wake the transparent control layer.
 - Index finger: move the cursor.
-- Thumb-index pinch: mouse down/up for click and drag.
+- Thumb-index pinch: click on release.
 - Thumb-middle pinch: right click.
 - Fist and hold: hide the control layer.
+- Drag, scroll and desktop switching have no built-in pose — record one (see below).
 - Voice: "启动/控制", "退出/停止", "打开网易云", "点击".
+
+Click and drag are separate actions rather than one pose that upgrades when the
+hand moves far enough. Holding a button down is a distinct intent, and inferring
+it from movement collided with the motion gestures below, which move the hand on
+purpose: any pose still matching click would have started a drag mid-scroll.
 
 The desktop build uses Electron for the transparent always-on-top overlay and a tiny Swift CoreGraphics helper for macOS pointer events.
 
@@ -51,6 +57,51 @@ Which gesture fires is decided once per frame by nearest template, not by whiche
 
 A new recording is refused when it lands within one threshold of a gesture you already saved: at that range it is inside the drift of a single held pose, so which one fires would be arbitrary. Pairs between one and two thresholds apart still save — the whole single-hand pose space only spans about 0.21 to 0.54, so refusing that band would reject open-palm vs fist — and the dashboard warns instead.
 
+## Motion Gestures
+
+Scrolling and desktop switching are not poses. A pose is a single frame, and both
+of these need to know what the hand has been *doing*, so the recorded pose only
+selects which control law is active and the movement afterwards decides the rest.
+They are two different laws, deliberately not one mechanism:
+
+**上下滚动 is a ratchet.** Park the wrist, tilt the palm up, and one notch of
+scrolling fires; tilt further and nothing more happens until the hand returns to
+the pose it was recorded in, which re-arms it. Scrolling more is one more tilt.
+The alternative — mapping continuous hand displacement onto scroll position — has
+no defined rest position, so the hand has to hover mid-air and there is no moment
+that clearly means "stop".
+
+The tilt is measured against the recorded template's own angle, not against an
+angle captured when the gesture is first recognised: the recorded pose *is* the
+rest position, which avoids both a baseline race and treating an already-tilted
+hand as neutral.
+
+That angle also has a hard ceiling. Matching de-rotates a live pose onto its
+template by at most 旋转容差, and past that the leftover rotation is charged as
+shape error at about 0.0196 distance per degree — so a trigger angle beyond the
+tolerance would make the pose stop matching at exactly the angle it should fire
+at. 滚动触发角 is therefore clamped, and 抬压角度 in the diagnostics panel says so
+when it happens rather than leaving a slider that silently does nothing.
+
+**左右切换桌面 is a swipe**, one desktop per stroke, sent as Ctrl+Left/Right —
+macOS Spaces have no synthesisable gesture event, so the keyboard shortcut is the
+only route. The hard part is not detecting the stroke, it is the return: swiping
+right means the hand comes back, and that return is a fast leftward stroke. So
+firing again requires both the cooldown to expire and the wrist to actually stop.
+A stroke also has to be sideways and straight — a hand being carried somewhere is
+not a gesture.
+
+The two laws never compete for one motion, and not because of a priority order:
+the ratchet requires a wrist below 1.1 palm widths per second, the swipe one
+above 挥动速度门限 (default 2.6), and the dead band between them means no single
+motion satisfies both. Speeds are in palm widths per second rather than pixels so
+a threshold means the same thing at any distance from the camera.
+
+Both gestures need a measurable rotation axis, which two mirrored hands do not
+have — their axes cancel, and `poseAngle` returns null. Recording a two-hand
+mirrored pose for 上下滚动 is refused at save time rather than saving something
+that could never fire.
+
 ## Gesture-Triggered Rules
 
 Every rule under 常用规则 takes a gesture too, recorded the same way. Hold a bound gesture for 1.2 seconds and the rule fires; there is a 2.5 second cooldown afterwards, and it works whether or not control mode is on, since opening an app should not require waking the pointer first.
@@ -71,7 +122,19 @@ Turn on 诊断与调参 in the dashboard (or press Command+D) to get the panel t
 | 跟随滞后 | how far the cursor trails the raw fingertip | > 26 px |
 | 识别率 | share of frames with a hand, plus hand count | < 85% |
 | 手势距离 | distance to the nearest recorded template, the closest seen, and which gesture it is | — |
-| 保持进度 | which gesture is accumulating hold time and for how long, or that a pinch is waiting for release | — |
+| 保持进度 | which gesture is accumulating hold time and for how long, or that a pinch is waiting for release, or that a drag is holding the button | — |
+| 抬压角度 | palm tilt away from the recorded pose, against the trigger angle, and whether that angle was clamped | — |
+| 动态手势 | why the ratchet and the swipe each did nothing this frame, plus wrist speed | — |
+
+动态手势 exists because these two gestures have several distinct ways to do
+nothing — the wrist was moving, the hand has not returned to rest, the cooldown is
+running, the pose has no measurable axis, the stroke was not straight enough — and
+every one of them looks identical from the outside: the gesture appears on the
+status line and the screen does not move. That symptom has already cost this
+project three debugging rounds under other causes, so each reason is named.
+Reports carry a tally of these reasons across the whole sample window under
+`motion`, since a single frame's reason is whatever the last frame happened to
+say.
 
 **点击通道 in 运行状态 is the first row to read when nothing happens.** Gesture recognition and mouse delivery are two separate claims, and only 识别 speaks for the first: macOS discards synthesised events from a process without the Accessibility grant, silently — no error, no exception, and the helper cannot tell. So a live gesture, a click animation and a dead mouse are all mutually consistent, and no amount of gesture tuning helps. 正常 means the helper is running and trusted; 无权限 and 异常 raise a red banner that names the fix. Reports carry the same verdict under `pointer`, including which binary is running (`pointer.binary`) and how many commands were written versus dropped.
 
@@ -90,6 +153,9 @@ The seven sliders apply instantly, no restart:
 - **手势容错阈值** — larger accepts sloppier poses and misfires more. Default 0.28: above the 0.10-0.16 a held pose drifts on real hardware, below the 0.346 that separates the closest distinct pair.
 - **旋转容差** — degrees of wrist tilt to forgive; too large merges gestures that differ only in direction.
 - **推理间隔** — smaller tracks tighter and costs more CPU.
+- **滚动触发角** — degrees of palm tilt per scroll notch, clamped against 旋转容差.
+- **每次滚动量** — notches per tilt; larger scrolls faster and lands less precisely.
+- **挥动速度门限** — how fast a sideways stroke must be to switch desktops. Its floor stays above the wrist speed the ratchet allows, so the two gestures cannot both fire.
 
 恢复默认调参 puts them all back. 重置指标 clears the rolling averages in both processes before a fresh measurement.
 

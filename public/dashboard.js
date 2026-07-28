@@ -44,8 +44,11 @@ let recordingAction = null;
 
 const actionLabels = {
   wake: "唤醒控制",
-  click: "点击/拖拽",
+  click: "点击",
+  drag: "拖拽（按住不放）",
   rightClick: "右键",
+  scroll: "上下滚动（手掌抬压）",
+  spaceSwitch: "左右切换桌面（横向挥动）",
   exit: "退出控制",
 };
 
@@ -420,11 +423,60 @@ window.aircursor.onMetrics((m) => {
     null,
     m.holdId
       ? `${labelFor(m.holdId)} · ${m.holdMs} ms`
-      : m.pinchActive
-        ? "捏合中 · 松开即点击"
-        : "无保持中的手势",
+      : m.dragActive
+        ? "拖拽中 · 左键按住"
+        : m.pinchActive
+          ? "捏合中 · 松开即点击"
+          : "无保持中的手势",
   );
+  renderMotion(m.motion);
 });
+
+// Why the motion gestures did nothing. Both of them can fail for several reasons
+// that are invisible from the outside — the wrist was moving, the hand has not
+// returned to the recorded pose yet, the cooldown is still running, the pose has
+// no measurable axis — and every one of them presents as "the gesture shows up on
+// the status line and the screen does not move". That symptom has already cost
+// three debugging rounds on this project, so each reason gets named here.
+const MOTION_BLOCKED_TEXT = {
+  controlOff: "控制模式关着",
+  noHand: "没有检测到手",
+  notBound: "没录手势",
+  poseNotMatched: "手势没匹配上",
+  noAxis: "姿势测不出方向轴（双手镜像）",
+  wristMoving: "手腕在移动，先停稳",
+  waitingReturn: "等手回到录制姿势才能再滚",
+  waitingStill: "等手停下来才能再挥",
+  cooldown: "冷却中",
+  noPath: "轨迹不足",
+  tooShort: "挥动距离不够",
+  notHorizontal: "不够横向",
+  notStraight: "轨迹不够直",
+};
+
+function motionReason(blocked) {
+  if (!blocked) return "就绪";
+  return MOTION_BLOCKED_TEXT[blocked] || blocked;
+}
+
+function renderMotion(motion) {
+  if (!motion) {
+    setMetric("mTilt", null, "-");
+    setMetric("mMotion", null, "-");
+    return;
+  }
+  // The clamp is surfaced rather than applied quietly: a trigger angle past the
+  // rotation tolerance would make the tilted pose stop matching its own
+  // template, so it is capped — and a slider that silently does nothing above
+  // some value is its own debugging trap.
+  const clamped = motion.clampedTrigger ? `（已压到 ${motion.triggerDeg}°，受旋转容差限制）` : "";
+  setMetric("mTilt", null, `${motion.tiltDeg}° / 触发 ${motion.triggerDeg}°${clamped}`);
+  setMetric(
+    "mMotion",
+    null,
+    `滚动 ${motionReason(motion.scrollBlocked)} · 挥动 ${motionReason(motion.swipeBlocked)} · 手速 ${motion.wristSpeed}`,
+  );
+}
 window.aircursor.onOverlayLog((entry) => {
   if (!entry) return;
   const line = `[${entry.source}] ${entry.message}\n`;
