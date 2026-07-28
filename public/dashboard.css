@@ -212,12 +212,24 @@ h2 {
   gap: 6px;
 }
 
+/* Portrait, because a hand is: measured on a real template the normalized shape
+   spans 1.73 x 2.67, i.e. taller than it is wide. In the original 76x62 landscape
+   box the drawing fit by height and used only half the width, so every preview came
+   out small and off-centre — worse for two-hand templates, which are wider still
+   and got squashed. */
 .recorder-preview canvas {
-  width: 76px;
-  height: 62px;
+  width: 60px;
+  height: 84px;
   border: 1px solid #dfe6f1;
   border-radius: 8px;
   background: #fff;
+}
+
+/* Two hands side by side are wider than tall, so that shape gets its own box
+   rather than being fit into the one-hand one. */
+.recorder-preview canvas.is-wide {
+  width: 104px;
+  height: 84px;
 }
 
 .recorder-preview canvas.is-empty {
@@ -234,7 +246,6 @@ h2 {
 /* A recorded movement plays back rather than showing a frozen frame: a dynamic
    gesture shown as a still image says nothing about what the gesture is. */
 .recorder-preview canvas.is-animated {
-  width: 96px;
   border-color: #a8c8ea;
   background: linear-gradient(180deg, #fff 0%, #f7fbff 100%);
 }

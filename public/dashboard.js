@@ -117,19 +117,32 @@ function templatePoints(template) {
 function drawTemplate(canvas, template, { tiltDeg = 0, accent = "#0f72d4" } = {}) {
   const ctx = canvas.getContext("2d");
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = canvas.clientWidth || 76;
-  const h = canvas.clientHeight || 62;
+  const hands = templatePoints(template);
+  if (!hands) {
+    canvas.classList.add("is-empty");
+    // Cleared, not collapsed: the dashed empty box is how "not recorded yet" looks,
+    // and zeroing the backing store would make the element vanish instead.
+    canvas.width = Math.round((canvas.clientWidth || 60) * dpr);
+    canvas.height = Math.round((canvas.clientHeight || 84) * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.clientWidth || 60, canvas.clientHeight || 84);
+    return;
+  }
+  canvas.classList.remove("is-empty");
+  // Decided before measuring, not after: the class is what sets clientWidth, so
+  // setting it later meant a two-hand pose was scaled to the one-hand box on its
+  // first draw. A two-hand pose is wider than tall and a one-hand pose is the
+  // opposite, so the box follows the content.
+  canvas.classList.toggle("is-wide", hands.length > 1);
+  // Sized from the element so the CSS box is the single source of truth; the
+  // fallbacks match the one-hand box in dashboard.css.
+  const w = canvas.clientWidth || 60;
+  const h = canvas.clientHeight || 84;
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const hands = templatePoints(template);
-  if (!hands) {
-    canvas.classList.add("is-empty");
-    return;
-  }
-  canvas.classList.remove("is-empty");
 
   // The tilt preview rotates the stored pose by the recorded extent, so the
   // second frame shows the position the movement actually reaches rather than a

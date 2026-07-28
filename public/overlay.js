@@ -641,7 +641,7 @@ function performSequenceAction(action) {
   state.motion.sequences += 1;
 
   if (state.ruleIds.includes(action)) {
-    aircursor.runRule(action);
+    aircursor.runRule(action, { fromGesture: true });
     burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 32 : 12, "#8affc1");
     return;
   }
@@ -722,7 +722,7 @@ function updateRuleGestures(gesture) {
   burst(state.cursor.x, state.cursor.y, settings.effects === "rich" ? 32 : 12, "#8affc1");
   // `target`, not `bound`: the hold can complete on a frame where the tracker
   // lost the hand and the grace window is carrying it, and `bound` is null then.
-  aircursor.runRule(target);
+  aircursor.runRule(target, { fromGesture: true });
 }
 
 function resetPinch() {
@@ -1895,6 +1895,9 @@ function handleVoiceText(rawText, source = "语音") {
     return;
   }
 
+  // Voice deliberately does not pass fromGesture: the switch turns off the
+  // *gesture* binding, and silencing voice with it would remove the fallback the
+  // user needs while a gesture is disabled.
   aircursor.runRule(rule.id).then((response) => {
     aircursor.status({
       rule: `${response.ok ? source : `${source}失败`}：${rule.label}`,

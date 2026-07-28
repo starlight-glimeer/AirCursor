@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld("aircursor", {
     ipcRenderer.invoke("aircursor:start-recording", action, hands, kind),
   cancelRecording: () => ipcRenderer.invoke("aircursor:cancel-recording"),
   clearRecordedGesture: (action) => ipcRenderer.invoke("aircursor:clear-recorded-gesture", action),
-  runRule: (ruleId) => ipcRenderer.invoke("aircursor:run-rule", ruleId),
+  runRule: (ruleId, options) => ipcRenderer.invoke("aircursor:run-rule", ruleId, options),
   openNetease: () => ipcRenderer.invoke("aircursor:open-netease"),
   openAccessibilitySettings: () => ipcRenderer.invoke("aircursor:open-accessibility"),
   showDashboard: () => ipcRenderer.invoke("aircursor:show-dashboard"),

@@ -895,9 +895,22 @@ function openWithCandidates(candidates) {
   return false;
 }
 
-function runRule(ruleId) {
+// The enable switch is enforced here, not only in the overlay.
+//
+// A gesture-triggered rule goes overlay -> IPC -> here, so the overlay-side guard
+// did not cover it: switching a rule off left it firing exactly as before. A switch
+// that visibly does nothing is worse than no switch, and the reason it slipped is
+// that the guard was added where gestures are *matched* rather than where actions
+// are *performed* — and this action is performed in a different process.
+function runRule(ruleId, { fromGesture = false } = {}) {
   const rule = ruleDefinitions.find((item) => item.id === ruleId);
   if (!rule) return { ok: false, id: ruleId, label: "未知规则" };
+  // The 测试 button in the dashboard is a deliberate manual run, so it ignores the
+  // switch; a gesture must not.
+  if (fromGesture && settings.disabledActions?.[ruleId]) {
+    broadcast("aircursor:overlay-status", { rule: `已停用，未执行：${rule.label}` });
+    return { ok: false, id: rule.id, label: rule.label, disabled: true };
+  }
 
   const ok = openWithCandidates(rule.candidates);
   const result = { ok, id: rule.id, label: rule.label };
@@ -1138,7 +1151,7 @@ ipcMain.handle("aircursor:clear-recorded-gesture", (_event, action) => {
   return { ok: true, settings };
 });
 ipcMain.handle("aircursor:get-rules", () => ({ rules: publicRules }));
-ipcMain.handle("aircursor:run-rule", (_event, ruleId) => runRule(ruleId));
+ipcMain.handle("aircursor:run-rule", (_event, ruleId, options) => runRule(ruleId, options));
 ipcMain.handle("aircursor:open-netease", () => runRule("open_netease"));
 ipcMain.handle("aircursor:open-accessibility", () => {
   shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
