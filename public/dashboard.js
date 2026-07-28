@@ -75,6 +75,104 @@ function ensureRecordedOption(action) {
   }
 }
 
+// Drawing a saved template back at the user.
+//
+// A template is 21 landmarks per hand of normalized coordinates. Stored as
+// numbers they are unreadable, so the only way to learn what a recording
+// captured was to go and perform it and see whether anything happened — which is
+// also how a bad recording stayed invisible until it was mistaken for a bug in
+// the matching. The preview removes the guesswork: what is drawn is exactly what
+// live poses are compared against.
+const HAND_LINES = [
+  [0, 1, 2, 3, 4],
+  [0, 5, 6, 7, 8],
+  [0, 9, 10, 11, 12],
+  [0, 13, 14, 15, 16],
+  [0, 17, 18, 19, 20],
+  [5, 9, 13, 17],
+];
+const LANDMARKS_PER_HAND = 21;
+
+// Templates share one origin and scale across both hands, so a two-hand pose
+// keeps the gap between the hands. Fitting to the drawn bounds preserves that.
+function templatePoints(template) {
+  const values = template?.values;
+  const hands = template?.hands;
+  if (!Array.isArray(values) || !hands) return null;
+  const out = [];
+  for (let hand = 0; hand < hands; hand += 1) {
+    const offset = hand * LANDMARKS_PER_HAND * 3;
+    const points = [];
+    for (let id = 0; id < LANDMARKS_PER_HAND; id += 1) {
+      points.push({ x: values[offset + id * 3], y: values[offset + id * 3 + 1] });
+    }
+    out.push(points);
+  }
+  return out;
+}
+
+function drawTemplate(canvas, template, { tiltDeg = 0, accent = "#0f72d4" } = {}) {
+  const ctx = canvas.getContext("2d");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = canvas.clientWidth || 76;
+  const h = canvas.clientHeight || 62;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const hands = templatePoints(template);
+  if (!hands) {
+    canvas.classList.add("is-empty");
+    return;
+  }
+  canvas.classList.remove("is-empty");
+
+  // The tilt preview rotates the stored pose by the recorded extent, so the
+  // second frame shows the position the movement actually reaches rather than a
+  // number the user has to imagine.
+  const rot = (tiltDeg * Math.PI) / 180;
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const placed = hands.map((points) =>
+    points.map((p) => ({ x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos })),
+  );
+
+  const all = placed.flat();
+  const xs = all.map((p) => p.x);
+  const ys = all.map((p) => p.y);
+  const spanX = Math.max(...xs) - Math.min(...xs) || 1;
+  const spanY = Math.max(...ys) - Math.min(...ys) || 1;
+  const pad = 7;
+  const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const at = (p) => ({ x: w / 2 + (p.x - cx) * scale, y: h / 2 + (p.y - cy) * scale });
+
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const points of placed) {
+    ctx.strokeStyle = accent;
+    for (const line of HAND_LINES) {
+      ctx.beginPath();
+      line.forEach((id, i) => {
+        const p = at(points[id]);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    }
+    ctx.fillStyle = accent;
+    for (const p of points) {
+      const q = at(p);
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
 // Thresholds that turn a metric amber. They mark "this is what would make the
 // experience feel wrong", so a report carries the judgement, not just numbers.
 const METRIC_WARN = {
@@ -182,6 +280,18 @@ function buildRuleRow(rule) {
     ruleState.textContent = `${result.ok ? "已执行" : "失败"}：${rule.label}`;
   });
 
+  // Same preview as the fixed rows: a rule's gesture is just as invisible.
+  const preview = document.createElement("div");
+  preview.className = "recorder-preview";
+  preview.dataset.previewAction = rule.id;
+  const rest = document.createElement("canvas");
+  rest.dataset.previewRest = "";
+  const move = document.createElement("canvas");
+  move.dataset.previewMove = "";
+  move.className = "is-move";
+  move.hidden = true;
+  preview.append(rest, move);
+
   const feedback = document.createElement("div");
   feedback.className = "recorder-feedback";
   const bar = document.createElement("div");
@@ -194,7 +304,7 @@ function buildRuleRow(rule) {
   hint.textContent = "未录制";
   feedback.append(bar, hint);
 
-  row.append(copy, handsSelect, recordButton, clearButton, testButton, feedback);
+  row.append(copy, handsSelect, recordButton, clearButton, testButton, preview, feedback);
   return row;
 }
 
@@ -211,11 +321,42 @@ function paintRecorderRow(row) {
   const handsSelect = row.querySelector("[data-hands-action]");
   handsSelect.disabled = Boolean(recordingAction);
   if (recorded?.hands && !recordingAction) handsSelect.value = String(recorded.hands);
+  paintPreview(row, recorded);
   if (isRecording) return;
   row.querySelector("[data-progress-action]").style.width = "0%";
-  row.querySelector("[data-hint-action]").textContent = recorded
-    ? `已录制${recorded.hands === 2 ? "双手" : "单手"}手势`
-    : "未录制";
+  row.querySelector("[data-hint-action]").textContent = recorded ? describeRecorded(recorded) : "未录制";
+}
+
+// What was captured, in the terms the user performed it in: a motion gesture is
+// described by the movement it measured, not just "已录制".
+function describeRecorded(recorded) {
+  const hands = recorded.hands === 2 ? "双手" : "单手";
+  const motion = recorded.motion;
+  if (motion?.measure === "tilt") {
+    return `${hands} · 抬压到 ${Math.round(motion.peak)}°，超过 ${Math.round(motion.trigger)}° 就滚一段`;
+  }
+  if (motion?.measure === "swipe") {
+    return `${hands} · 挥动到 ${motion.peak.toFixed(1)} 掌宽/秒，超过 ${motion.trigger.toFixed(1)} 就切桌面`;
+  }
+  return `已录制${hands}手势`;
+}
+
+function paintPreview(row, recorded) {
+  const preview = row.querySelector("[data-preview-action]");
+  if (!preview) return;
+  const rest = preview.querySelector("[data-preview-rest]");
+  const move = preview.querySelector("[data-preview-move]");
+  drawTemplate(rest, recorded?.template);
+  rest.title = recorded ? "录下的姿势（匹配就是拿它比的）" : "还没录";
+  // Only a tilt gesture has a second position worth drawing; a swipe's extent is
+  // a speed, which a still frame cannot show, so its cell stays hidden rather
+  // than showing a duplicate of the rest pose and implying otherwise.
+  const tilt = recorded?.motion?.measure === "tilt" ? recorded.motion.peak : null;
+  move.hidden = tilt === null;
+  if (tilt !== null) {
+    drawTemplate(move, recorded.template, { tiltDeg: tilt, accent: "#1f9d63" });
+    move.title = `抬压到 ${Math.round(tilt)}° 时的位置`;
+  }
 }
 
 // Two templates too close together produce the most confusing symptom there is:
@@ -470,7 +611,10 @@ function renderMotion(motion) {
   // template, so it is capped — and a slider that silently does nothing above
   // some value is its own debugging trap.
   const clamped = motion.clampedTrigger ? `（已压到 ${motion.triggerDeg}°，受旋转容差限制）` : "";
-  setMetric("mTilt", null, `${motion.tiltDeg}° / 触发 ${motion.triggerDeg}°${clamped}`);
+  // Whether the trigger came from the recording or from the slider, because
+  // otherwise "I moved the slider and nothing changed" is unexplainable.
+  const from = motion.triggerFromRecording ? "录制值" : "滑块值";
+  setMetric("mTilt", null, `${motion.tiltDeg}° / 触发 ${motion.triggerDeg}°（${from}）${clamped}`);
   setMetric(
     "mMotion",
     null,
@@ -494,17 +638,35 @@ window.aircursor.onRecordingProgress((payload) => {
     return;
   }
   bar.style.width = `${Math.round((payload.progress || 0) * 100)}%`;
-  hint.textContent = payload.hint || "";
+  // In the movement stage the bar is a readout of how far the movement has got,
+  // not a countdown to a save, and the row says which stage it is in so "hold
+  // still" never appears while a movement is being asked for.
+  const row = bar.closest(".recorder-row");
+  if (row) row.classList.toggle("is-moving", payload.stage === "move");
+  const measured =
+    payload.stage === "move" && payload.measured ? ` · 最大 ${payload.measured}${payload.unit || ""}` : "";
+  hint.textContent = `${payload.hint || ""}${measured}`;
 });
 window.aircursor.onRecordingResult((result) => {
   if (!result) return;
   if (result.settings) settings = result.settings;
   recordingAction = null;
+  document.querySelectorAll(".recorder-row.is-moving").forEach((row) => row.classList.remove("is-moving"));
   ruleState.textContent = result.ok
-    ? `已保存${result.hands === 2 ? "双手" : "单手"}手势：${labelFor(result.action)}`
+    ? `已保存：${labelFor(result.action)}${describeSaved(result)}`
     : `录制失败：${result.reason}`;
   render();
 });
+
+// Repeat back what the movement measured, so a saved gesture is confirmed by its
+// own numbers rather than by going and testing whether it works.
+function describeSaved(result) {
+  const hands = result.hands === 2 ? "双手" : "单手";
+  const motion = result.motion;
+  if (motion?.measure === "tilt") return `（${hands}，抬压 ${Math.round(motion.peak)}°）`;
+  if (motion?.measure === "swipe") return `（${hands}，挥动 ${motion.peak.toFixed(1)} 掌宽/秒）`;
+  return `（${hands}）`;
+}
 window.aircursor.onSettings((nextSettings) => {
   settings = nextSettings;
   render();

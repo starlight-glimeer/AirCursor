@@ -575,12 +575,16 @@ function axisRejection(action, template) {
   return "这个动作靠手掌抬压的角度触发，但刚录的姿势测不出方向轴（双手镜像姿势会互相抵消）。换一个单手姿势，或让两手不对称。";
 }
 
-function saveRecordedTemplate(action, template) {
+function saveRecordedTemplate(action, template, motion) {
   if (!recordableActions.includes(action)) return;
   updateSettings({
     gestureMap: { [action]: `custom:${action}` },
     recordedGestures: {
-      [action]: { at: Date.now(), hands: template.hands, template },
+      // `motion` carries the trigger measured from the movement the user just
+      // performed, so this gesture fires at the extent they demonstrated rather
+      // than at whatever a global slider happens to say. The slider stays as the
+      // fallback for gestures recorded before this existed.
+      [action]: { at: Date.now(), hands: template.hands, template, motion: motion || null },
     },
   });
 }
@@ -1034,7 +1038,7 @@ ipcMain.on("aircursor:recording-result", (_event, result) => {
   // owns which actions exist and what they require.
   const axisReason = result.ok && result.template ? axisRejection(result.action, result.template) : null;
   const ok = Boolean(result.ok) && !axisReason;
-  if (ok && result.template) saveRecordedTemplate(result.action, result.template);
+  if (ok && result.template) saveRecordedTemplate(result.action, result.template, result.motion);
   recordingSession = null;
   updateSettings(session.restore);
   // The overlay knows the geometry but not the labels, so it reports which

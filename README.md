@@ -47,6 +47,8 @@ The four actions above are fixed in code; which gesture triggers each one is you
 3. Hold the pose still. The progress bar fills over 2 seconds and the template saves itself — no button to press, which is the point when both hands are busy.
 4. Moving out of the pose, dropping a hand, or showing the wrong number of hands restarts the 2 seconds and says why. After 15 seconds it gives up rather than saving something wrong.
 
+Every recorder row draws the pose it saved, so you can see what was captured instead of performing the gesture to find out. A tilt gesture draws two frames: the rest pose, and the position the tilt reaches. A saved row also states what it measured — "抬压到 26°，超过 19° 就滚一段" — because a gesture confirmed only by "已录制" is a gesture you still have to go and test.
+
 The saved template is the median of the frames you held, so one mistracked frame cannot poison it. Matching normalizes translation and scale, so the same pose works closer to or further from the camera; two-hand templates share one origin and one scale across both hands, so the distance between your hands stays part of the signature. A one-hand pose can never match a two-hand template.
 
 Wrist tilt is forgiven up to 旋转容差 (default 20°), measured along wrist to middle-finger base. It is capped rather than unlimited on purpose: full rotation invariance would make thumbs-up and thumbs-down the same gesture. For two hands the tilt is one shared axis, so leaning the whole pose still matches while rotating one hand alone stays a distinct gesture.
@@ -70,6 +72,21 @@ the pose it was recorded in, which re-arms it. Scrolling more is one more tilt.
 The alternative — mapping continuous hand displacement onto scroll position — has
 no defined rest position, so the hand has to hover mid-air and there is no moment
 that clearly means "stop".
+
+**Recording a motion gesture has two stages**, because asking someone to hold a
+movement still for two seconds is a contradiction. Stage 1 captures the rest
+pose — that one genuinely is static, since it is the position the hand returns to
+in order to re-arm. Stage 2 asks for the action itself: perform the tilt (or the
+swipe), and the extent it reaches becomes this gesture's trigger, at 75% of what
+was demonstrated so repeating the same movement crosses it rather than landing on
+the edge. The stage ends when the movement settles, not on a timer, and a dropped
+frame mid-movement does not discard it — at a 40-60% tracking rate a movement is
+guaranteed to have gaps.
+
+So 滚动触发角 and 挥动速度门限 are fallbacks for gestures recorded before this
+existed. "How far do I have to tilt" is a question the recording already
+answered, and one global slider cannot answer it for two differently-recorded
+gestures. 抬压角度 says which of the two is in force.
 
 The tilt is measured against the recorded template's own angle, not against an
 angle captured when the gesture is first recognised: the recorded pose *is* the

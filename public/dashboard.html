@@ -141,7 +141,7 @@
             <label>
               <span>滚动触发角 <b data-tuning-value="scrollTriggerDeg"></b></span>
               <input type="range" data-tuning="scrollTriggerDeg" min="6" max="40" step="1" />
-              <em>手掌抬压多少度滚一段；超过旋转容差会被自动压回，抬压角度那格会标注</em>
+              <em>兜底值：录过手势就以录制时抬到的幅度为准，这里不生效（抬压角度那格会标是哪个）。超过旋转容差会被自动压回</em>
             </label>
             <label>
               <span>每次滚动量 <b data-tuning-value="scrollNotches"></b></span>
@@ -151,7 +151,7 @@
             <label>
               <span>挥动速度门限 <b data-tuning-value="swipeSpeed"></b></span>
               <input type="range" data-tuning="swipeSpeed" min="1.4" max="5" step="0.1" />
-              <em>横向挥多快才算切桌面；越小越容易误触，越大越费力</em>
+              <em>兜底值：录过手势就以录制时挥的速度为准。越小越容易误触，越大越费力</em>
             </label>
           </div>
           <div class="diag-actions">
@@ -167,6 +167,10 @@
 
         <article class="panel wide">
           <h2>手势规则</h2>
+          <p class="panel-hint">
+            下面四个下拉是内置手型的快捷选择；每个动作真正用哪个手势，以下方“录制”里的为准（录过就以录的为准）。
+            拖拽、上下滚动、左右切桌面没有内置手型，只能录。
+          </p>
           <div class="gesture-settings">
             <label>
               <span>唤醒控制</span>
@@ -211,6 +215,10 @@
               </select>
               <button type="button" data-record-action="wake">开始录制</button>
               <button type="button" data-clear-action="wake">清除</button>
+              <div class="recorder-preview" data-preview-action="wake">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="wake"></i></div>
                 <span data-hint-action="wake">未录制</span>
@@ -224,6 +232,10 @@
               </select>
               <button type="button" data-record-action="click">开始录制</button>
               <button type="button" data-clear-action="click">清除</button>
+              <div class="recorder-preview" data-preview-action="click">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="click"></i></div>
                 <span data-hint-action="click">未录制</span>
@@ -237,6 +249,10 @@
               </select>
               <button type="button" data-record-action="drag">开始录制</button>
               <button type="button" data-clear-action="drag">清除</button>
+              <div class="recorder-preview" data-preview-action="drag">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="drag"></i></div>
                 <span data-hint-action="drag">未录制</span>
@@ -255,6 +271,10 @@
               </select>
               <button type="button" data-record-action="scroll">开始录制</button>
               <button type="button" data-clear-action="scroll">清除</button>
+              <div class="recorder-preview" data-preview-action="scroll">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="scroll"></i></div>
                 <span data-hint-action="scroll">未录制</span>
@@ -268,6 +288,10 @@
               </select>
               <button type="button" data-record-action="spaceSwitch">开始录制</button>
               <button type="button" data-clear-action="spaceSwitch">清除</button>
+              <div class="recorder-preview" data-preview-action="spaceSwitch">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="spaceSwitch"></i></div>
                 <span data-hint-action="spaceSwitch">未录制</span>
@@ -281,6 +305,10 @@
               </select>
               <button type="button" data-record-action="rightClick">开始录制</button>
               <button type="button" data-clear-action="rightClick">清除</button>
+              <div class="recorder-preview" data-preview-action="rightClick">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="rightClick"></i></div>
                 <span data-hint-action="rightClick">未录制</span>
@@ -294,20 +322,15 @@
               </select>
               <button type="button" data-record-action="exit">开始录制</button>
               <button type="button" data-clear-action="exit">清除</button>
+              <div class="recorder-preview" data-preview-action="exit">
+                <canvas data-preview-rest width="76" height="62"></canvas>
+                <canvas data-preview-move width="76" height="62" class="is-move" hidden></canvas>
+              </div>
               <div class="recorder-feedback">
                 <div class="recorder-bar"><i data-progress-action="exit"></i></div>
                 <span data-hint-action="exit">未录制</span>
               </div>
             </div>
-          </div>
-          <div class="rules">
-            <div><b>张开手掌 1 秒</b><span>唤醒控制模式</span></div>
-            <div><b>食指移动</b><span>移动鼠标指针</span></div>
-            <div><b>食指指向 + 说“点/选/开”</b><span>语音点选当前位置</span></div>
-            <div><b>拇指 + 食指捏合</b><span>锁定当前点；短捏点击，捏住移动拖拽</span></div>
-            <div><b>拇指 + 中指捏合</b><span>右键点击</span></div>
-            <div><b>握拳 1 秒</b><span>退出控制模式</span></div>
-            <div><b>语音</b><span>本地常用规则，不接大模型</span></div>
           </div>
         </article>
 

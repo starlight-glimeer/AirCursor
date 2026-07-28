@@ -64,7 +64,8 @@ const GESTURE_LABELS = {
 const { PointerFilter, TrackingMetrics } = window.AirCursorTracking;
 const { orderHands, buildPoseTemplate, templateDistance, medianTemplate, GestureResolver, SEPARATION_FACTOR } =
   window.AirCursorPose;
-const { WristPath, TiltRatchet, SwipeDetector, maxUsableTiltDeg } = window.AirCursorMotion;
+const { WristPath, TiltRatchet, SwipeDetector, maxUsableTiltDeg, wrapAngle, toDegrees, RATCHET_MAX_SPEED } =
+  window.AirCursorMotion;
 
 const metrics = new TrackingMetrics();
 const resolver = new GestureResolver();
@@ -152,6 +153,8 @@ const state = {
     tiltDeg: 0,
     triggerDeg: 0,
     clampedTrigger: false,
+    triggerFromRecording: false,
+    swipeSpeedThreshold: 0,
     wristSpeed: 0,
     scrollBlocked: null,
     swipeBlocked: null,
@@ -592,13 +595,19 @@ function updateMotionGestures(gesture, now) {
     : null;
 
   if (scrollTemplate && gestureMatches(gesture, scrollBinding)) {
-    // Clamped against the rotation tolerance: past that limit the tilted pose no
-    // longer matches its own template, so a trigger set beyond it would make the
-    // gesture disappear at exactly the angle it should fire at. Measured on a
-    // hand-shaped pose, leftover rotation costs ~0.0196 distance per degree.
+    // The trigger comes from the movement the user recorded, when there is one:
+    // "how far do I tilt" is a question their own recording already answered, and
+    // a global slider cannot answer it for two differently-recorded gestures.
+    const recorded = settings.recordedGestures?.[scrollBinding.slice("custom:".length)]?.motion;
+    const wanted = recorded?.measure === "tilt" ? recorded.trigger : active.scrollTriggerDeg;
+    // Clamped against the rotation tolerance either way: past that limit the
+    // tilted pose no longer matches its own template, so a trigger beyond it
+    // would make the gesture disappear at exactly the angle it should fire at.
+    // Measured on a hand-shaped pose, leftover rotation costs ~0.0196 per degree.
     const ceiling = maxUsableTiltDeg(active.rotationTolerance, active.matchThreshold);
-    const trigger = Math.min(active.scrollTriggerDeg, ceiling);
-    m.clampedTrigger = trigger < active.scrollTriggerDeg;
+    const trigger = Math.min(wanted, ceiling);
+    m.clampedTrigger = trigger < wanted;
+    m.triggerFromRecording = recorded?.measure === "tilt";
     m.triggerDeg = Number(trigger.toFixed(1));
 
     const direction = scrollRatchet.update({
@@ -624,9 +633,18 @@ function updateMotionGestures(gesture, now) {
 
   const swipeBinding = settings.gestureMap?.spaceSwitch;
   if (swipeBinding?.startsWith("custom:") && gestureMatches(gesture, swipeBinding)) {
+    const recordedSwipe = settings.recordedGestures?.[swipeBinding.slice("custom:".length)]?.motion;
+    // Same idea as the tilt, with one extra floor: a swipe threshold below the
+    // parked-wrist limit would let one motion satisfy both laws, which is the
+    // dead band the two gestures rely on to not need an arbitration order.
+    const speedThreshold =
+      recordedSwipe?.measure === "swipe"
+        ? Math.max(recordedSwipe.trigger, RATCHET_MAX_SPEED + 0.2)
+        : active.swipeSpeed;
+    m.swipeSpeedThreshold = Number(speedThreshold.toFixed(2));
     const direction = swipeDetector.update({
       displacement,
-      speedThreshold: active.swipeSpeed,
+      speedThreshold,
       now,
     });
     m.swipeBlocked = swipeDetector.blocked;
@@ -748,15 +766,52 @@ function updateSystemCursor(gesture) {
   }
 }
 
+// Motion actions record in two stages, because a motion gesture is not a pose
+// and asking someone to hold one still is a contradiction.
+//
+// Stage 1 captures the rest pose — that one really is static, and it has to be,
+// since it is the position the hand returns to in order to re-arm the ratchet.
+// Stage 2 records the movement itself: perform the action, and its measured
+// extent becomes this gesture's trigger, so "how far do I have to tilt" is
+// answered by what the user actually did instead of by guessing at a slider.
+const MOTION_RECORDING = {
+  scroll: {
+    restHint: "先摆好中位：手掌摆正、手腕别动。这是之后「手回到这儿才能再滚一次」的位置",
+    moveHint: "现在把手掌往上抬到你觉得该滚一段的位置，然后停一下",
+    // What the movement stage measures. Tilt is an angle; a swipe is travel.
+    measure: "tilt",
+  },
+  spaceSwitch: {
+    restHint: "先把手停稳，摆好准备挥动的姿势",
+    moveHint: "现在横向快速挥一下，像拨开东西那样",
+    measure: "swipe",
+  },
+};
+
+function isMotionAction(action) {
+  return Boolean(MOTION_RECORDING[action]);
+}
+
 function startRecording(action, wantedHands) {
   state.recording = {
     action,
     wantedHands,
+    motion: MOTION_RECORDING[action] || null,
+    // Motion recordings run rest -> move; static ones only ever have one stage.
+    stage: "rest",
     phase: "countdown",
     startedAt: performance.now(),
     holdStartedAt: 0,
     samples: [],
     reference: null,
+    restTemplate: null,
+    // Movement stage: the extent seen so far, and how long it has been settling
+    // back down, so the stage can end when the movement is clearly over rather
+    // than after a fixed timer.
+    peak: 0,
+    peakAt: 0,
+    movedAt: 0,
+    trace: [],
   };
 }
 
@@ -786,7 +841,7 @@ function conflictingAction(action, template) {
   return null;
 }
 
-function finishRecording(recording) {
+function finishRecording(recording, motion) {
   const template = medianTemplate(recording.samples);
   const conflict = conflictingAction(recording.action, template);
   state.recording = null;
@@ -799,7 +854,7 @@ function finishRecording(recording) {
     });
     return;
   }
-  aircursor.recordingResult({ ok: true, action: recording.action, template });
+  aircursor.recordingResult({ ok: true, action: recording.action, template, motion });
 }
 
 function failRecording(recording, reason) {
@@ -815,6 +870,13 @@ function updateRecording(gesture, handCount) {
 
   const now = performance.now();
   const elapsed = now - recording.startedAt;
+
+  // The movement stage has its own loop: nothing about it is "hold still", so it
+  // shares none of the drift/stability logic below.
+  if (recording.stage === "move") {
+    updateMotionRecording(recording, gesture, handCount, now);
+    return;
+  }
 
   if (recording.phase === "countdown") {
     const remaining = COUNTDOWN_MS - elapsed;
@@ -879,6 +941,19 @@ function updateRecording(gesture, handCount) {
 
   const held = now - recording.holdStartedAt;
   if (held >= HOLD_MS) {
+    // A static gesture is done. A motion gesture has only just captured the
+    // position it starts and returns to; the action itself is still to come.
+    if (recording.motion) {
+      recording.stage = "move";
+      recording.restTemplate = medianTemplate(recording.samples);
+      recording.startedAt = now;
+      recording.peak = 0;
+      recording.peakAt = 0;
+      recording.movedAt = 0;
+      recording.trace = [];
+      wristPath.reset();
+      return;
+    }
     finishRecording(recording);
     return;
   }
@@ -886,8 +961,107 @@ function updateRecording(gesture, handCount) {
   aircursor.recordingProgress({
     action: recording.action,
     phase: "capture",
+    stage: recording.stage,
     progress: Math.min(1, held / HOLD_MS),
-    hint: `保持不动 ${((HOLD_MS - held) / 1000).toFixed(1)}s`,
+    hint: recording.motion
+      ? `${recording.motion.restHint} · 保持 ${((HOLD_MS - held) / 1000).toFixed(1)}s`
+      : `保持不动 ${((HOLD_MS - held) / 1000).toFixed(1)}s`,
+  });
+}
+
+// Stage 2: record the movement, and let its extent set this gesture's trigger.
+//
+// This ends when the movement is over, not on a timer — for the ratchet that
+// means the tilt stopped growing and came back down, for the swipe it means the
+// wrist parked again. A fixed window would either cut a slow movement short or
+// make a fast one wait.
+const MOTION_SETTLE_MS = 450;
+// Below this there was no movement worth calling a gesture, so recording says so
+// rather than saving a trigger of ~0 that would fire on tracking noise.
+const MIN_TILT_DEG = 6;
+const MIN_SWIPE_SPEED = 1.4;
+
+function updateMotionRecording(recording, gesture, handCount, now) {
+  const spec = recording.motion;
+
+  if (now - recording.startedAt > CAPTURE_TIMEOUT_MS) {
+    failRecording(recording, `超时没有捕捉到${spec.measure === "tilt" ? "抬压" : "挥动"}动作，请重新录制`);
+    return;
+  }
+
+  const pose = gesture?.poseTemplate;
+  const wrongHands = recording.wantedHands && handCount !== recording.wantedHands;
+  if (!pose || wrongHands) {
+    // Losing the hand mid-movement does not throw the recording away: the peak
+    // seen so far is still the best evidence of what the user did, and at a
+    // 40-60% tracking rate a movement is guaranteed to have gaps.
+    aircursor.recordingProgress({
+      action: recording.action,
+      phase: "capture",
+      stage: "move",
+      progress: 0,
+      hint: !handCount ? "手不见了，回到画面继续这个动作" : `需要 ${recording.wantedHands} 只手`,
+      measured: recording.peak,
+    });
+    return;
+  }
+
+  let extent = 0;
+  if (spec.measure === "tilt") {
+    const rest = recording.restTemplate?.angle;
+    const live = pose.angle;
+    if (!Number.isFinite(rest) || !Number.isFinite(live)) {
+      // No axis on either side: this pose can never drive a tilt gesture. Said
+      // here rather than at save time so the user is not asked to perform a
+      // movement that cannot possibly be measured.
+      failRecording(recording, "这个姿势测不出方向轴（双手镜像会互相抵消），换一个单手姿势");
+      return;
+    }
+    extent = Math.abs(toDegrees(wrapAngle(live - rest)));
+  } else {
+    wristPath.push(gesture.wrist.x, gesture.wrist.y, gesture.palmWidth, now);
+    extent = wristPath.displacement()?.speed ?? 0;
+  }
+
+  recording.trace.push(Number(extent.toFixed(2)));
+  if (recording.trace.length > MAX_SAMPLES) recording.trace.shift();
+
+  const floor = spec.measure === "tilt" ? MIN_TILT_DEG : MIN_SWIPE_SPEED;
+  if (extent > recording.peak) {
+    recording.peak = extent;
+    recording.peakAt = now;
+  }
+  if (extent > floor) recording.movedAt = now;
+
+  // Done when a real movement has happened and has since settled back: for the
+  // tilt that is the hand coming down, for the swipe the wrist stopping.
+  const settled = recording.movedAt && extent < floor && now - recording.movedAt > MOTION_SETTLE_MS;
+  if (recording.peak > floor && settled) {
+    finishRecording(recording, {
+      measure: spec.measure,
+      // Fire a little before the extent the user demonstrated, so reproducing
+      // the same movement reliably crosses it rather than landing exactly on the
+      // edge — the same reason a hold has a grace window.
+      trigger: Number((recording.peak * 0.75).toFixed(2)),
+      peak: Number(recording.peak.toFixed(2)),
+    });
+    return;
+  }
+
+  aircursor.recordingProgress({
+    action: recording.action,
+    phase: "capture",
+    stage: "move",
+    // Not a countdown: this bar shows how far the movement has got, which is the
+    // thing being measured. Filling it is not a goal, it is a readout.
+    progress: Math.min(1, extent / Math.max(floor * 3, recording.peak || floor * 3)),
+    hint: recording.movedAt
+      ? extent < floor
+        ? "很好，保持住让它记下来"
+        : `记录中：${spec.measure === "tilt" ? `${extent.toFixed(0)}°` : `${extent.toFixed(1)} 掌宽/秒`}`
+      : spec.moveHint,
+    measured: Number(recording.peak.toFixed(2)),
+    unit: spec.measure === "tilt" ? "°" : "掌宽/秒",
   });
 }
 

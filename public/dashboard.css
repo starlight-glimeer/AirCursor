@@ -103,8 +103,7 @@ h2 {
   border-top: 1px solid #eef1f6;
 }
 
-.status span,
-.rules span {
+.status span {
   color: #677083;
 }
 
@@ -124,12 +123,6 @@ h2 {
 .switch input {
   width: 42px;
   height: 24px;
-}
-
-.rules {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
 }
 
 .gesture-settings {
@@ -209,6 +202,35 @@ h2 {
   gap: 10px;
 }
 
+/* A saved gesture is 63 numbers; without drawing them back the only way to find
+   out what got recorded is to go and try it. The preview draws the stored
+   template itself, so what is on screen is what will be matched against. */
+.recorder-preview {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recorder-preview canvas {
+  width: 76px;
+  height: 62px;
+  border: 1px solid #dfe6f1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.recorder-preview canvas.is-empty {
+  border-style: dashed;
+  background: #f4f6fa;
+}
+
+/* The rest pose and the movement extent are two separate things to check, so a
+   motion gesture shows both frames side by side. */
+.recorder-preview canvas.is-move {
+  border-color: #bfe4d1;
+}
+
 .recorder-bar {
   height: 6px;
   border-radius: 999px;
@@ -242,6 +264,17 @@ h2 {
   box-shadow: 0 0 0 3px rgba(15, 114, 212, 0.12);
 }
 
+/* The movement stage is not "hold still", so it does not look like it: green
+   rather than blue, because the instruction is the opposite one. */
+.recorder-row.is-moving {
+  border-color: #1f9d63;
+  box-shadow: 0 0 0 3px rgba(31, 157, 99, 0.14);
+}
+
+.recorder-row.is-moving .recorder-bar i {
+  background: #1f9d63;
+}
+
 .recorder-row.is-saved {
   background: #f5fbf8;
   border-color: #bfe4d1;
@@ -250,17 +283,6 @@ h2 {
 .recorder-row button {
   min-width: 78px;
   padding: 0 12px;
-}
-
-.rules div {
-  min-height: 86px;
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  padding: 14px;
-  border: 1px solid #eef1f6;
-  border-radius: 8px;
-  background: #f8faff;
 }
 
 /* Rule rows are recorder rows now, so .rule-row styling went with them. */
