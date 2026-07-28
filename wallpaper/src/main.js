@@ -31,29 +31,31 @@ let currentStrategy = null;
 const WALL_STRATEGIES = [
   {
     id: 'desktop',
-    label: 'desktop 层（真壁纸层，可能收不到鼠标）',
+    label: 'desktop 层（真壁纸层，收不到鼠标）',
     options: { type: 'desktop' },
     apply: (win) => {
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      // The menu bar strip is the one part a normal window cannot reach: macOS
+      // reserves it, and setBounds gets clamped just below it. Verified against the
+      // system's own wallpaper, which does cover it — so the window has to be told
+      // it may sit outside the visible frame, and then asked again.
+      liftOverMenuBar(win);
     },
   },
   {
     id: 'bottom-normal',
     label: '普通窗口压到最底（能收鼠标，会出现在 Mission Control）',
     options: {},
-    // Plain windows get clamped to the work area, so this one needs the explicit
-    // full-screen pass to reach under the menu bar.
-    fullScreen: true,
     apply: (win) => {
       win.setAlwaysOnTop(false);
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      liftOverMenuBar(win);
     },
   },
   {
     id: 'floating',
     label: '悬浮最上层（一定看得见，用来验渲染，不是壁纸）',
     options: {},
-    fullScreen: true,
     apply: (win) => {
       // 'screen-saver' rather than 'floating': floating sits *below* the Dock and
       // the menu bar, which is exactly the strip that was left uncovered. This
@@ -61,9 +63,35 @@ const WALL_STRATEGIES = [
       // point.
       win.setAlwaysOnTop(true, 'screen-saver');
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      liftOverMenuBar(win);
     },
   },
 ];
+
+// Push a window over the full display, menu bar strip included.
+//
+// macOS clamps setBounds to the visible frame, so a wallpaper ends up ~25 px short
+// at the top and the real desktop picture shows through. Two things are needed:
+// enableLargerThanScreen at construction, and a second setBounds after the window
+// exists — the first one alone gets clamped, and the second one alone has nothing
+// to permit it.
+//
+// The retry on a timer is not superstition: the clamp is applied when the window
+// joins a Space, which happens after apply() returns.
+function liftOverMenuBar(win) {
+  const { bounds } = screen.getPrimaryDisplay();
+  const push = () => {
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.setBounds(bounds);
+    } catch (error) {
+      console.warn('[wall] setBounds failed:', error.message);
+    }
+  };
+  push();
+  win.once('ready-to-show', push);
+  setTimeout(push, 350);
+}
 
 function strategyIndexById(id) {
   const i = WALL_STRATEGIES.findIndex((s) => s.id === id);
@@ -160,6 +188,10 @@ function createWallWindow(strategyId) {
     fullscreenable: false,
     hasShadow: false,
     skipTaskbar: true,
+    // Without this macOS clamps the window to the visible frame, which stops below
+    // the menu bar. The system's own wallpaper covers the full display, so ours has
+    // to be allowed to as well.
+    enableLargerThanScreen: true,
     backgroundColor: '#00000000',
     ...strategy.options,
     webPreferences: {
@@ -180,25 +212,40 @@ function createWallWindow(strategyId) {
     console.warn(`[wall] strategy ${strategy.id} apply failed:`, error.message);
   }
 
-  // Reassert the frame after the strategy has run. Constructor bounds are a
-  // request, and macOS shrinks a plain window to the work area — measured, the top
-  // strip under the menu bar was left uncovered. setBounds afterwards is honoured
-  // where the constructor was not.
+  // Reassert the frame after the strategy has run, and report what actually stuck.
   //
-  // simpleFullScreen rather than setFullScreen: the real fullscreen API moves the
-  // window into its own Space, which is the opposite of what a wallpaper wants.
+  // Constructor bounds are a request. macOS clamps a window to the visible frame,
+  // which excludes the menu bar strip — measured on a 1470x956 display, the top ~25
+  // px stayed uncovered and the real desktop picture showed through. So: allow the
+  // window to exceed the screen, ask again, then log the delta. A wallpaper that
+  // silently sits 25 px short is exactly the kind of thing that gets argued about
+  // instead of measured.
   try {
     win.setBounds(bounds);
-    if (typeof win.setSimpleFullScreen === 'function' && strategy.fullScreen) {
-      win.setSimpleFullScreen(true);
+    const got = win.getBounds();
+    const short = bounds.y !== got.y || bounds.height !== got.height
+      || bounds.x !== got.x || bounds.width !== got.width;
+    if (short) {
+      console.log(`[wall] bounds 请求 ${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}`
+        + ` 实得 ${got.width}x${got.height}@${got.x},${got.y}`);
     }
   } catch (error) {
-    console.warn(`[wall] bounds reassert failed:`, error.message);
+    console.warn('[wall] bounds reassert failed:', error.message);
   }
 
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('config', config);
-    win.webContents.send('strategy', { id: strategy.id, label: strategy.label });
+    // Ship the requested-vs-actual frame to the HUD. If the menu bar strip is still
+    // showing through, the numbers say so directly instead of the two of us
+    // comparing screenshots.
+    let got = null;
+    try { got = win.getBounds(); } catch { /* window may already be gone */ }
+    win.webContents.send('strategy', {
+      id: strategy.id,
+      label: strategy.label,
+      wanted: bounds,
+      got,
+    });
   });
 
   console.log(`[wall] 壁纸层策略: ${strategy.id} — ${strategy.label}`);

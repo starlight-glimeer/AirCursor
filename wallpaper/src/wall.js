@@ -251,6 +251,20 @@ let fps = 0;
 let frames = 0;
 let fpsAt = performance.now();
 
+// Whether the window got the frame it asked for. The menu bar strip showing through
+// is a 25px difference nobody can eyeball, so it gets reported as numbers.
+function frameNote() {
+  if (!strategy || !strategy.wanted || !strategy.got) return '画面尺寸：未知';
+  const w = strategy.wanted;
+  const g = strategy.got;
+  const dy = g.y - w.y;
+  const dh = w.height - g.height;
+  if (!dy && !dh && w.width === g.width) {
+    return `画面 ${g.width}×${g.height} <span class="ok">全屏 ✓</span>`;
+  }
+  return `画面 ${g.width}×${g.height} <span class="note">⚠️ 顶部差 ${dy}px 高度差 ${dh}px</span>`;
+}
+
 function drawHud() {
   if (!config || !config.debug.showHud) {
     hud.style.display = 'none';
@@ -262,6 +276,7 @@ function drawHud() {
   hud.innerHTML = [
     `<b>GestureWall</b> ${fps} fps`,
     `壁纸层：${strategy ? strategy.label : '?'}`,
+    frameNote(),
     `鼠标事件：${mouseSeen ? '收到 ✓' : '没收到（desktop 层的预期）'}`,
     missing.length ? `⚠️ 未设置：${missing.join(' / ')} — ⌃⇧W 打开设置` : '三层已就位',
     `视角 zoom ${view.zoom.toFixed(2)} yaw ${view.yaw.toFixed(2)} pitch ${view.pitch.toFixed(2)}`,
