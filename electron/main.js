@@ -817,6 +817,14 @@ function buildReport(note) {
       lagPx: stat("lagPx"),
       trackingRate: stat("trackingRate"),
       bothHandsRate: stat("bothHandsRate"),
+      // Read these two, not the pair above: the plain rates divide by every
+      // inference in the session, so a hand that was simply down reads the same as
+      // a tracker dropping frames. `activeFrames` is the denominator, included so
+      // a rate computed over a handful of frames is not mistaken for a solid one.
+      activeTrackingRate: stat("activeTrackingRate"),
+      activeBothHandsRate: stat("activeBothHandsRate"),
+      activeFrames: stat("activeFrames"),
+      idleFrames: stat("idleFrames"),
       matchDistance: stat("matchDistance"),
       holdMs: stat("holdMs"),
       pointerEvents: stat("pointerEvents"),

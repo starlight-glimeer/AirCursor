@@ -321,6 +321,33 @@ const MAX_KEYFRAMES = 10;
 // gesture that fires on tracking noise.
 const MIN_KEYFRAMES = 3;
 
+// How far a movement must get from its own starting pose to be recordable as a
+// sequence, in units of the match threshold.
+//
+// A round trip — wave, circle, tap — ends where it started, so its last keyframe
+// is a pose the hand can be in without having moved. The midpoint rule below
+// stops a still hand from *walking* the sequence, but it cannot help a sequence
+// whose destination is its origin: reaching the end is then indistinguishable
+// from never having left. Such a movement needs its direction in the feature
+// vector to be recognisable at all, which static pose templates do not carry.
+//
+// So this is refused at record time with an explanation, rather than saved as a
+// gesture that could only ever misfire. Measured on shape-changing movements a
+// genuine out-and-back reaches 0.45-0.68 at its midpoint while its endpoints sit
+// at 0.00-0.23, so requiring the *end* to be clear of the start separates "went
+// somewhere" from "came back".
+const MIN_SEQUENCE_SPAN = 1.0;
+
+// Whether a recorded movement ends somewhere other than where it began, and by
+// enough that arriving is distinguishable from never leaving.
+function sequenceSpan(keyframes, threshold, distance) {
+  if (!keyframes || keyframes.length < 2) return 0;
+  const first = keyframes[0].template;
+  const last = keyframes[keyframes.length - 1].template;
+  const d = distance(last, first, 0);
+  return Number.isFinite(d) ? d / threshold : 0;
+}
+
 // Reduce a recorded stream to the frames that carry the shape of the movement.
 // Always keeps the first and last: those are where it starts and where it ends,
 // which are the two the user is most likely to check in the preview.
@@ -434,7 +461,26 @@ class SequenceMatcher {
       return false;
     }
 
-    if (distance(pose, keyframes[this.index].template, rotationTolerance) < threshold) {
+    // Advancing needs the hand to be *nearer* the next keyframe than the one it
+    // came from — not merely inside the next one's radius.
+    //
+    // Radius alone was not enough, and the reason is arithmetic rather than
+    // taste. Keyframes are kept when they differ by KEYFRAME_SPACING x threshold
+    // (0.55 x 0.28 = 0.154), while the radius that counts as "arrived" is the
+    // full 0.28. Consecutive keyframes therefore sat closer together than the
+    // ball used to detect them, and a completely motionless hand was inside two
+    // at once: measured, a still hand walked two steps into every recorded
+    // movement without moving at all. That does not present as a gesture that
+    // never fires — it presents as one that misfires, since the remaining steps
+    // can then be completed by any incidental hand movement.
+    //
+    // Comparing against the previous keyframe fixes it without having to tune
+    // the spacing and the radius against each other: whatever the spacing,
+    // "closer to the next than to the last" only becomes true once the hand has
+    // actually travelled past the midpoint between them.
+    const toNext = distance(pose, keyframes[this.index].template, rotationTolerance);
+    const toPrev = distance(pose, keyframes[this.index - 1].template, rotationTolerance);
+    if (toNext < threshold && toNext < toPrev) {
       this.index += 1;
       this.lastAdvanceAt = now;
       this.progress = this.index / keyframes.length;
@@ -459,7 +505,9 @@ root.AirCursorMotion = {
   KEYFRAME_SPACING,
   MAX_KEYFRAMES,
   MIN_KEYFRAMES,
+  MIN_SEQUENCE_SPAN,
   buildKeyframes,
+  sequenceSpan,
   SequenceMatcher,
   RATCHET_MAX_SPEED,
   SWIPE_MIN_SPEED,

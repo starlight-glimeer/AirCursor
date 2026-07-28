@@ -74,7 +74,9 @@ const {
   wrapAngle,
   toDegrees,
   buildKeyframes,
+  sequenceSpan,
   MIN_KEYFRAMES,
+  MIN_SEQUENCE_SPAN,
   RATCHET_MAX_SPEED,
 } = window.AirCursorMotion;
 
@@ -1063,6 +1065,10 @@ function startRecording(action, wantedHands, kind, law) {
     peak: 0,
     peakAt: 0,
     movedAt: 0,
+    // For law-less movements: when the extent last stopped changing, which is how
+    // "the movement finished" is detected without demanding the hand come back.
+    lastExtent: null,
+    stillSince: 0,
     trace: [],
     // Every frame of the movement, thinned to keyframes on save. This is what
     // makes the preview an animation instead of a number to imagine, and what
@@ -1206,6 +1212,8 @@ function updateRecording(gesture, handCount) {
       recording.peak = 0;
       recording.peakAt = 0;
       recording.movedAt = 0;
+      recording.lastExtent = null;
+      recording.stillSince = 0;
       recording.trace = [];
       recording.frames = [];
       wristPath.reset();
@@ -1314,10 +1322,38 @@ function updateMotionRecording(recording, gesture, handCount, now) {
   // the hand coming down, for the swipe the wrist stopping, for a sequence the
   // shape returning near where it started. A gesture that ends somewhere else
   // entirely still completes — the timeout is the backstop.
-  const settled = recording.movedAt && extent < floor && now - recording.movedAt > MOTION_SETTLE_MS;
-  if (recording.peak > floor && settled) {
-    saveMotionRecording(recording, law, floor);
-    return;
+  // "Settled" has to mean the movement stopped, not that the hand came back.
+  //
+  // The two laws genuinely do return: a tilt comes down, a wrist parks. But a
+  // law-less movement usually ends somewhere else entirely — a hand opening out, a
+  // flick to one side — and requiring `extent < floor` demanded it return near the
+  // starting pose. Combined with the round-trip guard at save time, which refuses
+  // exactly those returning movements, the two conditions left no shape of
+  // movement that could satisfy both: one-way gestures never finished recording
+  // and returning ones were rejected once they did.
+  //
+  // So for a sequence, stopping is measured against recent movement rather than
+  // against the origin: the extent has held roughly still for the settle window.
+  if (law) {
+    recording.lastExtent = extent;
+    const returned = recording.movedAt && extent < floor && now - recording.movedAt > MOTION_SETTLE_MS;
+    if (recording.peak > floor && returned) {
+      saveMotionRecording(recording, law, floor);
+      return;
+    }
+  } else {
+    // Track where the extent was when it last changed appreciably. A hand held
+    // anywhere — origin, destination, mid-air — stops updating this and the window
+    // elapses.
+    const drift = Math.abs(extent - (recording.lastExtent ?? extent));
+    if (drift > floor * 0.15) recording.stillSince = 0;
+    recording.lastExtent = extent;
+    if (!recording.stillSince) recording.stillSince = now;
+    const stopped = recording.movedAt && now - recording.stillSince > MOTION_SETTLE_MS;
+    if (recording.peak > floor && stopped) {
+      saveMotionRecording(recording, law, floor);
+      return;
+    }
   }
 
   aircursor.recordingProgress({
@@ -1357,6 +1393,16 @@ function saveMotionRecording(recording, law, floor) {
   // saving it would produce a gesture that fires without any movement at all.
   if (!law && keyframes.length < MIN_KEYFRAMES) {
     failRecording(recording, "这个动作幅度太小，看起来更像一个静态姿势。换成「静态」录制，或者把动作做大一些");
+    return;
+  }
+  // A movement that ends where it began cannot be told from one that never
+  // happened: its final pose is reachable without moving. Refused with the reason
+  // rather than saved as a gesture that could only misfire.
+  if (!law && sequenceSpan(keyframes, MATCH_THRESHOLD, templateDistance) < MIN_SEQUENCE_SPAN) {
+    failRecording(
+      recording,
+      "这个动作结束时又回到了起始姿势（挥手、画圈这类往复动作），只靠姿势序列分不出「做完了」和「没动过」。请让动作停在一个和起点明显不同的姿势上，或者改用左右挥动那两个动作",
+    );
     return;
   }
   finishRecording(
@@ -1684,7 +1730,7 @@ async function setupHands() {
     state.hands = results.multiHandLandmarks || [];
     state.handedness = results.multiHandedness || [];
     state.resultAt = performance.now();
-    metrics.markHands(state.hands.length);
+    metrics.markHands(state.hands.length, performance.now());
     metrics.markPipeline(state.frameCapturedAt, state.resultAt);
   });
 

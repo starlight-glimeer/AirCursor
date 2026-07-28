@@ -185,6 +185,8 @@ const METRIC_WARN = {
   mPipeline: (v) => v > 45,
   mJitter: (v) => v > 2.5,
   mLag: (v) => v > 26,
+  // Judged on the active rate: the all-inclusive one is legitimately ~50% in any
+  // session where the user also touched the panel, so warning on it cried wolf.
   mTracking: (v) => v < 85,
 };
 
@@ -692,7 +694,20 @@ window.aircursor.onMetrics((m) => {
   setMetric("mLag", m.lagPx, `${m.lagPx} px`);
   // Both rates: a two-hand gesture only matches on frames where both hands were
   // found, so the loose rate can look fine while the gesture is unusable.
-  setMetric("mTracking", m.trackingRate, `${m.trackingRate}% / 双手 ${m.bothHandsRate}% · ${m.hands} 手`);
+  // Two rates, because one could not distinguish a CV fault from a hand that was
+  // simply down — and the ambiguous number had already been written up as the
+  // top-priority CV problem before an outside review caught it. The active rate
+  // only counts frames where a hand was present or had been within the last two
+  // seconds, so idle time leaves the denominator instead of looking like misses.
+  const active = m.activeTrackingRate;
+  setMetric(
+    "mTracking",
+    active,
+    active === null
+      ? `${m.trackingRate}% / 双手 ${m.bothHandsRate}% · ${m.hands} 手（还没有有效样本）`
+      : `${active}% / 双手 ${m.activeBothHandsRate}% · ${m.hands} 手` +
+          `（有效 ${m.activeFrames} 帧；含空闲 ${m.trackingRate}%）`,
+  );
   // Which gesture is closest matters as soon as more than one is bound: a
   // distance alone cannot tell you the wrong template is the one winning.
   setMetric(
