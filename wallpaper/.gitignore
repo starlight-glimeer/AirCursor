@@ -1,7 +1,0 @@
-node_modules/
-dist/
-.DS_Store
-
-# 第三方前端库：约 24MB，且同一份 MediaPipe 已在 AirCursor 仓库里。
-# 用 npm run vendor 取（优先从本机 AirCursor 拷，离线可用）。
-src/vendor/
