@@ -5,10 +5,6 @@ const showHands = document.getElementById("showHands");
 const voiceEnabled = document.getElementById("voiceEnabled");
 const twoHands = document.getElementById("twoHands");
 const effectsEnabled = document.getElementById("effectsEnabled");
-const wakeGesture = document.getElementById("wakeGesture");
-const clickGesture = document.getElementById("clickGesture");
-const rightClickGesture = document.getElementById("rightClickGesture");
-const exitGesture = document.getElementById("exitGesture");
 const cameraState = document.getElementById("cameraState");
 const handState = document.getElementById("handState");
 const voiceState = document.getElementById("voiceState");
@@ -21,6 +17,7 @@ const pointerBanner = document.getElementById("pointerBanner");
 const diagnostics = document.getElementById("diagnostics");
 const diagnosticsPanel = document.getElementById("diagnosticsPanel");
 const overlayLog = document.getElementById("overlayLog");
+const readyState = document.getElementById("readyState");
 const captureLandmarks = document.getElementById("captureLandmarks");
 const revealCaptures = document.getElementById("revealCaptures");
 
@@ -31,12 +28,7 @@ let settings = {
   voiceEnabled: true,
   twoHands: true,
   effects: "balanced",
-  gestureMap: {
-    wake: "openPalm",
-    click: "pinch",
-    rightClick: "middlePinch",
-    exit: "fist",
-  },
+  gestureMap: {},
   recordedGestures: {},
   disabledActions: {},
   gestureUndo: {},
@@ -57,29 +49,6 @@ const actionLabels = {
   spaceRight: "切到右边桌面",
   exit: "退出控制",
 };
-
-const actionSelects = {
-  wake: wakeGesture,
-  click: clickGesture,
-  rightClick: rightClickGesture,
-  exit: exitGesture,
-};
-
-function ensureRecordedOption(action) {
-  const select = actionSelects[action];
-  const value = `custom:${action}`;
-  const existing = Array.from(select.options).find((option) => option.value === value);
-  if (settings.recordedGestures?.[action]) {
-    if (!existing) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = "使用已录制手势";
-      select.prepend(option);
-    }
-  } else if (existing) {
-    existing.remove();
-  }
-}
 
 // Drawing a saved template back at the user.
 //
@@ -226,7 +195,6 @@ function renderTuning() {
 }
 
 function render() {
-  for (const action of Object.keys(actionSelects)) ensureRecordedOption(action);
   diagnostics.checked = Boolean(settings.diagnostics);
   diagnosticsPanel.hidden = !settings.diagnostics;
   renderTuning();
@@ -235,15 +203,27 @@ function render() {
   voiceEnabled.checked = settings.voiceEnabled;
   twoHands.checked = settings.twoHands;
   effectsEnabled.checked = settings.effects === "rich";
-  wakeGesture.value = settings.gestureMap?.wake || "openPalm";
-  clickGesture.value = settings.gestureMap?.click || "pinch";
-  rightClickGesture.value = settings.gestureMap?.rightClick || "middlePinch";
-  exitGesture.value = settings.gestureMap?.exit || "fist";
   controlState.textContent = settings.controlEnabled ? "开启" : "关闭";
   controlToggle.textContent = settings.controlEnabled ? "关闭控制" : "开启控制";
 
   document.querySelectorAll(".gesture-recorder .recorder-row").forEach(paintRecorderRow);
   renderRules();
+  renderReadiness();
+}
+
+// A fresh install has no gestures bound, so nothing happens when you wave at it —
+// which is indistinguishable from broken. The status line says so outright rather
+// than leaving the user to guess, and counts what is bound once some are.
+// Its own row, not the 识别 one: that is written by the overlay every 500ms with the
+// live per-frame state, so anything else put there flashes once and is gone. This
+// project already lost a helper permission warning to exactly that overwrite.
+function renderReadiness() {
+  const bound = Object.entries(settings.gestureMap || {}).filter(([, v]) => v?.startsWith("custom:")).length;
+  const total = document.querySelectorAll(".gesture-recorder .recorder-row").length;
+  readyState.textContent = bound
+    ? `已录 ${bound}/${total} 个动作`
+    : "一个都没录 —— 下面每行点「开始录制」";
+  readyState.classList.toggle("is-bad", bound === 0);
 }
 
 // Rule rows are built from the list main owns, so adding a rule there gives it a
@@ -728,18 +708,6 @@ document.getElementById("resetTuning").addEventListener("click", async () => {
 });
 document.getElementById("overlayDevtools").addEventListener("click", () => {
   window.aircursor.openDevTools("overlay");
-});
-wakeGesture.addEventListener("change", () => {
-  patchSettings({ gestureMap: { wake: wakeGesture.value } });
-});
-clickGesture.addEventListener("change", () => {
-  patchSettings({ gestureMap: { click: clickGesture.value } });
-});
-rightClickGesture.addEventListener("change", () => {
-  patchSettings({ gestureMap: { rightClick: rightClickGesture.value } });
-});
-exitGesture.addEventListener("change", () => {
-  patchSettings({ gestureMap: { exit: exitGesture.value } });
 });
 // Only the four static rows are wired here; rule rows bind their own handlers as
 // they are built, since they do not exist when this runs.

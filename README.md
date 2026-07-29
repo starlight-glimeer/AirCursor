@@ -23,30 +23,28 @@ Then open `http://127.0.0.1:5177`.
 
 ## Current Gesture
 
-- Open palm and hold: wake the transparent control layer.
-- Index finger: move the cursor.
-- Thumb-index pinch: click on release.
-- Thumb-middle pinch: right click.
-- Fist and hold: hide the control layer.
-- Open palm tilted up/down: scroll. Open palm swept sideways: switch desktop.
-- Drag is the one action with no built-in pose — record one (see below).
+**Nothing is bound out of the box — every gesture is recorded by you.** A fresh
+install waves back at nothing until you record something, and the panel says so
+rather than leaving that to look like a fault.
 
-Everything except drag works without recording anything. Recording only improves
-accuracy: it replaces the built-in shape with yours and, for the tilt, replaces the
-guessed trigger angle with the extent you actually demonstrated.
+The actions available to bind: 唤醒控制 / 点击 / 拖拽 / 右键 / 向上滚动 / 向下滚动 /
+切到左边桌面 / 切到右边桌面 / 退出控制, plus one per 常用规则.
 
-Open palm is deliberately shared by wake, both scroll directions and both desktop
-directions. Those five are separated by *movement*, not shape — a palm held still for
-a second wakes, a palm that tilts scrolls, a palm that sweeps switches desktop, and a
-palm doing none of those fires nothing. Drag has no default because there are four
-built-in shapes and click/drag/rightClick all need mutually exclusive ones (nothing
-separates them but the shape itself), while openPalm and fist are spoken for.
-- Voice: "启动/控制", "退出/停止", "打开网易云", "点击".
+This replaced a set of built-in hand shapes (pinch, middle-pinch, open palm, fist).
+They worked, but not well, and the ceiling was countable: four shapes for nine
+actions, so `drag` could not be assigned one at all. A template recorded with your
+own hand is a stronger signal than a hand-written shape test — and it is yours, so it
+fits your hand rather than the one the thresholds were written for.
 
-Click and drag are separate actions rather than one pose that upgrades when the
-hand moves far enough. Holding a button down is a distinct intent, and inferring
-it from movement collided with the motion gestures below, which move the hand on
-purpose: any pose still matching click would have started a drag mid-scroll.
+Factory defaults are still planned; they will be recordings from a real hand rather
+than synthesised ones, which would look present and match nothing.
+
+Voice: "启动/控制", "退出/停止", "打开网易云", "点击" — these work without recording,
+since they are text matches rather than shapes.
+
+Click and drag are separate actions rather than one pose that upgrades when the hand
+moves far enough. Holding a button down is a distinct intent, and inferring it from
+movement collided with the motion gestures below, which move the hand on purpose.
 
 The desktop build uses Electron for the transparent always-on-top overlay and a tiny Swift CoreGraphics helper for macOS pointer events.
 

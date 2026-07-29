@@ -36,6 +36,10 @@
             <strong id="handState">未检测到手</strong>
           </div>
           <div class="status">
+            <span>手势就绪</span>
+            <strong id="readyState">检查中</strong>
+          </div>
+          <div class="status">
             <span>语音</span>
             <strong id="voiceState">等待</strong>
           </div>
@@ -171,43 +175,10 @@
         <article class="panel wide">
           <h2>手势规则</h2>
           <p class="panel-hint">
-            下面四个下拉是内置手型的快捷选择；每个动作真正用哪个手势，以下方“录制”里的为准（录过就以录的为准）。
-            拖拽、上下滚动、左右切桌面没有内置手型，只能录。
+            每个动作的手势都由你自己录。没录的动作不会触发 —— 这是有意的：手写的手型判定
+            上限很低（四种手型分不到九个动作），你自己录的模板比它准。
+            <br />录得不满意点「回退」，能回到上一次那个，或者回到未录制。
           </p>
-          <div class="gesture-settings">
-            <label>
-              <span>唤醒控制</span>
-              <select id="wakeGesture">
-                <option value="openPalm">张开手掌</option>
-                <option value="fist">握拳</option>
-                <option value="none">关闭手势唤醒</option>
-              </select>
-            </label>
-            <label>
-              <span>点击</span>
-              <select id="clickGesture">
-                <option value="pinch">拇指 + 食指捏合</option>
-                <option value="middlePinch">拇指 + 中指捏合</option>
-                <option value="none">只用语音点选</option>
-              </select>
-            </label>
-            <label>
-              <span>右键</span>
-              <select id="rightClickGesture">
-                <option value="middlePinch">拇指 + 中指捏合</option>
-                <option value="pinch">拇指 + 食指捏合</option>
-                <option value="none">关闭右键手势</option>
-              </select>
-            </label>
-            <label>
-              <span>退出控制</span>
-              <select id="exitGesture">
-                <option value="fist">握拳</option>
-                <option value="openPalm">张开手掌</option>
-                <option value="none">关闭手势退出</option>
-              </select>
-            </label>
-          </div>
           <div id="gestureConflicts" class="conflict-banner" hidden></div>
           <div class="gesture-recorder">
             <div class="recorder-row" data-action="wake">
