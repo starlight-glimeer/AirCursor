@@ -416,4 +416,42 @@ check('骨架几何自检存在，而且面板能看到', () => {
   assert.ok(html.includes('overlay-geom'), '面板没有显示几何自检的地方');
 });
 
+
+// ── 同窗口脚本的顶层声明不能撞名 ─────────────────────────────────────────
+//
+// 摄像头搬进骨架层之后，sensor.js 和 overlay-window.js 跑在同一个窗口里，而两边都在
+// 顶层 `const T = window.GestureWallTemplates` ⟹ "Identifier 'T' has already been
+// declared" ⟹ **整层脚本全部停止执行**。
+//
+// 症状是"摄像头不启动"，和重名没有任何表面关系。我为此猜了两轮，直到把渲染进程的
+// console 转出来才看到那一行 —— 而那条日志转发是上一个 commit 才加的。
+check('同一个窗口加载的脚本都包在 IIFE 里（顶层声明会互相撞）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  // 取出这个窗口加载的本地脚本（vendor 的不管，那些本来就是库）
+  const scripts = [...html.matchAll(/<script src="((?!vendor)[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(scripts.length >= 5, `只解析出 ${scripts.length} 个脚本，正则失效了`);
+
+  const naked = [];
+  for (const name of scripts) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+    // 去掉开头注释，看第一行实际代码是不是 IIFE
+    const firstCode = src.split('\n').find((l) => l.trim() && !l.trim().startsWith('//'));
+    if (!firstCode || !firstCode.trim().startsWith('(function')) naked.push(name);
+  }
+  assert.deepStrictEqual(naked, [],
+    `这些脚本没包 IIFE，顶层声明会和同窗口其他脚本相撞：${naked.join(', ')}`);
+});
+
+check('渲染进程的报错会转出来（否则这类错误只能靠猜）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 骨架层没有开发者工具、不在视线里。它抛的任何异常如果不转出来，症状就只剩
+  // "某个功能不工作"，而那和真正的原因可能毫无关系。
+  assert.match(main, /console-message/, '骨架层的 console 没有转发');
+  assert.match(main, /render-process-gone/, '崩溃没有上报');
+  assert.match(dash, /onHelperLog/, '面板没有订阅日志');
+  assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

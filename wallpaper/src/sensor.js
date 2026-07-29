@@ -2,6 +2,14 @@
 //
 // 判定在 input.js，录制在 recorder.js，这里只负责：接 MediaPipe 的结果、按当前模式
 // 分流（正常 or 录制）、发事件、报状态。
+//
+// ⚠️ 包在 IIFE 里,不是风格问题。这个文件和 sensor.js / overlay-window.js 现在跑在
+// **同一个窗口**(摄像头搬进骨架层之后),两边都在顶层 `const T = ...` ⟹
+// "Identifier 'T' has already been declared" ⟹ **整层脚本全部停止执行**,
+// 而症状只是"摄像头不启动",看不出和重名有任何关系。
+//
+// 同窗口的脚本之间没有作用域隔离,所以每个都得自己包。
+(function () {
 const { GestureInput, toPixels, mirror } = window.GestureWallInput;
 const { Recorder, conflictingAction } = window.GestureWallRecorder;
 const T = window.GestureWallTemplates;
@@ -320,3 +328,4 @@ async function start() {
 }
 
 start();
+})();

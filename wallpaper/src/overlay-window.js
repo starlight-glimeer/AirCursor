@@ -1,4 +1,12 @@
 // 骨架窗口的接线。绘制逻辑在 overlay.js，这里只负责收消息、驱动帧循环、管录制提示条。
+//
+// ⚠️ 包在 IIFE 里,不是风格问题。这个文件和 sensor.js / overlay-window.js 现在跑在
+// **同一个窗口**(摄像头搬进骨架层之后),两边都在顶层 `const T = ...` ⟹
+// "Identifier 'T' has already been declared" ⟹ **整层脚本全部停止执行**,
+// 而症状只是"摄像头不启动",看不出和重名有任何关系。
+//
+// 同窗口的脚本之间没有作用域隔离,所以每个都得自己包。
+(function () {
 const T = window.GestureWallTemplates;
 const overlay = new window.GestureWallOverlay.HandOverlay(document.getElementById('hands'));
 
@@ -84,3 +92,4 @@ window.gw.onRecordingResult((r) => {
   }
   setTimeout(() => banner.classList.remove('on'), r && r.cancelled ? 0 : 1600);
 });
+})();
