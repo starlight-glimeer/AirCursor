@@ -45,8 +45,19 @@ check('手势开 + 开关开 → 显示', () => {
   assert.strictEqual(wantsOverlay(cfg(true, true), null), true);
 });
 
-check('手势开 + 开关关 → 不显示', () => {
-  assert.strictEqual(wantsOverlay(cfg(true, false), null), false);
+// 契约变了:窗口的存在条件是"手势开着",因为摄像头就在这一层(和 AirCursor 3.x 一样)。
+// "显示骨架"那个开关只控制**画不画**,不控制建不建窗口 —— 按 showHands 建拆会连摄像头
+// 一起拆掉,而"我不想看骨架"不等于"我不想用手势"。
+check('手势开 + 开关关 → 窗口还在（摄像头在这一层）', () => {
+  assert.strictEqual(wantsOverlay(cfg(true, false), null), true);
+});
+
+check('关掉显示骨架时真的不画（否则窗口留着就等于一直显示）', () => {
+  const win = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay-window.js'), 'utf8');
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  assert.match(win, /showSkeleton \|\| overlay\.recording/, '帧循环没有按开关决定画不画');
+  assert.match(win, /overlay\.clear\(\)/, '不画时没有擦画布 —— 上一帧会留在屏幕上');
+  assert.match(overlay, /clear\(\)\s*\{/, 'overlay 没有 clear 方法');
 });
 
 // 录制是唯一必须看见手的时刻。"我关了骨架所以录制时什么都看不到"不是用户会预期的后果。
@@ -134,7 +145,9 @@ check('骨架窗口不可聚焦（不抢焦点）', () => {
 // 主进程按 `showHands || recordingAction` 决定开不开骨架窗口，sensor 按自己的条件决定发不发
 // 关键点。**这两个判据必须一致** —— 不一致的那半边不报错，只是录制时开出一个空窗口，
 // 症状和"骨架坏了"分不清。这条守的是两个文件之间的一致性，不是单个函数的正确性。
-check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时都放行）', () => {
+// 摄像头和骨架同窗口之后,这条"两个文件判据一致"的守卫换了对象:sendHands 仍要为录制
+// 放行(录制时必须看见手),而窗口的存在条件已经和 showHands 解耦。
+check('sendHands 为录制放行（录制时必须看见手）', () => {
   const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
   const send = sensor.slice(sensor.indexOf('function sendHands'), sensor.indexOf('function onResults'));
   assert.ok(/recorder\s*&&\s*recorder\.active/.test(send),
@@ -142,8 +155,8 @@ check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时
 
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const sync = main.slice(main.indexOf('function syncOverlayVisibility'));
-  assert.ok(/showHands\s*\|\|\s*recordingAction/.test(sync.slice(0, 400)),
-    '主进程不再按 showHands || recordingAction 开窗口 —— 两边判据已经分叉');
+  assert.ok(/gestures\.enabled/.test(sync.slice(0, 600)),
+    '窗口的存在条件必须是 gestures.enabled —— 摄像头在这一层,按 showHands 拆会连摄像头一起拆');
 });
 
 // ── 能力可达性：接线齐了但用户点不到，等于没做 ──────────────────────────
@@ -279,15 +292,35 @@ check('改函数签名后调用点都跟上了（JS 不会为多传的参数报�
     `toCanvas 有调用点还在传 4 个以上参数 —— 那是旧的缩放签名，JS 不会报错但缩放会照旧生效`);
 });
 
-check('摄像头窗口不可见，但不是用 show:false 或 1x1 做的', () => {
+// 摄像头没有独立窗口了 —— 它在骨架层里(和 AirCursor 3.x 一样)。
+//
+// 那个独立窗口试过三种藏法,三种都失败:show:false 拿不到摄像头授权(macOS 只对可见窗口
+// 弹);完全挪到屏幕外被 macOS 钳回来;挪到主屏顶边之上 —— 而用户有外接显示器,那个位置
+// 正好落在外接屏上,于是外接屏出现一个黑框。
+//
+// 靠位置藏在多显示器下没有正确答案:任何"屏幕外"坐标都可能是另一块屏的屏内。所以窗口
+// 本身去掉了,而不是继续找藏法。
+check('摄像头在骨架层里，没有独立的 sensor 窗口', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const block = main.slice(main.indexOf('function ensureSensor'), main.indexOf('function ensureSensor') + 1400);
-  // show:false → macOS 不给摄像头授权（只对可见窗口弹）
-  // 1x1      → <video> 可能被判定不可见而停止解码，而 MediaPipe 要一个真在播的 video
-  // 纯屏幕外 → macOS 把窗口钳回可见区域（实测：用户两次都看到它）
-  assert.doesNotMatch(block, /show: false/, 'show:false 拿不到摄像头授权');
-  assert.match(block, /width: 360/, '尺寸不能压到 1x1，video 会停止解码');
-  assert.match(block, /transparent: true/, '靠透明而不是靠尺寸来隐藏');
+  const overlayHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  assert.doesNotMatch(main, /sensorWindow/, '还有 sensor 窗口的残留');
+  assert.doesNotMatch(main, /ensureSensor/, 'ensureSensor 应该已经删掉');
+  assert.match(overlayHtml, /<video id="cam"/, '骨架层里没有 video —— 摄像头没搬过来');
+  assert.match(overlayHtml, /src="sensor\.js"/, '骨架层没加载 sensor.js');
+});
+
+check('骨架层可聚焦，否则摄像头授权弹窗没人能回答', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const block = main.slice(main.indexOf('function ensureOverlay'), main.indexOf('function destroyOverlay'));
+  // 这是那个独立 sensor 窗口原本存在的理由,而正确解法是让骨架层可聚焦 ——
+  // AirCursor 3.x 的 overlay 就没设 focusable:false,它靠 setIgnoreMouseEvents 做穿透。
+  // 穿透和不可聚焦是两件事。
+  // 只看非注释行:文件里有一段注释解释"为什么不设 focusable:false",而按整段文本匹配
+  // 会把那段注释当成违规 —— 守卫太宽会逼人删掉解释,而解释正是下次别再犯的唯一依据。
+  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(code, /focusable:\s*false/,
+    '骨架层设了 focusable:false —— getUserMedia 的授权弹窗会没人能回答');
+  assert.match(block, /setIgnoreMouseEvents/, '穿透要靠 setIgnoreMouseEvents,不是靠不可聚焦');
 });
 
 check('语音默认关，且不在启动时抢麦克风', () => {

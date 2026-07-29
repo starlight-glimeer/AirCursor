@@ -41,7 +41,6 @@ function withLibraryStatus(cfg) {
 
 let wallWindow = null;
 let dashboardWindow = null;
-let sensorWindow = null;
 let overlayWindow = null;
 // 正在录制哪个动作。主进程要知道，因为录制期间骨架强制显示、其他手势必须屏蔽。
 let recordingAction = null;
@@ -300,7 +299,7 @@ function writeConfig() {
 // "面板上有的条目不标缺失"，而那种不一致查起来比缺功能烦。
 function broadcast(channel, payload) {
   const body = channel === 'config' ? withLibraryStatus(payload) : payload;
-  for (const win of [wallWindow, dashboardWindow, sensorWindow, overlayWindow]) {
+  for (const win of [wallWindow, dashboardWindow, overlayWindow, overlayWindow]) {
     if (win && !win.isDestroyed()) win.webContents.send(channel, body);
   }
 }
@@ -492,7 +491,11 @@ function ensureOverlay() {
     fullscreenable: false,
     hasShadow: false,
     skipTaskbar: true,
-    focusable: false,
+    // ⚠️ 不设 focusable: false。
+    //
+    // 摄像头现在就在这个窗口里(和 AirCursor 3.x 一样),而 getUserMedia 的授权弹窗
+    // 出现在一个不可聚焦的窗口上时**没人能回答它**。3.x 的 overlay 也没设这个 ——
+    // 它靠 setIgnoreMouseEvents 做穿透,那是正确的做法:穿透和不可聚焦是两件事。
     enableLargerThanScreen: true,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -521,64 +524,29 @@ function destroyOverlay() {
 //
 // 录制时强制显示而不管用户设置 —— 那是唯一必须看见手的时刻，而"我关了骨架所以录制时
 // 什么都看不到"不是一个用户会预期的后果。
+// 骨架窗口的存在条件 = 手势开着。**不再看 showHands。**
+//
+// 因为摄像头就在这个窗口里(和 AirCursor 3.x 一样),而"我不想看骨架"不等于"我不想用
+// 手势" —— 按 showHands 建拆窗口会连摄像头一起拆掉。
+//
+// "显示不显示骨架"改成只控制画不画:窗口本来就是全屏透明的,不画就等于不存在。这样
+// 也顺带去掉了那个独立的 sensor 窗口 —— 而它在外接显示器上表现为一个黑框(用户拍了照),
+// 因为我三次都在靠"位置"藏它,而多屏下任何"屏幕外"的坐标都可能是另一块屏的屏内。
 function syncOverlayVisibility() {
-  const wanted = !!(config && config.gestures.enabled && (config.showHands || recordingAction));
+  const wanted = !!(config && config.gestures.enabled);
   if (wanted) ensureOverlay();
   else destroyOverlay();
+  // 画不画由 overlay 自己按 config 决定,这里只负责把 config 送到。
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('config', config);
+  }
 }
 
-// The camera lives in its own hidden window rather than in the wall: a
-// desktop-level window may not be focusable, and getUserMedia in a window that
-// cannot be focused is a permission prompt nobody can answer. Separating it also
-// means the wall keeps rendering if gesture recognition dies.
-function ensureSensor() {
-  if (sensorWindow && !sensorWindow.isDestroyed()) return sensorWindow;
-  // ⚠️ 不能用 show:false。
-  //
-  // macOS 只对**可见窗口**弹摄像头授权,隐藏窗口的 getUserMedia 会直接被拒,而且不弹
-  // 任何东西 —— 症状是"勾了开启摄像头手势但摄像头不亮、面板上没有任何提示"。
-  //
-  // 所以窗口是可见的,只是挪到屏幕外:既满足系统要求,又不占用户的桌面。第一次开会弹
-  // 系统授权对话框,那是必须的。
-  // 窗口必须"可见"但用户看不到。
-  //
-  // 两次都没做对:show:false 拿不到摄像头授权(macOS 只对可见窗口弹),而挪到屏幕外之后
-  // macOS **把它钳回了可见区域** —— 用户第二次报"右上角摄像头窗口没消失"。
-  //
-  // 现在的做法:留在屏幕内、1x1 像素、全透明、鼠标穿透、不进任务栏。系统认为它可见,
-  // 所以授权照给;而 1 个像素的透明窗口用户看不见。
-  // 尺寸不能压到 1x1:那样 <video> 可能被判定为不可见而停止解码,而 MediaPipe 要的
-  // 就是一个真在播的 video。所以保持足够大,靠**全透明 + 藏在菜单栏下面**让它看不见。
-  const home = screen.getPrimaryDisplay().bounds;
-  sensorWindow = new BrowserWindow({
-    width: 360,
-    height: 270,
-    // y 负值:整个窗口在屏幕顶边之上,只有下沿那点在菜单栏区域 —— macOS 的钳制是按
-    // "窗口至少有一部分可见"算的,所以它不会被拉回来,而透明背景让那一部分也看不见。
-    x: home.x,
-    y: home.y - 268,
-    show: true,
-    frame: false,
-    transparent: true,
-    hasShadow: false,
-    focusable: false,
-    skipTaskbar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false,
-    },
-  });
-  // 鼠标穿透:1x1 也会吃掉那一个像素的点击,而那个像素在屏幕左上角(菜单栏附近)。
-  sensorWindow.setIgnoreMouseEvents(true, { forward: true });
-  sensorWindow.loadFile(path.join(__dirname, 'sensor.html'));
-  sensorWindow.webContents.on('did-finish-load', () => {
-    sensorWindow.webContents.send('config', config);
-  });
-  sensorWindow.on('closed', () => { sensorWindow = null; });
-  return sensorWindow;
-}
+// 摄像头没有独立窗口了 —— 它在骨架层里(和 AirCursor 3.x 一样)。
+//
+// 原来那个 sensor 窗口的存在理由是"骨架层 focusable:false,授权弹窗没人能回答",而正确
+// 解法是让骨架层可聚焦(3.x 就没设那个),不是造第二个窗口。那个窗口在外接显示器上表现为
+// 一个黑框,而我三次靠"位置"藏它都失败:多屏下任何"屏幕外"的坐标都可能是另一块屏的屏内。
 
 // ---------------------------------------------------------------------------
 // IPC
@@ -674,8 +642,8 @@ ipcMain.handle('set-strategy', (_event, id) => {
 ipcMain.handle('set-gestures', (_event, enabled) => {
   config.gestures.enabled = !!enabled;
   writeConfig();
-  if (config.gestures.enabled) ensureSensor();
-  else if (sensorWindow && !sensorWindow.isDestroyed()) sensorWindow.destroy();
+  // 建/拆窗口交给 syncOverlayVisibility 一处管 —— 两处都能拆窗口时,"谁拆的"会变成
+  // 一个需要查的问题。
   syncOverlayVisibility();
   broadcast('config', config);
   return config;
@@ -882,13 +850,13 @@ ipcMain.handle('start-capture', () => {
   // 窗口存在 ≠ 摄像头在跑。用户报过一次:点了按钮显示"正在录制 5 秒",然后什么都没发生、
   // 目录也是空的 —— 那次是 MediaPipe 没加载(vendor 步骤没跑),窗口好好地开着。
   // 只查窗口是不够的。
-  if (!sensorWindow || sensorWindow.isDestroyed()) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
     return { ok: false, reason: '摄像头没有开着 —— 先勾上「开启摄像头手势」' };
   }
   if (!sensorReady) {
     return { ok: false, reason: `摄像头还没就绪:${sensorStatusText || '正在启动'}` };
   }
-  sensorWindow.webContents.send('start-capture');
+  overlayWindow.webContents.send('start-capture');
   // 兜底:5 秒后该有文件了。没有就说出来 —— 一个只说"正在录制"然后永远不再说话的
   // 界面,和坏掉没有区别。
   const expectBy = Date.now();
@@ -957,8 +925,9 @@ ipcMain.on('hands', (_event, payload) => {
 
 ipcMain.handle('start-recording', (_event, action) => {
   if (!config.gestures.enabled) return { ok: false, error: '先开启摄像头手势' };
-  const sensor = ensureSensor();
-  if (!sensor || sensor.isDestroyed()) return { ok: false, error: '摄像头窗口没起来' };
+  // 摄像头在骨架层里,所以确保那一层在。
+  const layer = ensureOverlay();
+  if (!layer || layer.isDestroyed()) return { ok: false, error: '骨架层没起来' };
   recordingAction = action;
   // 录制时骨架强制显示，不管用户的开关 —— 那是唯一必须看见手的时刻。
   syncOverlayVisibility();
@@ -967,8 +936,8 @@ ipcMain.handle('start-recording', (_event, action) => {
 });
 
 ipcMain.handle('cancel-recording', () => {
-  if (sensorWindow && !sensorWindow.isDestroyed()) {
-    sensorWindow.webContents.send('cancel-recording', {});
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('cancel-recording', {});
   }
   recordingAction = null;
   syncOverlayVisibility();
@@ -1061,7 +1030,7 @@ app.whenReady().then(() => {
   wallWindow = createWallWindow(config.wallStrategy);
   followDisplayChanges();
   openDashboard();
-  if (config.gestures.enabled) ensureSensor();
+  // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
   syncOverlayVisibility();
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a

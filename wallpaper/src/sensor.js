@@ -41,12 +41,16 @@ function sendHands(list) {
   // 症状是"录制时什么都看不见"，和骨架坏了一模一样。两边的判据必须一致。
   if (!config) return;
   if (!config.showHands && !(recorder && recorder.active)) return;
-  window.gw.sendHands({
+  const payload = {
     // 镜像后发：壁纸上看到的手要和自己的手同向，否则抬右手屏幕上左边亮，人会以为坏了。
     hands: list.map((lm) => lm.map((p) => ({ x: 1 - p.x, y: p.y }))),
     recording: !!(recorder && recorder.active),
     at: Date.now(),
-  });
+  };
+  // 摄像头和骨架现在在同一个窗口里,所以直接喂 —— 走 IPC 会绕出进程再绕回来,白付一次
+  // 序列化和一次往返,而这是 30/s 的消息。
+  if (window.__gwOverlay) window.__gwOverlay.ingest(payload);
+  else window.gw.sendHands(payload);
 }
 
 // 录 5 秒原始关键点。

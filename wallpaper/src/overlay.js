@@ -127,6 +127,13 @@ class HandOverlay {
     };
   }
 
+  // 擦掉但不销毁:关掉"显示骨架"时用。窗口要留着(摄像头在这一层),所以"不显示"只能
+  // 靠不画 —— 而画布上一帧的内容不会自己消失,必须擦。
+  clear() {
+    if (!this.width) return;
+    this.ctx.clearRect(0, 0, this.width, this.height);
+  }
+
   resize(width, height, pixelRatio) {
     const dpr = Math.min(pixelRatio || 1, 2);
     this.width = width;

@@ -28,13 +28,29 @@ function syncSize() {
 window.addEventListener('resize', syncSize);
 syncSize();
 
+// 画不画由 config 决定。
+//
+// 窗口的存在条件是"手势开着"(因为摄像头在这一层),而"显示骨架"这个开关只控制画不画 ——
+// 两件事分开之后,关掉骨架不会连摄像头一起关掉。窗口本来就是全屏透明的,不画就等于不存在。
+let showSkeleton = true;
+window.gw.onConfig((next) => {
+  // 录制时强制显示:那是唯一必须看见手的时刻,而"我关了骨架所以录制时什么都看不到"
+  // 不是用户会预期的后果。
+  showSkeleton = !!(next && (next.showHands || overlay.recording));
+});
+
 // 每帧都画：骨架有淡出和呼吸，只在收到消息时画会一顿一顿。
 function frame(now) {
-  overlay.draw(now);
+  if (showSkeleton || overlay.recording) overlay.draw(now);
+  else overlay.clear();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
+// 同窗口直喂的入口。sensor.js 现在就在这一层,所以它直接调这个而不是走 IPC ——
+// 30/s 的消息绕出进程再绕回来是白付的成本。
+window.__gwOverlay = { ingest: (payload) => overlay.update(payload, performance.now()) };
+// IPC 那条保留:骨架层将来可能有别的进程要喂它(比如回放录好的关键点)。
 window.gw.onHands((payload) => overlay.update(payload, performance.now()));
 
 // ---------------------------------------------------------------------------

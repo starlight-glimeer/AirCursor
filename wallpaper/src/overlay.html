@@ -11,6 +11,9 @@
      手在 x=0.74 会画在屏幕 222px 处而不是 1088px 处。
      症状是"骨架偏右下角"，而我为此改了两次画布内部的坐标计算，全都改错了地方。 */
   #hands { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  /* video 必须在 DOM 里且"在播"(MediaPipe 要一个真在播的 video),但完全不可见。
+     用 opacity 而不是 display:none 或 1x1 —— 那两个会让浏览器停止解码。 */
+  #cam { position: fixed; left: 0; top: 0; width: 320px; height: 240px; opacity: 0; pointer-events: none; }
   /* 整层鼠标穿透。主进程也设了 setIgnoreMouseEvents，两边都做是因为它们防的是不同的
      东西：CSS 管这个文档内的元素，Electron 那个管整个窗口对系统的行为。 */
   body { pointer-events: none; cursor: default; }
@@ -49,6 +52,11 @@
 </style>
 </head>
 <body>
+  <!-- 摄像头就在这一层,和 AirCursor 3.x 一样。
+       之前它在一个独立的 sensor 窗口里,而那个窗口在外接显示器上表现为一个黑框 ——
+       三次靠"位置"藏它都失败,因为多屏下任何"屏幕外"坐标都可能是另一块屏的屏内。
+       这一层本来就全屏透明可见,摄像头授权自然拿得到,不需要第二个窗口。 -->
+  <video id="cam" playsinline muted autoplay></video>
   <canvas id="hands"></canvas>
   <div id="banner">
     <span class="dot"></span>
@@ -57,9 +65,22 @@
     <span class="track"><i id="banner-fill"></i></span>
   </div>
 
+  <!-- 顺序有硬约束:判定模块要在 input/recorder 之前,MediaPipe 要在 sensor 之前。
+       原来这些在独立的 sensor 窗口里,现在摄像头搬到这一层,它们跟着过来。 -->
+  <script src="vendor/mediapipe/camera_utils/camera_utils.js"
+          onerror="window.__mpMissing = 'camera_utils'"></script>
+  <script src="vendor/mediapipe/hands/hands.js"
+          onerror="window.__mpMissing = 'hands'"></script>
+  <script src="vendor/aircursor/pose.js"></script>
+  <script src="vendor/aircursor/motion.js"></script>
+  <script src="vendor/aircursor/tracking.js"></script>
   <script src="system.js"></script>
   <script src="templates.js"></script>
+  <script src="input.js"></script>
+  <script src="recorder.js"></script>
+  <!-- 绘制在前:sensor.js 启动时会立刻开始发帧,而 overlay-window 要先把画布准备好。 -->
   <script src="overlay.js"></script>
   <script src="overlay-window.js"></script>
+  <script src="sensor.js"></script>
 </body>
 </html>
