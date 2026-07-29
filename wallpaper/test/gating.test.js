@@ -381,4 +381,20 @@ check('录完报的是有手的帧数，不只是总帧数', () => {
   assert.match(dash, /withHands/, '没报有手帧数 —— 0 帧有手的空文件会看起来像成功');
 });
 
+// ⚠️ 关键点录制的载荷必须带当时生效的 tuning。
+//
+// 回放探针的每个门限（挥动速度/倾斜角/匹配阈值）都从 capture.tuning 读，缺了会
+// **静默回落到默认常数** ⟹ 用户调过参数的那次回放被拿默认值去判，报出一组自信但
+// 错的数字。而这个文件存在的全部目的就是把那些常数从猜变成量 —— 判据错了整件事反过来。
+//
+// 这条守的是跨文件、跨仓库的一致性（sensor.js 产出 ↔ probes/replay-landmarks.js 消费），
+// 任何一侧的单测都看不见。
+check('关键点录制带上当时的 tuning（否则探针会拿默认值误判）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const save = sensor.slice(sensor.indexOf('function captureFrame'),
+    sensor.indexOf('function onResults'));
+  assert.match(save, /tuning:\s*tuningOf\(\)/,
+    'capture 载荷没带 tuning —— 回放探针会静默用默认门限判定');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

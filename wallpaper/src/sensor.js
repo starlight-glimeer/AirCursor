@@ -74,7 +74,17 @@ function captureFrame(list, now) {
     hands: list.map((hand) => hand.map((p) => [round4(p.x), round4(p.y), round4(p.z || 0)])),
   });
   if (now - capture.startedAt < CAPTURE_MS) return;
-  const payload = { v: 1, capturedAt: new Date().toISOString(), durationMs: CAPTURE_MS, frames: capture.frames };
+  // ⚠️ 必须带上当时生效的调参。回放探针拿它当判据（挥动门/倾斜门/匹配阈值），
+  // 缺了它探针会**静默回落到默认值** —— 于是"用户已经调过参数"的那次回放会被拿
+  // 默认常数去判，报出一组自信但错的数字。而这个文件存在的全部目的就是把那些
+  // 常数从猜变成量，判据错了整件事就反过来了。
+  const payload = {
+    v: 1,
+    capturedAt: new Date().toISOString(),
+    durationMs: CAPTURE_MS,
+    tuning: tuningOf(),
+    frames: capture.frames,
+  };
   capture = null;
   window.gw.saveCapture(payload);
 }
