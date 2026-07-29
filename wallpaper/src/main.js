@@ -981,7 +981,7 @@ ipcMain.handle('start-recording', (_event, action) => {
   recordingAction = action;
   // 录制时骨架强制显示，不管用户的开关 —— 那是唯一必须看见手的时刻。
   syncOverlayVisibility();
-  sensor.webContents.send('start-recording', { action });
+  layer.webContents.send('start-recording', { action });
   return { ok: true };
 });
 

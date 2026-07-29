@@ -136,7 +136,18 @@ function buildPoseTemplate(handList) {
     points.flatMap((p) => [
       Number(((p.x - origin.x) / scale).toFixed(4)),
       Number(((p.y - origin.y) / scale).toFixed(4)),
-      Number(((p.z || 0) * Z_WEIGHT).toFixed(4)),
+      // ⚠️ z divided by `scale` too, exactly like x and y.
+      //
+      // It was not, and the raw value went straight in. Callers hand this
+      // function pixel-space points (`palmWidthOf` has a 60px floor, so they
+      // must), which means they scale z by the same factor — and z then arrived
+      // ~86x larger than x/y on real landmarks. The distance between two
+      // consecutive frames of a *motionless* hand measured 7.3 against a 0.28
+      // threshold: every pose comparison was really a depth-noise comparison.
+      //
+      // The symptom was "recording is impossible" — the hold check never once
+      // passed, so it just kept saying 请保持手不动. Nothing errored.
+      Number((((p.z || 0) / scale) * Z_WEIGHT).toFixed(4)),
     ]),
   );
   // The angle rides along instead of being baked in: matching decides how much

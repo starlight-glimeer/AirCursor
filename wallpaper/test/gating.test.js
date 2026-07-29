@@ -454,4 +454,64 @@ check('渲染进程的报错会转出来（否则这类错误只能靠猜）', (
   assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
 });
 
+// ── 已删掉的窗口不能还有代码在往它发消息 ─────────────────────────────────
+//
+// sensor 窗口删掉之后，`start-recording` 那个 handler 里还留着
+// `sensor.webContents.send(...)` —— 旁边的 cancel-recording / start-capture 都改成了
+// overlayWindow，只有这一个漏了。
+//
+// 它不是语法错误，`node --check` 全绿；只在用户点「录制」的那一刻抛 ReferenceError，
+// 而症状是"无法录制"，看不出和一个不存在的变量有关系。这一条和上面那个 `sendStatus`
+// 是同一类：**未定义标识符只在运行到那一行时才炸**，而那一行是用户交互才会走到的。
+check('主进程里没有向已删窗口发消息的残留（未定义标识符只在点下去那一刻才炸）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const code = main.split('\n')
+    .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+    .join('\n');
+  // 收件人必须是真实存在的窗口变量。任何别的名字都是残留。
+  const known = ['wallWindow', 'dashboardWindow', 'overlayWindow', 'layer', 'win', 'target', 'w'];
+  const bad = [...code.matchAll(/(\w+)\.webContents\.send\(/g)]
+    .map((m) => m[1])
+    .filter((name) => !known.includes(name));
+  assert.deepStrictEqual([...new Set(bad)], [],
+    `这些收件人不是已知的窗口变量，很可能是删窗口时的残留：${[...new Set(bad)].join(', ')}`);
+});
+
+// 同一类的另一半：渲染进程里调了自己没定义的函数。
+//
+// sensor.js 的 onStartCapture 回调里写的是 `sendStatus(...)`，而这个文件里那个函数
+// 叫 `status` —— 于是「录 5 秒关键点」一点就抛 ReferenceError，录不到任何东西。
+// 用户看到的是"点了没反应，目录也是空的"。
+check('渲染脚本里调用的本地函数都有定义（拼错的函数名 node --check 查不出来）', () => {
+  for (const name of ['sensor.js', 'overlay-window.js', 'recorder.js', 'input.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    const defined = new Set([
+      ...[...code.matchAll(/function\s+(\w+)\s*\(/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s+(\w+)\s*=/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(':').pop().trim())),
+      ...[...code.matchAll(/class\s+(\w+)/g)].map((m) => m[1]),
+      // 类里的方法定义：`  foo(a, b) {`。它们既是定义也长得像调用，不收进来会全体误报。
+      ...[...code.matchAll(/^\s{2,}(?:async\s+|get\s+|set\s+)?(\w+)\s*\([^)]*\)\s*\{/gm)].map((m) => m[1]),
+    ]);
+    // 只查"看起来像本模块自己的辅助函数"的调用：小写开头、不带点。带点的是
+    // window.x / T.y 那类，跨模块引用不在这条守卫的范围内。
+    const called = [...code.matchAll(/(?<![.\w$])([a-z][a-zA-Z0-9_]{3,})\(/g)].map((m) => m[1]);
+    const builtin = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'typeof',
+      'require', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'parseInt',
+      'parseFloat', 'isNaN', 'fetch', 'atan2', 'hypot', 'round', 'floor', 'ceil', 'sqrt',
+      'min', 'max', 'abs', 'push', 'map', 'filter', 'slice', 'splice', 'forEach', 'join',
+      'split', 'indexOf', 'includes', 'reduce', 'sort', 'find', 'some', 'every', 'concat',
+      'toFixed', 'padEnd', 'padStart', 'match', 'replace', 'test', 'keys', 'values',
+      'entries', 'assign', 'stringify', 'parse', 'from', 'now', 'async', 'await', 'else',
+      'function', 'await',
+      // 浏览器全局(这几个文件跑在渲染进程里)
+      'requestAnimationFrame', 'cancelAnimationFrame', 'getComputedStyle']);
+    const missing = called.filter((n) => !defined.has(n) && !builtin.has(n));
+    assert.deepStrictEqual([...new Set(missing)], [],
+      `${name} 里这些函数被调用但没有定义（会在跑到那一行时抛 ReferenceError）：${[...new Set(missing)].join(', ')}`);
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

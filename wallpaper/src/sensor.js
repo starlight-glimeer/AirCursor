@@ -75,7 +75,7 @@ let capture = null;
 if (window.gw.onStartCapture) {
   window.gw.onStartCapture(() => {
     capture = { startedAt: performance.now(), frames: [] };
-    sendStatus('正在录制原始关键点 5 秒…');
+    status('正在录制原始关键点 5 秒…');
   });
 }
 
