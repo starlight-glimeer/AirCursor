@@ -136,14 +136,21 @@ window.gw.onStartRecording(({ action }) => {
     matchThreshold: matchThreshold(),
     rotationTolerance: rotationTolerance(),
   });
-  // 有律的动作（挥动/倾斜）只需要一个静态姿势当门；没律的要录一段动作。
+
+  // 静态/动态和手数取用户在面板里选的，不按动作名查表。
+  //
+  // 有律的动作（挥动/倾斜）例外：方向由律决定，录制只是加一道"必须是这个手型"的门，
+  // 所以强制静态 —— 让它们走动态录制会要求用户做一遍动作，而那个动作的形状对触发
+  // 毫无影响。
+  const options = (config && config.recordOptions && config.recordOptions[action]) || {};
+  const dynamic = meta.law ? false : options.kind === 'dynamic';
   recorder.start(action, {
-    hands: 1,
-    dynamic: !meta.law,
+    hands: options.hands || 1,
+    dynamic,
     law: meta.law,
     now: performance.now(),
   });
-  status(`开始录制「${meta.label}」`);
+  status(`开始录制「${meta.label}」（${dynamic ? '动态' : '静态'} · ${options.hands || 1} 只手）`);
 });
 
 window.gw.onCancelRecording(() => {

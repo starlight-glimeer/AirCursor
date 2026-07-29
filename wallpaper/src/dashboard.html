@@ -161,9 +161,23 @@
 
   /* ---- 录制 ---- */
   .rec {
-    display: grid; grid-template-columns: 1fr auto; gap: 12px;
+    display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
     align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line);
   }
+  .rec .opts { display: flex; gap: 5px; align-items: center; }
+  .rec .opts select { font-size: 11px; padding: 3px 5px; }
+
+  /* 预览：静止姿势 + 动作动图，两个并排。空的时候是虚线框 —— "还没录"要看得出来
+     是一个状态，而不是布局里少了个东西。 */
+  .preview { display: flex; gap: 6px; align-items: center; }
+  .preview canvas {
+    width: 60px; height: 76px; border-radius: 6px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+  }
+  .preview canvas.is-wide { width: 96px; }
+  .preview canvas.is-empty { border-style: dashed; opacity: .45; }
+  .preview canvas.is-move { border-color: rgba(31,157,99,.4); }
+  .preview .arrow { color: var(--dim); font-size: 11px; }
   .rec:last-child { border-bottom: 0; }
   .rec .nm { font-weight: 600; font-size: 12px; }
   .rec .hint2 { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
@@ -314,6 +328,7 @@
 </main>
 
 <script src="templates.js"></script>
+<script src="preview.js"></script>
 <script src="library.js"></script>
 <script src="dashboard.js"></script>
 </body>

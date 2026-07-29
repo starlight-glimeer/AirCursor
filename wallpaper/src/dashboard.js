@@ -4,6 +4,7 @@
 // 壁纸也不用被单独通知。
 const T = window.GestureWallTemplates;
 const Lib = window.GestureWallLibrary;
+const P = window.GestureWallPreview;
 
 let config = null;
 let strategy = null;
@@ -280,8 +281,24 @@ function renderContinuous() {
   }
 }
 
+// 录制选项：静态还是动态、几只手。
+//
+// 静态/动态是**用户的选择**，不是按动作名查表 —— AirCursor 那边一开始是硬编码的，
+// 结果既拒绝了"用画圈打开某个功能"（适合动态的动作被强制静态），也在一个静止姿势
+// 就够用的地方强加了做动作的步骤。有律的动作（挥动/倾斜）例外：它们的方向由律决定，
+// 录制只是加一道"必须是这个手型"的门，所以固定静态。
+function recordOptions(action) {
+  const stored = (config.recordOptions && config.recordOptions[action.id]) || {};
+  return {
+    // 有律的强制静态；其余默认静态（更快录完），用户想要动态自己选。
+    kind: action.law ? 'static' : (stored.kind || 'static'),
+    hands: stored.hands || 1,
+  };
+}
+
 function renderRecordables() {
   const host = document.getElementById('recordables');
+  stopAllPreviews();
   host.innerHTML = '';
   const t = T.template(config.template);
   const actions = T.recordableActionsOf(config.template, config.proTier);
@@ -291,27 +308,31 @@ function renderRecordables() {
   }
   for (const action of actions) {
     const recorded = config.recorded && config.recorded[action.id];
+    const options = recordOptions(action);
     const row = el('div', 'rec');
 
+    // ---- 左：名字、提示、状态、进度条 ----
     const info = el('div');
     const name = el('span', 'nm', action.label);
-    if (t.actions.pro.includes(action.id)) {
-      name.append(el('span', 'tier pro', '进阶'));
-    }
+    if (t.actions.pro.includes(action.id)) name.append(el('span', 'tier pro', '进阶'));
     info.append(name);
     info.append(el('span', 'hint2', action.hint));
+
     const state = el('div', 'state');
     if (recordingAction === action.id) {
       state.textContent = '准备中…';
       state.className = 'state ok';
     } else if (recorded) {
-      state.textContent = `已录制 · ${recorded.hands} 只手${recorded.keyframes ? ` · ${recorded.keyframes} 关键帧` : ''}`;
+      const kind = recorded.keyframeData && recorded.keyframeData.length ? '动态' : '静态';
+      state.textContent = `已录制 · ${kind} · ${recorded.hands} 只手`
+        + (recorded.keyframes ? ` · ${recorded.keyframes} 关键帧` : '');
       state.className = 'state ok';
     } else {
       state.textContent = action.law ? '未录制（有内置判定，录了更准）' : '未录制';
       state.className = 'state';
     }
     info.append(state);
+
     const bar = el('div', 'bar');
     const fill = el('i');
     fill.dataset.action = action.id;
@@ -319,7 +340,48 @@ function renderRecordables() {
     info.append(bar);
     row.append(info);
 
+    // ---- 中：预览 ----
+    row.append(buildPreview(action, recorded));
+
+    // ---- 右：选项 + 按钮 ----
+    const right = el('div');
+    const opts = el('div', 'opts');
+    if (!action.law) {
+      const kindSelect = document.createElement('select');
+      for (const [value, label] of [['static', '静态姿势'], ['dynamic', '动态动作']]) {
+        const node = document.createElement('option');
+        node.value = value;
+        node.textContent = label;
+        if (value === options.kind) node.selected = true;
+        kindSelect.append(node);
+      }
+      kindSelect.onchange = () => window.gw.setConfig({
+        recordOptions: {
+          ...(config.recordOptions || {}),
+          [action.id]: { ...options, kind: kindSelect.value },
+        },
+      });
+      opts.append(kindSelect);
+    }
+    const handsSelect = document.createElement('select');
+    for (const [value, label] of [[1, '单手'], [2, '双手']]) {
+      const node = document.createElement('option');
+      node.value = String(value);
+      node.textContent = label;
+      if (value === options.hands) node.selected = true;
+      handsSelect.append(node);
+    }
+    handsSelect.onchange = () => window.gw.setConfig({
+      recordOptions: {
+        ...(config.recordOptions || {}),
+        [action.id]: { ...options, hands: Number(handsSelect.value) },
+      },
+    });
+    opts.append(handsSelect);
+    right.append(opts);
+
     const buttons = el('div');
+    buttons.style.marginTop = '6px';
     if (recordingAction === action.id) {
       const stop = el('button', 'act danger', '取消');
       stop.onclick = () => window.gw.cancelRecording();
@@ -335,12 +397,135 @@ function renderRecordables() {
         buttons.append(clear);
       }
     }
-    row.append(buttons);
+    right.append(buttons);
+    row.append(right);
+
     host.append(row);
   }
   if (!config.gestures.enabled) {
     host.append(el('p', 'hint warn', '先开启摄像头手势才能录制'));
   }
+}
+
+// ---------------------------------------------------------------------------
+// 预览
+//
+// 为什么它是精华：录完之后，用户唯一的验证手段本来是"摆一遍看有没有反应"，而那把
+// "录错了"和"匹配没过"混成同一个症状。画出来就一眼看出录的是不是自己想的那个。
+// ---------------------------------------------------------------------------
+const previewLoops = new Map();
+
+function stopPreview(action) {
+  const handle = previewLoops.get(action);
+  if (handle) cancelAnimationFrame(handle);
+  previewLoops.delete(action);
+}
+
+function stopAllPreviews() {
+  for (const action of [...previewLoops.keys()]) stopPreview(action);
+}
+
+// 把一个模板画到 canvas 上。
+function drawTemplate(canvas, template, { tiltDeg = 0, accent = '#6cc7ff' } = {}) {
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const hands = P.templatePoints(template);
+
+  // 双手比单手宽，所以框跟着内容变。**先加 class 再量尺寸** —— class 决定
+  // clientWidth，反过来的话第一次绘制会把双手姿势塞进单手的框里。
+  canvas.classList.toggle('is-wide', !!hands && hands.length > 1);
+
+  const w = canvas.clientWidth || 60;
+  const h = canvas.clientHeight || 76;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!hands) {
+    // 清空而不是塌掉：虚线空框就是"还没录"的样子，把 backing store 归零会让元素消失。
+    canvas.classList.add('is-empty');
+    return;
+  }
+  canvas.classList.remove('is-empty');
+
+  const { hands: placed } = P.layout(hands, w, h, tiltDeg);
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = accent;
+  ctx.fillStyle = accent;
+  for (const points of placed) {
+    for (const line of P.HAND_LINES) {
+      ctx.beginPath();
+      line.forEach((id, i) => {
+        const p = points[id];
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    }
+    for (const p of points) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+// 动图：走完动作，停一下，重来。停顿段换颜色 —— "动作结束了"要看得见而不是靠数节拍。
+function startPreviewLoop(action, canvas, keyframes) {
+  stopPreview(action);
+  if (!keyframes || keyframes.length < 2) return;
+  let start = null;
+  const tick = (nowMs) => {
+    // 自己检查还在不在文档里：省掉每个调用点都要记得拆除。
+    if (!canvas.isConnected) { previewLoops.delete(action); return; }
+    if (start === null) start = nowMs;
+    const frame = P.frameAt(keyframes, nowMs - start);
+    if (frame) {
+      drawTemplate(canvas, frame.template, { accent: frame.holding ? '#8affc1' : '#6cc7ff' });
+    }
+    previewLoops.set(action, requestAnimationFrame(tick));
+  };
+  previewLoops.set(action, requestAnimationFrame(tick));
+}
+
+function buildPreview(action, recorded) {
+  const wrap = el('div', 'preview');
+  const rest = document.createElement('canvas');
+  wrap.append(rest);
+
+  const keyframes = recorded && recorded.keyframeData;
+  const dynamic = keyframes && keyframes.length > 1;
+
+  if (dynamic) {
+    wrap.append(el('span', 'arrow', '→'));
+    const move = document.createElement('canvas');
+    move.className = 'is-move';
+    wrap.append(move);
+    // 静止那格画起始姿势，动的那格放动图 —— 两格并排，因为"从哪开始"和"怎么动"
+    // 是两个独立的问题，一个动图答不了第一个。
+    drawTemplate(rest, keyframes[0].template);
+    // 元素进 DOM 之后才能量到尺寸，所以动画在下一帧启动。
+    requestAnimationFrame(() => startPreviewLoop(action.id, move, keyframes));
+  } else if (recorded && recorded.template) {
+    drawTemplate(rest, recorded.template);
+    // 倾斜类：第二格画"动作实际到达的位置"，而不是让用户看一个角度数字自己想象。
+    if (action.law === 'tilt' && recorded.trigger) {
+      wrap.append(el('span', 'arrow', '→'));
+      const tilted = document.createElement('canvas');
+      tilted.className = 'is-move';
+      wrap.append(tilted);
+      requestAnimationFrame(() => drawTemplate(tilted, recorded.template, {
+        tiltDeg: (config.gestureTuning && config.gestureTuning.tiltTriggerDeg) || 22,
+        accent: '#8affc1',
+      }));
+    }
+  } else {
+    drawTemplate(rest, null);
+  }
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------

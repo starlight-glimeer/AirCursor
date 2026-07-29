@@ -222,6 +222,12 @@ const defaultConfig = {
   library: [],
   // 已录制的手势，动作 id → { hands, template, keyframes, trigger, ... }。
   recorded: {},
+  // 每个动作的录制选项：静态还是动态、几只手。
+  //
+  // 静态/动态是**用户的选择**而不是按动作名查表。AirCursor 那边一开始硬编码，结果既
+  // 拒绝了"用画圈打开某个功能"（适合动态的被强制静态），也在静止姿势就够用的地方
+  // 强加了做动作的步骤。
+  recordOptions: {},
   debug: { showHud: true },
 };
 
@@ -240,7 +246,7 @@ function readConfig() {
 // mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
 // 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
 // 预设都在下次启动时被静默丢掉。
-const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded']);
+const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions']);
 
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
