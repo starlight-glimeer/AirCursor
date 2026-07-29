@@ -342,6 +342,16 @@ function wireDiagnostics() {
     node.className = g.consistent ? 'state ok' : 'state warn';
   });
 
+  // 骨架层/helper 的报错。只留最近 40 行 —— 它的用途是"刚才出了什么事",不是日志归档。
+  window.gw.onHelperLog((entry) => {
+    const node = document.getElementById('log');
+    if (!node || !entry) return;
+    const line = `[${entry.source || '?'}] ${entry.message}`;
+    node.textContent = `${node.textContent}${node.textContent ? '\n' : ''}${line}`
+      .split('\n').slice(-40).join('\n');
+    node.scrollTop = node.scrollHeight;
+  });
+
   window.gw.onCaptureSaved((payload) => {
     if (!payload || payload.error) {
       state.textContent = `保存失败:${payload && payload.error}`;

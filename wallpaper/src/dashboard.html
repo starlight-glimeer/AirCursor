@@ -181,6 +181,9 @@
   .rec:last-child { border-bottom: 0; }
   .rec .nm { font-weight: 600; font-size: 12px; }
   .rec .hint2 { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
+  .log { max-height: 120px; overflow: auto; margin: 6px 0 0; padding: 6px 8px;
+    background: #0d0d0f; border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
+    color: #b9c0cc; white-space: pre-wrap; }
   .rec .state { font-family: ui-monospace, monospace; font-size: 10px; margin-top: 4px; }
   .bar { height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 6px; }
   .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; width: 0; transition: width .1s; }
@@ -320,6 +323,9 @@
            "手在数据里的位置"、没有"骨架落在屏幕哪个像素"。三层尺寸(缓冲/CSS/逻辑)
            任何一层不一致,画布就在被缩放显示,而那正是那两轮的真根因。 -->
       <div id="overlay-geom" class="state">骨架几何：等骨架层启动</div>
+      <!-- 骨架层和 helper 的报错。摄像头搬进骨架层之后不启动，而我花了几轮在推断原因 ——
+           因为那个窗口里抛的异常谁都看不到：它没有开发者工具、不在视线里。 -->
+      <pre id="log" class="log"></pre>
       <button class="act" id="capture-start">录 5 秒关键点</button>
       <button class="act" id="revealCaptures">打开关键点目录</button>
       <div id="capture-state" class="state"></div>

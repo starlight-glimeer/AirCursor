@@ -239,6 +239,9 @@ const defaultConfig = {
   showHands: true,
   // 语音命令。默认关:开着会占麦克风,而那会切换音频输入设备、影响正在播放的音乐。
   voice: false,
+  // 摄像头授权拿到过没有。决定骨架层一开始要不要鼠标穿透 —— 授权弹窗在穿透窗口上
+  // 点不动,所以第一次必须留着可交互。
+  cameraGranted: false,
   // 手 → 真光标。默认关:一开摄像头就抢走鼠标,用户会没法用鼠标去把它关掉。
   // 需要辅助功能授权,而缺权限时 CGEvent 静默丢弃 —— 所以面板要显示投递层健康状态。
   controlCursor: false,
@@ -505,11 +508,42 @@ function ensureOverlay() {
       backgroundThrottling: false,
     },
   });
+  // 渲染进程的 console 转到主进程 + 面板。
+  //
+  // 摄像头搬进这一层之后没启动,而我花了几轮在推断原因 —— 因为这个窗口里抛的任何异常
+  // **谁都看不到**:它没有开发者工具、不在视线里,而 sensor.js 的加载期错误只会让摄像头
+  // 静默不起。AirCursor 3.x 转了这个,他的没转。
+  //
+  // Electron 36 起签名从 (event, level, message, line, sourceId) 变成单个 details
+  // 对象,两种都接才不会静默变哑。
+  overlayWindow.webContents.on('console-message', (...args) => {
+    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
+    const level = d ? d.level : args[1];
+    const message = d ? d.message : args[2];
+    if (level === 'error' || level === 'warning' || /⚠️|失败|Error/.test(String(message))) {
+      broadcast('helper-log', { source: 'overlay', message: String(message) });
+    }
+  });
+  // 未捕获异常单独报:它比 console.error 更致命(整个脚本停在那里),而 console-message
+  // 在某些 Electron 版本上拿不到它。
+  overlayWindow.webContents.on('render-process-gone', (_e, details) => {
+    broadcast('helper-log', { source: 'overlay', message: `骨架层崩了:${details.reason}` });
+  });
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // forward: true 让鼠标事件继续传给下面的窗口，否则这一层会让整个屏幕点不动。
-  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  // ⚠️ 穿透在**摄像头授权之后**才开。
+  //
+  // 这个窗口是 alwaysOnTop 'screen-saver' + 鼠标穿透,而 macOS 的摄像头授权弹窗在这种
+  // 窗口上可能压根没法点(穿透会让点击落到它下面去)。所以先留着可交互,拿到授权、
+  // 摄像头真的在出帧之后再开穿透 —— sensor 报 ready 时主进程来开。
+  //
+  // 这一段的由来:摄像头搬进这一层之后不启动,而我猜了几轮 —— 因为这个窗口的报错谁都
+  // 看不到(见上面 console-message 那段)。观测和这条修复是一起加的。
+  if (config && config.cameraGranted) {
+    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  }
   liftOverMenuBar(overlayWindow);
   overlayWindow.on('closed', () => { overlayWindow = null; });
   return overlayWindow;
@@ -906,6 +940,15 @@ ipcMain.on('sensor-status', (_event, payload) => {
   // ⚠️ 且已经报到"已开启" —— sensor 自己在成功那一刻才发这句。
   sensorStatusText = (payload && payload.text) || '';
   if (payload && typeof payload.ready === 'boolean') sensorReady = payload.ready;
+  // 摄像头真的出帧了 ⟹ 授权已经拿到 ⟹ 可以开穿透了(在那之前窗口必须可交互,否则
+  // 授权弹窗点不动)。记进 config,下次启动就直接开。
+  if (payload && payload.ready && overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    if (!config.cameraGranted) {
+      config.cameraGranted = true;
+      writeConfig();
+    }
+  }
   broadcast('sensor-status', payload);
 });
 

@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('gw', {
   sendSensorStatus: (payload) => ipcRenderer.send('sensor-status', payload),
   reportOverlayGeometry: (payload) => ipcRenderer.send('overlay-geometry', payload),
   onOverlayGeometry: (handler) => ipcRenderer.on('overlay-geometry', (_e, p) => handler(p)),
+  onHelperLog: (handler) => ipcRenderer.on('helper-log', (_e, p) => handler(p)),
   sendRecordingProgress: (payload) => ipcRenderer.send('recording-progress', payload),
   sendRecordingResult: (payload) => ipcRenderer.send('recording-result', payload),
 

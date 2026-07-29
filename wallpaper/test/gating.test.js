@@ -323,6 +323,18 @@ check('骨架层可聚焦，否则摄像头授权弹窗没人能回答', () => {
   assert.match(block, /setIgnoreMouseEvents/, '穿透要靠 setIgnoreMouseEvents,不是靠不可聚焦');
 });
 
+check('穿透在摄像头授权之后才开（弹窗在穿透窗口上点不动）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  // 这一层是 alwaysOnTop 'screen-saver' + 穿透,而 macOS 的摄像头授权弹窗在这种窗口上
+  // 可能压根没法点 —— 点击会落到它下面去。所以第一次必须留着可交互。
+  assert.match(main, /config\.cameraGranted[\s\S]{0,120}setIgnoreMouseEvents/,
+    '骨架层一上来就开穿透 —— 首次摄像头授权的弹窗会点不动');
+  // 拿到授权后要真的开,否则这一层永久吃掉全屏的点击。
+  assert.match(main, /payload\.ready[\s\S]{0,300}setIgnoreMouseEvents\(true/,
+    '摄像头就绪后没有开穿透 —— 那这一层会一直吃掉整个屏幕的点击');
+  assert.match(main, /cameraGranted = true/, '没有把"授权拿到过"记下来,每次启动都要重来');
+});
+
 check('语音默认关，且不在启动时抢麦克风', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8');
