@@ -533,17 +533,28 @@ function ensureOverlay() {
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // forward: true 让鼠标事件继续传给下面的窗口，否则这一层会让整个屏幕点不动。
-  // ⚠️ 穿透在**摄像头授权之后**才开。
+  // 穿透**永远开**,没有例外。
   //
-  // 这个窗口是 alwaysOnTop 'screen-saver' + 鼠标穿透,而 macOS 的摄像头授权弹窗在这种
-  // 窗口上可能压根没法点(穿透会让点击落到它下面去)。所以先留着可交互,拿到授权、
-  // 摄像头真的在出帧之后再开穿透 —— sensor 报 ready 时主进程来开。
+  // 上一版为了让摄像头授权弹窗可点,把穿透做成了"拿到授权后才开" —— 结果这一层盖在
+  // 全屏最上层且不穿透,吃掉了用户所有的点击,连启动页的按钮都点不进去。用户报
+  // "开头的 gesturewall 我点不进去了"。
   //
-  // 这一段的由来:摄像头搬进这一层之后不启动,而我猜了几轮 —— 因为这个窗口的报错谁都
-  // 看不到(见上面 console-message 那段)。观测和这条修复是一起加的。
-  if (config && config.cameraGranted) {
-    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
-  }
+  // 那个取舍本身就是错的:摄像头授权不需要**整层**可点,只需要请求发生在一个可交互的
+  // 窗口里。所以授权改由 dashboard 发起(它是普通窗口),拿到之后骨架层直接用 —— 权限是
+  // 授给整个 App 的,不是授给某个窗口。
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  // 三重保险。这一层盖在全屏最上层,任何一条失效的后果都是**整个屏幕点不动** ——
+  // 用户实测到过("鼠标直接废掉了,屏幕上所有的东西都点不动了"),而那种状态下他连
+  // 关掉这个 App 都做不到。所以不依赖任何单一机制:
+  //
+  //   setIgnoreMouseEvents  Electron 层面的穿透
+  //   ready-to-show 后重设   窗口重建/显示时 Electron 有可能丢掉上面那次设置
+  //   body pointer-events    CSS 层面,即使 Electron 那边失效也不会吃掉点击
+  overlayWindow.once('ready-to-show', () => {
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
+  });
   liftOverMenuBar(overlayWindow);
   overlayWindow.on('closed', () => { overlayWindow = null; });
   return overlayWindow;
@@ -940,14 +951,10 @@ ipcMain.on('sensor-status', (_event, payload) => {
   // ⚠️ 且已经报到"已开启" —— sensor 自己在成功那一刻才发这句。
   sensorStatusText = (payload && payload.text) || '';
   if (payload && typeof payload.ready === 'boolean') sensorReady = payload.ready;
-  // 摄像头真的出帧了 ⟹ 授权已经拿到 ⟹ 可以开穿透了(在那之前窗口必须可交互,否则
-  // 授权弹窗点不动)。记进 config,下次启动就直接开。
-  if (payload && payload.ready && overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
-    if (!config.cameraGranted) {
-      config.cameraGranted = true;
-      writeConfig();
-    }
+  // 记下"授权拿到过",面板用它决定要不要显示"先去授权"那一步。不再和穿透挂钩。
+  if (payload && payload.ready && !config.cameraGranted) {
+    config.cameraGranted = true;
+    writeConfig();
   }
   broadcast('sensor-status', payload);
 });
@@ -1086,9 +1093,20 @@ app.whenReady().then(() => {
   globalShortcut.register('Control+Shift+L', cycleStrategy);
   globalShortcut.register('Control+Shift+R', () => broadcast('reset-view', {}));
   globalShortcut.register('Control+Shift+Q', () => app.quit());
+  // 逃生开关:把骨架层直接拆掉。
+  //
+  // 这一层盖在全屏最上层,如果穿透因为任何原因失效,后果是**整个屏幕点不动** —— 用户
+  // 实测撞到过,而那种状态下鼠标废掉、连关掉这个 App 都做不到。一个能把自己锁在外面的
+  // 程序必须有一个不依赖鼠标的出口,而且这个出口不能和"退出"绑在一起(用户可能只是想
+  // 拿回鼠标,不是想关掉壁纸)。
+  globalShortcut.register('Control+Shift+X', () => {
+    destroyOverlay();
+    broadcast('helper-log', { source: 'main', message: '骨架层已拆掉(⌃⇧X) —— 鼠标恢复。重新勾选「显示手骨架」可以再开' });
+  });
 
   console.log('\n=== GestureWall ===');
-  console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧Q 退出\n');
+  console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角');
+  console.log('  ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
 
 // Deliberately does not quit: closing the settings window is not quitting the

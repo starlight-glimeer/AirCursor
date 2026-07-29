@@ -323,16 +323,38 @@ check('骨架层可聚焦，否则摄像头授权弹窗没人能回答', () => {
   assert.match(block, /setIgnoreMouseEvents/, '穿透要靠 setIgnoreMouseEvents,不是靠不可聚焦');
 });
 
-check('穿透在摄像头授权之后才开（弹窗在穿透窗口上点不动）', () => {
+// ⚠️ 这条守的是一个**能把用户锁在电脑外面**的失败。
+//
+// 上一版为了让摄像头授权弹窗可点,把穿透做成"拿到授权后才开"。后果:这一层盖在全屏
+// 最上层且不穿透 ⟹ 整个屏幕点不动 ⟹ 用户连关掉这个 App 都做不到。实测撞到过
+// ("鼠标直接废掉了,屏幕上所有的东西都点不动了")。
+//
+// 授权不需要**整层**可点,只需要请求发生在一个可交互的窗口里。所以穿透无条件开,
+// 而且有三重保险 + 一个不依赖鼠标的逃生开关。
+check('骨架层的穿透是无条件的（否则整个屏幕点不动）', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  // 这一层是 alwaysOnTop 'screen-saver' + 穿透,而 macOS 的摄像头授权弹窗在这种窗口上
-  // 可能压根没法点 —— 点击会落到它下面去。所以第一次必须留着可交互。
-  assert.match(main, /config\.cameraGranted[\s\S]{0,120}setIgnoreMouseEvents/,
-    '骨架层一上来就开穿透 —— 首次摄像头授权的弹窗会点不动');
-  // 拿到授权后要真的开,否则这一层永久吃掉全屏的点击。
-  assert.match(main, /payload\.ready[\s\S]{0,300}setIgnoreMouseEvents\(true/,
-    '摄像头就绪后没有开穿透 —— 那这一层会一直吃掉整个屏幕的点击');
-  assert.match(main, /cameraGranted = true/, '没有把"授权拿到过"记下来,每次启动都要重来');
+  const block = main.slice(main.indexOf('function ensureOverlay'), main.indexOf('function destroyOverlay'));
+  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  // 不能有任何条件包着它 —— 条件为假的那一刻鼠标就废了。
+  assert.doesNotMatch(code, /if\s*\([^)]*\)\s*\{?\s*\n?\s*overlayWindow\.setIgnoreMouseEvents/,
+    '穿透被条件包住了 —— 条件不成立时整个屏幕会点不动');
+  assert.match(code, /setIgnoreMouseEvents\(true, \{ forward: true \}\)/, '没有开穿透');
+  // ready-to-show 后重设:窗口重建时 Electron 可能丢掉之前那次设置。
+  assert.match(code, /ready-to-show[\s\S]{0,200}setIgnoreMouseEvents/,
+    '没有在 ready-to-show 后重设穿透 —— 那次设置可能被窗口重建丢掉');
+});
+
+check('有一个不依赖鼠标的逃生开关，而且告诉了用户', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 一个能把自己锁在外面的程序必须有不依赖鼠标的出口,而且不能和"退出"绑在一起 ——
+  // 用户可能只想拿回鼠标,不是想关掉壁纸。
+  assert.match(main, /Control\+Shift\+X[\s\S]{0,200}destroyOverlay\(\)/,
+    '没有"拆掉骨架层"的全局快捷键');
+  // 写在代码里但用户不知道,等于没有 —— 出事时他没法查文档。
+  assert.match(wall, /⌃⇧X/, '启动页没告诉用户鼠标点不动时按什么');
+  assert.match(dash, /⌃⇧X/, '面板没列出这个快捷键');
 });
 
 check('语音默认关，且不在启动时抢麦克风', () => {
