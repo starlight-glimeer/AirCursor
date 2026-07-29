@@ -182,15 +182,41 @@ check('WE 壁纸走自定义 protocol 而不是 loadFile', () => {
     'WE 窗口用了 loadFile —— Vite 的 ES module 在 file:// 下加载不了，会白屏');
 });
 
-// ⚠️ 反向调用那条：壁纸自己挂 window.wallpaperPropertyListener 等我们去调，
-// contextIsolation:true 下我们看不见它 ⟹ 41 项配置永远发不进去且不报错。
-check('WE 窗口 contextIsolation 为 false（属性接口是反向的）', () => {
+// ⚠️ 这条翻过一次，翻的方向值得记：我原来为了拿到页面挂的
+// window.wallpaperPropertyListener 关掉了 contextIsolation。但壁纸是从创意工坊下的
+// 第三方 HTML，同世界意味着它可能摸到 require ⟹ 读用户的文件系统。
+// 正确做法是两个方向各用各的桥（contextBridge 出去、executeJavaScript 进去），
+// 隔离全程开着。**别为了接口形状退让安全边界。**
+check('WE 窗口保持 contextIsolation + sandbox（壁纸是第三方 HTML）', () => {
   const create = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
     mainSrc.indexOf('function sendWEProperties'));
-  assert.match(create, /contextIsolation:\s*false/,
-    'WE 窗口开了 contextIsolation —— 壁纸挂的 wallpaperPropertyListener 我们看不见');
-  // 但 nodeIntegration 不能开：壁纸是第三方 HTML。
+  assert.match(create, /contextIsolation:\s*true/,
+    'WE 窗口关了 contextIsolation —— 第三方壁纸可能拿到 require 读文件系统');
   assert.match(create, /nodeIntegration:\s*false/, 'WE 窗口开了 nodeIntegration');
+  assert.match(create, /sandbox:\s*true/, 'WE 窗口没开 sandbox');
+});
+
+// 属性是反向的，隔离世界读不到页面挂的对象 ⟹ 必须用 executeJavaScript（跑在主世界）。
+// ⚠️ 如果哪天有人把它改回 webContents.send，属性会静默发不进去。
+check('属性走 executeJavaScript（主世界）而不是 IPC', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function applyWEProperties'),
+    mainSrc.indexOf('const WE_PROP_RETRY_MS'));
+  assert.match(fn, /executeJavaScript/, '属性没走 executeJavaScript，隔离下发不进去');
+  assert.match(fn, /wallpaperPropertyListener/, '没去调壁纸挂的那个对象');
+  // 拼字符串进 JS 必须转义 —— 壁纸目录名里一个引号就能把脚本劈开。
+  assert.match(fn, /JSON\.stringify\(JSON\.stringify/,
+    '属性没做双重转义，壁纸名里的引号会把注入脚本劈开');
+});
+
+check('we-preload 用 contextBridge 而不是直接改 window', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-preload.js'), 'utf8');
+  assert.match(src, /contextBridge\.exposeInMainWorld/,
+    'we-preload 没用 contextBridge —— 隔离开着时直接赋值 window 页面看不到');
+  // 逐个 expose：壁纸检查的是平铺的 window.wallpaperRegisterXxx，不是命名空间。
+  for (const name of ['wallpaperRegisterAudioListener', 'wallpaperReady',
+    'wallpaperMediaIntegration']) {
+    assert.ok(src.includes(`'${name}'`), `we-preload 没暴露 ${name}`);
+  }
 });
 
 check('自己的三层景深壁纸仍然保持 contextIsolation: true', () => {
@@ -236,15 +262,17 @@ check('WE 的 IPC 通道 preload 里都有出口', () => {
 });
 
 // we-preload 是独立的 preload，不能暴露 ipcRenderer 给第三方 HTML。
-check('we-preload 不把 ipcRenderer / require 暴露给页面', () => {
+check('we-preload 只暴露 wallpaper* 的东西（不给页面主进程通道）', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-preload.js'), 'utf8');
-  assert.ok(!/window\.(ipcRenderer|require|electron)\s*=/.test(src),
-    'we-preload 把 ipcRenderer 或 require 挂到 window 上了 —— 第三方 HTML 能拿到主进程通道');
-  // 只该挂 WE 那几个函数
-  const assigned = [...src.matchAll(/window\.(\w+)\s*=/g)].map((m) => m[1]);
-  for (const name of assigned) {
-    assert.ok(/^wallpaper/.test(name), `we-preload 挂了非 WE 的全局：window.${name}`);
+  const exposed = [...src.matchAll(/exposeInMainWorld\('(\w+)'/g)].map((m) => m[1]);
+  assert.ok(exposed.length >= 5, `只暴露了 ${exposed.length} 个，WE 契约要 5 个 register + 常量`);
+  for (const name of exposed) {
+    assert.ok(/^wallpaper/.test(name),
+      `we-preload 暴露了非 WE 的东西：${name} —— 第三方壁纸能拿到它`);
   }
+  // 直接赋值 window 在隔离下无效（页面看不到），出现就是没理解隔离模型。
+  assert.ok(!/^\s*window\.\w+\s*=/m.test(src),
+    'we-preload 里有直接给 window 赋值 —— 隔离开着时页面看不到，属于无效代码');
 });
 
 // ⚠️ 时序：那 5 个 register 函数必须在页面脚本之前存在。样本的 index.html 用

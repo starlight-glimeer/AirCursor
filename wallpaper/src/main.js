@@ -871,6 +871,7 @@ function loadWEProject(dir) {
 }
 
 function destroyWEWindow() {
+  if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
   if (weWindow && !weWindow.isDestroyed()) weWindow.destroy();
   weWindow = null;
   weReady = false;
@@ -900,18 +901,19 @@ function createWEWindow() {
     ...strategy.options,
     webPreferences: {
       preload: path.join(__dirname, 'we-preload.js'),
-      // ⚠️ 这里和其他三个窗口不一样，而且是必须的。
+      // ⚠️ 这里曾经是 contextIsolation: false，因为属性接口是反向的（壁纸自己挂
+      // window.wallpaperPropertyListener 等宿主去调），而隔离世界读不到页面挂的东西。
       //
-      // 数据流是双向的：壁纸自己执行
-      //   window.wallpaperPropertyListener = { applyUserProperties, ... }
-      // 然后等宿主去调。contextIsolation: true 下 preload 和页面是两个隔离的 JS 世界,
-      // 页面挂在自己 window 上的那个对象我们看不见 —— 症状是画面正常、音频正常、
-      // 41 项配置永远发不进去，而且不报错。
-      //
-      // 代价是第三方 HTML 和 preload 同世界，所以 we-preload.js 里只挂 WE 那几个函数,
-      // 不暴露 ipcRenderer / require / 我们自己的 gw。
-      contextIsolation: false,
+      // 改回 true 了。壁纸是从创意工坊下的第三方 HTML，同世界意味着它可能摸到
+      // require ⟹ 能读用户的文件系统。那个风险不值得为一个接口形状承担，而且两个
+      // 方向都有不关隔离的办法：
+      //   我们→壁纸：contextBridge.exposeInMainWorld（它本来就是往主世界桥）
+      //   壁纸→我们：executeJavaScript 跑在主世界（见 sendWEProperties）
+      contextIsolation: true,
       nodeIntegration: false,
+      // 第三方 HTML 就该按第三方对待。sandbox 会限制 preload 里能 require 的东西，
+      // 而 we-preload 只用 electron 的 contextBridge/ipcRenderer，两个都在白名单内。
+      sandbox: true,
       // 壁纸持续动画，而"不是焦点窗口"对壁纸是常态 —— 让 Chromium 在那里节流
       // 等于永久卡住动画。
       backgroundThrottling: false,
@@ -944,11 +946,75 @@ function createWEWindow() {
 }
 
 // 把 project.json 的属性（叠加用户覆盖）发给壁纸。
+//
+// ⚠️ 这条是**反向**的：壁纸自己执行 `window.wallpaperPropertyListener = {…}` 然后等
+// 宿主去调它。所以不能走 IPC + preload —— 隔离世界里读不到页面挂的对象。
+//
+// executeJavaScript **默认跑在主世界**（要跑隔离世界得显式用
+// executeJavaScriptInIsolatedWorld），所以主进程可以直接在页面世界里调那个对象。
+// 这样属性能发进去，而 contextIsolation 保持开着。
+//
+// 页面可能还没挂上（壁纸的 bundle 是 ES module，加载是异步的），所以脚本里自己判断
+// 并把没送到的报回来 —— 由调用方决定要不要重试。
+function applyWEProperties(props, general) {
+  if (!weWindow || weWindow.isDestroyed()) return Promise.resolve({ applied: false });
+  // JSON.stringify 两次：一次把对象变成字面量，外层那次是为了让它作为字符串安全嵌入。
+  // 直接拼对象会让壁纸名里的引号或反斜杠把脚本劈开。
+  const script = `(() => {
+    const listener = window.wallpaperPropertyListener;
+    if (!listener) return { applied: false, reason: 'no-listener' };
+    let user = false, general = false;
+    try {
+      if (typeof listener.applyUserProperties === 'function') {
+        listener.applyUserProperties(JSON.parse(${JSON.stringify(JSON.stringify(props))}));
+        user = true;
+      }
+      if (typeof listener.applyGeneralProperties === 'function') {
+        listener.applyGeneralProperties(JSON.parse(${JSON.stringify(JSON.stringify(general))}));
+        general = true;
+      }
+    } catch (error) {
+      return { applied: false, reason: String(error && error.message) };
+    }
+    return { applied: user || general, user, general };
+  })()`;
+  return weWindow.webContents.executeJavaScript(script, true)
+    .catch((error) => ({ applied: false, reason: String(error && error.message) }));
+}
+
+// 发属性，页面还没挂好就重试。
+//
+// ⚠️ 有上限：不是每个壁纸都有可配置项，无上限重试会对那些壁纸永远转下去。
+const WE_PROP_RETRY_MS = 120;
+const WE_PROP_TIMEOUT_MS = 8000;
+let wePropTimer = null;
+
 function sendWEProperties() {
   if (!weWindow || weWindow.isDestroyed() || !weProject) return;
   const props = WE.userProperties(weProject.properties, config.we.overrides);
-  weWindow.webContents.send('we-user-properties', props);
-  weWindow.webContents.send('we-general-properties', WE.generalProperties(config.we.fps));
+  const general = WE.generalProperties(config.we.fps);
+  const startedAt = Date.now();
+
+  if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+
+  const attempt = async () => {
+    const result = await applyWEProperties(props, general);
+    if (result.applied) {
+      if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+      return;
+    }
+    if (Date.now() - startedAt > WE_PROP_TIMEOUT_MS) {
+      if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+      // 说出来而不是静默放弃：'no-listener' 是"这个壁纸没有可配置项"（正常），
+      // 别的原因是真出问题了。两者在画面上都看不出来。
+      if (result.reason !== 'no-listener') {
+        console.warn('[we] 属性发不进去:', result.reason);
+      }
+    }
+  };
+
+  attempt();
+  wePropTimer = setInterval(attempt, WE_PROP_RETRY_MS);
 }
 
 function weStatus(error) {
@@ -1031,7 +1097,8 @@ ipcMain.handle('we-set-property', (_event, key, value) => {
   config.we.overrides[key] = value;
   writeConfig(config);
   if (weWindow && !weWindow.isDestroyed()) {
-    weWindow.webContents.send('we-user-properties', { [key]: { value } });
+    // 单项热改也走 executeJavaScript —— 和上面同一条路，不是两套机制。
+    applyWEProperties({ [key]: { value } }, WE.generalProperties(config.we.fps));
   }
   return { ok: true };
 });
