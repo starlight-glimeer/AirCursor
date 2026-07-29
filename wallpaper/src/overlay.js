@@ -95,6 +95,38 @@ class HandOverlay {
     this.height = 0;
   }
 
+  // 自检:把"画布到底多大、骨架到底画到哪个像素"报出来。
+  //
+  // 存在的理由是这条链改了两次零好转。我一直在量"手在数据里的位置"(那是对的),而从没量过
+  // "骨架落在屏幕的哪个像素" —— 两者之间隔着 canvas 缓冲尺寸、CSS 尺寸、DPR 三层,而错
+  // 就在 CSS 那层(canvas 没设 CSS 尺寸,默认 300x150,整张画布被压到屏幕左上角)。
+  //
+  // 所以这个方法报的是**端到端**:输入归一化坐标 → 输出屏幕像素,以及中间每一层的尺寸。
+  // 任何一层不对,数字自己会说出来。
+  selfCheck() {
+    const cssW = this.canvas.clientWidth;
+    const cssH = this.canvas.clientHeight;
+    const probes = [
+      { name: '左上', x: 0, y: 0 },
+      { name: '正中', x: 0.5, y: 0.5 },
+      { name: '右下', x: 1, y: 1 },
+    ];
+    return {
+      // 三个尺寸必须一致(乘 dpr 之后)。不一致就是画布被缩放显示了。
+      buffer: { w: this.canvas.width, h: this.canvas.height },
+      css: { w: cssW, h: cssH },
+      logical: { w: this.width, h: this.height },
+      dpr: cssW ? Number((this.canvas.width / cssW).toFixed(2)) : null,
+      // 缓冲和 CSS 的比值如果不等于 dpr,画布就在被拉伸/压缩。
+      consistent: cssW > 0 && Math.abs(this.width - cssW) < 2 && Math.abs(this.height - cssH) < 2,
+      // 端到端:归一化坐标画到哪个 CSS 像素。这三个数直接和"你看到骨架在哪"对照。
+      mapped: probes.map((p) => {
+        const out = toCanvas(p, this.width, this.height);
+        return { at: p.name, x: Math.round(out.x), y: Math.round(out.y) };
+      }),
+    };
+  }
+
   resize(width, height, pixelRatio) {
     const dpr = Math.min(pixelRatio || 1, 2);
     this.width = width;

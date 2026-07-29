@@ -5,10 +5,15 @@
 <title>GestureWall Overlay</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  /* ⚠️ 这条不能少。canvas 是 inline 元素，没有 CSS 尺寸时用的是默认 300x150 ——
+     而 resize() 设的是 canvas.width（绘制缓冲），两者是**独立**的。缓冲设成
+     2940x1912 而 CSS 停在 300x150 的后果是整张画布被缩放塞进屏幕左上角一个小框里：
+     手在 x=0.74 会画在屏幕 222px 处而不是 1088px 处。
+     症状是"骨架偏右下角"，而我为此改了两次画布内部的坐标计算，全都改错了地方。 */
+  #hands { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
   /* 整层鼠标穿透。主进程也设了 setIgnoreMouseEvents，两边都做是因为它们防的是不同的
      东西：CSS 管这个文档内的元素，Electron 那个管整个窗口对系统的行为。 */
   body { pointer-events: none; cursor: default; }
-  #hands { position: fixed; inset: 0; }
 
   /* 录制时的提示条。骨架告诉你手在哪，这个告诉你现在该做什么 —— 录制的时候
      dashboard 可能被壁纸挡住或者不在视线里，而"保持不动"这类指令必须看得见。 */

@@ -899,6 +899,7 @@ ipcMain.handle('start-capture', () => {
   return { ok: true };
 });
 // sensor 的就绪状态。摄像头真的在出帧才算就绪 —— 窗口开着但模型没加载时它是 false。
+let overlayGeometry = null;
 let sensorReady = false;   // sensor 显式报的,不靠猜文案
 let sensorStatusText = '';
 let lastCaptureAt = 0;
@@ -923,6 +924,13 @@ ipcMain.handle('reveal-captures', () => {
   fs.mkdirSync(dir, { recursive: true });
   shell.openPath(dir);
   return { ok: true, dir };
+});
+
+// 骨架的几何自检。转给面板显示 —— 一个没人能看的自检和没有自检是一回事,
+// 而这个项目本轮已经犯过那个错(三层接好、面板零入口)。
+ipcMain.on('overlay-geometry', (_event, payload) => {
+  overlayGeometry = payload;
+  broadcast('overlay-geometry', payload);
 });
 
 ipcMain.on('sensor-status', (_event, payload) => {

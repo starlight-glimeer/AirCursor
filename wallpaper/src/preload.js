@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld('gw', {
   sendGesture: (payload) => ipcRenderer.send('gesture', payload),
   sendHands: (payload) => ipcRenderer.send('hands', payload),
   sendSensorStatus: (payload) => ipcRenderer.send('sensor-status', payload),
+  reportOverlayGeometry: (payload) => ipcRenderer.send('overlay-geometry', payload),
+  onOverlayGeometry: (handler) => ipcRenderer.on('overlay-geometry', (_e, p) => handler(p)),
   sendRecordingProgress: (payload) => ipcRenderer.send('recording-progress', payload),
   sendRecordingResult: (payload) => ipcRenderer.send('recording-result', payload),
 

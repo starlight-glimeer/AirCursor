@@ -330,6 +330,18 @@ function wireDiagnostics() {
     state.className = /失败|不可用/.test(s.text || '') ? 'state warn' : 'state';
   });
 
+  // 骨架几何:三层尺寸 + 端到端映射。不一致时直接说"画布在被缩放",而不是让人去猜。
+  window.gw.onOverlayGeometry((g) => {
+    const node = document.getElementById('overlay-geom');
+    if (!node || !g) return;
+    const m = g.mapped || [];
+    const corners = m.map((p) => `${p.at} ${p.x},${p.y}`).join(' · ');
+    node.textContent = g.consistent
+      ? `骨架几何：正常 · 逻辑 ${g.logical.w}x${g.logical.h} · dpr ${g.dpr} · ${corners}`
+      : `骨架几何：⚠️ 画布被缩放显示 —— 缓冲 ${g.buffer.w}x${g.buffer.h} / CSS ${g.css.w}x${g.css.h} / 逻辑 ${g.logical.w}x${g.logical.h}`;
+    node.className = g.consistent ? 'state ok' : 'state warn';
+  });
+
   window.gw.onCaptureSaved((payload) => {
     if (!payload || payload.error) {
       state.textContent = `保存失败:${payload && payload.error}`;

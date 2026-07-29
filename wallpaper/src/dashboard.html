@@ -316,6 +316,10 @@
         <b>大小</b>而是它的<b>时间相关结构</b>（相邻帧一起漂、丢跟踪后重新检出会跳）——
         独立噪声会自己平均掉，相关噪声不会，而那个差异决定判定在真手上成不成立。
       </p>
+      <!-- 骨架几何自检。这一格存在的理由:骨架位置错了两轮都没定位到,因为手上只有
+           "手在数据里的位置"、没有"骨架落在屏幕哪个像素"。三层尺寸(缓冲/CSS/逻辑)
+           任何一层不一致,画布就在被缩放显示,而那正是那两轮的真根因。 -->
+      <div id="overlay-geom" class="state">骨架几何：等骨架层启动</div>
       <button class="act" id="capture-start">录 5 秒关键点</button>
       <button class="act" id="revealCaptures">打开关键点目录</button>
       <div id="capture-state" class="state"></div>

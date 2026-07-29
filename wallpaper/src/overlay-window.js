@@ -17,6 +17,13 @@ const PHASE_LABEL = {
 
 function syncSize() {
   overlay.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
+  // 每次尺寸变化都把自检结果报给主进程,由面板显示。
+  //
+  // 为什么要报出来:骨架位置错了两轮都没定位到,因为我手上只有"手在数据里的位置",没有
+  // "骨架落在屏幕哪个像素"。而后者要跨三层(缓冲/CSS/DPR),缺任何一层都看不出问题在哪。
+  if (window.gw && window.gw.reportOverlayGeometry) {
+    window.gw.reportOverlayGeometry(overlay.selfCheck());
+  }
 }
 window.addEventListener('resize', syncSize);
 syncSize();

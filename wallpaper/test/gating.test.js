@@ -319,4 +319,34 @@ check('三种权限都有授权入口（麦克风/语音识别单列）', () => 
   assert.match(html, /AirCursorVoice/, '没告诉用户语音识别那项要找 helper 的名字');
 });
 
+
+check('canvas 有 CSS 尺寸 —— 缺了整张画布会被压到屏幕左上角', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  // canvas 是 inline 元素，没有 CSS 尺寸时用默认 300x150，而 resize() 设的是
+  // canvas.width（绘制缓冲）—— 两者独立。缓冲 2940x1912 而 CSS 停在 300x150 的后果是
+  // 手在 x=0.74 画到屏幕 222px 而不是 1088px。症状是"骨架偏右下角"，而我为此改了两轮
+  // 画布内部的坐标计算，全都改错了地方。
+  const rules = [...style.matchAll(/#hands\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  assert.ok(rules.length > 0, '#hands 没有任何 CSS 规则');
+  // 最后一条规则生效，所以它必须带尺寸 —— 早期这里有两条，后一条没尺寸把前一条覆盖了。
+  const winner = rules[rules.length - 1];
+  assert.match(winner, /width:\s*100vw/, '生效的那条 #hands 规则没有宽度');
+  assert.match(winner, /height:\s*100vh/, '生效的那条 #hands 规则没有高度');
+});
+
+check('骨架几何自检存在，而且面板能看到', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 自检报的是端到端：归一化坐标 → 屏幕像素，加上中间三层尺寸。缺任何一层都定位不到
+  // 这次那个 bug，而那个 bug 让两轮修复零效果。
+  assert.match(overlay, /selfCheck\(\)/, 'overlay 没有几何自检');
+  assert.match(overlay, /consistent:/, '自检没有报"三层尺寸一致吗"');
+  assert.match(overlay, /mapped:/, '自检没有报端到端映射');
+  // 没人能看的自检等于没有 —— 本轮已经犯过一次（三层接好、面板零入口）。
+  assert.match(dash, /onOverlayGeometry/, '面板没有订阅几何自检');
+  assert.ok(html.includes('overlay-geom'), '面板没有显示几何自检的地方');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
