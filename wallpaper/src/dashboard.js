@@ -290,8 +290,9 @@ function renderContinuous() {
 function recordOptions(action) {
   const stored = (config.recordOptions && config.recordOptions[action.id]) || {};
   return {
-    // 有律的强制静态；其余默认静态（更快录完），用户想要动态自己选。
-    kind: action.law ? 'static' : (stored.kind || 'static'),
+    // 默认静态（录得快），动态用户自己选。**有律的也给选** —— 见 templates.js 里
+    // `law` 的注释：律只说明默认怎么触发，不该锁死怎么录。
+    kind: stored.kind || 'static',
     hands: stored.hands || 1,
   };
 }
@@ -351,7 +352,7 @@ function renderRecordables() {
     // ---- 右：选项 + 按钮 ----
     const right = el('div');
     const opts = el('div', 'opts');
-    if (!action.law) {
+    {
       const kindSelect = document.createElement('select');
       for (const [value, label] of [['static', '静态姿势'], ['dynamic', '动态动作']]) {
         const node = document.createElement('option');
@@ -565,6 +566,7 @@ function renderToggles() {
   };
   bind('gestures', () => config.gestures.enabled, (v) => window.gw.setGestures(v));
   bind('proTier', () => config.proTier, (v) => window.gw.setConfig({ proTier: v }));
+  bind('showHands', () => config.showHands, (v) => window.gw.setConfig({ showHands: v }));
   bind('music', () => config.music.enabled, (v) => window.gw.setConfig({ music: { enabled: v } }));
   bind('moodFromCover', () => config.music.moodFromCover,
     (v) => window.gw.setConfig({ music: { moodFromCover: v } }));

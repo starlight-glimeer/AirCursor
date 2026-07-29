@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('gw', {
   // Sensor -> main -> wall/dashboard. Fire and forget: a dropped gesture is better
   // than a stalled camera loop waiting for an ack.
   sendGesture: (payload) => ipcRenderer.send('gesture', payload),
+  sendHands: (payload) => ipcRenderer.send('hands', payload),
   sendSensorStatus: (payload) => ipcRenderer.send('sensor-status', payload),
   sendRecordingProgress: (payload) => ipcRenderer.send('recording-progress', payload),
   sendRecordingResult: (payload) => ipcRenderer.send('recording-result', payload),
@@ -49,6 +50,7 @@ contextBridge.exposeInMainWorld('gw', {
   onConfig: on('config'),
   onStrategy: on('strategy'),
   onGesture: on('gesture'),
+  onHands: on('hands'),
   onTrack: on('track'),
   onSensorStatus: on('sensor-status'),
   onResetView: on('reset-view'),

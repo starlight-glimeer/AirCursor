@@ -25,6 +25,20 @@ function tuningOf() {
   return (config && config.gestureTuning) || {};
 }
 
+// 把关键点发给壁纸去画骨架。
+//
+// 只发归一化的 x/y，不发 z：画的是 2D 骨架，而 z 是最噪的一轴，带上它只是白占带宽。
+// 录制期间也发 —— 录制时最需要看见手在哪，那是"录制反馈很差"的核心。
+function sendHands(list) {
+  if (!config || !config.showHands) return;
+  window.gw.sendHands({
+    // 镜像后发：壁纸上看到的手要和自己的手同向，否则抬右手屏幕上左边亮，人会以为坏了。
+    hands: list.map((lm) => lm.map((p) => ({ x: 1 - p.x, y: p.y }))),
+    recording: !!(recorder && recorder.active),
+    at: Date.now(),
+  });
+}
+
 function onResults(results) {
   const now = performance.now();
   const list = results.multiHandLandmarks || [];
@@ -32,6 +46,8 @@ function onResults(results) {
   // 录制中：整帧交给 recorder，不发任何手势事件 —— 否则做录制动作时会顺带触发
   // 已绑的动作，那正是 AirCursor 真机踩过的"录制被已有手势打断"。
   if (recorder && recorder.active) {
+    // 骨架照发：录制时看不见手在哪，反馈就只剩文字。
+    if (now - lastSend >= SEND_INTERVAL_MS) { lastSend = now; sendHands(list); }
     tickRecording(list, now);
     return;
   }
@@ -39,6 +55,7 @@ function onResults(results) {
   if (now - lastSend < SEND_INTERVAL_MS) return;
   lastSend = now;
 
+  sendHands(list);
   const { events, status: text } = input.update(list, now, tuningOf());
   for (const event of events) window.gw.sendGesture({ v: 1, at: Date.now(), ...event });
   status(text);
@@ -137,13 +154,12 @@ window.gw.onStartRecording(({ action }) => {
     rotationTolerance: rotationTolerance(),
   });
 
-  // 静态/动态和手数取用户在面板里选的，不按动作名查表。
+  // 静态/动态和手数完全取用户在面板里选的，不按动作名查表，**有律的也一样**。
   //
-  // 有律的动作（挥动/倾斜）例外：方向由律决定，录制只是加一道"必须是这个手型"的门，
-  // 所以强制静态 —— 让它们走动态录制会要求用户做一遍动作，而那个动作的形状对触发
-  // 毫无影响。
+  // 第一版给有律的动作强制静态（连下拉都不给），理由是"方向由律决定"。但用户要的是
+  // 功能一致：选了动态就走关键帧序列，那时律让位。锁死选项是替用户做决定。
   const options = (config && config.recordOptions && config.recordOptions[action]) || {};
-  const dynamic = meta.law ? false : options.kind === 'dynamic';
+  const dynamic = options.kind === 'dynamic';
   recorder.start(action, {
     hands: options.hands || 1,
     dynamic,

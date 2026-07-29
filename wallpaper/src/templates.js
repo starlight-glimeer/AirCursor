@@ -6,11 +6,27 @@
 //    相当于普通用户 / pro 用户的感觉。另外的模板是另外的手势设定，所以其实是绑定的。」
 //
 // 所以"该录哪些手势"是模板的属性，不是一份全局列表。换模板 = 换一套可用动作。
-// 每个动作还标了 tier：basic 是这套模板的基本操作，pro 是进阶 —— 同一套模板的两档，
-// 而不是两个模板。
+// 而 basic/pro 的含义见下面 TIERS —— 不是动作分两组，是"有没有手势"。
 //
 // 无 DOM、无 Electron，所以能跑纯逻辑用例。
 (function (root) {
+
+// 分档不是"手势分两档"，是**有没有手势**。
+//
+// 我第一版理解错了：按动作分成 basic/pro 两组，于是"进阶"意味着更多手势动作。用户
+// 说的是另一回事 ——
+//
+//   「普通版就是正常的手表交互，就没有手势；进阶版就是手势支持录制。」
+//
+// 所以普通版根本不开摄像头（鼠标交互），进阶版全部动作开放且都能录制。同一套模板的
+// 两种玩法，而不是动作数量的两档。
+//
+// 结果是 pro 档现在包含全部动作，`actions.basic` 只剩空数组占位 —— 保留字段是为了
+// 让"某个模板只想给一部分动作"这种情况以后还能表达，但默认不再拿它分层。
+const TIERS = {
+  basic: { id: 'basic', label: '普通', hint: '鼠标交互，不开摄像头' },
+  pro: { id: 'pro', label: '进阶', hint: '手势控制，动作可自己录制' },
+};
 
 // 一个动作的定义。`id` 进配置和手势绑定，所以改名等于让用户已录的手势失效 ——
 // 加新动作可以，改 id 不行。
@@ -36,7 +52,9 @@ const ACTIONS = {
     label: '主体左转',
     hint: '快速向左横挥',
     kind: 'discrete',
-    // 有物理律的动作：录制只是为了拿一个"这套姿势才算"的门，方向由律决定。
+    // `law` 只说明**默认怎么触发**（不录也能用），不锁死**怎么录**：用户选了动态就走
+    // 关键帧序列，那时律让位。第一版把有律的动作强制静态、连下拉都不给，而用户要的是
+    // "功能一致" —— 每个可录制动作都该有同样的选项。
     law: 'swipe',
     recordable: true,
   },
@@ -155,7 +173,7 @@ const MODULES = {
   },
 };
 
-// 模板 = 一组默认模块 + 一套动作（分 basic / pro 两档）。
+// 模板 = 一组默认模块 + 一套动作。
 //
 // 先只做一套（用户："我们先做一套模版以及对应的手势"）。结构留着，加第二套时只需
 // 往这里加一条，不用改任何渲染或录制代码 —— 那是这个文件存在的意义。
@@ -165,15 +183,11 @@ const TEMPLATES = {
     label: '景深舞台',
     hint: '背景 + 主体 + 漂浮碎片，三层景深',
     slots: { background: 'still', subject: 'float', shard: 'orbit' },
-    // 手势分档：basic 是这套模板的基本操作，pro 是进阶。同一套模板的两档。
-    //
-    // ⚠️ basic 里必须至少有一个**可录制**的动作。第一版把六个可录制动作全放进 pro，
-    // 结果默认状态下「可录制的动作」那一栏是空的 —— 显示"这套模板没有需要录制的动作"，
-    // 而用户看到的就是"录制功能不存在"。一个默认打开就空的功能区等于没有这个功能，
-    // 而这条只有真机截图才看得出来，用例全绿。templates.test.js 现在守着它。
+    // 进阶版：全部动作开放，全部可录制。普通版不开摄像头，所以它那一档是空的
+    // （鼠标交互不需要"动作列表"）。见文件头 TIERS 的说明。
     actions: {
-      basic: ['zoom', 'parallax', 'yawLeft', 'yawRight'],
-      pro: ['pitchUp', 'pitchDown', 'spin', 'resetView'],
+      basic: [],
+      pro: ['zoom', 'parallax', 'yawLeft', 'yawRight', 'pitchUp', 'pitchDown', 'spin', 'resetView'],
     },
   },
 };
@@ -184,8 +198,7 @@ function template(id) {
   return TEMPLATES[id] || TEMPLATES[DEFAULT_TEMPLATE];
 }
 
-// 这套模板下所有可用动作，按档位顺序。pro 档只在开启后才列出 —— 普通用户不该
-// 一上来看到八个动作。
+// 这套模板下所有可用动作。普通档不开摄像头所以是空的；进阶档全部开放。
 function actionsOf(templateId, includePro) {
   const t = template(templateId);
   const ids = includePro ? [...t.actions.basic, ...t.actions.pro] : [...t.actions.basic];
@@ -219,6 +232,7 @@ function resolveSlots(templateId, slots) {
 }
 
 root.GestureWallTemplates = {
+  TIERS,
   ACTIONS,
   MODULES,
   TEMPLATES,

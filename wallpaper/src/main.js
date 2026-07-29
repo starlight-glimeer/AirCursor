@@ -216,8 +216,12 @@ const defaultConfig = {
   // 当前模板，以及三个槽位各选了哪个模块。空对象表示用模板自己的默认。
   template: 'depthStage',
   slots: {},
-  // 进阶动作是否显示。默认关：普通用户不该一上来看到八个动作。
-  proTier: false,
+  // 进阶模式：开摄像头手势 + 可录制。默认开 —— 这个产品的卖点就是手势，藏在开关后面
+  // 等于默认交付的是一个只能用鼠标的壁纸。普通模式留着给"只想要个好看壁纸"的人。
+  proTier: true,
+  // 壁纸上画手骨架和指针位置。默认开：录制和调手感时看不见手在哪，反馈只有文字，
+  // 而"手势没反应"和"手没被检测到"是两件需要分开的事。
+  showHands: true,
   // 图库：用户上传的素材。数组而不是字典，因为顺序有意义（新加的在后面）。
   library: [],
   // 已录制的手势，动作 id → { hands, template, keyframes, trigger, ... }。
@@ -585,6 +589,11 @@ ipcMain.on('gesture', (_event, payload) => {
 });
 
 ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
+
+// 关键点只转给壁纸：dashboard 不画骨架，而这是 30/s 的高频消息，多发一份纯浪费。
+ipcMain.on('hands', (_event, payload) => {
+  if (wallWindow && !wallWindow.isDestroyed()) wallWindow.webContents.send('hands', payload);
+});
 
 // ---------------------------------------------------------------------------
 // 手势录制

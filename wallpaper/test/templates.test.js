@@ -36,24 +36,38 @@ check('未知模板 id 落回默认，不返回 undefined', () => {
   assert.ok(t && t.id === T.DEFAULT_TEMPLATE);
 });
 
-// 手势和模板绑定：换模板 = 换一套可用动作。这是用户定的设计。
-check('模板决定有哪些动作，分 basic / pro 两档', () => {
+// 分档不是"手势分两组"，是"有没有手势"：普通版鼠标交互不开摄像头，进阶版全部动作
+// 开放且都能录制。我第一版按动作分组做错了，这条守着新语义。
+check('进阶档开放全部动作，两档不重叠', () => {
   const t = T.template('depthStage');
-  assert.ok(t.actions.basic.length > 0, '没有 basic 动作');
-  assert.ok(t.actions.pro.length > 0, '没有 pro 动作');
-  // 两档不能重叠 —— 同一个动作既基础又进阶说明分档没想清楚
+  assert.ok(t.actions.pro.length > 0, '进阶档没有动作');
+  assert.strictEqual(t.actions.pro.length, Object.keys(T.ACTIONS).length,
+    '进阶档没有开放全部动作');
   const overlap = t.actions.basic.filter((id) => t.actions.pro.includes(id));
   assert.strictEqual(overlap.length, 0, `两档重叠：${overlap.join(',')}`);
 });
 
-// 回归守卫：第一版把六个可录制动作全塞进 pro 档，于是默认状态下「可录制的动作」
-// 整栏是空的，显示"这套模板没有需要录制的动作" —— 用户看到的就是"录制功能不存在"。
-// 用例当时全绿，只有真机截图看得出来。
-check('basic 档至少有一个可录制动作（否则录制栏默认是空的）', () => {
+check('TIERS 说明了两档的含义（普通=无手势）', () => {
+  assert.ok(T.TIERS.basic && T.TIERS.pro, '缺 TIERS 定义');
+  assert.match(T.TIERS.basic.hint, /鼠标|不开摄像头/);
+  assert.match(T.TIERS.pro.hint, /手势/);
+});
+
+// 回归守卫：曾经把可录制动作全塞进 pro 档而 pro 默认关，于是「可录制的动作」整栏是空的
+// —— 用户看到的就是"录制功能不存在"。现在默认就是 pro 档，所以守的是"默认状态下有东西"。
+check('默认档位下有可录制动作（录制栏不能打开就是空的）', () => {
   for (const id of Object.keys(T.TEMPLATES)) {
-    const basic = T.recordableActionsOf(id, false);
-    assert.ok(basic.length > 0,
-      `模板 ${id} 的 basic 档没有可录制动作 —— 录制栏打开就是空的`);
+    const actions = T.recordableActionsOf(id, true);
+    assert.ok(actions.length > 0, `模板 ${id} 没有任何可录制动作`);
+  }
+});
+
+// 用户要"功能一致"：每个可录制动作都该有同样的选项，包括有律的那些。
+check('所有可录制动作都能选静态/动态（不因为有律就锁死）', () => {
+  const actions = T.recordableActionsOf('depthStage', true);
+  assert.ok(actions.length >= 6, `可录制动作只有 ${actions.length} 个`);
+  for (const action of actions) {
+    assert.strictEqual(action.kind, 'discrete', `${action.id} 不是离散动作却可录制`);
   }
 });
 
