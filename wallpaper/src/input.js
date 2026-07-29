@@ -130,6 +130,8 @@ class GestureInput {
     this.sequences = new Map();
     this.statics = new Map();
     this.blocked = null;
+    // 上一帧每个录过的动作离触发有多远。面板拿它显示"我现在摆着手，差多少"。
+    this.probe = [];
     this.lastSeenAt = 0;
   }
 
@@ -179,6 +181,8 @@ class GestureInput {
     if (!list.length) {
       // 手离开了就重置，否则下次举手时会拿旧轨迹算出一次假挥动。
       if (now - this.lastSeenAt > 400) this.reset();
+      // 诊断也清掉：留着上一帧的距离会让面板显示几秒前的数字，而那比空白更误导。
+      this.probe = [{ why: '手不在画面里' }];
       return { events: [], status: '未检测到手' };
     }
     this.lastSeenAt = now;
@@ -325,21 +329,38 @@ class GestureInput {
   //   只有 template   → 静态姿势匹配（用户录了一个手型，配合内置律用）
   updateRecorded(mirrored, now, config) {
     const recorded = config && config.recorded;
-    if (!recorded) return null;
+    if (!recorded || !Object.keys(recorded).length) {
+      this.probe = [{ why: '还没录过任何手势' }];
+      return null;
+    }
     const pose = Pose.buildPoseTemplate(mirrored);
-    if (!pose) return null;
+    if (!pose) {
+      this.probe = [{ why: '这一帧建不出姿势模板' }];
+      return null;
+    }
 
     const threshold = (config && config.matchThreshold) || 0.28;
     const rotation = (config && config.rotationTolerance) || 0;
 
+    // 诊断：每个录过的动作，这一帧离它多远、为什么没触发。
+    //
+    // 存在的理由：「录了没反应」这句话对应六段链路（录制存盘 → 写配置 → 读配置 → 匹配
+     // → 发事件 → 主进程执行），而在此之前只有两头可见。中间四段全靠猜，而这一节里
+    // 任何一个 continue 都会让手势静默失效 —— 手数不对、距离差一点、armed 没复位，
+    // 三种原因指向完全不同的处理，症状却是同一句"没反应"。
+    this.probe = [];
+
     for (const [action, entry] of Object.entries(recorded)) {
-      if (!entry || !entry.template) continue;
+      if (!entry || !entry.template) { this.probe.push({ action, why: '没有模板' }); continue; }
       // 连续动作的录制走 continuousGate（每帧的门），不在这里触发一次 —— 否则摆出
       // zoom 的手型会同时"触发一次 zoom 事件"和"开启连续 zoom"，前者是无意义的。
       if (action === 'zoom' || action === 'parallax') continue;
       // 手数必须对得上：单手模板不该被双手姿势匹配，反之亦然。templateDistance 自己
       // 会返回 Infinity，但显式跳过省掉一次距离计算。
-      if (entry.hands !== mirrored.length) continue;
+      if (entry.hands !== mirrored.length) {
+        this.probe.push({ action, why: `要 ${entry.hands} 只手，现在 ${mirrored.length} 只` });
+        continue;
+      }
 
       if (entry.keyframeData && entry.keyframeData.length) {
         const matcher = this.sequenceFor(action);
@@ -351,6 +372,11 @@ class GestureInput {
           distance: Pose.templateDistance,
           now,
         });
+        this.probe.push({
+          action,
+          why: fired ? '触发' : `关键帧 ${matcher.index || 0}/${entry.keyframeData.length}`,
+          dynamic: true,
+        });
         if (fired) return { action };
         continue;
       }
@@ -361,6 +387,16 @@ class GestureInput {
       if (!entry.law) {
         const distance = Pose.templateDistance(pose, entry.template, rotation);
         const state = this.staticState(action);
+        // 距离和门一起报：只报"没匹配"说不出是差 0.01 还是差 10 倍，而那决定
+        // 是"再摆准一点"还是"这个模板录坏了"。
+        this.probe.push({
+          action,
+          distance: Number(distance.toFixed(3)),
+          threshold,
+          armed: state.armed,
+          why: distance >= threshold ? '姿势不够近'
+            : state.armed ? '触发' : '要先离开这个姿势再回来',
+        });
         if (distance >= threshold) {
           // 离开了姿势才重新武装。这一条是"保持住不连发"的真正机制 —— 光靠时间冷却
           // 不够：一直摆着的手型会每过一个冷却期就再触发一次，而用户只做了一个动作。
@@ -371,9 +407,26 @@ class GestureInput {
           state.armed = false;
           return { action };
         }
+      } else {
+        // 有律的动作：模板只是一道门，触发交给挥动/倾斜。这里报出来是因为
+        // "录了有律的动作却没反应"的原因往往是**律那一侧**没触发，而不是姿势不对。
+        const distance = Pose.templateDistance(pose, entry.template, rotation);
+        this.probe.push({
+          action,
+          distance: Number(distance.toFixed(3)),
+          threshold,
+          why: distance < threshold ? `手型对上了，等${entry.law === 'swipe' ? '挥动' : '倾斜'}`
+            : '手型不对（有律的动作要手型 + 动作都对）',
+        });
       }
     }
     return null;
+  }
+
+  // 上一帧的诊断快照。sensor 每隔一段时间取一次发给面板 —— 每帧发是 30/s 的噪声，
+  // 而这个数据的用途是"我现在摆着手，它说我差多少"，不需要逐帧。
+  lastProbe() {
+    return this.probe || [];
   }
 
   // 手掌上下倾斜 → 视角上看/下看，走棘轮所以可重复。

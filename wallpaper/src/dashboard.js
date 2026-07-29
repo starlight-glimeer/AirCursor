@@ -766,6 +766,27 @@ window.gw.onSensorStatus((s) => {
     const grants = document.getElementById('grant-row');
     if (grants) grants.hidden = false;
   }
+
+  // 匹配诊断。每个录过的动作一行：离触发多远、为什么没触发。
+  //
+  // 报**距离和门限两个数**，不是"匹配/不匹配"：差 0.01 和差 10 倍指向完全不同的处理
+  // （再摆准一点 vs 这个模板录坏了重录），而一个布尔值把它们压成同一句话。
+  if (s && s.probe) {
+    const node = document.getElementById('match-probe');
+    if (node) {
+      const lines = s.probe.map((p) => {
+        if (!p.action) return p.why;                       // "手不在画面里" 这类
+        const d = p.distance !== undefined
+          ? ` · 距离 ${p.distance} / 门 ${p.threshold}${p.distance < p.threshold ? ' ✓' : ''}`
+          : '';
+        return `${p.action}${d} · ${p.why}`;
+      });
+      node.textContent = `手势匹配：\n${lines.join('\n')}`;
+      // 有任何一个够近就转绿 —— 那说明手势这侧是通的，问题在下游（执行/绑定）。
+      node.className = s.probe.some((p) => p.distance !== undefined && p.distance < p.threshold)
+        ? 'state ok' : 'state';
+    }
+  }
 });
 
 window.gw.onGesture((g) => {

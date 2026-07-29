@@ -23,6 +23,9 @@ function sendIntervalMs() {
 // 推理闸门的状态。没有它们时真机只有 14fps(串行堆积),见 onFrame。
 let inferenceBusy = false;
 let lastInferenceAt = 0;
+// 匹配诊断的发送间隔。给人读的数字不需要 30/s —— 那样面板上只会看到一片闪烁。
+const PROBE_INTERVAL_MS = 250;
+let lastProbeAt = 0;
 
 let hands = null;
 let camera = null;
@@ -137,7 +140,18 @@ function onResults(results) {
   sendHands(list);
   const { events, status: text } = input.update(list, now, tuningOf());
   for (const event of events) window.gw.sendGesture({ v: 1, at: Date.now(), ...event });
-  status(text);
+
+  // 匹配诊断：每个录过的动作，这一帧离触发有多远。
+  //
+  // 走已有的 sensor-status 通道，不新开 IPC。**限速到 ~4/s**：这是给人读的数字，而
+  // 30/s 会让面板上的数字糊成一片，还白付 26 次序列化。
+  const probe = input.lastProbe ? input.lastProbe() : null;
+  if (probe && now - lastProbeAt >= PROBE_INTERVAL_MS) {
+    lastProbeAt = now;
+    status(text, { probe });
+  } else {
+    status(text);
+  }
 }
 
 // ---------------------------------------------------------------------------

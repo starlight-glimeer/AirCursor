@@ -588,4 +588,37 @@ check('静态/动态的显示读存下来的字段，不靠 keyframeData 猜', (
   assert.match(sensor, /dynamic: entry\.dynamic/, 'sensor 转发时把 dynamic 丢了');
 });
 
+// ── 诊断埋点必须能被看到 ─────────────────────────────────────────────────
+//
+// 这个项目已经犯过一次「把观测手段建好却没地方看」（pointerHealth 接了三层、面板零
+// 入口）。诊断的价值全在能不能被读到，所以埋点和显示要一起钉住。
+check('匹配诊断从 input 一路到面板', () => {
+    const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(input, /lastProbe\(\)/, 'input 没有暴露诊断快照');
+  assert.match(sensor, /input\.lastProbe/, 'sensor 没有取诊断');
+  assert.match(sensor, /probe/, 'sensor 没有把诊断发出去');
+  assert.match(dash, /s\.probe/, '面板没有读诊断');
+  assert.ok(html.includes('id="match-probe"'), '面板没有显示诊断的地方');
+  // 限速：30/s 的数字给人读只会看到一片闪烁，而且白付 26 次序列化。
+  assert.match(sensor, /PROBE_INTERVAL_MS/, '诊断没有限速 —— 30/s 的数字没法读');
+});
+
+// 「录了没反应」分不清是手势没认出来还是 App 打不开，而两者的下一步完全不同
+// （重录 vs 查 App 路径）。所以执行那一段也要自证。
+check('系统动作的执行过程可见（含每个候选的失败原因）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  // 识别到了要说一声：这是"手势那侧全部走通了"的唯一证明。
+  assert.match(main, /识别到.*执行系统动作/, '手势走到主进程时没有任何记录');
+  // ⚠️ `stdio: 'ignore'` 会把 open 的报错扔掉，而那句报错正是答案：
+  // 「Unable to find application named …」和「cannot be opened because it is damaged」
+  // 需要完全不同的处理，而退出码把它们压成同一个 1。
+  const block = main.slice(main.indexOf("if (kind === 'app')"), main.indexOf("if (kind === 'pointer')"));
+  assert.match(block, /encoding: 'utf8'/, "open 还在用 stdio:'ignore' —— 失败原因被扔掉了");
+  assert.match(block, /stderr/, '没有读 open 的报错');
+  assert.match(block, /helper-log/, '执行结果没进面板日志 —— 用户看不到终端');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

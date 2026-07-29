@@ -759,18 +759,36 @@ function runSystemAction(id) {
   if (!kind) return { ok: false, error: 'NOT_SYSTEM_ACTION' };
 
   if (kind === 'app') {
+    // 每个候选的失败原因都留下来。`stdio: 'ignore'` 会把 open 的报错扔掉，而那句报错
+    // 正是答案：「Unable to find application named …」和「The application cannot be
+    // opened because it is damaged」需要完全不同的处理，而退出码把它们压成同一个 1。
+    const tried = [];
     const args = System.openApp(id, (candidate) => {
       try {
-        return spawnSync('/usr/bin/open', candidate, { stdio: 'ignore' }).status === 0;
-      } catch {
+        const r = spawnSync('/usr/bin/open', candidate, { encoding: 'utf8' });
+        const why = r.status === 0 ? 'ok'
+          : (String(r.stderr || '').trim().split('\n')[0] || `退出码 ${r.status}`);
+        tried.push(`open ${candidate.join(' ')} → ${why}`);
+        return r.status === 0;
+      } catch (error) {
+        tried.push(`open ${candidate.join(' ')} → ${error.message}`);
         return false;
       }
     });
     // 报出用了哪个候选：同一个 App 在不同机器上路径/bundle id/名字都可能不同，而
     // "试了四个都失败"和"第二个成功了"需要分开看。
-    if (args) console.log(`[system] ${id} → open ${args.join(' ')}`);
-    else console.warn(`[system] ${id} 全部候选都失败了`);
-    return { ok: !!args, via: args };
+    //
+    // 送进面板的日志窗格，不只是 console —— 用户看不到终端时 console.log 等于不存在，
+    // 而这条链（录制 → 匹配 → 事件 → 执行）里"执行"是唯一能自证成败的一段。
+    for (const line of tried) broadcast('helper-log', { source: 'system', message: `${id} ${line}` });
+    if (!args) {
+      broadcast('helper-log', {
+        source: 'system',
+        message: `⚠️ ${id}：${tried.length} 个候选全失败 —— 这台机器上找不到那个 App，`
+          + '和手势没关系（手势那侧已经走到这里了）',
+      });
+    }
+    return { ok: !!args, via: args, tried };
   }
 
   if (kind === 'pointer') {
@@ -818,6 +836,9 @@ ipcMain.on('gesture', (_event, payload) => {
   // 系统动作在主进程执行，不转给壁纸 —— 壁纸不知道怎么打开应用，转过去只是让它
   // 收到一个不认识的 action 然后什么都不做（那正是"手势没反应"的一种）。
   if (payload && System.systemKindOf(payload.action)) {
+    // 这一行是"手势那侧全部走通了"的证明。没有它，「录了没反应」分不清是手势没认出来
+    // 还是 App 打不开 —— 而两者的下一步完全不同（重录 vs 查 App 路径）。
+    broadcast('helper-log', { source: 'gesture', message: `识别到「${payload.action}」→ 执行系统动作` });
     const result = runSystemAction(payload.action);
     // dashboard 仍然要知道：它显示"最近事件"，而系统动作的成败是那里唯一的反馈。
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {

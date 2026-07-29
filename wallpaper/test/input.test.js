@@ -579,4 +579,89 @@ check('连续动作不走"触发一次"那条路', () => {
     'parallax 被当成离散手势触发了一次 —— 它是连续量，没有"触发一次"的语义');
 });
 
+// ── 匹配诊断：「录了没反应」必须能说出断在哪 ──────────────────────────────
+//
+// 这条链有六段（录制 → 存盘 → 写配置 → 匹配 → 发事件 → 主进程执行），而在此之前只有
+// 两头可见。用户报「我录制了打开网易云，预览图看着没问题，但是没反应」，而这一句对应
+// 六个完全不同的处理 —— 中间四段全靠猜。
+//
+// `updateRecorded` 里每一个 continue 都会让手势静默失效：手数不对、距离差一点、armed
+// 没复位。三种原因指向完全不同的下一步（换手数 / 摆准一点 / 先松手），症状是同一句
+// "没反应"。所以诊断要报**距离和门限两个数**，不是一个布尔值。
+check('诊断报出每个录过动作的距离和原因', () => {
+  const input = new I.GestureInput({});
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    recorded: { open_netease: { hands: 1, template, dynamic: false, law: null } },
+    matchThreshold: 0.28,
+  };
+  input.update([target], 1000, config);
+  const probe = input.lastProbe();
+  assert.strictEqual(probe.length, 1, `诊断应该有 1 条，实际 ${probe.length}`);
+  assert.strictEqual(probe[0].action, 'open_netease');
+  assert.strictEqual(typeof probe[0].distance, 'number', '没报距离 —— 差 0.01 和差 10 倍分不开');
+  assert.strictEqual(typeof probe[0].threshold, 'number', '没报门限 —— 光有距离读不出远近');
+  assert.ok(probe[0].why, '没说原因');
+});
+
+check('手数不对时诊断直接说手数（而不是报一个距离）', () => {
+  const input = new I.GestureInput({});
+  const template = P.buildPoseTemplate([px(I.mirror(hand())), px(I.mirror(hand({ centerX: 0.7 })))]);
+  const config = { recorded: { spin: { hands: 2, template, dynamic: false, law: null } } };
+  input.update([hand()], 1000, config);      // 只举一只手
+  const probe = input.lastProbe();
+  assert.match(probe[0].why, /2 只手/, `手数不对却报了别的原因：${probe[0].why}`);
+  // 距离在这种情况下是 Infinity，报出来只会误导 —— 所以不报。
+  assert.strictEqual(probe[0].distance, undefined, '手数不对时不该报距离');
+});
+
+check('姿势够近但没触发时，说得出是"要先离开再回来"', () => {
+  // 这一条是静态手势"保持住不连发"的机制，而它的副作用是：用户摆着手不动会看到
+  // "没反应"。诊断必须把这种情况和"姿势不够近"分开 —— 前者是正常的，后者要重录。
+  const input = new I.GestureInput({});
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = { recorded: { spin: { hands: 1, template, dynamic: false, law: null } } };
+  const first = input.update([target], 1000, config);
+  assert.ok(first.events.some((e) => e.action === 'spin'), '第一帧就该触发');
+  input.update([target], 1100, config);      // 手一直不动
+  const probe = input.lastProbe();
+  assert.strictEqual(probe[0].armed, false, 'armed 没被清掉');
+  assert.match(probe[0].why, /离开/, `没说清为什么不再触发：${probe[0].why}`);
+});
+
+check('有律的动作：手型对上了要说"等挥动"，不是"没反应"', () => {
+  // 「录了有律的动作却没反应」的原因往往在**律那一侧**（没挥够快/没倾斜够），而不是
+  // 姿势不对。之前这一格根本不报，于是它和"姿势不对"完全分不开。
+  const input = new I.GestureInput({});
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = { recorded: { yawLeft: { hands: 1, template, dynamic: false, law: 'swipe' } } };
+  input.update([target], 1000, config);
+  const probe = input.lastProbe();
+  assert.ok(probe.length, '有律的动作一条诊断都没报');
+  assert.match(probe[0].why, /挥动/, `没说在等什么：${probe[0].why}`);
+});
+
+check('手不在画面里时诊断清掉，不留上一帧的数字', () => {
+  // 留着旧数字比空白更误导：用户会以为"手明明放下了，它还说差 0.1"。
+  const input = new I.GestureInput({});
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = { recorded: { spin: { hands: 1, template, dynamic: false, law: null } } };
+  input.update([target], 1000, config);
+  assert.ok(input.lastProbe()[0].distance !== undefined, '有手时该有距离');
+  input.update([], 1500, config);
+  const probe = input.lastProbe();
+  assert.strictEqual(probe[0].distance, undefined, '手不在了还留着距离');
+  assert.match(probe[0].why, /手不在/, `没说手不在：${probe[0].why}`);
+});
+
+check('什么都没录时说"还没录过"，不是空白', () => {
+  const input = new I.GestureInput({});
+  input.update([hand()], 1000, { recorded: {} });
+  assert.match(input.lastProbe()[0].why, /还没录/, '空配置时诊断是空的 —— 那和"坏了"分不开');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

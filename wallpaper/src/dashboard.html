@@ -326,6 +326,11 @@
       <div id="overlay-geom" class="state">骨架几何：等骨架层启动</div>
       <!-- 骨架层和 helper 的报错。摄像头搬进骨架层之后不启动，而我花了几轮在推断原因 ——
            因为那个窗口里抛的异常谁都看不到：它没有开发者工具、不在视线里。 -->
+      <!-- 匹配诊断：每个录过的动作，此刻离触发有多远。
+           「录了没反应」对应六段链路（录制 → 存盘 → 读配置 → 匹配 → 发事件 → 执行），
+           而在此之前只有两头可见。这一块是第四段，也是最常断的一段：手数不对、距离差
+           一点、armed 没复位，三种原因指向完全不同的处理，症状却是同一句"没反应"。 -->
+      <div id="match-probe" class="state">手势匹配：摆出手势看这里</div>
       <pre id="log" class="log"></pre>
       <button class="act" id="capture-start">录 5 秒关键点</button>
       <button class="act" id="revealCaptures">打开关键点目录</button>
