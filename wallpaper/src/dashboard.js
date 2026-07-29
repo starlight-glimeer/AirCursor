@@ -420,6 +420,14 @@ function renderActionGroup(hostId, actions) {
         clear.onclick = () => window.gw.clearRecording(action.id);
         buttons.append(clear);
       }
+      // 回退：主进程和 preload 早就接好了，但面板上没有入口 ⟹ 功能点不到。
+      // 判据是 recordUndo 里有这个键，不是 recorded 里有 —— 清除也能回退。
+      if (config.recordUndo && action.id in config.recordUndo) {
+        const undo = el('button', 'act', '撤销上次');
+        undo.title = '回到这个动作上一次的录制（或回到未录制）';
+        undo.onclick = () => window.gw.undoRecording(action.id);
+        buttons.append(undo);
+      }
     }
     right.append(buttons);
     row.append(right);
@@ -609,6 +617,7 @@ function apply(next) {
   renderContinuous();
   renderRecordables();
   renderToggles();
+  cursorToggle.checked = !!config.controlCursor;
   renderAudioSource();
   if (!built) {
     renderSliders('tuning', TUNING);
@@ -684,6 +693,75 @@ document.getElementById('preset-save').onclick = async () => {
 };
 
 document.getElementById('lib-add').onclick = () => window.gw.libraryAdd();
+
+// ---------------------------------------------------------------------------
+// 控制鼠标键盘 + 录原始关键点
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 这两块的主进程、preload、sensor 三层在合并时都接好了，唯独**面板上没有入口** ——
+// 整条链齐了但用户点不到，功能等于不存在，而所有测试全绿。这是本项目反复出现的
+// 那个形状（未读的 config 字段、没导入的 spawnSync、默认空的录制页）的又一次。
+// 现在 gating 里有条守卫按"preload 暴露了什么"反查"面板用了没有"。
+
+const cursorToggle = document.getElementById('controlCursor');
+const pointerHealthNode = document.getElementById('pointer-health');
+
+cursorToggle.onchange = () => window.gw.setConfig({ controlCursor: cursorToggle.checked });
+
+function renderPointerHealth(health) {
+  if (!health) { pointerHealthNode.textContent = '—'; return; }
+  // ⚠️ trusted 是最要紧的一位：false 意味着后面所有 sent 都被系统丢掉了，
+  // 而 sent 那个数字照常增长 —— 只看 sent 会以为一切正常。这正是 AirCursor
+  // 烧掉四轮的那件事（缺权限时 CGEvent.post 静默丢弃）。
+  if (health.trusted === false) {
+    pointerHealthNode.innerHTML =
+      '<span class="warn">没有辅助功能权限 —— 手势移动光标会被系统静默丢弃</span>\n'
+      + '去「系统设置 → 隐私与安全性 → 辅助功能」勾上本应用';
+    return;
+  }
+  const parts = ['✅ 点击通道正常'];
+  if (Number.isFinite(health.sent)) parts.push(`已投递 ${health.sent}`);
+  // failed 和"没权限"是两回事，分开报。
+  if (health.failed) parts.push(`⚠️ 失败 ${health.failed}`);
+  if (health.exits) parts.push(`helper 重启 ${health.exits} 次`);
+  pointerHealthNode.textContent = parts.join(' · ');
+}
+
+if (window.gw.onPointerHealth) window.gw.onPointerHealth(renderPointerHealth);
+if (window.gw.pointerHealth) window.gw.pointerHealth().then(renderPointerHealth).catch(() => {});
+
+const captureState = document.getElementById('capture-state');
+
+document.getElementById('capture-start').onclick = async () => {
+  captureState.textContent = '正在录 5 秒 —— 就做平时会做的动作，别刻意摆姿势。';
+  const result = await window.gw.startCapture();
+  // ⚠️ 主进程返回的是 {ok:false, reason:…} 不是 error。读错字段只会显示兜底文案，
+  // 而"摄像头没开"恰恰是最常见的失败原因。
+  if (result && result.ok === false) {
+    captureState.innerHTML = `<span class="warn">${result.reason || result.error || '起不来'}</span>`;
+  }
+};
+
+document.getElementById('capture-reveal').onclick = () => window.gw.revealCaptures();
+
+window.gw.onCaptureSaved((payload) => {
+  if (!payload) return;
+  // 写盘失败也走这个通道。不接的话录完什么都不显示，用户会去找一个不存在的文件。
+  if (payload.error) {
+    captureState.innerHTML = `<span class="warn">存盘失败：${payload.error}</span>`;
+    return;
+  }
+  const { file, frames, withHands } = payload;
+  // ⚠️ 报"有手的帧数"而不只是总帧数：0 帧有手也会存出一个看起来成功的文件
+  // （有大小、能打开），而它完全没用。这个区别必须说出来。
+  const rate = frames ? Math.round(withHands / frames * 100) : 0;
+  captureState.innerHTML = rate === 0
+    ? `<span class="warn">录完了，但 ${frames} 帧里一帧都没检测到手</span>\n`
+      + '摄像头开了吗？手在画面里吗？这个文件没有用，重录一次。'
+    : `✅ 存好了：${withHands}/${frames} 帧有手（${rate}%）\n${file}`;
+});
+
+
 
 
 // ---------------------------------------------------------------------------

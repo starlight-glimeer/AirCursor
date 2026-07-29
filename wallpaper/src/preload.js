@@ -29,6 +29,17 @@ contextBridge.exposeInMainWorld('gw', {
   startRecording: (action) => ipcRenderer.invoke('start-recording', action),
   cancelRecording: () => ipcRenderer.invoke('cancel-recording'),
   clearRecording: (action) => ipcRenderer.invoke('clear-recording', action),
+  undoRecording: (action) => ipcRenderer.invoke('undo-recording', action),
+
+  // 投递层健康 + 原始关键点录制(从 AirCursor 搬过来的两样)
+  pointerHealth: () => ipcRenderer.invoke('pointer-health'),
+  startCapture: () => ipcRenderer.invoke('start-capture'),
+  revealCaptures: () => ipcRenderer.invoke('reveal-captures'),
+  saveCapture: (payload) => ipcRenderer.send('save-capture', payload),
+  onStartCapture: (handler) => ipcRenderer.on('start-capture', () => handler()),
+  onCaptureSaved: (handler) => ipcRenderer.on('capture-saved', (_e, p) => handler(p)),
+  onPointerHealth: (handler) => ipcRenderer.on('pointer-health', (_e, p) => handler(p)),
+  onVoiceStatus: (handler) => ipcRenderer.on('voice-status', (_e, p) => handler(p)),
 
   // 预设
   savePreset: (name) => ipcRenderer.invoke('save-preset', name),

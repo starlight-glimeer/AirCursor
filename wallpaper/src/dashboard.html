@@ -341,6 +341,33 @@
       <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透 —— 所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
     </div>
 
+    <h3>控制鼠标键盘</h3>
+    <div class="card">
+      <div class="toggle"><input type="checkbox" id="controlCursor"><label for="controlCursor">用手势移动光标并点击</label></div>
+      <div id="pointer-health" class="hint">—</div>
+      <p class="hint">
+        ⚠️ 这条链需要<b>辅助功能</b>权限，而<b>没授权时事件是被静默丢弃的</b> ——
+        不报错、不提示，表现就是"手在动但鼠标不动"。上面那行状态就是为这件事存在的：
+        AirCursor 曾经为同一个问题烧掉四轮排查，每轮都卡在"分不清是没识别还是没投递"。
+        <br>默认关着。一开摄像头就抢走鼠标会让人没法用电脑修配置。
+      </p>
+    </div>
+
+    <h3>录原始关键点（诊断用）</h3>
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="capture-start" type="button">录 5 秒关键点</button>
+        <button class="act" id="capture-reveal" type="button">打开存放目录</button>
+      </div>
+      <div id="capture-state" class="hint">录 5 秒摄像头看到的原始关键点，存成一个文件。</div>
+      <p class="hint">
+        为什么需要它：两边所有测试都跑在<b>合成手</b>上，而合成手缺的正是决定手势能不能用的东西 ——
+        真机噪声的<b>时间相关性</b>（相邻帧一起漂、丢跟踪后重新检出会跳）。合成噪声每帧独立、会自己平均掉。
+        <br>⚠️ 现在那些阈值（灵敏度、死区、频谱归一化系数）<b>全是估的</b>。有了这个文件才能从猜变成量。
+        <br>录的时候<b>就做平时会做的动作</b>，不用刻意摆姿势；丢跟踪的那几帧也是有用的数据。
+      </p>
+    </div>
+
     <h3>连续控制（不用录，开了就能用）</h3>
     <div class="card" id="continuous"></div>
 
