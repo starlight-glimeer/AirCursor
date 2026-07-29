@@ -61,6 +61,8 @@ const defaultSettings = {
     exit: "fist",
   },
   recordedGestures: {},
+  // The previous recording per action, for one level of undo. See rememberPrevious.
+  gestureUndo: {},
   // Which actions are allowed to fire at all. Absent means enabled, so an action
   // added in a later version is on by default rather than silently dead for
   // everyone who already has a settings file — and so this stays empty until the
@@ -290,6 +292,7 @@ function mergeSettings(base, incoming) {
     // absence of an entry is what "enabled" means, and two ways to say the same
     // thing is how a stale `false` outlives the flag it belonged to.
     disabledActions: mergeMap(base.disabledActions, incoming?.disabledActions),
+    gestureUndo: mergeMap(base.gestureUndo, incoming?.gestureUndo),
     tuning: { ...base.tuning, ...(incoming?.tuning || {}) },
   };
 }
@@ -708,9 +711,38 @@ function axisRejection(action, template) {
   return "这个动作靠手掌抬压的角度触发，但刚录的姿势测不出方向轴（双手镜像姿势会互相抵消）。换一个单手姿势，或让两手不对称。";
 }
 
+// The previous recording for each action, so a bad take can be undone.
+//
+// Without this, re-recording is destructive: the only way to find out whether a new
+// take is better is to keep it, and if it is worse the old one is already gone. That
+// makes users reluctant to re-record at all, which matters more now that every
+// gesture is user-recorded rather than falling back to a built-in shape.
+//
+// Kept per action rather than as a snapshot of everything: recording gesture B must
+// not consume the undo for gesture A, since the two are unrelated edits. One level
+// deep — a second undo would need a stack, and "undo the take I just made" is the
+// case that actually comes up.
+//
+// Lives in settings so it survives a restart: discovering a recording is bad usually
+// happens after using the app for a while, not in the same session.
+function rememberPrevious(action) {
+  const current = settings.recordedGestures?.[action];
+  const previousMap = { ...(settings.gestureUndo || {}) };
+  if (current) {
+    previousMap[action] = { entry: current, mapped: settings.gestureMap?.[action] || null };
+  } else {
+    // No recording to go back to, but "before" still has to be representable, or
+    // undoing a first recording would restore itself. null means "there was nothing".
+    previousMap[action] = { entry: null, mapped: settings.gestureMap?.[action] || null };
+  }
+  return previousMap;
+}
+
 function saveRecordedTemplate(action, template, motion, keyframes) {
   if (!recordableActions.includes(action)) return;
+  const gestureUndo = rememberPrevious(action);
   updateSettings({
+    gestureUndo,
     gestureMap: { [action]: `custom:${action}` },
     recordedGestures: {
       // `motion` carries the extent measured from the movement the user just
@@ -1170,13 +1202,40 @@ ipcMain.handle("aircursor:cancel-recording", () => {
   endRecording();
   return { ok: true };
 });
+// Undo the last recording (or clear) for one action.
+//
+// Restores both the entry and what gestureMap pointed at, because those two can
+// disagree: clearing sets the map back to a built-in shape while removing the entry,
+// so restoring only the entry would leave the action still bound to the built-in.
+ipcMain.handle("aircursor:undo-gesture", (_event, action) => {
+  if (!recordableActions.includes(action)) return { ok: false, reason: "未知动作" };
+  const undo = settings.gestureUndo?.[action];
+  if (!undo) return { ok: false, reason: "没有可回退的录制" };
+
+  updateSettings({
+    recordedGestures: { [action]: undo.entry },
+    gestureMap: { [action]: undo.mapped },
+    // Consumed: one level of undo, so undoing twice must not restore the same take
+    // again. Without this, undo would look like it worked and change nothing.
+    gestureUndo: { [action]: null },
+  });
+  return {
+    ok: true,
+    settings,
+    restored: Boolean(undo.entry),
+    label: actionLabels[action] || action,
+  };
+});
 ipcMain.handle("aircursor:clear-recorded-gesture", (_event, action) => {
   if (!recordableActions.includes(action)) {
     return { ok: false, reason: "未知动作" };
   }
+  // Clearing is destructive too, so it is undoable on the same footing as recording.
+  const gestureUndo = rememberPrevious(action);
   // Core actions fall back to their built-in gesture; a rule has none, so its
   // mapping goes away entirely and the rule becomes voice-only again.
   updateSettings({
+    gestureUndo,
     gestureMap: { [action]: defaultGestureMap[action] ?? null },
     recordedGestures: { [action]: null },
   });

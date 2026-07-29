@@ -39,6 +39,7 @@ let settings = {
   },
   recordedGestures: {},
   disabledActions: {},
+  gestureUndo: {},
   diagnostics: false,
   tuning: {},
 };
@@ -314,6 +315,13 @@ function buildRuleRow(rule) {
   clearButton.textContent = "清除";
   clearButton.addEventListener("click", () => clearRecorded(rule.id));
 
+  const undoButton = document.createElement("button");
+  undoButton.type = "button";
+  undoButton.dataset.undoAction = rule.id;
+  undoButton.textContent = "回退";
+  undoButton.hidden = true;
+  undoButton.addEventListener("click", () => undoGesture(rule.id));
+
   const testButton = document.createElement("button");
   testButton.type = "button";
   testButton.textContent = "测试";
@@ -347,7 +355,7 @@ function buildRuleRow(rule) {
   hint.textContent = "未录制";
   feedback.append(bar, hint);
 
-  row.append(toggle, copy, kindSelect, handsSelect, recordButton, clearButton, testButton, preview, feedback);
+  row.append(toggle, copy, kindSelect, handsSelect, recordButton, clearButton, undoButton, testButton, preview, feedback);
   return row;
 }
 
@@ -373,6 +381,17 @@ function paintRecorderRow(row) {
     if (!locked && recorded && !recordingAction) {
       kindSelect.value = recorded.keyframes?.length ? "dynamic" : "static";
     }
+  }
+  // Shown only when there is something to go back to. A permanently visible undo
+  // button that does nothing most of the time trains people to ignore it, and then it
+  // is not there when they need it.
+  const undo = row.querySelector("[data-undo-action]");
+  if (undo) {
+    undo.hidden = !settings.gestureUndo?.[action];
+    undo.disabled = Boolean(recordingAction);
+    undo.title = settings.gestureUndo?.[action]?.entry
+      ? "回到上一次录的那个手势"
+      : "回到「未录制」的状态";
   }
   const toggle = row.querySelector("[data-enabled-action]");
   if (toggle) {
@@ -622,6 +641,21 @@ async function setActionEnabled(action, enabled) {
   render();
 }
 
+async function undoGesture(action) {
+  const result = await window.aircursor.undoGesture(action);
+  if (!result.ok) {
+    ruleState.textContent = `无法回退：${result.reason}`;
+    return;
+  }
+  if (result.settings) settings = result.settings;
+  // Says which state it went back to, because "回退" alone leaves the user unsure
+  // whether they now have the old gesture or none at all.
+  ruleState.textContent = result.restored
+    ? `已回退到上一次录的手势：${result.label}`
+    : `已回退：${result.label} 现在是未录制状态`;
+  render();
+}
+
 async function clearRecorded(action) {
   const result = await window.aircursor.clearRecordedGesture(action);
   if (result.ok) {
@@ -727,6 +761,9 @@ captureLandmarks.addEventListener("click", async () => {
 });
 revealCaptures.addEventListener("click", () => window.aircursor.revealCaptures());
 
+document.querySelectorAll(".gesture-recorder [data-undo-action]").forEach((button) => {
+  button.addEventListener("click", () => undoGesture(button.dataset.undoAction));
+});
 document.querySelectorAll(".gesture-recorder [data-enabled-action]").forEach((input) => {
   input.addEventListener("change", () => setActionEnabled(input.dataset.enabledAction, input.checked));
 });
