@@ -191,6 +191,24 @@
   }
   .tier.pro { background: rgba(255,180,84,.18); color: var(--warn); }
 
+  /* ---- WE 壁纸的自动生成控件 ----
+     和 .row2 分开：那个是 1fr/64px 两列，而这里要 标签/控件/读数 三列，
+     且控件类型不固定（滑块、下拉、勾选、文本各占中间那格）。 */
+  .we-row { display: grid; grid-template-columns: 150px 1fr 52px; gap: 10px;
+            align-items: center; padding: 4px 0; }
+  .we-row label { font-size: 12px; color: var(--dim); }
+  .we-row .val { font-family: ui-monospace, monospace; font-size: 10px;
+                 color: var(--dim); text-align: right; }
+  .we-row input[type=checkbox] { justify-self: start; }
+  .we-src { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .we-src button {
+    border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px;
+    background: #15151b; color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .we-src button:hover { border-color: rgba(255,255,255,.2); }
+  .we-src button.on { border-color: var(--accent); background: rgba(108,199,255,.12); }
+  #we-state, #we-audio-state { white-space: pre-wrap; line-height: 1.7; }
+
   /* ---- 滑块 ---- */
   .row2 { display: grid; grid-template-columns: 1fr 64px; gap: 10px; align-items: center; padding: 4px 0; }
   .row2 label { font-size: 12px; }
@@ -227,6 +245,7 @@
   <button data-tab="template" class="on">模板</button>
   <button data-tab="library">图库</button>
   <button data-tab="gesture">手势录制</button>
+  <button data-tab="we">WE 壁纸</button>
   <button data-tab="system">壁纸与音乐</button>
   <div class="spacer"></div>
   <div class="keys">
@@ -260,6 +279,40 @@
       </div>
       <div id="presets"></div>
       <p class="hint">调出满意的就存下来，可以存几套一键切换对比 —— 比用文字描述"哪里不对"准得多。<b>只存视觉参数，不动三张图。</b></p>
+    </div>
+  </section>
+
+  <!-- ============ WE 网页壁纸 ============ -->
+  <section id="tab-we">
+    <h2>Wallpaper Engine 网页壁纸</h2>
+    <p class="lead">
+      装载 Steam 创意工坊的<b>网页类</b>壁纸（<code>project.json</code> 里 <code>type: "Web"</code>）。
+      它们就是 HTML + JS，所以能直接跑；音频响应和鼠标交互都在。
+      <br>⚠️ <b>scene / video 类不支持</b> —— 那要解 WE 的私有格式。
+    </p>
+
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="we-pick" type="button">选择壁纸目录…</button>
+        <button class="act" id="we-clear" type="button">卸载，回到三层景深</button>
+      </div>
+      <div id="we-state" class="hint">未装载</div>
+    </div>
+
+    <h3>音源</h3>
+    <div class="card">
+      <div id="we-audio-source"></div>
+      <div id="we-audio-state" class="hint"></div>
+      <p class="hint">
+        抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
+        <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
+        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
+      </p>
+    </div>
+
+    <h3>壁纸自己的参数</h3>
+    <div class="card">
+      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
     </div>
   </section>
 

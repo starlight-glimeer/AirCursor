@@ -35,6 +35,14 @@ contextBridge.exposeInMainWorld('gw', {
   loadPreset: (name) => ipcRenderer.invoke('load-preset', name),
   deletePreset: (name) => ipcRenderer.invoke('delete-preset', name),
 
+  // WE 网页壁纸
+  wePick: () => ipcRenderer.invoke('we-pick'),
+  weClear: () => ipcRenderer.invoke('we-clear'),
+  weControls: () => ipcRenderer.invoke('we-controls'),
+  weStatus: () => ipcRenderer.invoke('we-status'),
+  weSetProperty: (key, value) => ipcRenderer.invoke('we-set-property', key, value),
+  weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
+
   setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
@@ -58,5 +66,7 @@ contextBridge.exposeInMainWorld('gw', {
   onRecordingProgress: on('recording-progress'),
   onRecordingResult: on('recording-result'),
   onStartRecording: on('start-recording'),
+  onWeStatus: on('we-status'),
+  onWeAudioStatus: on('we-audio-status'),
   onCancelRecording: on('cancel-recording'),
 });

@@ -609,6 +609,7 @@ function apply(next) {
   renderContinuous();
   renderRecordables();
   renderToggles();
+  renderAudioSource();
   if (!built) {
     renderSliders('tuning', TUNING);
     renderSliders('musicTuning', MUSIC_TUNING);
@@ -684,4 +685,166 @@ document.getElementById('preset-save').onclick = async () => {
 
 document.getElementById('lib-add').onclick = () => window.gw.libraryAdd();
 
+
+// ---------------------------------------------------------------------------
+// WE 网页壁纸
+// ---------------------------------------------------------------------------
+
+const AUDIO_SOURCES = [
+  { id: 'netease', label: '网易云', hint: '只抓网易云的声音（需 macOS 14.4+）' },
+  { id: 'system', label: '全系统', hint: '整台机器的输出，别的 App 出声也会影响画面' },
+  { id: 'off', label: '关闭', hint: '不抓音频，壁纸走它自己的空闲动画' },
+];
+
+function renderAudioSource() {
+  const host = document.getElementById('we-audio-source');
+  if (!host) return;
+  const current = (config.we && config.we.audioSource) || 'off';
+  host.className = 'we-src';
+  host.innerHTML = '';
+  for (const source of AUDIO_SOURCES) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = source.id === current ? 'on' : '';
+    button.textContent = source.label;
+    button.title = source.hint;
+    button.onclick = async () => {
+      await window.gw.weSetAudioSource(source.id);
+      renderWEStatus();
+    };
+    host.appendChild(button);
+  }
+}
+
+// 状态分三层显示，因为它们代表不同的失败：
+//   装载了没有 → 根本没选壁纸
+//   ready 没有 → 页面加载了但里面的 JS 没跑起来（ES module 挂了就是这样）
+//   音频不 ok  → 权限或没在放歌
+// ⚠️ 这三种在画面上看起来都是"没反应"，分不开的话没法查。
+async function renderWEStatus() {
+  const status = await window.gw.weStatus();
+  const node = document.getElementById('we-state');
+  if (!node) return;
+  if (!status.dir) {
+    node.innerHTML = '未装载 —— 现在显示的是三层景深壁纸';
+  } else if (status.error) {
+    node.innerHTML = `<span class="warn">${status.error}</span>\n${status.dir}`;
+  } else {
+    node.innerHTML = `<b>${status.title}</b>\n${status.dir}\n`
+      + (status.ready
+        ? '✅ 壁纸里的脚本已经跑起来了'
+        : '⏳ 页面加载了，但壁纸还没报 ready —— 如果一直这样，是里面的脚本没跑起来')
+      + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频');
+  }
+  renderAudioStatus(status.audio);
+  await renderWEControls();
+}
+
+function renderAudioStatus(audio) {
+  const node = document.getElementById('we-audio-state');
+  if (!node) return;
+  if (!audio) {
+    node.textContent = (config.we && config.we.audioSource === 'off')
+      ? '音频已关闭' : '还没有音频状态';
+    return;
+  }
+  node.innerHTML = audio.ok
+    ? `✅ ${audio.text}`
+    : `<span class="warn">${audio.text}</span>${audio.detail ? '\n' + audio.detail : ''}`;
+}
+
+// 控件从 project.json 自动生成 —— 不给每个壁纸手写一遍 UI。
+// 这样支持的不是"这一个壁纸"，是任意 WE 网页壁纸。
+async function renderWEControls() {
+  const host = document.getElementById('we-controls');
+  if (!host) return;
+  const result = await window.gw.weControls();
+  if (!result.ok || !result.controls.length) {
+    host.innerHTML = '<span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span>';
+    return;
+  }
+  host.innerHTML = '';
+  for (const control of result.controls) {
+    const value = control.key in result.overrides ? result.overrides[control.key] : control.value;
+    const row = document.createElement('div');
+    row.className = 'we-row';
+
+    const label = document.createElement('label');
+    label.textContent = control.label;
+    row.appendChild(label);
+
+    if (control.type === 'bool') {
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!value;
+      input.onchange = () => window.gw.weSetProperty(control.key, input.checked);
+      row.appendChild(input);
+      row.appendChild(document.createElement('span'));   // 占住第三列，别让网格错位
+    } else if (control.type === 'combo') {
+      const select = document.createElement('select');
+      for (const option of control.options || []) {
+        const el = document.createElement('option');
+        el.value = String(option.value);
+        el.textContent = option.label;
+        if (String(option.value) === String(value)) el.selected = true;
+        select.appendChild(el);
+      }
+      select.onchange = () => {
+        // ⚠️ option 的 value 在 DOM 里一律是字符串，但壁纸的 combo 值可能是数字
+        // （样本的 gridSize 是 120/160/320…）。原样发字符串过去，壁纸拿它当数字用
+        // 会得到 NaN —— 而那是静默的。所以按原始类型还原。
+        const original = (control.options || [])
+          .find((o) => String(o.value) === select.value);
+        window.gw.weSetProperty(control.key, original ? original.value : select.value);
+      };
+      row.appendChild(select);
+      row.appendChild(document.createElement('span'));
+    } else if (control.type === 'slider') {
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = control.min;
+      input.max = control.max;
+      input.step = control.step;
+      input.value = value;
+      const readout = document.createElement('span');
+      readout.className = 'val';
+      readout.textContent = value;
+      input.oninput = () => {
+        readout.textContent = input.value;
+        window.gw.weSetProperty(control.key, Number(input.value));
+      };
+      row.appendChild(input);
+      row.appendChild(readout);
+    } else {
+      // color 之类：原样文本编辑。样本的 color 值是 "r g b" 空格分隔的 0..1，
+      // 不是 hex —— 用 color picker 会需要来回转换，先给文本框。
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = value === undefined ? '' : String(value);
+      input.onchange = () => window.gw.weSetProperty(control.key, input.value);
+      row.appendChild(input);
+      row.appendChild(document.createElement('span'));
+    }
+    host.appendChild(row);
+  }
+}
+
+document.getElementById('we-pick').onclick = async () => {
+  const result = await window.gw.wePick();
+  if (!result.ok && result.error) {
+    document.getElementById('we-state').innerHTML = `<span class="warn">${result.error}</span>`;
+    return;
+  }
+  renderWEStatus();
+};
+
+document.getElementById('we-clear').onclick = async () => {
+  await window.gw.weClear();
+  renderWEStatus();
+};
+
+window.gw.onWeStatus(() => renderWEStatus());
+window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
+
 window.gw.getConfig().then(apply);
+renderWEStatus();

@@ -146,4 +146,159 @@ check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时
     '主进程不再按 showHands || recordingAction 开窗口 —— 两边判据已经分叉');
 });
 
+console.log('\n  WE 网页壁纸接线');
+
+const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+
+// ⚠️ 这一节全部是"接线漏了但测试全绿"那一类的守卫。我在这个项目里反复栽在同一个形状上：
+// 配置字段没人读、模块没被 require、IPC 没注册 —— 每次纯逻辑用例都是绿的，
+// 而功能是死的（recorded 手势没人读、spawnSync 没导入、录制页面是空的）。
+
+check('we-host.js 被 main.js 加载（否则 WE.* 全是 undefined）', () => {
+  assert.match(mainSrc, /require\('\.\/we-host\.js'\)/);
+  assert.match(mainSrc, /const WE = globalThis\.GestureWallWE/);
+});
+
+check('audio-source.js 被 main.js 加载', () => {
+  assert.match(mainSrc, /require\('\.\/audio-source\.js'\)/);
+});
+
+// ⚠️ 时序硬约束：registerSchemesAsPrivileged 必须在 app ready 之前调用，
+// 否则自定义 scheme 拿不到 standard/secure 特权 —— 而那正是 ES module 能加载的前提。
+// 放进 whenReady 里不会报错，只会让壁纸白屏。
+check('registerSchemesAsPrivileged 在 app.whenReady 之前', () => {
+  const reg = mainSrc.indexOf('registerSchemesAsPrivileged');
+  const ready = mainSrc.indexOf('app.whenReady');
+  assert.ok(reg > 0, '没有注册特权 scheme —— ES module 会加载失败');
+  assert.ok(reg < ready, 'registerSchemesAsPrivileged 在 whenReady 之后，特权不生效');
+});
+
+// 壁纸是 Vite 的 ES module，file:// 下加载不了（CORS）。所以必须走自定义 protocol。
+check('WE 壁纸走自定义 protocol 而不是 loadFile', () => {
+  const create = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
+    mainSrc.indexOf('function sendWEProperties'));
+  assert.ok(/loadURL/.test(create), 'WE 窗口没用 loadURL');
+  assert.ok(!/loadFile/.test(create),
+    'WE 窗口用了 loadFile —— Vite 的 ES module 在 file:// 下加载不了，会白屏');
+});
+
+// ⚠️ 反向调用那条：壁纸自己挂 window.wallpaperPropertyListener 等我们去调，
+// contextIsolation:true 下我们看不见它 ⟹ 41 项配置永远发不进去且不报错。
+check('WE 窗口 contextIsolation 为 false（属性接口是反向的）', () => {
+  const create = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
+    mainSrc.indexOf('function sendWEProperties'));
+  assert.match(create, /contextIsolation:\s*false/,
+    'WE 窗口开了 contextIsolation —— 壁纸挂的 wallpaperPropertyListener 我们看不见');
+  // 但 nodeIntegration 不能开：壁纸是第三方 HTML。
+  assert.match(create, /nodeIntegration:\s*false/, 'WE 窗口开了 nodeIntegration');
+});
+
+check('自己的三层景深壁纸仍然保持 contextIsolation: true', () => {
+  const create = mainSrc.slice(mainSrc.indexOf('function createWallWindow'),
+    mainSrc.indexOf('function createDashboard'));
+  assert.match(create, /contextIsolation:\s*true/,
+    '把自己的壁纸窗口也降到 contextIsolation:false 了');
+});
+
+// 两种壁纸源都钉在桌面层会互相遮挡，而"我看到的是哪个"就没法判断了。
+check('装载 WE 壁纸时销毁三层景深窗口（两者互斥）', () => {
+  // ⚠️ 用 lastIndexOf 找结束标记：那个字符串在上面的注释里也出现过一次，
+  // 用 indexOf 会切出空串 —— 断言就变成"永远失败"。切片式的源码守卫都有这个坑。
+  const start = mainSrc.indexOf('function setWEWallpaper');
+  const end = mainSrc.lastIndexOf("ipcMain.on('we-ready'");
+  assert.ok(start > 0 && end > start, `切片范围不对：${start}..${end}`);
+  const fn = mainSrc.slice(start, end);
+  assert.match(fn, /wallWindow\.destroy\(\)/, '没销毁旧壁纸窗口，两层会叠在一起');
+});
+
+check('broadcast 覆盖 weWindow（否则 WE 壁纸收不到任何广播）', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function broadcast'),
+    mainSrc.indexOf('function broadcast') + 400);
+  assert.match(fn, /weWindow/, 'broadcast 的窗口列表漏了 weWindow');
+});
+
+// 歌曲信息走 WE 自己的四通道协议，不是我们的 'track' 事件 —— 漏接的症状是
+// 画面正常、封面永远空白。
+check('onTrack 同时喂给 WE 壁纸的 media 通道', () => {
+  const idx = mainSrc.indexOf("require('./nowplaying').install");
+  const block = mainSrc.slice(idx, idx + 500);
+  assert.match(block, /sendWEMedia/, 'onTrack 没喂给 WE 壁纸，封面会永远空白');
+});
+
+// WE 壁纸的每个 IPC 通道都要在 preload 里有对应出口，否则面板调不到。
+check('WE 的 IPC 通道 preload 里都有出口', () => {
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  for (const channel of ['we-pick', 'we-clear', 'we-controls', 'we-status',
+    'we-set-property', 'we-set-audio-source']) {
+    assert.ok(preload.includes(channel), `preload 缺 ${channel}`);
+    assert.ok(mainSrc.includes(channel), `main.js 没注册 ${channel}`);
+  }
+});
+
+// we-preload 是独立的 preload，不能暴露 ipcRenderer 给第三方 HTML。
+check('we-preload 不把 ipcRenderer / require 暴露给页面', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-preload.js'), 'utf8');
+  assert.ok(!/window\.(ipcRenderer|require|electron)\s*=/.test(src),
+    'we-preload 把 ipcRenderer 或 require 挂到 window 上了 —— 第三方 HTML 能拿到主进程通道');
+  // 只该挂 WE 那几个函数
+  const assigned = [...src.matchAll(/window\.(\w+)\s*=/g)].map((m) => m[1]);
+  for (const name of assigned) {
+    assert.ok(/^wallpaper/.test(name), `we-preload 挂了非 WE 的全局：window.${name}`);
+  }
+});
+
+// ⚠️ 时序：那 5 个 register 函数必须在页面脚本之前存在。样本的 index.html 用
+// `if (window.wallpaperRegister...)` 判断，晚一步就是全 false —— 画面正常但永远没数据。
+check('we-preload 在模块顶层就挂好 register 函数（不等 IPC 或 DOM）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-preload.js'), 'utf8');
+  const assignIdx = src.indexOf('window.wallpaperRegisterAudioListener');
+  assert.ok(assignIdx > 0, '没挂 audio listener');
+  // 赋值语句不该在任何回调/函数体里。取赋值之前的代码，括号必须是平衡的。
+  const before = src.slice(0, assignIdx);
+  const opens = (before.match(/\{/g) || []).length;
+  const closes = (before.match(/\}/g) || []).length;
+  assert.strictEqual(opens, closes,
+    'register 函数的赋值在某个函数体里 —— 页面脚本跑的时候可能还不存在');
+});
+
+check('音频 helper 源码存在且 main.js 指向它', () => {
+  const swift = path.join(__dirname, '..', 'native', 'GestureWallAudio.swift');
+  assert.ok(fs.existsSync(swift), 'helper 源码不在');
+  assert.match(mainSrc, /GestureWallAudio\.swift/, 'main.js 没指向 helper 源码');
+});
+
+// 静默是这条链的主要失败模式，状态必须播报出去。
+check('音频状态会广播到面板', () => {
+  assert.match(mainSrc, /we-audio-status/, '音频状态没广播 —— 没授权时用户只看到柱子不动');
+});
+
+// helper 是独立进程，不杀会留下孤儿占着屏幕录制权限。
+check('退出时杀掉音频 helper', () => {
+  const idx = mainSrc.indexOf("app.on('will-quit'");
+  const block = mainSrc.slice(idx, idx + 300);
+  assert.match(block, /audioTap/, '退出时没停 helper，会留孤儿进程占着屏幕录制');
+});
+
+// ⚠️ 这条守的是我刚犯的错：renderWEControls 里用了 .chip / .val 这两个 CSS 里
+// 根本不存在的类。后果是控件渲染出来但完全没样式 —— **不报错，测试也全绿**，
+// 只有截图才看得出来。和"录制页面是空的"那次同一个形状。
+check('dashboard.js 用到的 CSS 类在 dashboard.html 里都有定义', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+
+  const used = new Set();
+  // className = 'x' / className = 'x y' / el('div', 'x')
+  for (const m of js.matchAll(/className\s*=\s*'([a-z0-9 -]+)'/g)) {
+    m[1].split(/\s+/).filter(Boolean).forEach((c) => used.add(c));
+  }
+  for (const m of js.matchAll(/\bel\('[a-z]+',\s*'([a-z0-9 -]+)'/g)) {
+    m[1].split(/\s+/).filter(Boolean).forEach((c) => used.add(c));
+  }
+
+  const missing = [...used].filter((c) => !style.includes(`.${c}`));
+  assert.deepStrictEqual(missing, [],
+    `这些类没有样式定义，控件会裸奔：${missing.join(', ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

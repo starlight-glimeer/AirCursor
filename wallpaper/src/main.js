@@ -7,7 +7,7 @@
 //
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, protocol, net } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -19,6 +19,11 @@ const Library = globalThis.GestureWallLibrary;
 // 系统动作（打开应用、媒体键）的定义，主进程和 dashboard 共用一份。
 require('./system.js');
 const System = globalThis.GestureWallSystem;
+
+require('./we-host.js');
+const WE = globalThis.GestureWallWE;
+
+const AudioSource = require('./audio-source.js');
 
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
@@ -40,6 +45,9 @@ let wallWindow = null;
 let dashboardWindow = null;
 let sensorWindow = null;
 let overlayWindow = null;
+let weWindow = null;
+let weProject = null;      // 当前装载的 WE 壁纸（parseProject 的结果）
+let weReady = false;       // 壁纸自己调过 wallpaperReady 了吗
 // 正在录制哪个动作。主进程要知道，因为录制期间骨架强制显示、其他手势必须屏蔽。
 let recordingAction = null;
 let currentStrategy = null;
@@ -239,6 +247,18 @@ const defaultConfig = {
   // 拒绝了"用画圈打开某个功能"（适合动态的被强制静态），也在静止姿势就够用的地方
   // 强加了做动作的步骤。
   recordOptions: {},
+  // WE 网页壁纸。和我们自己的三层景深壁纸并列，是第二种"壁纸源"。
+  we: {
+    // 壁纸目录（含 project.json）。null = 用我们自己的三层景深。
+    dir: null,
+    // 用户在面板上改过的属性覆盖，键对齐 project.json 的 properties。
+    // 只存改过的：project.json 的默认值是权威来源，全量复制会在壁纸更新后变陈旧。
+    overrides: {},
+    fps: 30,
+    // 音源。ScreenCaptureKit 抓系统音频，要屏幕录制权限。
+    // 'off' 时壁纸会走它自己的空闲动画（样本有 idleWaveEnabled）。
+    audioSource: 'off',
+  },
   debug: { showHud: true },
 };
 
@@ -257,7 +277,9 @@ function readConfig() {
 // mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
 // 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
 // 预设都在下次启动时被静默丢掉。
-const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions']);
+// overrides 也是不透明字典：键是壁纸自己定的（gridSize/theme/…），我们不认识，
+// 按 defaultConfig 的键去递归合并会把用户改过的值全丢掉。
+const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions', 'overrides']);
 
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
@@ -284,7 +306,7 @@ function writeConfig() {
 // "面板上有的条目不标缺失"，而那种不一致查起来比缺功能烦。
 function broadcast(channel, payload) {
   const body = channel === 'config' ? withLibraryStatus(payload) : payload;
-  for (const win of [wallWindow, dashboardWindow, sensorWindow, overlayWindow]) {
+  for (const win of [wallWindow, dashboardWindow, sensorWindow, overlayWindow, weWindow]) {
     if (win && !win.isDestroyed()) win.webContents.send(channel, body);
   }
 }
@@ -792,12 +814,330 @@ ipcMain.on('recording-result', (_event, payload) => {
 });
 
 // ---------------------------------------------------------------------------
+// WE 网页壁纸
+// ---------------------------------------------------------------------------
+
+// 为什么不能 loadFile 直接开：那些壁纸是 Vite 打的 ES module
+// （`<script type="module" crossorigin>`），而 ES module 在 Chromium 里一律按 CORS
+// 语义抓取 —— file:// 的 origin 是 opaque，模块加载直接失败。样本的 bundle 还带
+// Vite 的 preload polyfill，对每个 chunk 做 fetch()，在 file:// 下同样抛。
+//
+// 症状会是**白屏**，而白屏看起来像"这个壁纸不兼容"，不像"协议选错了"。
+//
+// 自定义 scheme 声明成 standard + secure 之后，模块和 fetch 都按正常 http 语义走，
+// 不用关 webSecurity（壁纸是第三方 HTML，不该给它降全局安全等级）。
+const WE_SCHEME = 'wall';
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: WE_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+}]);
+
+// 把 wall://host/<相对路径> 映射到当前壁纸目录下的文件。
+//
+// ⚠️ 只服务当前壁纸目录，且路径要夹在目录内 —— 第三方 HTML 里一个
+// `fetch('../../../../etc/passwd')` 不该读到东西。
+function registerWEProtocol() {
+  protocol.handle(WE_SCHEME, (request) => {
+    if (!weProject || !weProject.dir) return new Response('no wallpaper', { status: 404 });
+    const url = new URL(request.url);
+    const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '') || weProject.file;
+    const root = path.resolve(weProject.dir);
+    const target = path.resolve(root, rel);
+    // path.resolve 已经把 .. 折叠掉了，所以这里比较前缀就够。加 path.sep 是为了
+    // 不让 /foo/barbaz 通过 /foo/bar 的前缀检查。
+    if (target !== root && !target.startsWith(root + path.sep)) {
+      return new Response('forbidden', { status: 403 });
+    }
+    return net.fetch(`file://${target}`);
+  });
+}
+
+// 读壁纸目录的 project.json。
+function loadWEProject(dir) {
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'project.json'), 'utf8');
+    const parsed = WE.parseProject(JSON.parse(raw));
+    if (!parsed) return { ok: false, error: 'project.json 解析后为空' };
+    if (!parsed.supported) {
+      // scene / video 要解 WE 的私有 .pkg/.tex 格式。那条路连 Open Wallpaper Engine
+      // 都只做到"显示静态底图"（粒子代码是死的、零 shader），不值得走。
+      return { ok: false, error: `暂不支持 type=${parsed.type}，只支持 Web 类型` };
+    }
+    return { ok: true, project: { ...parsed, dir } };
+  } catch (error) {
+    return { ok: false, error: `读 project.json 失败：${error.message}` };
+  }
+}
+
+function destroyWEWindow() {
+  if (weWindow && !weWindow.isDestroyed()) weWindow.destroy();
+  weWindow = null;
+  weReady = false;
+}
+
+function createWEWindow() {
+  if (!weProject) return null;
+  const strategy = WALL_STRATEGIES[strategyIndexById(config.wallStrategy)];
+  const { bounds } = screen.getPrimaryDisplay();
+  const win = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    skipTaskbar: true,
+    enableLargerThanScreen: true,
+    // 不透明：WE 壁纸自己画满整屏（样本的 body 是 background:#000）。
+    // transparent 会让它的 GLSL 混色和我们的透明背景打架。
+    backgroundColor: '#000000',
+    ...strategy.options,
+    webPreferences: {
+      preload: path.join(__dirname, 'we-preload.js'),
+      // ⚠️ 这里和其他三个窗口不一样，而且是必须的。
+      //
+      // 数据流是双向的：壁纸自己执行
+      //   window.wallpaperPropertyListener = { applyUserProperties, ... }
+      // 然后等宿主去调。contextIsolation: true 下 preload 和页面是两个隔离的 JS 世界,
+      // 页面挂在自己 window 上的那个对象我们看不见 —— 症状是画面正常、音频正常、
+      // 41 项配置永远发不进去，而且不报错。
+      //
+      // 代价是第三方 HTML 和 preload 同世界，所以 we-preload.js 里只挂 WE 那几个函数,
+      // 不暴露 ipcRenderer / require / 我们自己的 gw。
+      contextIsolation: false,
+      nodeIntegration: false,
+      // 壁纸持续动画，而"不是焦点窗口"对壁纸是常态 —— 让 Chromium 在那里节流
+      // 等于永久卡住动画。
+      backgroundThrottling: false,
+    },
+  });
+
+  win.loadURL(`${WE_SCHEME}://wallpaper/${weProject.file}`);
+  try {
+    strategy.apply(win);
+  } catch (error) {
+    console.warn(`[we] strategy ${strategy.id} apply failed:`, error.message);
+  }
+
+  // 加载失败要说出来。白屏的原因有好几种（协议没注册、文件名不对、模块加载失败），
+  // 而它们在外面看起来一模一样。
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.warn(`[we] 加载失败 ${code} ${desc} ${url}`);
+    broadcast('we-status', weStatus(`加载失败：${desc}`));
+  });
+
+  win.webContents.on('did-finish-load', () => {
+    sendWEProperties();
+    // ⚠️ 不在这里判"成功"。did-finish-load 只说 HTML 到了，不说里面的 ES module
+    // 跑起来了 —— 而模块加载失败正是 file:// 那个坑的症状。真正的成功信号是壁纸
+    // 自己调 wallpaperReady（见 ipcMain.on('we-ready')）。
+    broadcast('we-status', weStatus(null));
+  });
+
+  return win;
+}
+
+// 把 project.json 的属性（叠加用户覆盖）发给壁纸。
+function sendWEProperties() {
+  if (!weWindow || weWindow.isDestroyed() || !weProject) return;
+  const props = WE.userProperties(weProject.properties, config.we.overrides);
+  weWindow.webContents.send('we-user-properties', props);
+  weWindow.webContents.send('we-general-properties', WE.generalProperties(config.we.fps));
+}
+
+function weStatus(error) {
+  return {
+    dir: weProject ? weProject.dir : null,
+    title: weProject ? weProject.title : null,
+    wantsAudio: weProject ? weProject.wantsAudio : false,
+    // ⚠️ ready 是"壁纸里的 JS 真的跑起来了"，不是"窗口开了"。这两件事分开报,
+    // 因为白屏时它们的值不同 —— 这是唯一能区分"没加载"和"加载了但没渲染"的观测点。
+    ready: weReady,
+    audioSource: config && config.we ? config.we.audioSource : 'off',
+    // 采集侧的状态（权限、是否真的按 App 过滤成功）单独一层，别和窗口状态混。
+    audio: audioStatus,
+    error: error || null,
+  };
+}
+
+// 装载一个 WE 壁纸目录。null = 卸掉，回到我们自己的三层景深。
+function setWEWallpaper(dir) {
+  if (!dir) {
+    weProject = null;
+    destroyWEWindow();
+    syncAudioSource();
+    if (!wallWindow || wallWindow.isDestroyed()) wallWindow = createWallWindow(config.wallStrategy);
+    broadcast('we-status', weStatus(null));
+    return { ok: true, cleared: true };
+  }
+
+  const loaded = loadWEProject(dir);
+  if (!loaded.ok) {
+    broadcast('we-status', weStatus(loaded.error));
+    return { ok: false, error: loaded.error };
+  }
+
+  weProject = loaded.project;
+  weReady = false;
+  // 两种壁纸源互斥：都钉在桌面层会互相遮挡，而"我看到的是哪个"就没法判断了。
+  if (wallWindow && !wallWindow.isDestroyed()) wallWindow.destroy();
+  wallWindow = null;
+  destroyWEWindow();
+  weWindow = createWEWindow();
+  syncAudioSource();
+  return { ok: true, project: { title: weProject.title, dir: weProject.dir } };
+}
+
+// 壁纸自己调 wallpaperReady 了 —— 这是"里面的 JS 活着"的唯一证据。
+ipcMain.on('we-ready', () => {
+  weReady = true;
+  broadcast('we-status', weStatus(null));
+});
+
+ipcMain.handle('we-pick', async () => {
+  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
+    title: '选择 Wallpaper Engine 壁纸目录（含 project.json）',
+    properties: ['openDirectory'],
+    buttonLabel: '装载',
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const out = setWEWallpaper(result.filePaths[0]);
+  if (out.ok) {
+    config.we.dir = weProject.dir;
+    writeConfig(config);
+    broadcast('config', config);
+  }
+  return out;
+});
+
+ipcMain.handle('we-clear', () => {
+  const out = setWEWallpaper(null);
+  config.we.dir = null;
+  writeConfig(config);
+  broadcast('config', config);
+  return out;
+});
+
+// 面板上改一项属性。热改：不重载页面，直接发属性 —— 样本的 applyUserProperties 就是
+// 为运行时改配置设计的（WE 用户在 Steam 面板上拖滑块就是走这条）。
+ipcMain.handle('we-set-property', (_event, key, value) => {
+  if (!weProject) return { ok: false, error: '没有装载 WE 壁纸' };
+  config.we.overrides[key] = value;
+  writeConfig(config);
+  if (weWindow && !weWindow.isDestroyed()) {
+    weWindow.webContents.send('we-user-properties', { [key]: { value } });
+  }
+  return { ok: true };
+});
+
+// 面板要渲染配置控件，直接从 project.json 生成 —— 不给每个壁纸手写 UI。
+ipcMain.handle('we-controls', () => {
+  if (!weProject) return { ok: false, controls: [] };
+  return {
+    ok: true,
+    title: weProject.title,
+    controls: WE.controlsOf(weProject.properties),
+    overrides: config.we.overrides,
+  };
+});
+
+ipcMain.handle('we-status', () => ({ ...weStatus(null), audio: audioStatus }));
+
+// 切音源。'netease' / 'system' / 'off'
+ipcMain.handle('we-set-audio-source', (_event, source) => {
+  if (!['netease', 'system', 'off'].includes(source)) {
+    return { ok: false, error: `未知音源 ${source}` };
+  }
+  config.we.audioSource = source;
+  writeConfig(config);
+  // 先停再起：换过滤条件要重建 SCStream。
+  if (audioTap) { audioTap.stop(); audioTap = null; }
+  syncAudioSource();
+  broadcast('config', config);
+  return { ok: true, source };
+});
+
+// 把歌曲信息喂给 WE 壁纸的四个 media 回调。
+//
+// 四个通道分开发，因为壁纸注册的是四个独立 listener，而它们的更新频率差一个量级
+// （歌名换歌才变、进度每秒都变）。合成一个通道会让壁纸每秒重跑换封面的过渡动画。
+function sendWEMedia(track) {
+  if (!weWindow || weWindow.isDestroyed()) return;
+  const wc = weWindow.webContents;
+  wc.send('we-media-properties', WE.mediaProperties(track));
+  wc.send('we-media-thumbnail', WE.mediaThumbnail(track));
+  wc.send('we-media-playback', WE.mediaPlayback(track));
+  wc.send('we-media-timeline', WE.mediaTimeline(track));
+}
+
+// 音频帧入口。采集在原生 helper 里（Electron 的 desktopCapturer 在 macOS 上不给
+// 系统音频），这里只做形状校验和转发。
+//
+// ⚠️ 静默（全 0）要能被看见：没授权拿到的就是全 0，而全 0 的画面看起来是
+// "音频响应坏了"。所以 normalizeAudioFrame 会报 silent，面板拿它显示状态。
+let audioTap = null;
+let audioStatus = null;
+
+// 启停音频采集。跟着 config.we.audioSource 走：
+//   'netease' 只抓网易云（macOS 14.4+，更早会退回全局并报 warning）
+//   'system'  全系统混音
+//   'off'     不采集（壁纸走它自己的空闲动画）
+function syncAudioSource() {
+  const want = weProject && weProject.wantsAudio && config.we.audioSource !== 'off';
+  if (!want) {
+    if (audioTap) { audioTap.stop(); audioTap = null; }
+    audioStatus = null;
+    return;
+  }
+  if (audioTap) return;   // 已经在跑
+
+  audioTap = AudioSource.start({
+    sourcePath: path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'),
+    outDir: path.join(app.getPath('userData'), 'native'),
+    bundle: config.we.audioSource === 'netease' ? AudioSource.NETEASE_BUNDLE : null,
+    onFrame: pushWEAudio,
+    onStatus: (status) => {
+      audioStatus = status;
+      // ⚠️ 状态一定要送到面板。这条链失败全是静默的（没授权=柱子不动），
+      // 而"柱子不动"和"没在放歌"、"壁纸不支持音频"是同一个画面。
+      broadcast('we-audio-status', status);
+      if (!status.ok) console.warn('[audio]', status.text);
+    },
+  });
+}
+
+let lastAudioSilentAt = 0;
+function pushWEAudio(frame) {
+  if (!weWindow || weWindow.isDestroyed()) return;
+  const result = WE.normalizeAudioFrame(frame);
+  weWindow.webContents.send('we-audio', result.data);
+  if (result.silent) {
+    const now = Date.now();
+    // 别每帧都播报，那会把 IPC 灌满。
+    if (now - lastAudioSilentAt > 3000) {
+      lastAudioSilentAt = now;
+      broadcast('we-audio-status', { silent: true, reason: result.reason || 'all-zero' });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Now playing (macOS)
 // ---------------------------------------------------------------------------
 require('./nowplaying').install({
   ipcMain,
   getConfig: () => config,
-  onTrack: (track) => broadcast('track', track),
+  onTrack: (track) => {
+    broadcast('track', track);
+    // WE 壁纸走自己的四通道 media 协议，不是我们的 'track' 事件。
+    sendWEMedia(track);
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -806,7 +1146,13 @@ require('./nowplaying').install({
 
 app.whenReady().then(() => {
   config = readConfig();
-  wallWindow = createWallWindow(config.wallStrategy);
+  registerWEProtocol();
+  // 上次装的 WE 壁纸还在就恢复它，否则用我们自己的三层景深。
+  if (config.we.dir && fs.existsSync(path.join(config.we.dir, 'project.json'))) {
+    setWEWallpaper(config.we.dir);
+  } else {
+    wallWindow = createWallWindow(config.wallStrategy);
+  }
   followDisplayChanges();
   openDashboard();
   if (config.gestures.enabled) ensureSensor();
@@ -826,4 +1172,8 @@ app.whenReady().then(() => {
 // Deliberately does not quit: closing the settings window is not quitting the
 // wallpaper. ⌃⇧Q is the way out.
 app.on('window-all-closed', () => {});
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  // helper 是独立进程，不显式杀会留下孤儿继续占着屏幕录制。
+  if (audioTap) audioTap.stop();
+});
