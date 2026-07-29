@@ -406,6 +406,10 @@ function buildKeyframes(samples, threshold, distance) {
   return frames.map((f) => ({ template: f.template, offsetMs: Math.round(f.at - start) }));
 }
 
+// 单次宽限的上限（毫秒）。见 SequenceMatcher.excuse：它限的是**一次调用**跨越的时长，
+// 而逐帧调用时那就是一个帧间隔。250 和保持判定、丢帧宽限用的是同一个值。
+const EXCUSE_MAX_GAP_MS = 250;
+
 // Walks a recorded sequence, one keyframe at a time, and fires when the last one
 // is reached.
 //
@@ -585,11 +589,17 @@ const KEYFRAME_ARRIVAL = 0.55;
   // 实际是"人做得到的动作在丢帧下走不完"。
   //
   // 只延长预算，不推进进度：丢帧期间手确实可能在动，但我们没看到，所以不能假设它到位了。
-  excuse(now) {
+  excuse(now, maxGap = EXCUSE_MAX_GAP_MS) {
     if (this.index === 0 || this.startedAt === null) return;
     const gap = this.lastSeenAt ? now - this.lastSeenAt : 0;
-    // 单次宽限有上限：真把手放下了不该无限期挂着。250ms 和保持判定用的是同一个值。
-    if (gap > 0 && gap < 250) this.startedAt += gap;
+    // 单次宽限有上限：真把手放下了不该无限期挂着。
+    //
+    // ⚠️ 上限是**单次调用**的上限，不是总时长的上限。逐帧调用时每次 gap 只有一个帧间隔
+    // （43ms），所以手离开 700ms 会被拆成 16 次小 gap 全额还回 —— 实测 688ms 还回 688ms。
+    //
+    // 但**摄像头不出帧**时（整个 onResults 不被调用）就走不到这里，等它恢复时是一次性的
+    // 大 gap，会被上限挡掉。所以调用方可以传一个更大的 maxGap 说"我知道这段有多久"。
+    if (gap > 0 && gap < maxGap) this.startedAt += gap;
     this.lastSeenAt = now;
     this.excused = (this.excused || 0) + 1;
   }

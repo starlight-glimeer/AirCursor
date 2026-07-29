@@ -71,6 +71,15 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// 手离开画面多久之后放弃正在进行的序列。
+//
+// 400ms（轨迹类的重置门）对序列来说太短：实测一个动态手势中途丢 516ms 就整个归零，而真机
+// capture 里最长的丢跟踪段是 726ms，做动作时手挥出画面边缘更是常事。
+//
+// 1500ms 的依据：比任何单次丢跟踪都长，又比"用户放弃这个动作去做别的事"短。而在这段时间
+// 里序列只是**暂停**——它的超时预算被 excuse() 还回去了，所以不会因为等待而 tooSlow。
+const SEQUENCE_ABANDON_MS = 1500;
+
 // 重新武装的门，占触发门的比例。手松到触发门的六成就算离开了。
 //
 // 留这段差值是为了滞回：触发和松开用同一个数时，距离在门附近的任何抖动都会重新武装。
@@ -230,11 +239,59 @@ class GestureInput {
   update(hands, now, config) {
     const list = Array.isArray(hands) ? hands : [];
     if (!list.length) {
-      // 手离开了就重置，否则下次举手时会拿旧轨迹算出一次假挥动。
-      if (now - this.lastSeenAt > 400) this.reset();
+      const away = now - this.lastSeenAt;
+      // ⚠️ 手不在画面时，正在进行的序列要**把这段时间还给它**，而不是让超时预算白流。
+      //
+      // 用户的观察：「如果录制的动态手势在做动作的时候离开了屏幕，好像这个动作的触发就
+      // 很困难了」。实测一个 3 关键帧的动态手势：中途丢 130ms 仍能触发，丢 **516ms 整个
+      // 序列归零**（回到第 0 步）。而真机 capture 里最长的丢跟踪段是 **726ms**。
+      //
+      // 上一轮给"手数不够"加过同样的宽限（`matcher.excuse`），但**手完全不在画面时走的是
+      // 这条分支**，压根没经过那段代码。同一个修法漏了一半 —— 而漏掉的这半是更常见的
+      // 情形（做动作时手挥出画面边缘）。
+      // 上限传 SEQUENCE_ABANDON_MS 而不是用默认的 250ms：这条分支知道"手离开了多久"，
+      // 而摄像头整段不出帧时（onResults 压根不被调用）恢复后是一次性的大 gap ——
+      // 默认上限会把它整个挡掉，等于这段宽限没生效。
+      for (const matcher of this.sequences.values()) matcher.excuse(now, SEQUENCE_ABANDON_MS);
+
+      // 手离开够久才重置，否则下次举手时会拿旧轨迹算出一次假挥动。
+      //
+      // 这个 400ms 同时决定"序列还能不能接着走"：超过它 reset() 会清掉所有匹配器的进度。
+      // 对指针/挥动来说 400ms 是对的（旧轨迹会算出假挥动），但对序列来说太短 ——
+      // 所以下面分开处理：轨迹类立刻重置，序列给更长的宽限。
+      if (away > 400) {
+        this.pointer.reset();
+        this.path.reset();
+        this.swipe.reset();
+        this.ratchet.reset();
+        for (const state of this.statics.values()) state.armed = true;
+      }
+      // 序列的宽限比轨迹长得多：真机最长丢跟踪 726ms，而一个动作做到一半手挥出画面
+      // 是常事。超过 SEQUENCE_ABANDON_MS 才认为"这次不算了"。
+      if (away > SEQUENCE_ABANDON_MS) {
+        for (const matcher of this.sequences.values()) matcher.reset();
+      }
       // 诊断也清掉：留着上一帧的距离会让面板显示几秒前的数字，而那比空白更误导。
-      this.probe = [{ why: '手不在画面里' }];
+      // 但要说清序列还在等 —— "手不在画面里"和"序列已经作废"是两回事。
+      const held = [...this.sequences.values()].filter((m) => m.index > 0).length;
+      this.probe = [{
+        why: held
+          ? `手不在画面里（${held} 个动作还在等，${Math.round(away)}ms/${SEQUENCE_ABANDON_MS}ms）`
+          : '手不在画面里',
+      }];
       return { events: [], status: '未检测到手' };
+    }
+    // ⚠️ 手回来的这一帧也要还时间。
+    //
+    // 摄像头**整段不出帧**时（睡眠、切后台、推理卡住）`update` 压根不被调用，所以上面那条
+    // "手不在画面"的分支一次都走不到 ⟹ 恢复后第一帧直接 `now - startedAt > budget`，
+    // 判成 tooSlow。实测：逐帧丢 1400ms 能触发，而摄像头整段不出帧 1400ms 不能 ——
+    // 同样的时间跨度，两种丢法结果不同，那就是漏了这一处。
+    //
+    // 判据是"距上一次看到手超过一个帧间隔的三倍"：正常帧不触发，真的断了才补。
+    const sinceSeen = this.lastSeenAt ? now - this.lastSeenAt : 0;
+    if (sinceSeen > 130) {
+      for (const matcher of this.sequences.values()) matcher.excuse(now, SEQUENCE_ABANDON_MS);
     }
     this.lastSeenAt = now;
 

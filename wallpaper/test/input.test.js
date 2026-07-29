@@ -967,4 +967,120 @@ check('诊断报出松开门（否则用户不知道该松多少）', () => {
 });
 
 
+// ── 手做动作时离开画面 ───────────────────────────────────────────────────
+//
+// 用户的观察：「如果录制的动态手势在做动作的时候离开了屏幕，好像这个动作的触发就很困难了」。
+// **成立，而且有两个独立的原因。**
+//
+// ① `reset()` 的门是 400ms —— 对指针/挥动是对的（旧轨迹会算出假挥动），但它同时清掉了
+//    序列的进度。实测一个 3 关键帧的动态手势中途丢 516ms 就整个归零，而真机 capture 里
+//    最长的丢跟踪段是 **726ms**。
+// ② 那段时间里序列的超时预算照走 ⟹ 恢复后直接 tooSlow。上一轮给"手数不够"加过宽限，
+//    但**手完全不在画面走的是另一条分支**，压根没经过那段代码。同一个修法漏了一半，
+//    而漏掉的这半是更常见的情形。
+const LEAVE_FIXTURE = JSON.parse(fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'real-landmark-noise.json'), 'utf8'));
+
+// 用真机轨迹造一个 3 关键帧的动态手势，然后中途让手消失。
+function runWithGap(mode, gapMs) {
+  const raw = LEAVE_FIXTURE.frames.map((h) => h.map(([x, y, z]) => ({ x, y, z })));
+  const traj = raw.slice(30, 55);
+  const tpl = (h) => P.buildPoseTemplate([px(I.mirror(h))]);
+  const keyframes = [0, 12, 24].map((i) => ({ template: tpl(traj[i]), offsetMs: i * 43 }));
+  const config = {
+    recorded: { spin: { hands: 1, template: keyframes[0].template, dynamic: true, law: null,
+      keyframeData: keyframes } },
+    gestureTuning: { matchThreshold: 0.28, rotationTolerance: 20 },
+  };
+  const input = new I.GestureInput(config);
+  let now = 1000;
+  for (let i = 0; i < traj.length; i += 1) {
+    if (i === 13) {
+      if (mode === 'frames') {
+        // 摄像头在出帧但检不到手 —— 走"手不在画面"那条分支
+        for (let k = 0; k < Math.round(gapMs / 43); k += 1, now += 43) input.update([], now, config);
+      } else {
+        // 摄像头整段不出帧（睡眠/切后台/推理卡住）—— update 压根不被调用
+        now += gapMs;
+      }
+    }
+    const out = input.update([traj[i]], now, config);
+    now += 43;
+    if (out.events.some((e) => e.action === 'spin')) return true;
+  }
+  return false;
+}
+
+check('做动作时手短暂离开画面，序列接着走', () => {
+  // 700ms 超过 reset() 的 400ms 门，但远小于真机最长丢跟踪 726ms 的量级 ——
+  // 这种情形必须能继续，否则"做动作时手挥出画面边缘"就永远触发不了。
+  assert.ok(runWithGap('frames', 700), '手离开 700ms 之后序列断了');
+  assert.ok(runWithGap('frames', 1400), '手离开 1400ms 之后序列断了（放弃门是 1500ms）');
+});
+
+check('摄像头整段不出帧时也还时间（两种丢法结果要一致）', () => {
+  // ⚠️ 这一格漏过：摄像头不出帧时 `update` 压根不被调用，所以"手不在画面"那条分支一次
+  // 都走不到 ⟹ 恢复后第一帧直接判 tooSlow。实测同样 1400ms，逐帧丢能触发、整段不出帧
+  // 不能 —— **同样的时间跨度两种丢法结果不同，那就是漏了一处**。
+  assert.ok(runWithGap('jump', 700), '摄像头停 700ms 之后序列断了');
+  assert.ok(runWithGap('jump', 1400), '摄像头停 1400ms 之后序列断了');
+});
+
+check('离开太久要放弃（否则序列永远不过期）', () => {
+  // 宽限的另一半：手真的放下去做别的事了，这次动作就该作废。不放弃的话下次举手会接上
+  // 一个几秒前的半成品序列，而用户会得到一个他没做过的动作。
+  assert.ok(!runWithGap('frames', 2500), '手离开 2500ms 还在接着走 —— 序列永远不过期');
+  assert.ok(!runWithGap('jump', 2500), '摄像头停 2500ms 还在接着走');
+});
+
+check('宽限的上限是"单次调用"的，不是总时长的', () => {
+  // 逐帧调用时每次 gap 只有一个帧间隔，所以 700ms 会被拆成 16 次小 gap 全额还回。
+  // 而调用方明确知道这段有多久时可以传一个更大的上限 —— 否则整段不出帧那种一次性大 gap
+  // 会被默认的 250ms 挡掉，等于宽限没生效。
+  const m = new Motion.SequenceMatcher();
+  const a = { hands: 1, angle: 0, values: new Array(63).fill(0) };
+  const keyframes = [{ template: a, offsetMs: 0 },
+    { template: { hands: 1, angle: 0, values: new Array(63).fill(0.5) }, offsetMs: 400 }];
+  m.update({ pose: a, keyframes, threshold: 0.28, rotationTolerance: 0,
+    distance: P.templateDistance, now: 1000 });
+  const started = m.startedAt;
+
+  // 逐帧：16 次 × 43ms
+  let t = 1000;
+  for (let i = 0; i < 16; i += 1) { t += 43; m.excuse(t); }
+  assert.ok(Math.abs((m.startedAt - started) - 688) < 50,
+    `逐帧宽限 688ms 只还回 ${m.startedAt - started}ms`);
+
+  // 一次性大 gap：默认上限挡掉，传大上限则放行
+  const m2 = new Motion.SequenceMatcher();
+  m2.update({ pose: a, keyframes, threshold: 0.28, rotationTolerance: 0,
+    distance: P.templateDistance, now: 1000 });
+  m2.excuse(1700);
+  assert.strictEqual(m2.startedAt, 1000, '一次性 700ms 该被默认上限挡掉');
+  const m3 = new Motion.SequenceMatcher();
+  m3.update({ pose: a, keyframes, threshold: 0.28, rotationTolerance: 0,
+    distance: P.templateDistance, now: 1000 });
+  m3.excuse(1700, 1500);
+  assert.strictEqual(m3.startedAt, 1700, '传了 1500 的上限却没放行');
+});
+
+check('手离开时诊断说清序列还在等，而不是只说"手不在画面"', () => {
+  // "手不在画面里"和"这次动作已经作废"是两回事，而用户看到的都是没反应。
+  const raw = LEAVE_FIXTURE.frames.map((h) => h.map(([x, y, z]) => ({ x, y, z })));
+  const traj = raw.slice(30, 55);
+  const tpl = (h) => P.buildPoseTemplate([px(I.mirror(h))]);
+  const keyframes = [0, 12, 24].map((i) => ({ template: tpl(traj[i]), offsetMs: i * 43 }));
+  const config = {
+    recorded: { spin: { hands: 1, template: keyframes[0].template, dynamic: true, law: null,
+      keyframeData: keyframes } },
+    gestureTuning: { matchThreshold: 0.28, rotationTolerance: 20 },
+  };
+  const input = new I.GestureInput(config);
+  let now = 1000;
+  for (let i = 0; i < 14; i += 1, now += 43) input.update([traj[i]], now, config);
+  input.update([], now + 200, config);
+  assert.match(input.lastProbe()[0].why, /还在等/,
+    `手离开时没说序列还在等：${input.lastProbe()[0].why}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
