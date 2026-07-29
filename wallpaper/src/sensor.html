@@ -12,8 +12,13 @@
 </head>
 <body>
   <video id="cam" playsinline muted autoplay></video>
-  <script src="vendor/mediapipe/camera_utils/camera_utils.js"></script>
-  <script src="vendor/mediapipe/hands/hands.js"></script>
+  <!-- MediaPipe 缺失时必须说出来。第一次 clone 后如果 vendor 步骤没跑,这两个 script
+       会 404,而后果是"勾了开启摄像头手势但摄像头不亮"、面板上一句话都没有 ——
+       用户看到的和"摄像头坏了"一模一样。 -->
+  <script src="vendor/mediapipe/camera_utils/camera_utils.js"
+          onerror="window.__mpMissing = 'camera_utils'"></script>
+  <script src="vendor/mediapipe/hands/hands.js"
+          onerror="window.__mpMissing = 'hands'"></script>
   <!-- AirCursor 的手势判定。取自 ../public/，由 fetch-vendor.sh 拷进来；
        这边只读不改，要改改源头。 -->
   <script src="vendor/aircursor/pose.js"></script>

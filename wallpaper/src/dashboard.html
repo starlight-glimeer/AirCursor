@@ -291,6 +291,13 @@
            而症状和 CV 层问题长得一模一样。为这件事烧掉过四轮，所以它必须有地方看。
            trusted 单独拎出来：没授权时 sent 照常增长，只看 sent 会以为一切正常。 -->
       <div id="pointer-health" class="state">点击通道：检查中</div>
+      <!-- 报出问题就给路径。之前只显示"无授权"然后什么都没有,而那个系统面板藏在三层
+           设置下面 —— 说了缺什么却不说去哪给,等于把活推回给用户。 -->
+      <div id="grant-row" hidden>
+        <button class="act primary" id="grantAccessibility">去授权辅助功能</button>
+        <button class="act" id="grantCamera">摄像头权限</button>
+        <p class="hint">授权后要<b>完全退出再打开</b> —— macOS 只在进程启动时读这个授权。</p>
+      </div>
     </div>
 
     <h3>诊断</h3>

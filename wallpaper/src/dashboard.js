@@ -318,6 +318,9 @@ function wireDiagnostics() {
   };
   reveal.onclick = () => window.gw.revealCaptures();
 
+  document.getElementById('grantAccessibility').onclick = () => window.gw.openAccessibility();
+  document.getElementById('grantCamera').onclick = () => window.gw.openCameraSettings();
+
   window.gw.onCaptureSaved((payload) => {
     if (!payload || payload.error) {
       state.textContent = `保存失败:${payload && payload.error}`;
@@ -338,9 +341,12 @@ function wireDiagnostics() {
 // 只看 sent 会以为一切正常。
 function renderPointerHealth(health) {
   const node = document.getElementById('pointer-health');
+  const grants = document.getElementById('grant-row');
   if (!node || !health) return;
+  // 授权按钮只在真缺的时候出现:常显一个"去授权"会让已经授权的人以为还有事没做。
+  if (grants) grants.hidden = health.trusted !== false;
   if (health.trusted === false) {
-    node.textContent = '点击通道：无辅助功能授权 —— 手势能识别，但鼠标事件被系统丢弃';
+    node.textContent = '点击通道：无辅助功能授权 —— 手势能识别，但鼠标事件被系统静默丢弃';
     node.className = 'state warn';
     return;
   }
@@ -715,6 +721,11 @@ window.gw.onStrategy((s) => { strategy = s; renderStrategy(); });
 
 window.gw.onSensorStatus((s) => {
   document.getElementById('live').textContent = s && s.text ? s.text : '—';
+  // 摄像头被拒时也把授权按钮露出来 —— 和辅助功能同一个道理:说了缺什么就得给路径。
+  if (s && s.denied) {
+    const grants = document.getElementById('grant-row');
+    if (grants) grants.hidden = false;
+  }
 });
 
 window.gw.onGesture((g) => {

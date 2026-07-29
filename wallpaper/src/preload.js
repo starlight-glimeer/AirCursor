@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('gw', {
 
   // 投递层健康 + 原始关键点录制(从 AirCursor 搬过来的两样)
   pointerHealth: () => ipcRenderer.invoke('pointer-health'),
+  openAccessibility: () => ipcRenderer.invoke('open-accessibility'),
+  openCameraSettings: () => ipcRenderer.invoke('open-camera-settings'),
   startCapture: () => ipcRenderer.invoke('start-capture'),
   revealCaptures: () => ipcRenderer.invoke('reveal-captures'),
   saveCapture: (payload) => ipcRenderer.send('save-capture', payload),

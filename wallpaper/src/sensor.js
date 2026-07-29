@@ -242,7 +242,10 @@ window.gw.onCancelRecording(() => {
 async function start() {
   status('正在加载手势模型');
   if (!window.Hands || !window.Camera) {
-    status('⚠️ MediaPipe 本地脚本未加载');
+    // 说清是哪个文件缺,以及怎么修 —— "未加载"三个字治不了任何问题。全新 clone 之后
+    // 最常见的原因是 vendor 步骤没跑(根目录的 postinstall 一度漏了这一步)。
+    const which = window.__mpMissing ? `(${window.__mpMissing}.js 404)` : '';
+    status(`⚠️ MediaPipe 没加载 ${which} —— 在仓库根目录跑一次 npm run vendor,然后重启`);
     return;
   }
 
@@ -274,11 +277,13 @@ async function start() {
   });
   try {
     await camera.start();
-    status('摄像头已开启');
+    // ready:true 是显式信号,不让主进程去匹配这句中文 —— 改一个字就会让"摄像头到底
+    // 开了没有"的判断静默失效,而那个判断决定 start-capture 放不放行。
+    status('摄像头已开启', { ready: true });
   } catch (error) {
     // 点名原因：「没给权限」和「摄像头被占用」需要完全不同的处理，把其中一个报成
     // 另一个会浪费真实时间。
-    status(`⚠️ 摄像头启动失败：${error.name || error.message || error}`);
+    status(`⚠️ 摄像头启动失败：${error.name || error.message || error}`, { ready: false, denied: /NotAllowed|Permission/i.test(String(error.name || error)) });
   }
 }
 

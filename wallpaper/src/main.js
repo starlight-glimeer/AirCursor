@@ -525,10 +525,21 @@ function syncOverlayVisibility() {
 // means the wall keeps rendering if gesture recognition dies.
 function ensureSensor() {
   if (sensorWindow && !sensorWindow.isDestroyed()) return sensorWindow;
+  // ⚠️ 不能用 show:false。
+  //
+  // macOS 只对**可见窗口**弹摄像头授权,隐藏窗口的 getUserMedia 会直接被拒,而且不弹
+  // 任何东西 —— 症状是"勾了开启摄像头手势但摄像头不亮、面板上没有任何提示"。
+  //
+  // 所以窗口是可见的,只是挪到屏幕外:既满足系统要求,又不占用户的桌面。第一次开会弹
+  // 系统授权对话框,那是必须的。
+  const away = screen.getPrimaryDisplay().bounds;
   sensorWindow = new BrowserWindow({
     width: 360,
     height: 270,
-    show: false,
+    x: away.x + away.width + 400,
+    y: away.y,
+    show: true,
+    focusable: false,
     skipTaskbar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -803,16 +814,50 @@ ipcMain.handle('test-system-action', (_event, id) => runSystemAction(id));
 // 独立的 claim,而缺权限时 CGEvent 静默丢弃 —— AirCursor 为此烧掉四轮。
 ipcMain.handle('pointer-health', () => systemBridge.health());
 
+// 打开系统设置的辅助功能页。
+//
+// 之前只显示"无辅助功能授权"然后就没了 —— 用户知道缺什么,不知道去哪给。而 macOS 的
+// 那个面板藏在系统设置三层下面,报出问题却不给路径等于把活推给用户。
+ipcMain.handle('open-accessibility', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+  return { ok: true };
+});
+
+// 打开摄像头授权页。同理:摄像头被拒之后光说"启动失败"没用。
+ipcMain.handle('open-camera-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Camera');
+  return { ok: true };
+});
+
 // 录 5 秒原始关键点。两边所有用例都是合成手,而合成手缺的是真机噪声的**时间相关结构**
 // (相邻帧一起漂、丢跟踪后重新检出会跳),而那个差异决定判定层在真手上成不成立。
 ipcMain.handle('start-capture', () => {
+  // 窗口存在 ≠ 摄像头在跑。用户报过一次:点了按钮显示"正在录制 5 秒",然后什么都没发生、
+  // 目录也是空的 —— 那次是 MediaPipe 没加载(vendor 步骤没跑),窗口好好地开着。
+  // 只查窗口是不够的。
   if (!sensorWindow || sensorWindow.isDestroyed()) {
     return { ok: false, reason: '摄像头没有开着 —— 先勾上「开启摄像头手势」' };
   }
+  if (!sensorReady) {
+    return { ok: false, reason: `摄像头还没就绪:${sensorStatusText || '正在启动'}` };
+  }
   sensorWindow.webContents.send('start-capture');
+  // 兜底:5 秒后该有文件了。没有就说出来 —— 一个只说"正在录制"然后永远不再说话的
+  // 界面,和坏掉没有区别。
+  const expectBy = Date.now();
+  setTimeout(() => {
+    if (lastCaptureAt >= expectBy) return;
+    broadcast('capture-saved', { error: '5 秒过去了但没有产出文件 —— 摄像头可能没真的在出帧' });
+  }, 7000);
   return { ok: true };
 });
+// sensor 的就绪状态。摄像头真的在出帧才算就绪 —— 窗口开着但模型没加载时它是 false。
+let sensorReady = false;   // sensor 显式报的,不靠猜文案
+let sensorStatusText = '';
+let lastCaptureAt = 0;
+
 ipcMain.on('save-capture', (_event, payload) => {
+  lastCaptureAt = Date.now();
   try {
     const dir = path.join(app.getPath('userData'), 'captures');
     fs.mkdirSync(dir, { recursive: true });
@@ -833,7 +878,13 @@ ipcMain.handle('reveal-captures', () => {
   return { ok: true, dir };
 });
 
-ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
+ipcMain.on('sensor-status', (_event, payload) => {
+  // 记下来源状态,让 start-capture 能判断"摄像头是不是真的在出帧"。判据是文本里没有
+  // ⚠️ 且已经报到"已开启" —— sensor 自己在成功那一刻才发这句。
+  sensorStatusText = (payload && payload.text) || '';
+  if (payload && typeof payload.ready === 'boolean') sensorReady = payload.ready;
+  broadcast('sensor-status', payload);
+});
 
 // 关键点只转给骨架层：dashboard 和壁纸都不画它，而这是 30/s 的高频消息，多发纯浪费。
 ipcMain.on('hands', (_event, payload) => {
