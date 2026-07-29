@@ -283,8 +283,9 @@
     <div class="card">
       <div class="toggle"><input type="checkbox" id="gestures"><label for="gestures">开启摄像头手势</label></div>
       <div class="toggle"><input type="checkbox" id="proTier"><label for="proTier">进阶模式（手势 + 录制）</label></div>
-      <div class="toggle"><input type="checkbox" id="showHands"><label for="showHands">壁纸上显示手骨架和指针</label></div>
+      <div class="toggle"><input type="checkbox" id="showHands"><label for="showHands">显示手骨架和指针（盖在所有窗口之上）</label></div>
       <div id="live">手势未开启</div>
+      <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透 —— 所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
     </div>
 
     <h3>连续控制（不用录，开了就能用）</h3>
@@ -324,7 +325,7 @@
     <h3>诊断</h3>
     <div class="card">
       <div class="toggle"><input type="checkbox" id="showHud"><label for="showHud">壁纸上显示诊断信息</label></div>
-      <p class="hint">手骨架的开关在「手势录制」那一栏。</p>
+      <p class="hint">手骨架的开关在「手势录制」那一栏 —— 它是独立窗口，不属于壁纸。</p>
     </div>
   </section>
 </main>

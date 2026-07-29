@@ -10,8 +10,6 @@
      the mouse is used to drive the wall during development. */
   body { cursor: default; }
   #stage { display: block; width: 100vw; height: 100vh; }
-  /* 盖在舞台上，不挡任何事件（壁纸层本来也收不到）。 */
-  #hands { position: fixed; inset: 0; pointer-events: none; }
 
   /* Placeholder shown when no images are set, so a fresh install looks
      deliberate rather than broken. */
@@ -45,10 +43,6 @@
 </head>
 <body>
   <canvas id="stage"></canvas>
-  <!-- 手骨架和指针。单独一层 2D canvas 盖在 WebGL 舞台上：舞台是 three.js 的，往里
-       塞 2D 绘制要么建材质要么建正交相机，而这层每帧都在变、和场景没有任何空间关系。
-       缺了这一层是"录制反馈很差"的根本原因 —— 之前只有文字。 -->
-  <canvas id="hands"></canvas>
   <div id="empty">
     <div>
       <b>GestureWall</b>
@@ -62,7 +56,6 @@
   <script src="templates.js"></script>
   <script src="layers.js"></script>
   <script src="mood.js"></script>
-  <script src="overlay.js"></script>
   <script src="wall.js"></script>
   <script>
     // Hide the placeholder as soon as any layer has an image.

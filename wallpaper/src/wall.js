@@ -6,8 +6,8 @@ const canvas = document.getElementById('stage');
 const scene = new WallScene(canvas);
 const view = createViewState();
 
-// 手骨架层。缺了它，"手势没反应"和"手没被检测到"是同一个症状 —— 录制时反馈只剩文字。
-const overlay = new window.GestureWallOverlay.HandOverlay(document.getElementById('hands'));
+// 骨架不画在这里：壁纸在最底层，而录制时 dashboard 在最前面 —— 骨架会在最需要它的
+// 那一刻被挡住。它现在是独立窗口（overlay.html），盖在所有东西之上、鼠标穿透。
 
 let config = null;
 let strategy = null;
@@ -315,9 +315,6 @@ function frame(now) {
     stepView(view, dt, config);
     applyView(scene, view, config, now / 1000);
     scene.render();
-    // 每帧都画：骨架有淡出动画和呼吸，只在收到消息时画会一顿一顿。
-    if (config.showHands) overlay.draw(now);
-    else overlay.draw(now - 1e6);   // 关掉时清空画布
   }
   drawHud();
   requestAnimationFrame(frame);
@@ -325,7 +322,6 @@ function frame(now) {
 
 function syncSize() {
   scene.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
-  overlay.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
 }
 window.addEventListener('resize', syncSize);
 syncSize();
@@ -333,7 +329,6 @@ syncSize();
 window.gw.onConfig(applyConfig);
 window.gw.onStrategy((s) => { strategy = s; mouseSeen = false; });
 window.gw.onGesture(onGesture);
-window.gw.onHands((payload) => overlay.update(payload, performance.now()));
 window.gw.onTrack(onTrack);
 window.gw.onSensorStatus((s) => { sensorStatus = s; });
 window.gw.onResetView(resetView);

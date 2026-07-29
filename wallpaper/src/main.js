@@ -35,6 +35,9 @@ function withLibraryStatus(cfg) {
 let wallWindow = null;
 let dashboardWindow = null;
 let sensorWindow = null;
+let overlayWindow = null;
+// 正在录制哪个动作。主进程要知道，因为录制期间骨架强制显示、其他手势必须屏蔽。
+let recordingAction = null;
 let currentStrategy = null;
 
 // How to put a window behind everything else on macOS.
@@ -277,7 +280,7 @@ function writeConfig() {
 // "面板上有的条目不标缺失"，而那种不一致查起来比缺功能烦。
 function broadcast(channel, payload) {
   const body = channel === 'config' ? withLibraryStatus(payload) : payload;
-  for (const win of [wallWindow, dashboardWindow, sensorWindow]) {
+  for (const win of [wallWindow, dashboardWindow, sensorWindow, overlayWindow]) {
     if (win && !win.isDestroyed()) win.webContents.send(channel, body);
   }
 }
@@ -409,6 +412,68 @@ function openDashboard() {
   dashboardWindow.on('closed', () => { dashboardWindow = null; });
 }
 
+// 骨架层：独立窗口，盖在所有东西之上，鼠标穿透。
+//
+// 第一版把骨架画在壁纸上，那是结构性错误：壁纸在最底层，而**录制时 dashboard 在最前面**
+// —— 于是骨架在最需要它的那一刻必然被挡住。而且骨架的用途不只是装饰壁纸：它是"手在
+// 哪、有没有被看到"的唯一答案，那个问题在任何窗口在前时都成立。
+//
+// 三个设置缺一不可（和 AirCursor 的 overlay 一样）：
+//   alwaysOnTop 'screen-saver'  盖过普通窗口和 Dock
+//   setIgnoreMouseEvents        否则它会吃掉整个屏幕的点击
+//   visibleOnAllWorkspaces      切 Space 后还在
+function ensureOverlay() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) return overlayWindow;
+  const { bounds } = screen.getPrimaryDisplay();
+  overlayWindow = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    skipTaskbar: true,
+    focusable: false,
+    enableLargerThanScreen: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+  overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // forward: true 让鼠标事件继续传给下面的窗口，否则这一层会让整个屏幕点不动。
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  liftOverMenuBar(overlayWindow);
+  overlayWindow.on('closed', () => { overlayWindow = null; });
+  return overlayWindow;
+}
+
+function destroyOverlay() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
+  overlayWindow = null;
+}
+
+// 骨架该不该在：用户开了，**或者正在录制**。
+//
+// 录制时强制显示而不管用户设置 —— 那是唯一必须看见手的时刻，而"我关了骨架所以录制时
+// 什么都看不到"不是一个用户会预期的后果。
+function syncOverlayVisibility() {
+  const wanted = !!(config && config.gestures.enabled && (config.showHands || recordingAction));
+  if (wanted) ensureOverlay();
+  else destroyOverlay();
+}
+
 // The camera lives in its own hidden window rather than in the wall: a
 // desktop-level window may not be focusable, and getUserMedia in a window that
 // cannot be focused is a permission prompt nobody can answer. Separating it also
@@ -444,6 +509,9 @@ ipcMain.handle('get-config', () => config);
 ipcMain.handle('set-config', (_event, patch) => {
   config = mergeConfig(config, patch);
   writeConfig();
+  // showHands 或 gestures.enabled 可能变了，骨架窗口要跟着建/拆。无脑同步比逐字段
+  // 判断安全：漏一个字段的后果是"开关拨了没反应"。
+  syncOverlayVisibility();
   broadcast('config', config);
   return config;
 });
@@ -528,6 +596,7 @@ ipcMain.handle('set-gestures', (_event, enabled) => {
   writeConfig();
   if (config.gestures.enabled) ensureSensor();
   else if (sensorWindow && !sensorWindow.isDestroyed()) sensorWindow.destroy();
+  syncOverlayVisibility();
   broadcast('config', config);
   return config;
 });
@@ -584,15 +653,24 @@ ipcMain.handle('delete-preset', (_event, name) => {
 // rather than translates: whoever produces an event decides what it means, so
 // there is one place to look when something fires that should not have.
 ipcMain.on('gesture', (_event, payload) => {
+  // 录制期间丢掉所有手势事件。
+  //
+  // sensor 那边已经有一道守卫（录制时不调 input.update），这里是第二道。两道不是冗余：
+  // 那一道防的是"判定被跑了"，这一道防的是"事件从任何路径漏出来"。录制时做动作会经过
+  // 各种中间姿势，触发已绑的动作 —— 而那些动作会切模块、转视角、甚至退出模式，把录制
+  // 打断。AirCursor 真机上就是这么坏的。
+  if (recordingAction) return;
   if (wallWindow && !wallWindow.isDestroyed()) wallWindow.webContents.send('gesture', payload);
   if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.webContents.send('gesture', payload);
 });
 
 ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
 
-// 关键点只转给壁纸：dashboard 不画骨架，而这是 30/s 的高频消息，多发一份纯浪费。
+// 关键点只转给骨架层：dashboard 和壁纸都不画它，而这是 30/s 的高频消息，多发纯浪费。
 ipcMain.on('hands', (_event, payload) => {
-  if (wallWindow && !wallWindow.isDestroyed()) wallWindow.webContents.send('hands', payload);
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('hands', payload);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -606,6 +684,9 @@ ipcMain.handle('start-recording', (_event, action) => {
   if (!config.gestures.enabled) return { ok: false, error: '先开启摄像头手势' };
   const sensor = ensureSensor();
   if (!sensor || sensor.isDestroyed()) return { ok: false, error: '摄像头窗口没起来' };
+  recordingAction = action;
+  // 录制时骨架强制显示，不管用户的开关 —— 那是唯一必须看见手的时刻。
+  syncOverlayVisibility();
   sensor.webContents.send('start-recording', { action });
   return { ok: true };
 });
@@ -614,6 +695,8 @@ ipcMain.handle('cancel-recording', () => {
   if (sensorWindow && !sensorWindow.isDestroyed()) {
     sensorWindow.webContents.send('cancel-recording', {});
   }
+  recordingAction = null;
+  syncOverlayVisibility();
   broadcast('recording-result', { ok: false, cancelled: true });
   return { ok: true };
 });
@@ -636,6 +719,10 @@ ipcMain.on('recording-progress', (_event, payload) => {
 });
 
 ipcMain.on('recording-result', (_event, payload) => {
+  // 无论成败都解除录制态：漏掉这一步会让手势永久屏蔽，而症状是"手势全都不响应"，
+  // 那个症状指向的地方和真正的原因差得很远。
+  recordingAction = null;
+  syncOverlayVisibility();
   // 成功就落盘。sensor 只负责产出模板，不碰配置 —— 两边都能写配置的话，"谁把它改了"
   // 就会变成一个需要查的问题。
   if (payload && payload.ok && payload.action && payload.entry) {
@@ -665,6 +752,7 @@ app.whenReady().then(() => {
   followDisplayChanges();
   openDashboard();
   if (config.gestures.enabled) ensureSensor();
+  syncOverlayVisibility();
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.
