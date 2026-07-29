@@ -675,4 +675,53 @@ check('recorder 的结果整体透传，不逐个列字段', () => {
     `这些转发点在做白名单，上游新增的字段会被静默丢掉：${suspect.map((s) => s.slice(0, 60)).join(' | ')}`);
 });
 
+// ── 诊断区的换行必须保留 ─────────────────────────────────────────────────
+//
+// `#match-probe` 和 `#overlay-geom` 用 `class="state"`，但它们**不在 `.rec` 里**，而
+// 唯一那条 state 规则是 `.rec .state` ⟹ 它们一直没有任何样式。
+//
+// 后果不是"丑"，是**读不到**：`white-space` 默认把 textContent 里的 `\n` 折叠成空格，
+// 多个手势的诊断挤成一行长文本。用户原话「我没有看到更多的日志信息」—— 诊断一直在发，
+// 只是显示成了一行。
+//
+// 这个形状是「接线齐了但用不上」的变体：数据到了、元素在、内容也写进去了，而**呈现层
+// 把它变成了不可读**。现有那条"CSS 类都有定义"的守卫查的是 `className='x'`，查不到这种。
+check('多行诊断的容器保留换行（否则挤成一行 = 看不到）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+
+  // 找出所有"往 textContent 里塞 \n"的元素 id —— 那些必须保留换行。
+  //
+  // ⚠️ 窗口是"到下一个 getElementById 为止"，不是固定字符数。第一版用 400 字符，而
+  // `#match-probe` 的写入点在 getElementById 之后 14 行（中间有一段注释和一个 map）
+  // ⟹ **它压根没被识别成多行容器,守卫就没检查它** —— 而它正是这次出问题的那个。
+  // 一个"全绿但没覆盖到目标"的守卫比没有更糟，因为它让人以为查过了。
+  const multiline = new Set();
+  const sites = [...dash.matchAll(/getElementById\('([\w-]+)'\)/g)];
+  for (let i = 0; i < sites.length; i += 1) {
+    const from = sites[i].index;
+    const to = i + 1 < sites.length ? sites[i + 1].index : dash.length;
+    if (/textContent\s*=\s*`[^`]*\\n/.test(dash.slice(from, to))) multiline.add(sites[i][1]);
+  }
+  assert.ok(multiline.has('match-probe'),
+    '没把 match-probe 识别成多行容器 —— 那正是这条守卫要看的那个，窗口切得太小了');
+  assert.ok(multiline.size >= 3, `只解析出 ${multiline.size} 个多行容器，正则失效了`);
+
+  const bad = [...multiline].filter((id) => {
+    if (new RegExp(`<pre[^>]*id="${id}"`).test(html)) return false;   // <pre> 默认保留换行
+    // ⚠️ 要查**所有**匹配的规则，不是第一条。CSS 里后面的覆盖前面的，而同一个 id 出现
+    // 两条规则是常事（`#live` 就有两条）。只看第一条会误判 —— 这正是 `#hands` 那个 bug
+    // 的形状（两条规则，后一条没尺寸把前一条盖了），而我写这条守卫时又踩了一次：
+    // 加了个重复的 `#live` 规则，以为原来没有。
+    const rules = [...style.matchAll(new RegExp(`#${id}\\b[^{]*\\{([^}]*)\\}`, 'g'))]
+      .map((m) => m[1]);
+    const wraps = rules.some((r) => /white-space:\s*(pre|pre-wrap|pre-line)/.test(r));
+    const unwraps = rules.some((r) => /white-space:\s*(normal|nowrap)/.test(r));
+    return !(wraps && !unwraps);
+  });
+  assert.deepStrictEqual(bad, [],
+    `这些容器写入多行文本但不保留换行，会挤成一行读不了：${bad.join(', ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

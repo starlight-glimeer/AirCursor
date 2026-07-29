@@ -185,6 +185,21 @@
     background: #0d0d0f; border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
     color: #b9c0cc; white-space: pre-wrap; }
   .rec .state { font-family: ui-monospace, monospace; font-size: 10px; margin-top: 4px; }
+  /* ⚠️ 诊断区那几块（#match-probe / #overlay-geom）用的也是 `state` 类，但它们**不在
+     `.rec` 里**，所以上面那条选择器不生效 —— 它们一直没有任何样式。
+     后果不是"丑"，是**读不到**：`white-space` 默认把 textContent 里的 `\n` 折叠成空格，
+     于是多个手势的诊断挤成一行长文本，用户看到的就是"没有更多信息"。
+     用户原话：「我没有看到更多的日志信息」。 */
+  #match-probe, #overlay-geom {
+    font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5;
+    white-space: pre-wrap;              /* 换行必须保留，这是这条规则存在的理由 */
+    margin-top: 6px; padding: 7px 9px;
+    background: rgba(255,255,255,.04); border-radius: 6px;
+    color: var(--dim);
+    max-height: 160px; overflow-y: auto;   /* 手势多了要能滚，不能截断 */
+  }
+  #match-probe.ok, #overlay-geom.ok { color: var(--accent); }
+  #match-probe.warn, #overlay-geom.warn { color: var(--warn); }
   .bar { height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 6px; }
   .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; width: 0; transition: width .1s; }
   .tier {
