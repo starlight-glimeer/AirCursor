@@ -46,6 +46,17 @@ check('模板决定有哪些动作，分 basic / pro 两档', () => {
   assert.strictEqual(overlap.length, 0, `两档重叠：${overlap.join(',')}`);
 });
 
+// 回归守卫：第一版把六个可录制动作全塞进 pro 档，于是默认状态下「可录制的动作」
+// 整栏是空的，显示"这套模板没有需要录制的动作" —— 用户看到的就是"录制功能不存在"。
+// 用例当时全绿，只有真机截图看得出来。
+check('basic 档至少有一个可录制动作（否则录制栏默认是空的）', () => {
+  for (const id of Object.keys(T.TEMPLATES)) {
+    const basic = T.recordableActionsOf(id, false);
+    assert.ok(basic.length > 0,
+      `模板 ${id} 的 basic 档没有可录制动作 —— 录制栏打开就是空的`);
+  }
+});
+
 check('pro 档默认不列出（普通用户不该一上来看到八个动作）', () => {
   const basic = T.actionsOf('depthStage', false);
   const all = T.actionsOf('depthStage', true);

@@ -303,7 +303,12 @@ function renderRecordables() {
   const t = T.template(config.template);
   const actions = T.recordableActionsOf(config.template, config.proTier);
   if (!actions.length) {
-    host.append(el('p', 'hint', '这套模板没有需要录制的动作'));
+    // 分清两种空：这套模板真的没有可录制动作，还是它们都在 pro 档而 pro 没开。
+    // 第一版只写了前一句，于是"勾一下就有了"这个出路完全看不出来。
+    const withPro = T.recordableActionsOf(config.template, true);
+    host.append(el('p', 'hint', withPro.length
+      ? `这套模板的 ${withPro.length} 个可录制动作都是进阶的 —— 勾上上面的「显示进阶动作」`
+      : '这套模板没有需要录制的动作'));
     return;
   }
   for (const action of actions) {

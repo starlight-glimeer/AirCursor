@@ -166,9 +166,14 @@ const TEMPLATES = {
     hint: '背景 + 主体 + 漂浮碎片，三层景深',
     slots: { background: 'still', subject: 'float', shard: 'orbit' },
     // 手势分档：basic 是这套模板的基本操作，pro 是进阶。同一套模板的两档。
+    //
+    // ⚠️ basic 里必须至少有一个**可录制**的动作。第一版把六个可录制动作全放进 pro，
+    // 结果默认状态下「可录制的动作」那一栏是空的 —— 显示"这套模板没有需要录制的动作"，
+    // 而用户看到的就是"录制功能不存在"。一个默认打开就空的功能区等于没有这个功能，
+    // 而这条只有真机截图才看得出来，用例全绿。templates.test.js 现在守着它。
     actions: {
-      basic: ['zoom', 'parallax'],
-      pro: ['yawLeft', 'yawRight', 'pitchUp', 'pitchDown', 'spin', 'resetView'],
+      basic: ['zoom', 'parallax', 'yawLeft', 'yawRight'],
+      pro: ['pitchUp', 'pitchDown', 'spin', 'resetView'],
     },
   },
 };
