@@ -672,4 +672,93 @@ check('关键帧数量有上限，而且余量够（抽稀不能掉到 MIN 以�
   }
 });
 
+// ── 手放下 = 动作做完了 ──────────────────────────────────────────────────
+//
+// 用户：「我的动作做完了，所以可能停止的判定有问题吧，有漏洞」。**是的。**
+//
+// `tickMove` 里整段（采样、幅度、结束判定）都在 `if (pose && handCount >= wanted)` 里面，
+// 所以手一离开画面就一帧都不走 —— 既不更新 stillSince 也不检查结束 ⟹ 只能等
+// MOVE_TIMEOUT_MS(4000ms) 超时。而"做完动作把手放下"是最自然的收尾方式。
+//
+// 真机五次录制（landmarks-17853470*）实测：动作本身只有 **201–986ms**，也就是每次录制
+// 都在空转 3 秒以上等超时。
+check('手放下之后及时收尾，不等 4 秒超时', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  const moving = NOISE.frames.slice(30, 55).map((h) => h.map(([x, y, z]) => ({
+    x: x * 1000, y: y * 1000, z: (z || 0) * 1000 })));
+  let out = null;
+  let phase = '';
+  let mi = 0;
+  let moveStart = null;
+  let finishedAt = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let hand;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      // ⚠️ 动作只做 350ms，然后**立刻把手拿走**。
+      //
+      // 第一版用 900ms，而那条录制在 731ms 就靠原有的 stillSince 路径收尾了 ——
+      // 手还在画面里，压根没走到"手放下"那一步。**用例没测到要测的东西**，
+      // 而我是靠"关掉那个分支它依然全绿"发现的。
+      //
+      // 350ms 短到 stillSince 来不及成立（要 SETTLE_MS=320ms 幅度不变），
+      // 所以收尾只能来自手放下那条路径。
+      hand = (now - moveStart < 350) ? moving[Math.min(mi++, moving.length - 1)] : null;
+    } else {
+      hand = STILL[i % STILL.length];
+    }
+    out = hand ? rec.update(P.buildPoseTemplate([hand]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) { finishedAt = now - moveStart; break; }
+  }
+  assert.ok(out && out.done, `手放下之后录制失败了：${out && out.error}`);
+  // 350ms 动作 + 600ms 判定 ≈ 950ms。4000ms 是超时值。
+  assert.ok(finishedAt < 1600,
+    `动作 350ms 就把手放下了，却录了 ${finishedAt}ms —— 还在等超时`);
+});
+
+check('手放下的判定门大于动作过程中的最大丢帧', () => {
+  // ⚠️ 这个数是真机标定的。用户录了同一个动作五次，量动作那一段**内部**的丢帧：
+  // 67ms / 34ms / 35ms / 67ms+67ms / **367ms**。
+  //
+  // 我原本想用 250ms —— 那会把第五次那个 367ms 的中途丢帧当成"做完了"，
+  // 于是动作录一半就收尾。600ms 留了 1.6 倍余量。
+  assert.ok(R.HAND_GONE_SETTLE_MS > 367,
+    `${R.HAND_GONE_SETTLE_MS}ms 小于真机实测的最大中途丢帧 367ms —— 动作会被截断`);
+  assert.ok(R.HAND_GONE_SETTLE_MS < R.MOVE_TIMEOUT_MS,
+    '手放下的判定门不小于超时值 —— 那这条路径就没有意义');
+});
+
+check('动作中途短暂丢帧不算做完', () => {
+  // 上一条的另一半：中途丢 367ms 之后手回来了，动作要继续录而不是收尾。
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  const moving = NOISE.frames.slice(30, 55).map((h) => h.map(([x, y, z]) => ({
+    x: x * 1000, y: y * 1000, z: (z || 0) * 1000 })));
+  let out = null;
+  let phase = '';
+  let mi = 0;
+  let moveStart = null;
+  let gapDone = false;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let hand;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      const t = now - moveStart;
+      // 400–767ms 之间丢帧（367ms，真机实测的最大值），之后手回来接着做
+      if (t > 400 && t < 767) { hand = null; }
+      else { if (t >= 767) gapDone = true; hand = moving[Math.min(mi++, moving.length - 1)]; }
+    } else {
+      hand = STILL[i % STILL.length];
+    }
+    out = hand ? rec.update(P.buildPoseTemplate([hand]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(gapDone, '丢帧期间就收尾了 —— 动作被截断，而那 367ms 是真机实测的中途丢帧');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

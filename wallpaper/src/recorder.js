@@ -35,6 +35,21 @@ const MOVE_READY_MS = 400;
 const MOVE_TIMEOUT_MS = 4000;
 // 幅度多久不变算动作结束。
 const SETTLE_MS = 320;
+// 手离开画面多久算"动作做完了"。
+//
+// 手放下是一个比"幅度不再变化"干净得多的收尾信号 —— 后者要在噪声里判断，前者是二值的。
+//
+// ⚠️ 下限由**动作过程中的丢帧**决定，而这个数是真机标定的。用户录了同一个动作五次
+// （landmarks-17853470*），量动作那一段内部的丢帧：
+//
+//   67ms / 34ms / 35ms / 67ms+67ms / **367ms**
+//
+// 最大 367ms —— 也就是我原本想用的 250ms 会把那次动作中途的丢帧当成"做完了"。
+// 600ms 留了 1.6 倍余量。
+//
+// 上限的约束来自体感：超时是 4000ms，所以任何小于它的值都是净改善。而实测五次动作
+// 本身只有 **201–986ms**，之前每次录制都要空转 3 秒以上等超时。
+const HAND_GONE_SETTLE_MS = 600;
 // 模板取多少帧的中位数。中位数而不是均值：一帧丢跟踪就会把均值拖走。
 const MAX_SAMPLES = 40;
 // 允许的漂移，占匹配阈值的比例。
@@ -139,6 +154,8 @@ class Recorder {
       driftingSince: 0,
       // 越线那一刻已经保持了多久。宽限期报这个值 —— 冻结而不是继续涨。
       frozenHeld: 0,
+      // 动作阶段手离开画面的时刻。0 = 手在画面里。见 tickMove。
+      goneSince: 0,
       // 被打断过几次、最后一次在什么时候。反复打断本身是"手在动"的证据。
       breaks: 0,
       lastBreakAt: 0,
@@ -395,7 +412,38 @@ class Recorder {
       if (s.stillSince && now - s.stillSince > SETTLE_MS && s.peak > this.threshold * MIN_MOVE_EXTENT) {
         return this.finish();
       }
+    } else if (s.frames.length) {
+      // ⚠️ **手放下 = 动作做完了。**
+      //
+      // 上面整段（采样、幅度、结束判定）都在 `if (pose && handCount >= wanted)` 里面，
+      // 所以手一离开画面就一帧都不走 —— 既不更新 stillSince，也不检查结束条件
+      // ⟹ 只能等 MOVE_TIMEOUT_MS(4000ms) 超时。
+      //
+      // 而"做完动作把手放下"是最自然的收尾方式。用户实测五次录制，动作本身只有
+      // **201–986ms**，之后手就不在画面了 —— 也就是每次录制都在空转 3 秒以上，
+      // 而那 3 秒里 `s.frames` 一帧都不增加（这条分支不采样），关键帧却是按 `at`
+      // 的时间戳算 offsetMs 的 ⟹ 录出来的动作时长会包含那段空白。
+      //
+      // 用户的判断：「我的动作做完了，所以可能停止的判定有问题吧，有漏洞」。
+      //
+      // 手离开够久（HAND_GONE_SETTLE_MS）就当动作结束：幅度够就保存，不够就报错 ——
+      // 和超时那条路同样的判据，只是不用再等 3 秒。
+      if (!s.goneSince) s.goneSince = now;
+      if (now - s.goneSince > HAND_GONE_SETTLE_MS) {
+        if (s.peak > this.threshold * MIN_MOVE_EXTENT) return this.finish();
+        this.session = null;
+        const need = Number((this.threshold * MIN_MOVE_EXTENT).toFixed(3));
+        return {
+          phase: PHASE.MOVE,
+          error: `手放下了但幅度不够：量到 ${s.peak.toFixed(3)}，需要 ${need}`
+            + `，收到 ${s.frames.length} 帧`,
+          peak: Number(s.peak.toFixed(3)),
+          need,
+          frames: s.frames.length,
+        };
+      }
     }
+    if (pose && handCount >= s.wantedHands) s.goneSince = 0;
 
     if (elapsed > MOVE_TIMEOUT_MS) {
       // 超时但已经录到足够幅度就保存 —— 作废等于让用户白做一遍。
@@ -526,6 +574,7 @@ root.GestureWallRecorder = {
   MOVE_READY_MS,
   MOVE_TIMEOUT_MS,
   SETTLE_MS,
+  HAND_GONE_SETTLE_MS,
   MAX_SAMPLES,
   STABLE_TOLERANCE_RATIO,
   MIN_MOVE_EXTENT,
