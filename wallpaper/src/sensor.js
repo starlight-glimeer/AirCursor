@@ -155,6 +155,11 @@ let lastBeatAt = 0;
 const HEARTBEAT_MS = 1000;
 
 function heartbeat(now) {
+  // ⚠️ 第一次调用时 `lastBeatAt` 是 0 而 `now` 是 performance.now()（启动即数千），
+  // 于是第一帧必然满足间隔条件、而 fps 算出来是 0 ⟹ **每次启动都报一次"推理停了"**。
+  // 用户日志里那行 `推理停了（累计 0 帧，摄像头 1 帧）` 就是它 —— 一个假警报，
+  // 而假警报会让真警报变得不可信。
+  if (!lastBeatAt) { lastBeatAt = now; framesAtLastBeat = frameOk; return; }
   if (now - lastBeatAt < HEARTBEAT_MS) return;
   const fps = Math.round(((frameOk - framesAtLastBeat) * 1000) / (now - lastBeatAt || 1));
   const stalled = fps === 0;

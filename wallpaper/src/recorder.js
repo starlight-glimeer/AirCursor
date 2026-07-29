@@ -446,13 +446,29 @@ class Recorder {
 
     if (s.dynamic && !s.law) {
       // 没有律：按关键帧序列匹配。
-      const keyframes = Motion.buildKeyframes(s.frames, this.threshold, Pose.templateDistance);
+      //
+      // ⚠️ **起始姿势要当第一个关键帧。**
+      //
+      // `s.frames` 从 MOVE 阶段才开始收，而 READY 那一拍（手从保持姿势移到动作起点）不进
+      // frames ⟹ `kf[0]` 是"手已经开始动之后"的某一帧。而实时匹配时用户必须从**保持的那个
+      // 静止姿势**进入 —— 那个姿势压根不在序列里。
+      //
+      // 实测：静止姿势离 kf[0] 的距离是 **1.96–2.06**，而入口门 0.54 ⟹ 差近 4 倍，
+      // 永远进不去。用户报的正是这个：「基本都是 0/6，距离 2.3 几 / 门 0.54 几，等起始姿势」。
+      //
+      // 而这条链的其余部分是对的：用录制时喂进去的同一批帧去匹配 kf[0]，最小距离 0.0000。
+      // 也就是**录制和匹配两条路一致，错的是"序列从哪里开始"**。
+      const withRest = s.restTemplate
+        ? [{ template: s.restTemplate, at: s.frames.length ? s.frames[0].at - 1 : 0 },
+          ...s.frames]
+        : s.frames;
+      const keyframes = Motion.buildKeyframes(withRest, this.threshold, Pose.templateDistance);
       if (keyframes.length < Motion.MIN_KEYFRAMES) {
         // 同样报数：抽到几个、要几个、原始帧有多少。
         // "动作太短"和"幅度太小"是两个不同的原因，而帧数和关键帧数的比值能分开它们 ——
         // 帧多而关键帧少 = 幅度不够；帧本来就少 = 做得太快。
         return {
-          error: `关键帧不够：从 ${s.frames.length} 帧里只抽出 ${keyframes.length} 个，需要 ${Motion.MIN_KEYFRAMES} 个`
+          error: `关键帧不够：从 ${withRest.length} 帧里只抽出 ${keyframes.length} 个，需要 ${Motion.MIN_KEYFRAMES} 个`
             + `（${s.frames.length > 20 ? '帧够多但幅度不足，动作再夸张一点' : '动作做得太快，慢一点'}）`,
           keyframes: keyframes.length,
           frames: s.frames.length,

@@ -597,4 +597,45 @@ check('关键帧不覆盖动作结束后的静止段', () => {
     + '它们之间的距离是噪声距离，会让序列走不完');
 });
 
+// ── 序列的第一个关键帧必须是"保持"的那个姿势 ──────────────────────────────
+//
+// **这是「基本都是 0/6，距离 2.3 几 / 门 0.54 几，等起始姿势」的根因。**
+//
+// `s.frames` 从 MOVE 阶段才开始收，而 READY 那一拍（手从保持姿势移到动作起点）不进
+// frames ⟹ `kf[0]` 是"手已经开始动之后"的某一帧。而实时匹配时用户必须从**保持的那个
+// 静止姿势**进入 —— 那个姿势压根不在序列里。
+//
+// 实测：静止姿势离 kf[0] 的距离 **1.96–2.06**，入口门 0.54 ⟹ 差近 4 倍，永远进不去。
+// 修完之后是 **0.02**。端到端"摆姿势→做动作"从"偶尔一次"变成 **10/10**。
+//
+// 而这条链的其余部分一直是对的：用录制时喂进去的同一批帧匹配 kf[0]，最小距离 0.0000。
+// 也就是**录制和匹配两条路一致，错的是"序列从哪里开始"** —— 那个区别我查了三轮才看到，
+// 因为两条路的坐标换算完全一样，看代码看不出问题。
+check('动态录制把保持的姿势当第一个关键帧', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  // 先保持（用真机静止帧），再做动作（用真机移动帧）
+  const moving = NOISE.frames.slice(30, 55).map((h) => h.map(([x, y, z]) => ({ x, y, z })));
+  const px2 = (h) => h.map((p) => ({ x: p.x * 1000, y: p.y * 1000, z: (p.z || 0) * 1000 }));
+  let out = null;
+  let phase = '';
+  let mi = 0;
+  for (let i = 0; i < 500; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    const hand = (phase === 'move' || phase === 'ready')
+      ? px2(moving[Math.min(mi++, moving.length - 1)])
+      : STILL[i % STILL.length];
+    out = rec.update(P.buildPoseTemplate([hand]), 1, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(out.result && out.result.keyframes, `录制失败：${out.error}`);
+
+  // kf[0] 必须离"保持的那个姿势"很近 —— 那是用户实时进入序列的唯一入口。
+  const rest = P.medianTemplate(STILL.map((h) => P.buildPoseTemplate([h])));
+  const d = P.templateDistance(out.result.keyframes[0].template, rest, (20 * Math.PI) / 180);
+  assert.ok(d < 0.3,
+    `第一个关键帧离保持姿势 ${d.toFixed(3)} —— 用户从保持姿势进不去，会一直卡在 0/N 步`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
