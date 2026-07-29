@@ -837,7 +837,12 @@ window.gw.onSensorStatus((s) => {
         // 两者一模一样。
         const step = p.steps ? ` · 第 ${p.step}/${p.steps} 步` : '';
         const back = p.fromPrev !== undefined ? ` · 离上一步 ${p.fromPrev}` : '';
-        return `${p.action}${step}${d}${back} · ${p.why}`;
+        // 重新武装的进度。「第一次好触发、后面很难」的那个状态就在这里 —— 手够近所以
+        // 不算离开、但已经触发过，于是看起来没反应。报出"离开了多久 / 要多久"。
+        const rearm = p.reArm !== undefined && !p.armed
+          ? ` · 松开门 ${p.reArm}${p.awayMs ? `（已离开 ${p.awayMs}ms）` : ''}`
+          : '';
+        return `${p.action}${step}${d}${back}${rearm} · ${p.why}`;
       });
       node.textContent = `手势匹配：\n${lines.join('\n')}`;
       // 有任何一个够近就转绿 —— 那说明手势这侧是通的，问题在下游（执行/绑定）。

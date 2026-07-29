@@ -879,4 +879,90 @@ check('还没开始的序列不宽限（没有预算可还）', () => {
   assert.strictEqual(m.startedAt, null, 'index 0 时 excuse 应该是 no-op');
 });
 
+// ── 重新武装:门要比触发低,而且要带时间 ────────────────────────────────────
+//
+// 用户报「确实是容易触发了，但是体感上是第一次好触发，后面又很难触发了」。
+//
+// 根因:触发和重新武装**共用一个门**。触发要 `距离 < gate`,重新武装要 `距离 >= gate`
+// ⟹ 双手把门放宽一倍之后,"离开姿势"也要离开一倍远。实测:
+//
+//   动作        单手(门 0.28)  双手(门 0.56)
+//   手指微松      0.303 ✅       0.342 ❌ 仍算"没离开"
+//   明显松开      0.547 ✅       0.600 ✅（只比门高 7%）
+//
+// 也就是双手触发一次之后要把手**完全放开**才能再触发,而没人会那么做。
+//
+// ⚠️ 这批用例钉的是**机制**,不是参数值 —— 那两个常数没标定成功(见 input.js 的注释)。
+check('重新武装的门低于触发的门', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const m = src.match(/const RE_ARM_RATIO = ([\d.]+);/);
+  assert.ok(m, '找不到 RE_ARM_RATIO');
+  assert.ok(Number(m[1]) < 1,
+    '重新武装和触发共用一个门 —— 双手放宽后手指微松跨不过去，触发一次就要完全放开');
+  assert.ok(Number(m[1]) > 0.3, '松开门太低了 —— 手稍微一抖就重新武装，会连发');
+});
+
+check('重新武装要求持续离开，不是单帧越线', () => {
+  // ⚠️ 位置滞回在这里**原理上不成立**，这一点是量出来的：手完全不动时逐帧距离在
+  // 0.12–1.33 之间抖，24 帧里穿越 0.56 这个门 5 次。而滞回带哪怕取 40% 也只有 0.22 宽，
+  // 比噪声幅度小得多 ⟹ 每次"从门外抖回门内"都是一次新触发。
+  // 扫参证实：0.5 到 0.95 每一档都连发，连接近原设计的 0.95 都是 8 次而不是 6 次。
+  //
+  // 所以判据必须带时间。这是「帧驱动的门槛要用时间当单位」在这个项目里的第五次。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.match(src, /RE_ARM_MS/, '重新武装没有时间维度 —— 位置滞回挡不住噪声穿越');
+  assert.match(src, /state\.awaySince/, '没有记"从哪一刻开始离开"');
+
+  // 行为验证：越线一帧然后立刻回来，不该重新武装。
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    recorded: { spin: { hands: 1, template, dynamic: false, law: null } },
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  const input = new I.GestureInput(config);
+  assert.ok(input.update([target], 1000, config).events.some((e) => e.action === 'spin'),
+    '第一帧就该触发');
+  // 离开一帧（用一个远的手型），再立刻回来
+  input.update([curled(hand({ palm: 0.12 }), 1.4)], 1040, config);
+  const again = input.update([target], 1080, config);
+  assert.ok(!again.events.some((e) => e.action === 'spin'),
+    '离开一帧就重新武装了 —— 噪声在门附近抖动会连发');
+});
+
+check('持续离开够久之后能再触发', () => {
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    recorded: { spin: { hands: 1, template, dynamic: false, law: null } },
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  const input = new I.GestureInput(config);
+  input.update([target], 1000, config);
+  // 离开 600ms（远超 RE_ARM_MS），期间一直保持远
+  const away = curled(hand({ palm: 0.12 }), 1.4);
+  for (let t = 1040; t <= 1640; t += 40) input.update([away], t, config);
+  const again = input.update([target], 1700, config);
+  assert.ok(again.events.some((e) => e.action === 'spin'),
+    '手离开了 600ms 还不能再触发 —— 那就是"第一次好触发，后面很难"');
+});
+
+check('诊断报出松开门和已离开时长', () => {
+  // 「后面很难触发」那个状态在诊断里必须说得出来：手够近所以不算离开、但已经触发过，
+  // 于是看起来没反应。只说"要先离开"用户不知道该松多少、松多久。
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const config = {
+    recorded: { spin: { hands: 1, template, dynamic: false, law: null } },
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  const input = new I.GestureInput(config);
+  input.update([target], 1000, config);      // 触发，之后 armed = false
+  input.update([target], 1040, config);
+  const probe = input.lastProbe()[0];
+  assert.strictEqual(probe.armed, false, 'armed 没被清掉');
+  assert.strictEqual(typeof probe.reArm, 'number', '没报松开门');
+  assert.match(probe.why, /\d+ms/, `没说要保持多久：${probe.why}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
