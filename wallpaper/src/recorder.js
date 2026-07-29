@@ -72,6 +72,19 @@ const STABLE_TOLERANCE_RATIO = 0.8;
 const STABLE_GRACE_MS = 250;
 // 动作幅度下限，占匹配阈值的倍数。低于这个是手在原地抖，不是一个动作。
 const MIN_MOVE_EXTENT = 1.6;
+// 幅度要连续多少帧都够大才算。见 tickMove：单帧最大值由噪声尖峰决定，毫无区分度。
+//
+// 5 帧 @23fps ≈ 215ms，比任何真实动作都短得多，所以它只挡尖峰不挡动作。扫参实测
+// （不做动作 vs 逐级放大的动作，真机噪声）：
+//
+//   EXTENT_RUN   不做动作量到   真动作(amp=1)   余量
+//   1（原样）      1.498         1.8+          **没有余量，不动也能录成**
+//   3             0.429         ✅            差 4% —— 太薄
+//   5             0.169         ✅            差 2.7 倍  ← 取这个
+//   8             0.121         ✅            没有额外收益，只是更迟钝
+//
+// 门限 0.448 = matchThreshold 0.28 × MIN_MOVE_EXTENT 1.6。
+const EXTENT_RUN = 5;
 
 const PHASE = { COUNTDOWN: 'countdown', CAPTURE: 'capture', READY: 'ready', MOVE: 'move' };
 
@@ -107,6 +120,8 @@ class Recorder {
       restTemplate: null,
       // 动作阶段：见过的最大幅度，以及幅度稳定了多久。
       peak: 0,
+      // 最近几帧的幅度。取它们的最小值，所以单帧尖峰进不了 peak。
+      extentRun: [],
       lastExtent: null,
       stillSince: 0,
       readyUntil: 0,
@@ -278,6 +293,7 @@ class Recorder {
     s.phase = PHASE.READY;
     s.readyUntil = now + MOVE_READY_MS;
     s.peak = 0;
+    s.extentRun = [];
     s.lastExtent = null;
     s.stillSince = 0;
     s.frames = [];
@@ -305,7 +321,24 @@ class Recorder {
     if (pose && handCount >= s.wantedHands) {
       s.frames.push({ template: pose, at: now });
       const extent = Pose.templateDistance(pose, s.restTemplate, this.rotationTolerance);
-      if (extent > s.peak) s.peak = extent;
+
+      // 幅度取**连续 EXTENT_RUN 帧的最小值**的最大值，不是单帧最大值。
+      //
+      // ⚠️ 单帧最大值完全由噪声尖峰决定。实测（静止的手 100 帧对 restTemplate）：中位
+      // 0.210、90 分位 0.768、**最大 1.794**，而动作门限是 0.448 —— 100 帧里有 18 帧
+      // 单独就超过门限 ⟹ **完全不做动作也能"录成"一个动态手势**（实测 amp=0 量到 1.498）。
+      //
+      // 这和「保持不动」那个 bug 是同一族：那次是"每一帧都不许越线"（尖峰让人永远过不去），
+      // 这次是"任一帧越线就算"（尖峰让人永远能过）。**都是拿单帧极值当判据。**
+      //
+      // 连续 3 帧都大才算，一个尖峰过不去。实测区分度：不做动作 0.225，真动作 0.526+，
+      // 而单帧最大值在这两种情况下都是 1.79（完全没有区分度）。
+      s.extentRun.push(extent);
+      if (s.extentRun.length > EXTENT_RUN) s.extentRun.shift();
+      if (s.extentRun.length === EXTENT_RUN) {
+        const sustained = Math.min(...s.extentRun);
+        if (sustained > s.peak) s.peak = sustained;
+      }
 
       // "动作结束" = 幅度不再变化，不是"手回到起点"。见文件头。
       if (s.lastExtent !== null && Math.abs(extent - s.lastExtent) < this.threshold * 0.06) {
@@ -324,14 +357,32 @@ class Recorder {
       // 超时但已经录到足够幅度就保存 —— 作废等于让用户白做一遍。
       if (s.peak > this.threshold * MIN_MOVE_EXTENT) return this.finish();
       this.session = null;
-      return { phase: PHASE.MOVE, error: '动作幅度太小，再做大一点' };
+      // ⚠️ 报出**实测幅度和门限两个数**，不是一句"再做大一点"。
+      //
+      // 用户报「我动作做完了，结果直接退出了，看着像是意外中断」—— 而"幅度太小"这句话
+      // 在用户已经觉得自己做完了动作的时候，读起来就是"莫名失败"。差 5% 和差 10 倍指向
+      // 完全不同的处理（再夸张一点 vs 这个动作类型压根测不到），而一句定性文案把两者
+      // 压成同一个意思。
+      const need = Number((this.threshold * MIN_MOVE_EXTENT).toFixed(3));
+      return {
+        phase: PHASE.MOVE,
+        error: `动作幅度不够：量到 ${s.peak.toFixed(3)}，需要 ${need}（差 ${(need / (s.peak || 1e-6)).toFixed(1)} 倍）`
+          + `，收到 ${s.frames.length} 帧`,
+        peak: Number(s.peak.toFixed(3)),
+        need,
+        frames: s.frames.length,
+      };
     }
 
+    // 进度里带上"幅度够了没"。做动作的当时就该知道，而不是失败之后才被告知 ——
+    // 用户会以为自己做完了，因为没有任何东西告诉他幅度不足。
+    const need = this.threshold * MIN_MOVE_EXTENT;
     return {
       phase: PHASE.MOVE,
       progress: Math.min(1, elapsed / MOVE_TIMEOUT_MS),
-      extent: s.peak,
-      hint: '做动作，做完停住',
+      extent: Number(s.peak.toFixed(3)),
+      extentNeeded: Number(need.toFixed(3)),
+      hint: s.peak >= need ? '幅度够了，停住手就保存' : '做动作 —— 幅度还不够，再大一点',
     };
   }
 
@@ -353,7 +404,15 @@ class Recorder {
       // 没有律：按关键帧序列匹配。
       const keyframes = Motion.buildKeyframes(s.frames, this.threshold, Pose.templateDistance);
       if (keyframes.length < Motion.MIN_KEYFRAMES) {
-        return { error: '动作太短或幅度太小，没能抽出足够的关键帧' };
+        // 同样报数：抽到几个、要几个、原始帧有多少。
+        // "动作太短"和"幅度太小"是两个不同的原因，而帧数和关键帧数的比值能分开它们 ——
+        // 帧多而关键帧少 = 幅度不够；帧本来就少 = 做得太快。
+        return {
+          error: `关键帧不够：从 ${s.frames.length} 帧里只抽出 ${keyframes.length} 个，需要 ${Motion.MIN_KEYFRAMES} 个`
+            + `（${s.frames.length > 20 ? '帧够多但幅度不足，动作再夸张一点' : '动作做得太快，慢一点'}）`,
+          keyframes: keyframes.length,
+          frames: s.frames.length,
+        };
       }
       result.keyframes = keyframes;
     }

@@ -189,13 +189,15 @@ function tickRecording(list, now) {
     return;
   }
 
-  window.gw.sendRecordingProgress({
-    action: recordingAction,
-    phase: result.phase,
-    progress: result.progress || 0,
-    countdown: result.countdown,
-    hint: result.hint,
-  });
+  // 透传 recorder 报的全部字段，只补上 action。
+  //
+  // ⚠️ 原来是白名单（一个个列字段），于是 recorder 新加的 extent/extentNeeded 被静默
+  // 丢掉 —— 加一个诊断字段要改两个文件，而漏掉这一处不会报错，只会让面板永远显示不出
+  // 那个数字。这个形状本身就是坑：**转发层做白名单，等于给每个新字段埋一个静默失效**。
+  //
+  // recorder 的返回值全部是给 UI 看的（phase/progress/hint/extent/…），没有敏感字段要挡，
+  // 所以整体透传是对的。
+  window.gw.sendRecordingProgress({ ...result, action: recordingAction, progress: result.progress || 0 });
 }
 
 function finishRecording(entry) {

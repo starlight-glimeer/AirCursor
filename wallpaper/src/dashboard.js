@@ -273,6 +273,16 @@ function renderGestureLead() {
 // 结果既拒绝了"用画圈打开某个功能"（适合动态的动作被强制静态），也在一个静止姿势
 // 就够用的地方强加了做动作的步骤。有律的动作（挥动/倾斜）例外：它们的方向由律决定，
 // 录制只是加一道"必须是这个手型"的门，所以固定静态。
+// 往日志窗格追一行。这是**唯一活得够久**的显示位置 —— `#live` 每帧被 sensor 状态覆盖。
+function logLine(source, message) {
+  const node = document.getElementById('log');
+  if (!node) return;
+  const line = `[${source}] ${message}`;
+  node.textContent = `${node.textContent}${node.textContent ? '\n' : ''}${line}`
+    .split('\n').slice(-40).join('\n');
+  node.scrollTop = node.scrollHeight;
+}
+
 function recordOptions(action) {
   const stored = (config.recordOptions && config.recordOptions[action.id]) || {};
   return {
@@ -329,12 +339,8 @@ function wireDiagnostics() {
 
   // 骨架层/helper 的报错。只留最近 40 行 —— 它的用途是"刚才出了什么事",不是日志归档。
   window.gw.onHelperLog((entry) => {
-    const node = document.getElementById('log');
-    if (!node || !entry) return;
-    const line = `[${entry.source || '?'}] ${entry.message}`;
-    node.textContent = `${node.textContent}${node.textContent ? '\n' : ''}${line}`
-      .split('\n').slice(-40).join('\n');
-    node.scrollTop = node.scrollHeight;
+    if (!entry) return;
+    logLine(entry.source || '?', entry.message);
   });
 
   window.gw.onCaptureSaved((payload) => {
@@ -810,7 +816,17 @@ window.gw.onRecordingProgress((p) => {
   const state = row && row.querySelector('.state');
   if (state) {
     const phase = { countdown: '倒计时', capture: '保持不动', ready: '准备做动作', move: '录动作' }[p.phase] || p.phase;
-    state.textContent = p.countdown ? `${phase} ${p.countdown}` : `${phase}：${p.hint || ''}`;
+    // 做动作时把**实测幅度和需要的幅度**显示出来。
+    //
+    // 之前只有一句"做动作，做完停住"，于是用户做完了、它判定幅度不足、录制退出 ——
+    // 而全程没有任何东西告诉他幅度不够。「看着像是意外中断」就是这么来的：失败的原因
+    // 在失败之前是可知的，只是没人显示它。
+    const extent = p.extent !== undefined && p.extentNeeded !== undefined
+      ? ` · 幅度 ${p.extent}/${p.extentNeeded}${p.extent >= p.extentNeeded ? ' ✓' : ''}`
+      : '';
+    state.textContent = p.countdown
+      ? `${phase} ${p.countdown}`
+      : `${phase}：${p.hint || ''}${extent}`;
     state.className = 'state ok';
   }
 });
@@ -818,10 +834,21 @@ window.gw.onRecordingProgress((p) => {
 window.gw.onRecordingResult((r) => {
   recordingAction = null;
   const node = document.getElementById('live');
-  if (r && r.ok) node.textContent = `✅ ${r.action} 录制成功`;
+  let text;
+  if (r && r.ok) text = `✅ ${r.action} 录制成功`;
   else if (r && r.conflictWith) {
-    node.textContent = `❌ 和「${T.ACTIONS[r.conflictWith] ? T.ACTIONS[r.conflictWith].label : r.conflictWith}」的手势太像（距离 ${r.distance}），换一个差别更大的`;
-  } else if (r) node.textContent = `❌ ${r.error || '录制失败'}`;
+    text = `❌ 和「${T.ACTIONS[r.conflictWith] ? T.ACTIONS[r.conflictWith].label : r.conflictWith}」的手势太像（距离 ${r.distance}），换一个差别更大的`;
+  } else if (r) text = `❌ ${r.error || '录制失败'}`;
+  if (text) {
+    node.textContent = text;
+    // ⚠️ 也写进日志窗格。`#live` 每帧都被 sensor 状态覆盖（~30/s），所以录制失败的
+    // 原因写在那里等于**闪一下就没了** —— 用户看到的就只是"录制突然退出了"，而错误
+    // 信息其实是有的。
+    //
+    // 「看着像意外中断」这句描述之所以出现，就是因为唯一说明原因的那行字活不过 33ms。
+    // 日志窗格留 40 行，是这个信息该去的地方。
+    logLine('录制', text);
+  }
   renderRecordables();
 });
 

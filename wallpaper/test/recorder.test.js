@@ -343,4 +343,125 @@ check('保持判定和匹配用同一个旋转容忍', () => {
     '漂移判定没传 rotationTolerance ⟹ 保持时容忍 0°、匹配时容忍 20°,两个判据不一致');
 });
 
+// ── 动作幅度：单帧最大值毫无区分度 ────────────────────────────────────────
+//
+// `peak` 原来取**单帧最大值**，而单帧最大值完全由噪声尖峰决定。实测（静止的手 100 帧对
+// restTemplate）：中位 0.210、90 分位 0.768、**最大 1.794**，门限 0.448 —— 100 帧里 18 帧
+// 单独就超门限 ⟹ **完全不做动作也能"录成"一个动态手势**（实测量到 1.498）。
+//
+// 这和「保持不动」那个 bug 是同一族：那次是"每一帧都不许越线"（尖峰让人永远过不去），
+// 这次是"任一帧越线就算"（尖峰让人永远能过）。**都是拿单帧极值当判据。**
+//
+// 用户报「动作做完了，结果直接退出了，看着像是意外中断」。这一族 bug 的另一半在 UI：
+// 失败原因写进 `#live`，而那个元素每帧被 sensor 状态覆盖（~30/s）⟹ 唯一说明原因的那行
+// 字活不过 33ms，所以"有错误信息"和"没有错误信息"在用户眼里一样。
+
+// 走完整流程：保持不动 → 做动作。`amp` 控制动作幅度，0 = 完全不动（只有噪声）。
+function runDynamic(seed, amp, duration = 900) {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  let out = null;
+  let phase = '';
+  let moveStart = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let lm;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      lm = stroked(noisyFrame(i + 50, seed + 3), Math.min(1, (now - moveStart) / duration), amp);
+    } else {
+      lm = noisyFrame(i, seed);
+    }
+    if (!NOISE.handPresent[(i + seed) % NOISE.handPresent.length]) out = rec.update(null, 0, now);
+    else out = rec.update(P.buildPoseTemplate([lm]), 1, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) return out;
+  }
+  return out || { error: '没收尾' };
+}
+
+// 一段动作：手向一侧移动，同时手形改变。
+// ⚠️ 手形必须变 —— 纯平移会被模板归一化消掉（这个项目里踩过五次）。
+function stroked(lm, t, amp) {
+  const wrist = lm[0];
+  return lm.map((p, k) => {
+    if (k < 5) return { x: p.x + t * amp * 0.25, y: p.y, z: p.z };
+    const f = [8, 12, 16, 20].includes(k) ? 1 : 0.4;
+    return {
+      x: p.x + t * amp * 0.25 + (wrist.x - p.x) * t * amp * 1.4 * f,
+      y: p.y + (wrist.y - p.y) * t * amp * 0.8 * f,
+      z: p.z,
+    };
+  });
+}
+
+check('完全不做动作时录不成动态手势（单帧尖峰不算幅度）', () => {
+  for (let seed = 0; seed < 5; seed += 1) {
+    const out = runDynamic(seed, 0);
+    assert.ok(!out.done,
+      `手一直不动却录成了动态手势(seed ${seed}) —— 幅度判据被噪声尖峰顶过去了`);
+  }
+});
+
+check('做了动作就能录成（快慢都要认）', () => {
+  // ⚠️ 第一版这里写的是 `1.0 * (900 / speed > 1 ? 1 : 1)` —— 一个恒等于 1 的表达式，
+  // 三档 speed 跑的是完全一样的输入。用例全绿而什么都没测，和"忘了写"没区别。
+  // 时长要真的传进 runDynamic 才算测了时长。
+  for (const duration of [400, 900, 2000]) {
+    let ok = 0;
+    for (let seed = 0; seed < 5; seed += 1) if (runDynamic(seed, 1.0, duration).done) ok += 1;
+    assert.ok(ok >= 4, `${duration}ms 的动作只成功 ${ok}/5 —— 这个时长录不进去`);
+  }
+});
+
+check('幅度不够时报出实测值和门限两个数', () => {
+  // 「幅度太小，再做大一点」这句话在用户已经觉得自己做完动作时读起来就是"莫名失败"。
+  // 差 5% 和差 10 倍指向完全不同的处理（再夸张一点 vs 这个动作压根测不到）。
+  const out = runDynamic(0, 0);
+  assert.ok(out.error, '不做动作应该失败');
+  assert.match(out.error, /量到 [\d.]+/, `错误里没有实测幅度：${out.error}`);
+  assert.match(out.error, /需要 [\d.]+/, `错误里没有门限：${out.error}`);
+  assert.match(out.error, /\d+ 帧/, `错误里没有帧数 —— 分不清"做太快"和"幅度不足"：${out.error}`);
+  assert.strictEqual(typeof out.peak, 'number', '没有结构化的 peak 字段');
+});
+
+check('做动作过程中就能看到幅度够没够', () => {
+  // 之前只有一句"做动作，做完停住"，于是用户做完了、判定幅度不足、录制退出 ——
+  // 而全程没有任何东西告诉他幅度不够。这是"看着像意外中断"的直接来源。
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: 0 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  let sawExtent = false;
+  let out = null;
+  for (let i = 0; i < 300; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    out = rec.update(P.buildPoseTemplate([noisyFrame(i, 0)]), 1, now);
+    if (out && out.phase === 'move' && out.extent !== undefined) {
+      sawExtent = true;
+      assert.strictEqual(typeof out.extentNeeded, 'number', '报了幅度却没报门限');
+      assert.ok(out.hint.includes('幅度'), `提示里没提幅度：${out.hint}`);
+      break;
+    }
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(sawExtent, '做动作阶段一次都没报过幅度');
+});
+
+check('sensor 透传 recorder 的全部字段（白名单会静默丢掉新字段）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const call = sensor.slice(sensor.indexOf('sendRecordingProgress('));
+  // ⚠️ 原来是白名单，于是 recorder 新加的 extent/extentNeeded 被静默丢掉 —— 加一个诊断
+  // 字段要改两个文件，而漏掉这一处不报错，只会让面板永远显示不出那个数字。
+  assert.match(call.slice(0, 200), /\.\.\.result/,
+    'sendRecordingProgress 又变回白名单了 —— recorder 新加的字段会被静默丢掉');
+});
+
+check('录制失败写进日志窗格，不只写会被覆盖的那一行', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // `#live` 每帧被 sensor 状态覆盖（~30/s）⟹ 写在那里的失败原因活不过 33ms。
+  // 这就是「看着像是意外中断」的成因：错误信息其实一直都有。
+  const block = dash.slice(dash.indexOf('onRecordingResult'), dash.indexOf('onTrack'));
+  assert.match(block, /logLine\(/,
+    '录制结果没进日志窗格 —— #live 每帧被覆盖，用户看不到失败原因');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
