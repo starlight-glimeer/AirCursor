@@ -19,6 +19,15 @@ const Library = globalThis.GestureWallLibrary;
 // 系统动作（打开应用、媒体键）的定义，主进程和 dashboard 共用一份。
 require('./system.js');
 const System = globalThis.GestureWallSystem;
+// 冲突检测。主进程也要用它 —— 重新启用一个手势时得先确认它和在用的手势不撞，而那个
+// 判断只能在这里做（只有主进程手上有全部录制）。
+//
+// 直接 require 而不是重实现：两份实现只要有一点不同，就会出现"录的时候说没冲突、启用时
+// 说有冲突"这种自相矛盾的提示。这几个模块都挂 globalThis，在 node 里能直接跑。
+require(path.join(__dirname, 'vendor', 'aircursor', 'pose.js'));
+require(path.join(__dirname, 'vendor', 'aircursor', 'motion.js'));
+require('./recorder.js');
+const Recorder = globalThis.GestureWallRecorder;
 // 系统投递层(真鼠标/键盘事件 + 本地语音)。整个抽自 AirCursor 的 main.js,不是重写 ——
 // 那一层的每条约定都是真机烧出来的,见文件头。
 const { createSystemBridge } = require('./system-bridge.js');
@@ -1082,6 +1091,34 @@ ipcMain.handle('clear-recording', (_event, action) => {
 ipcMain.handle('toggle-recording', (_event, action, enabled) => {
   const entry = config.recorded && config.recorded[action];
   if (!entry) return { ok: false, error: '这个动作还没录过' };
+
+  // 重新启用时才检查冲突 —— 那是两个手势真正开始同时生效的那一刻。
+  //
+  // 录制时不检查关掉的手势（用户把 A 关了正是为了腾出那个手型），代价就是这里必须拦：
+  // 不拦的话打开的瞬间两个撞在一起的手势同时活着，而用户得到的是"另一个动作"。
+  // 把成本放在这里，因为这一刻他正在主动打开它，因果关系是清楚的。
+  if (enabled && entry.template) {
+    const tuning = config.gestureTuning || {};
+    const hit = Recorder.conflictingAction(
+      action,
+      entry.template,
+      config.recorded,
+      tuning.matchThreshold || 0.28,
+      ((tuning.rotationTolerance || 20) * Math.PI) / 180,
+      // 只和**在用的**手势比：另一个关着的手势不构成障碍，它自己被打开时也会走这道检查。
+      { againstDisabled: false },
+    );
+    if (hit) {
+      const other = System.systemKindOf(hit.action) || hit.action;
+      broadcast('helper-log', {
+        source: '面板',
+        message: `⚠️ 打不开手势「${action}」：和「${hit.action}」太像（距离 ${hit.distance}，`
+          + `至少要 ${hit.need}）。要用它得先清除或重录其中一个`,
+      });
+      return { ok: false, conflictWith: hit.action, distance: hit.distance, need: hit.need, other };
+    }
+  }
+
   config.recorded = { ...config.recorded, [action]: { ...entry, enabled: !!enabled } };
   writeConfig();
   broadcast('config', config);

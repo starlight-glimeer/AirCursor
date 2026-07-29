@@ -642,4 +642,37 @@ check('单个手势的开关四层都通，而且不需要重录', () => {
     '开关没存在 recorded 上 —— 另开一张表会留下指向已删手势的孤儿');
 });
 
+// ── 转发层不做白名单 ─────────────────────────────────────────────────────
+//
+// ⚠️ **这个错误在同一个文件里犯了三次。**
+//
+//   sendRecordingProgress   丢掉 extent / extentNeeded（幅度诊断显示不出来）
+//   sendRecordingResult(冲突) 丢掉 need / otherDisabled（面板显示「至少要 ?」）
+//   sendRecordingResult(失败) 丢掉 peak / need / frames
+//
+// 前两次是用户报上来的：加了一个诊断字段、测试全绿、真机上那个数字就是不出现。而症状
+// 看起来像 UI 的问题，因为产出端和显示端都是对的 —— 中间那层静默地把它删了。
+//
+// 转发层做白名单，等于给每个新字段埋一个静默失效。这三处传的都是给 UI 看的数据，没有
+// 敏感字段要挡，所以整体透传是对的。
+check('recorder 的结果整体透传，不逐个列字段', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const calls = [...sensor.matchAll(/sendRecording(?:Result|Progress)\(\{([^}]*)/g)]
+    .map((m) => m[1]);
+  assert.ok(calls.length >= 3, `只解析出 ${calls.length} 个转发点，正则失效了`);
+  // 三类要分开：
+  //   透传（带 `...`）                    ✅ 想要的
+  //   自己构造的小载荷（<4 个字段）        ✅ 没有上游字段可丢
+  //   入库载荷（`entry: {`）              ✅ 故意显式列字段 —— 那是要写盘的结构，
+  //                                        多带一个字段会永远留在用户的配置文件里
+  // 剩下的才是"转发上游产出却做了白名单"，也就是会静默吃掉新字段的那种。
+  const suspect = calls.filter((body) => {
+    if (body.includes('...')) return false;
+    if (body.includes('entry:')) return false;
+    return body.split(',').filter((x) => x.trim()).length >= 4;
+  });
+  assert.deepStrictEqual(suspect, [],
+    `这些转发点在做白名单，上游新增的字段会被静默丢掉：${suspect.map((s) => s.slice(0, 60)).join(' | ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

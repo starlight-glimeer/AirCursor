@@ -427,16 +427,20 @@ class Recorder {
 
 // 两个姿势太近不是两个手势：实时姿势会去离它更近的那个模板，于是用户得到的是另一个
 // 动作，而这个看起来就是坏的。宁可在保存时拒绝 —— 那时用户还记得自己刚做了什么。
-function conflictingAction(action, template, recorded, threshold, rotationTolerance) {
+// 和已有手势撞不撞。`againstDisabled` 决定要不要把关掉的手势也算进来。
+//
+// 录制时**不算**关掉的（用户把 A 关了正是为了腾出那个手型），启用时**要算**（打开的
+// 那一刻两个才会真的同时生效）。
+//
+// 上一版录制时也算关掉的，理由是"防止之后重新打开时互抢"。那个风险是真的，但它把成本
+// 放错了时候：用户现在就想用这个手型，而障碍是一个他已经声明不用的动作。检查该发生在
+// **真正会出问题的那一刻** —— 也就是重新启用的时候，那时两个手势的关系才是活的。
+function conflictingAction(action, template, recorded, threshold, rotationTolerance, {
+  againstDisabled = false,
+} = {}) {
   for (const [other, entry] of Object.entries(recorded || {})) {
     if (other === action || !entry || !entry.template) continue;
-    // ⚠️ **关掉的手势照样参与冲突检测。**
-    //
-    // 不检测的话会形成一个陷阱：把 A 关掉、录一个和 A 很像的 B、之后重新打开 A ——
-    // 那一刻两个撞在一起的手势同时生效，而用户得到的是"另一个动作"，看起来就是坏的。
-    // 而那时他已经不记得当初关掉 A 是为了什么。
-    //
-    // 开关管的是"现在要不要用"，冲突管的是"这两个手势能不能共存"，两件事。
+    if (!againstDisabled && entry.enabled === false) continue;
     const distance = Pose.templateDistance(template, entry.template, rotationTolerance);
     if (distance < threshold * Pose.SEPARATION_FACTOR) {
       return {
@@ -444,7 +448,6 @@ function conflictingAction(action, template, recorded, threshold, rotationTolera
         distance: Number(distance.toFixed(3)),
         // 报出"要多远才够" —— 只说"太像了"用户不知道该改多少。
         need: Number((threshold * Pose.SEPARATION_FACTOR).toFixed(3)),
-        // 那个手势当时是关着的话要说清楚，否则用户会去找一个自己看不见在用的东西。
         otherDisabled: entry.enabled === false,
       };
     }

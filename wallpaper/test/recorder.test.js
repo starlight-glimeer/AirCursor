@@ -464,15 +464,47 @@ check('录制失败写进日志窗格，不只写会被覆盖的那一行', () =
     '录制结果没进日志窗格 —— #live 每帧被覆盖，用户看不到失败原因');
 });
 
-// 开关管"现在要不要用"，冲突管"这两个手势能不能共存" —— 两件事。
-check('关掉的手势照样参与冲突检测', () => {
+// 冲突检查发生在**两个手势真正同时生效的那一刻**，而不是更早。
+//
+// 上一版录制时也拿关掉的手势去比，理由是"防止之后重新打开时互抢"。那个风险是真的，但
+// 成本放错了时候：用户把 A 关掉正是为了腾出那个手型，而此刻拦住他的是一个他已经声明
+// 不用的动作。实测撞到过（「我关闭了主体左转，但是还是说太像了」）。
+//
+// 所以：录制时跳过关掉的，**启用时**才检查（主进程的 toggle-recording 里）。
+check('录制时跳过关掉的手势（用户关掉它正是为了腾出那个手型）', () => {
   const a = poseOf({ spread: 120 });
-  // 不检测的话会形成一个陷阱：把 A 关掉 → 录一个和 A 很像的 B → 之后重新打开 A ——
-  // 那一刻两个撞在一起的手势同时生效，而用户得到的是"另一个动作"，看起来就是坏的。
-  // 而那时他已经不记得当初关掉 A 是为了什么。
   const hit = R.conflictingAction('spin', a, { yawLeft: { template: a, enabled: false } }, 0.28, 0);
-  assert.ok(hit, '和一个关着的手势撞了却放过 —— 重新打开它的时候就串了');
+  assert.strictEqual(hit, null, '关掉的手势还在拦录制 —— 那"关闭"就没有意义了');
+});
+
+check('显式要求时才把关掉的算进来（启用那一刻用）', () => {
+  const a = poseOf({ spread: 120 });
+  const hit = R.conflictingAction('spin', a, { yawLeft: { template: a, enabled: false } }, 0.28, 0,
+    { againstDisabled: true });
+  assert.ok(hit, 'againstDisabled 没起作用');
   assert.strictEqual(hit.otherDisabled, true, '没说清对方是关着的');
+});
+
+check('在用的手势照旧拦住录制', () => {
+  // 这条是上面那条的另一半：跳过的只能是关掉的，开着的必须拦。
+  const a = poseOf({ spread: 120 });
+  for (const entry of [{ template: a }, { template: a, enabled: true }]) {
+    const hit = R.conflictingAction('spin', a, { yawLeft: entry }, 0.28, 0);
+    assert.ok(hit, `和在用的手势撞了却放过：${JSON.stringify(Object.keys(entry))}`);
+  }
+});
+
+// 启用那一刻的检查在主进程里，而它必须**只和在用的手势比** —— 另一个关着的手势不构成
+// 障碍，它自己被打开时也会走同一道检查。
+check('启用时的冲突检查在主进程里，且只和在用的比', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const handler = main.slice(main.indexOf("ipcMain.handle('toggle-recording'"));
+  const block = handler.slice(0, handler.indexOf('writeConfig()'));
+  assert.match(block, /conflictingAction/, '启用时没做冲突检查 —— 打开的瞬间两个手势会互抢');
+  assert.match(block, /if \(enabled/, '关闭时也在检查冲突 —— 关掉一个东西不该被拦');
+  assert.match(block, /againstDisabled: false/, '启用检查把关掉的也算进来了');
+  // 重实现一份判据会导致"录的时候说没冲突、启用时说有冲突"这种自相矛盾。
+  assert.match(main, /require\('\.\/recorder\.js'\)/, '主进程没复用 recorder 的冲突判据');
 });
 
 check('冲突报出"至少要多远"，不只是"太像了"', () => {

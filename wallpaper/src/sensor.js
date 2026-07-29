@@ -179,7 +179,8 @@ function tickRecording(list, now) {
   if (!result) return;
 
   if (result.error) {
-    window.gw.sendRecordingResult({ ok: false, action: recordingAction, error: result.error });
+    // 同样透传：result 里带着 peak / need / frames（幅度诊断），白名单会把它们丢掉。
+    window.gw.sendRecordingResult({ ...result, ok: false, action: recordingAction });
     recordingAction = null;
     return;
   }
@@ -214,18 +215,29 @@ function finishRecording(entry) {
     rotationTolerance(),
   );
   if (conflict) {
-    window.gw.sendRecordingResult({
-      ok: false,
-      action,
-      conflictWith: conflict.action,
-      distance: conflict.distance,
-    });
+    // 透传冲突的全部字段，只把 action 改成"和谁撞了"。
+    //
+    // ⚠️ 原来是白名单（只列 conflictWith / distance），于是 `need`（至少要多远）和
+    // `otherDisabled`（对方是关着的）被静默丢掉，面板显示成「至少要 ?」。
+    //
+    // **这是同一个文件里同一个错误的第二处** —— 上一轮刚为 sendRecordingProgress 修过。
+    // 转发层做白名单，等于给每个新字段埋一个静默失效，而症状是"我加的那个信息没显示
+    // 出来"，看起来像 UI 的问题。
+    window.gw.sendRecordingResult({ ...conflict, ok: false, action, conflictWith: conflict.action });
     return;
   }
 
+  // ⚠️ 这一处白名单是**有意的**，和下面那条守卫针对的不是一回事。
+  //
+  // 它不是"转发诊断"，是**构造入库载荷**：`keyframes` 在这里从数组变成了长度（给 UI 显示
+  // 用），完整数组走 `keyframeData`。存进配置的东西该显式列出来 —— 那是要写盘、要长期
+  // 存活、要和读取侧对齐的数据结构，多带一个字段的代价是它永远留在用户的配置文件里。
+  //
+  // 判别：**转发上游产出 → 整体透传；构造持久化结构 → 显式列字段。**
   window.gw.sendRecordingResult({
     ok: true,
     action,
+    // eslint-disable-next-line no-restricted-syntax -- 见上面：这是入库载荷不是转发
     entry: {
       hands: entry.hands,
       template: entry.template,

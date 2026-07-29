@@ -520,7 +520,20 @@ function renderActionGroup(hostId, actions) {
         const on = recorded.enabled !== false;
         const toggle = el('button', on ? 'act' : 'act primary', on ? '关闭' : '启用');
         toggle.onclick = async () => {
-          await window.gw.toggleRecording(action.id, !on);
+          const r = await window.gw.toggleRecording(action.id, !on);
+          // 启用可能被冲突拒绝。不显示的话就是"点了没反应" —— 这个项目里最难查的症状。
+          if (r && !r.ok && r.conflictWith) {
+            const label = T.ACTIONS[r.conflictWith] ? T.ACTIONS[r.conflictWith].label : r.conflictWith;
+            const state = row.querySelector('.state');
+            if (state) {
+              state.textContent = `打不开：和「${label}」太像（距离 ${r.distance}，至少要 ${r.need}）`;
+              state.className = 'state warn';
+            }
+            logLine('面板', `打不开「${action.label}」：和「${label}」太像（${r.distance}/${r.need}）`
+              + '。两个手势里得清除或重录一个');
+          } else if (r && !r.ok) {
+            logLine('面板', `开关失败：${r.error || '未知原因'}`);
+          }
         };
         buttons.append(toggle);
 
