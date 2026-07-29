@@ -74,7 +74,24 @@ function captureFrame(list, now) {
     hands: list.map((hand) => hand.map((p) => [round4(p.x), round4(p.y), round4(p.z || 0)])),
   });
   if (now - capture.startedAt < CAPTURE_MS) return;
-  const payload = { v: 1, capturedAt: new Date().toISOString(), durationMs: CAPTURE_MS, frames: capture.frames };
+  // ⚠️ tuning 必须一起存,而且这不是"顺手带上"。
+  //
+  // 回放探针的每个门限都从这个字段读。缺了不会崩 —— 会**静默回落到默认常数**,然后报出
+  // 一组看起来精确的数字。所以在面板上调过灵敏度之后录的那次,会被拿默认值判定:实测同
+  // 一段数据,带 tuning 报 3.1/30/0.31,不带报 2.6/22/0.28。
+  //
+  // 而这个文件存在的全部目的就是把那些常数从猜变成量。判据错了,整件事反过来 ——
+  // 比崩掉糟,因为崩掉你会知道。
+  const payload = {
+    v: 1,
+    capturedAt: new Date().toISOString(),
+    durationMs: CAPTURE_MS,
+    // 空对象和缺字段一样会让探针回落默认值,所以显式记下"配置当时到没到" ——
+    // 一份 tuningReady:false 的 capture 该被丢掉重录,而不是拿去标定。
+    tuning: tuningOf(),
+    tuningReady: !!(config && config.gestureTuning),
+    frames: capture.frames,
+  };
   capture = null;
   window.gw.saveCapture(payload);
 }
