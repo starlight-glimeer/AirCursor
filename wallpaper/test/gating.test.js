@@ -150,6 +150,12 @@ console.log('\n  WE 网页壁纸接线');
 
 const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
 
+// 去掉整行注释。源码守卫要查"代码里有没有这个写法"，而注释里常常故意写着错法当
+// 反例 —— 全文匹配会把解释当违规。我在这上面栽过两次，所以抽出来共用。
+function codeOnly(source) {
+  return source.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+}
+
 // ⚠️ 这一节全部是"接线漏了但测试全绿"那一类的守卫。我在这个项目里反复栽在同一个形状上：
 // 配置字段没人读、模块没被 require、IPC 没注册 —— 每次纯逻辑用例都是绿的，
 // 而功能是死的（recorded 手势没人读、spawnSync 没导入、录制页面是空的）。
@@ -395,6 +401,34 @@ check('关键点录制带上当时的 tuning（否则探针会拿默认值误判
     sensor.indexOf('function onResults'));
   assert.match(save, /tuning:\s*tuningOf\(\)/,
     'capture 载荷没带 tuning —— 回放探针会静默用默认门限判定');
+});
+
+// ⚠️ WE 网页壁纸的交互主体是鼠标（样本 pointerdown ×9、onClick ×8，"点一下掉流星"
+// 是它的卖点）。而 desktop 策略是真壁纸层、收不到鼠标 ⟹ 装上去是"画面出来了但点它
+// 没反应"，和壁纸本身坏了分不清。所以它必须默认用能收鼠标的策略。
+check('WE 壁纸默认用能收鼠标的层策略（不是 desktop）', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
+    mainSrc.indexOf('function sendWEProperties'));
+  assert.match(fn, /config\.we\.strategy\s*\|\|\s*'bottom-normal'/,
+    'WE 窗口跟着 wallStrategy 走了 —— 默认 desktop 收不到鼠标，交互整个不工作');
+  const defaults = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
+    mainSrc.indexOf('let config = null'));
+  assert.match(defaults, /strategy:\s*'bottom-normal'/, 'we.strategy 的默认值不对');
+});
+
+// 资产解析走 we-host 的纯函数，不在 main.js 里手写 —— 那三种错法（越界/空路径/
+// 百分号编码）都是白屏，而白屏在主进程里没法测。
+check('protocol 用 WE.resolveAsset 而不是自己拼路径', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function registerWEProtocol'),
+    mainSrc.indexOf('function loadWEProject'));
+  assert.match(fn, /WE\.resolveAsset/, 'protocol 没用 resolveAsset');
+  // ⚠️ 裸拼 file:// 会让目录名里的 # ? % 静默截断路径 ⟹ 404 ⟹ 白屏。
+  // 中文和空格恰好没事，所以"拿中文路径测过"证明不了它安全。
+  assert.match(fn, /pathToFileURL/, '裸拼了 file:// —— 目录名带 # ? % 会静默 404');
+  // ⚠️ 只看代码行：注释里把错法写成反例了，全文匹配会把解释当违规。
+  // 这是我第二次踩（上次是 templateAngle: 0 那条），所以这次直接抽成 helper。
+  assert.ok(!/`file:\/\/\$\{/.test(codeOnly(fn)),
+    '还在用模板字符串拼 file:// URL');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

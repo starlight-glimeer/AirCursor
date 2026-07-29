@@ -12,6 +12,7 @@ const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 // 图库的纯逻辑（无 DOM、无 Electron），主进程和 dashboard 共用同一份 —— 两份实现
 // 只要有一点不同，就会出现"面板里显示的和实际存的不一样"。
@@ -267,6 +268,9 @@ const defaultConfig = {
     // 音源。ScreenCaptureKit 抓系统音频，要屏幕录制权限。
     // 'off' 时壁纸会走它自己的空闲动画（样本有 idleWaveEnabled）。
     audioSource: 'off',
+    // WE 壁纸单独的层策略：默认 bottom-normal（能收鼠标），不跟 wallStrategy 走。
+    // 三层景深那边靠手势控制、不需要鼠标，所以两者的最优选择不一样。
+    strategy: 'bottom-normal',
   },
   debug: { showHud: true },
 };
@@ -990,15 +994,16 @@ function registerWEProtocol() {
   protocol.handle(WE_SCHEME, (request) => {
     if (!weProject || !weProject.dir) return new Response('no wallpaper', { status: 404 });
     const url = new URL(request.url);
-    const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '') || weProject.file;
-    const root = path.resolve(weProject.dir);
-    const target = path.resolve(root, rel);
-    // path.resolve 已经把 .. 折叠掉了，所以这里比较前缀就够。加 path.sep 是为了
-    // 不让 /foo/barbaz 通过 /foo/bar 的前缀检查。
-    if (target !== root && !target.startsWith(root + path.sep)) {
-      return new Response('forbidden', { status: 403 });
-    }
-    return net.fetch(`file://${target}`);
+    // 解析逻辑在 we-host.js 里（纯函数、可测）：越界、空路径、百分号编码这三件
+    // 都会错，而每一件的症状都是白屏 —— 看起来像"这个壁纸不兼容"。
+    const target = WE.resolveAsset(url.pathname, weProject.dir, weProject.file);
+    if (!target) return new Response('forbidden', { status: 403 });
+    // ⚠️ 必须用 pathToFileURL，不能裸拼 `file://${target}`。
+    // 目录名里的 # ? % 会被当成 URL 的片段/查询/转义起点 ⟹ 路径被**静默截断**，
+    // 变成 404 ⟹ 白屏，而白屏看起来像"这个壁纸不兼容"。
+    // 实测：'a#b' / 'c?d' / 'e%f' 三种都会错；中文和空格恰好没事，
+    // 所以拿中文路径测过也证明不了裸拼是安全的。
+    return net.fetch(pathToFileURL(target).href);
   });
 }
 
@@ -1028,7 +1033,14 @@ function destroyWEWindow() {
 
 function createWEWindow() {
   if (!weProject) return null;
-  const strategy = WALL_STRATEGIES[strategyIndexById(config.wallStrategy)];
+  // ⚠️ WE 网页壁纸的交互主体是**鼠标**（这个样本 pointerdown ×9、onClick ×8，
+  // "点一下掉流星"就是它的卖点）。而默认策略 desktop 是真壁纸层、**收不到鼠标事件** ——
+  // 装上去会是"画面出来了但点它没反应"，和壁纸坏了分不清。
+  //
+  // 所以 WE 壁纸默认用能收鼠标的那个策略。代价是它会出现在 Mission Control 里，
+  // 而那个代价比"交互整个不工作"小得多。用户仍可用 ⌃⇧L 切回去。
+  const strategyId = config.we.strategy || 'bottom-normal';
+  const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
   const { bounds } = screen.getPrimaryDisplay();
   const win = new BrowserWindow({
     x: bounds.x,

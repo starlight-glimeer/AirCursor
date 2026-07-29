@@ -293,4 +293,50 @@ check('进度非法时给 0 而不是 NaN', () => {
   assert.strictEqual(out.duration, 0);
 });
 
+console.log('\n  资产路径解析（每种错法都是白屏）');
+
+const DIR = '/tmp/wp';
+
+check('入口文件正常解析', () => {
+  assert.strictEqual(WE.resolveAsset('/index.html', DIR, 'index.html'), '/tmp/wp/index.html');
+});
+
+// wall://wallpaper/ 没有路径时要落到 project.json 声明的入口，不是目录本身。
+check('空路径落到入口文件', () => {
+  assert.strictEqual(WE.resolveAsset('/', DIR, 'index.html'), '/tmp/wp/index.html');
+  assert.strictEqual(WE.resolveAsset('', DIR, 'index.html'), '/tmp/wp/index.html');
+});
+
+check('子目录资产正常解析', () => {
+  assert.strictEqual(WE.resolveAsset('/assets/a.js', DIR, 'index.html'), '/tmp/wp/assets/a.js');
+});
+
+// ⚠️ URL 里的路径是百分号编码的。不解码 ⟹ 中文/空格目录名下所有资产 404 ⟹ 白屏。
+check('百分号编码被还原', () => {
+  assert.strictEqual(WE.resolveAsset('/%E4%B8%AD%E6%96%87.js', DIR, 'index.html'),
+    '/tmp/wp/中文.js');
+  assert.strictEqual(WE.resolveAsset('/my%20file.js', DIR, 'index.html'),
+    '/tmp/wp/my file.js');
+});
+
+// 壁纸是第三方 HTML。一个 fetch('../../../etc/passwd') 不该读到东西。
+check('越界路径被拦住（第三方 HTML 不能读文件系统）', () => {
+  assert.strictEqual(WE.resolveAsset('/../../../etc/passwd', DIR, 'index.html'), null);
+  assert.strictEqual(WE.resolveAsset('/..%2F..%2Fetc%2Fpasswd', DIR, 'index.html'), null);
+});
+
+// 前缀检查必须带路径分隔符，否则 /tmp/wpEVIL 会通过 /tmp/wp 的检查。
+check('相邻同前缀目录不算在内（/tmp/wp 不放行 /tmp/wpEVIL）', () => {
+  assert.strictEqual(WE.resolveAsset('/../wpEVIL/x.js', DIR, 'index.html'), null);
+});
+
+// 半个百分号会让 decodeURIComponent 抛。那不是攻击而是坏链接，但也不能当合法路径。
+check('坏编码返回 null 而不是抛', () => {
+  assert.strictEqual(WE.resolveAsset('/%E5%', DIR, 'index.html'), null);
+});
+
+check('没有目录时返回 null', () => {
+  assert.strictEqual(WE.resolveAsset('/index.html', null, 'index.html'), null);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

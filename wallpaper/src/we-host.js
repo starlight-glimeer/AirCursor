@@ -8,6 +8,10 @@
 // WE 没有公开的宿主端规范。所以每条都在注释里写了证据。
 (function (root) {
 
+// 只在 Node 里有。浏览器窗口加载这个文件时用不到 resolveAsset（那是主进程的事），
+// 所以拿不到 path 模块不算错误。
+const nodePath = typeof require === 'function' ? require('node:path') : null;
+
 // WE 给壁纸的音频是固定 128 段 FFT。
 //
 // 证据：样本的 setWallpaperAudioData 里 `const t = e.length || 128`，然后重采样到 512：
@@ -179,7 +183,35 @@ function mediaTimeline(track) {
   };
 }
 
+// 把 wall:// 的 URL 路径解析成壁纸目录下的真实文件路径。
+//
+// 抽出来是因为它有三件事会错，而每一件的症状都是白屏（看起来像"壁纸不兼容"）：
+//   ① 越界：第三方 HTML 里一个 fetch('../../../etc/passwd') 不该读到东西
+//   ② 空路径：wall://wallpaper/ 要落到入口文件，不是目录
+//   ③ 百分号编码：URL 里的 %E5%A3%81 要还原成中文，否则找不到文件
+//
+// 返回 null 表示越界，调用方回 403。
+function resolveAsset(pathname, dir, entryFile) {
+  if (!dir) return null;
+  let rel;
+  try {
+    rel = decodeURIComponent(pathname || '');
+  } catch {
+    // 半个百分号（'%E5%'）会让 decodeURIComponent 抛。那不是攻击也不是越界，
+    // 是坏链接 —— 但也不能当成合法路径拼下去。
+    return null;
+  }
+  rel = rel.replace(/^\/+/, '');
+  const root = nodePath.resolve(dir);
+  const target = nodePath.resolve(root, rel || entryFile || 'index.html');
+  // resolve 已经折叠了 ..，所以比前缀就够。加分隔符是为了不让 /foo/barbaz
+  // 通过 /foo/bar 的前缀检查。
+  if (target !== root && !target.startsWith(root + nodePath.sep)) return null;
+  return target;
+}
+
 root.GestureWallWE = {
+  resolveAsset,
   AUDIO_BINS,
   BANDS,
   PLAYBACK,
