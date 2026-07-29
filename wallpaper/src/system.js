@@ -112,15 +112,30 @@ function openApp(id, run) {
 }
 
 // 一个动作 id 是不是系统动作，以及属于哪类。
+// 指针类动作:移动光标、左键、右键。
+//
+// 和上面两类的区别是**它们需要辅助功能授权**,而缺权限时 `CGEvent.post` 被系统静默丢弃
+// (不报错/不抛异常/helper 自己都看不到)。所以它们单独一类,并且面板要能显示投递层的
+// 健康状态 —— 否则"手势识别到了但光标不动"和 CV 层的问题长得一模一样。
+//
+// `pointer_move` 是连续量,不走这张离散表(它由 input.js 的 pointer 事件每帧驱动)。
+const POINTER_ACTIONS = {
+  click_left: { label: '左键点击', hint: '需要辅助功能授权', command: 'click' },
+  click_right: { label: '右键点击', hint: '需要辅助功能授权', command: 'rightClick' },
+  drag_toggle: { label: '拖拽开关', hint: '做一次按下,再做一次放开', command: 'dragToggle' },
+};
+
 function systemKindOf(id) {
   if (ruleById(id)) return 'app';
   if (MEDIA_KEYS[id]) return 'media';
+  if (POINTER_ACTIONS[id]) return 'pointer';
   return null;
 }
 
 root.GestureWallSystem = {
   APP_RULES,
   MEDIA_KEYS,
+  POINTER_ACTIONS,
   systemActions,
   ruleById,
   openApp,
