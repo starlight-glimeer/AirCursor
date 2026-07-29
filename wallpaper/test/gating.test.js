@@ -514,4 +514,25 @@ check('渲染脚本里调用的本地函数都有定义（拼错的函数名 nod
   }
 });
 
+// ── vendor 副本不能和源头分叉 ────────────────────────────────────────────
+//
+// pose.js / motion.js / tracking.js 的源头在 ../../public/，`npm run vendor` 拷到
+// src/vendor/aircursor/。而 vendor 只在 npm install 时自动跑 ⟹ **改了源头不重跑就静默
+// 用旧副本**。
+//
+// 实测代价：z 归一化的修复提交了、测试全绿，而应用跑的是没修的副本。发现它纯属偶然
+// （新加的用例从 vendor 加载，报 0/40，而同一份逻辑在源头上是 39/40）。
+check('vendor 里的手势判定和 public/ 源头一致（改了源头不重跑 vendor 会静默用旧的）', () => {
+  const root = path.join(__dirname, '..', '..');
+  const stale = [];
+  for (const name of ['pose.js', 'motion.js', 'tracking.js']) {
+    const src = path.join(root, 'public', name);
+    const copy = path.join(__dirname, '..', 'src', 'vendor', 'aircursor', name);
+    if (!fs.existsSync(copy)) continue;   // 没跑过 vendor，别的用例会报
+    if (fs.readFileSync(src, 'utf8') !== fs.readFileSync(copy, 'utf8')) stale.push(name);
+  }
+  assert.deepStrictEqual(stale, [],
+    `这些副本和源头不一致，跑一次 npm run vendor：${stale.join(', ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

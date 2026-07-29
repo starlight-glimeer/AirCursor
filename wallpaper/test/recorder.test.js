@@ -237,4 +237,110 @@ check('不和自己比冲突', () => {
   assert.strictEqual(R.conflictingAction('spin', a, { spin: { template: a } }, 0.28, 0), null);
 });
 
+// ── 保持不动:用真机噪声,而不是合成手 ──────────────────────────────────────
+//
+// 上面所有用例喂的是合成手,而合成手造不出决定这件事成败的那个东西:**尖峰**。
+// 真机 capture 实测(只取手腕帧间移动<0.05掌宽、即手确实没动的 21 个帧对):
+// 形状距离中位 0.058,看着离门很远 —— 但 90 分位 0.180、最大 0.222。丢跟踪后重新
+// 检出会跳,而"1200ms 内每一帧都不越线"= ~28 帧连续,单帧越线率 47% ⟹ 全过概率 0%。
+//
+// 用户症状:「录制的时候卡在请保持不动,我都没有动」。0 次成功,不是"偶尔失败"。
+//
+// 夹具是真机 landmark 提炼的:基准姿势 + 帧间噪声序列 + 丢帧模式,回放时把噪声叠到
+// 一个**完全静止**的基准姿势上。这样"用户确实没动"是构造出来的事实,而噪声的时间
+// 相关结构(自相关 0.303)和尖峰来自真手。
+const NOISE = JSON.parse(fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'real-landmark-noise.json'), 'utf8'));
+
+const S = 1000;
+const basePose = NOISE.basePose.map(([x, y, z]) => ({ x: x * S, y: y * S, z: z * S }));
+
+// 第 seed 次试验的第 i 帧。shape 可选:改变手形(用来构造"手真的动了")。
+function noisyFrame(i, seed, shape) {
+  const n = NOISE.frameNoise[(i * 7 + seed) % NOISE.frameNoise.length];
+  const src = shape ? shape(basePose, i) : basePose;
+  return src.map((p, k) => ({
+    x: p.x + n[k][0] * S, y: p.y + n[k][1] * S, z: p.z + n[k][2] * S,
+  }));
+}
+
+// 跑一次完整的"保持不动",返回是否录成。dt/丢帧模式都来自真机。
+function runHold(seed, { frames = 200, shape = null } = {}) {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('click', { hands: 1, dynamic: false, law: null, now: 0 });
+  for (let i = 0; i < frames; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;   // +2000 跳过倒计时
+    // 丢帧照真机的模式来 —— 这是最常见的尖峰来源,101/118 帧有手,最长丢 726ms。
+    if (!NOISE.handPresent[(i + seed) % NOISE.handPresent.length]) {
+      const out = rec.update(null, 0, now);
+      if (out && out.done) return { ok: true, at: now - 2000 };
+      if (out && out.error) return { ok: false, error: out.error };
+      continue;
+    }
+    const out = rec.update(P.buildPoseTemplate([noisyFrame(i, seed, shape)]), 1, now);
+    if (out && out.done) return { ok: true, at: now - 2000 };
+    if (out && out.error) return { ok: false, error: out.error };
+  }
+  return { ok: false, error: '没收尾' };
+}
+
+check('真机噪声下"保持不动"能录成(修复前是 0/40)', () => {
+  let ok = 0;
+  const times = [];
+  for (let seed = 0; seed < 40; seed += 1) { const r = runHold(seed); if (r.ok) { ok += 1; times.push(r.at); } }
+  times.sort((a, b) => a - b);
+  if (process.env.VERBOSE) console.log(`      成功 ${ok}/40, 耗时中位 ${times[times.length >> 1]}ms 最长 ${times[times.length - 1]}ms`);
+  // 门槛定在 90%:低于这个用户就会遇到"要试好几次",而那和"不能用"体感上没差别。
+  assert.ok(ok >= 36, `40 次里只成功 ${ok} 次 —— 真机上就是"一直说请保持不动"`);
+});
+
+check('手形持续变化时不能录成(否则门就是假的)', () => {
+  // ⚠️ 反向夹具踩过三次,每次都是"看着在动其实没在动":
+  //   ① 纯平移 —— 模板按手腕归一化,平移 2000px 距离仍是 0.0000
+  //   ② curl=min(1,i/25) —— 第 25 帧到底,之后 175 帧是完全静止的手
+  //   ③ 只改一个点 —— 63 维 RMS 会摊平
+  // 有效的反向夹具必须**全程**改变手形,所以用往复。
+  const curl = (base, i) => {
+    const c = (1 - Math.cos((i / 25) * Math.PI)) / 2;
+    return base.map((p, k) => {
+      if (k < 5) return p;
+      const w = [8, 12, 16, 20].includes(k) ? 1
+        : [7, 11, 15, 19].includes(k) ? 0.6 : 0.25;
+      return { x: p.x + (base[0].x - p.x) * c * w * 0.9,
+               y: p.y + (base[0].y - p.y) * c * w * 0.9, z: p.z };
+    });
+  };
+  for (let seed = 0; seed < 6; seed += 1) {
+    const r = runHold(seed, { shape: curl });
+    assert.ok(!r.ok, `手形一直在变却录成了(seed ${seed}) —— 门太松,任何动作都会被当成静止`);
+  }
+});
+
+check('短暂丢帧不清空进度,长时间丢手才重来', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: 0 });
+  rec.start('click', { hands: 1, dynamic: false, law: null, now: 0 });
+  // 先攒够一点进度
+  let out = null;
+  for (let i = 0; i < 10; i += 1) out = rec.update(P.buildPoseTemplate([basePose]), 1, 2000 + i * 43);
+  const before = out.progress;
+  assert.ok(before > 0, '没有攒到进度,后面的比较没意义');
+  // 丢 3 帧(~129ms,宽限内):进度必须继续涨,不能归零
+  for (let i = 0; i < 3; i += 1) out = rec.update(null, 0, 2500 + i * 43);
+  assert.ok(out.progress >= before, `丢 3 帧就把进度清了(${before} → ${out.progress})`);
+  // 丢够 400ms(超宽限):这才是真的把手拿走了
+  for (let i = 0; i < 12; i += 1) out = rec.update(null, 0, 2700 + i * 43);
+  assert.strictEqual(out.progress, 0, '手拿走 400ms 之后仍然在计时 —— 那门就没意义了');
+});
+
+check('保持判定和匹配用同一个旋转容忍', () => {
+  // 不传第三个参数等于 rotationTolerance=0,即"手腕角度一点都不许变",而匹配时容忍
+  // 20° ⟹ 两个判据对同一只手给出不同答案。源码里查,因为这是一个**漏参数**的错,
+  // 行为上只表现为"更严格一点",测不出来。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'recorder.js'), 'utf8');
+  const line = src.split('\n').find((l) => l.includes('Pose.templateDistance(pose, s.reference'));
+  assert.ok(line, '找不到漂移判定那一行 —— 被改写了');
+  assert.match(line, /this\.rotationTolerance/,
+    '漂移判定没传 rotationTolerance ⟹ 保持时容忍 0°、匹配时容忍 20°,两个判据不一致');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
