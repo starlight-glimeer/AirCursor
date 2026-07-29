@@ -23,6 +23,8 @@ require(path.join(vendor, 'motion.js'));
 require(path.join(vendor, 'tracking.js'));
 require('../src/input.js');
 const I = globalThis.GestureWallInput;
+// 倾斜那一节直接测 TiltRatchet 的契约，所以要拿到 Motion 本身。
+const Motion = globalThis.AirCursorMotion;
 
 let passed = 0;
 function check(name, fn) {
@@ -382,6 +384,84 @@ check('reset 清掉序列匹配器的进度', () => {
   matcher.lastFiredAt = 12345;
   input.reset();
   assert.strictEqual(matcher.lastFiredAt, null, '序列匹配器没被重置');
+});
+
+console.log('\n  倾斜参考角（真 bug 的回归守卫）');
+
+// ⚠️ 这一节守的是一个真 bug：我原来传 `templateAngle: 0, // 手掌水平`。
+// poseAngle 量腕→中指根这根轴，而屏幕 y 向下增长 ⟹ 手竖直举起读的是 **-90° 不是 0**。
+//
+// 后果比"角度偏了"严重：delta 恒 90° > 门 22° ⟹ 手一出现就触发一格；之后 armed=false，
+// 而重新武装要 |delta| < 0.45×22 = 9.9°（手水平指向右）⟹ 竖着举手永远回不去。
+// 症状 = "倾斜只响一次就再也不响"，不报错。
+//
+// 是外援 agent 从我这边的调用方式反查出来的（AirCursor f0d30d5），我这边实测坐实。
+check('竖直举手时 delta 是 0，不是 90（参考角用 neutralTiltReference）', () => {
+  const upright = Motion.neutralTiltReference();
+  const ratchet = new Motion.TiltRatchet();
+  const fired = ratchet.update({
+    liveAngle: upright, templateAngle: upright,
+    wristSpeed: 0, triggerDeg: 22, now: 1000,
+  });
+  assert.strictEqual(fired, 0, '手竖着举着静止不动就触发了');
+  assert.ok(Math.abs(ratchet.deltaDeg) < 0.01,
+    `竖直手的 delta 是 ${ratchet.deltaDeg.toFixed(1)}° —— 参考角搞错了`);
+});
+
+// 反例：把旧的错值钉住。这条不是重复上一条 —— 它证明那个值**确实**会坏，
+// 所以如果哪天有人"顺手简化"回 0，失败信息会直接说清为什么不行。
+check('反例：参考角写 0 会让手一出现就误触发', () => {
+  const ratchet = new Motion.TiltRatchet();
+  const fired = ratchet.update({
+    liveAngle: Motion.neutralTiltReference(),   // 竖直手 = -90°
+    templateAngle: 0,                          // 旧的错值
+    wristSpeed: 0, triggerDeg: 22, now: 1000,
+  });
+  assert.notStrictEqual(fired, 0,
+    '旧的错值现在不会误触发了？那约定变了，上一条的理由要重写');
+  assert.ok(Math.abs(ratchet.deltaDeg) > 80,
+    `旧值的 delta 只有 ${ratchet.deltaDeg.toFixed(1)}°，和 90 差太多`);
+});
+
+// 误触发之后棘轮会永久卡死 —— 这是"只响一次"那个症状的机制。
+check('反例续：误触发后棘轮卡死（竖手回不到 9.9° 以内）', () => {
+  const ratchet = new Motion.TiltRatchet();
+  const args = {
+    liveAngle: Motion.neutralTiltReference(), templateAngle: 0,
+    wristSpeed: 0, triggerDeg: 22,
+  };
+  ratchet.update({ ...args, now: 1000 });          // 首帧误触发
+  const second = ratchet.update({ ...args, now: 2000 });
+  assert.strictEqual(second, 0);
+  assert.strictEqual(ratchet.blocked, 'waitingReturn',
+    '卡死的原因不是 waitingReturn 了，机制解释要更新');
+});
+
+check('修好后棘轮能反复触发（抬→回中→再抬）', () => {
+  const upright = Motion.neutralTiltReference();
+  const lifted = upright + 30 * Math.PI / 180;
+  const ratchet = new Motion.TiltRatchet();
+  const base = { templateAngle: upright, wristSpeed: 0, triggerDeg: 22 };
+  assert.notStrictEqual(ratchet.update({ ...base, liveAngle: lifted, now: 1000 }), 0,
+    '抬 30° 没触发');
+  ratchet.update({ ...base, liveAngle: upright, now: 1200 });   // 回中重新武装
+  assert.notStrictEqual(ratchet.update({ ...base, liveAngle: lifted, now: 1400 }), 0,
+    '回中之后再抬不触发 —— 棘轮死了');
+});
+
+// ⚠️ input.js 里不能再出现字面量参考角。那个约定藏在 poseAngle 的实现里，
+// 而参数名叫 templateAngle 会让人以为 0 是"中性"。
+check('input.js 用 neutralTiltReference 而不是字面量', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.match(src, /templateAngle:\s*Motion\.neutralTiltReference\(\)/,
+    'input.js 没用 neutralTiltReference');
+  // ⚠️ 只看代码行，不看注释：上面那段注释里就写着 `templateAngle: 0` 当反例，
+  // 直接全文匹配会把解释当违规（我第一版就是这样红的）。
+  const code = src.split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  assert.ok(!/templateAngle:\s*0\b/.test(code), 'input.js 的代码里还有 templateAngle: 0');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

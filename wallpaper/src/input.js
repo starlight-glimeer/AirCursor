@@ -43,8 +43,24 @@ const SPAN_MAX = 5.2;
 // 实测到 `speed 0.0` 才发现，而我当时正准备去改夹具。
 //
 // 所以进 AirCursor 模块前统一乘到一个虚拟像素空间，出来再除回去。1000 是量级对的
-// 任意值：让 60px 下限相当于 6% 屏宽（合理），1.6px 死区相当于 0.16%（合理）。
+// 任意值：让下限相当于 6% 屏宽（合理），1.6px 死区相当于 0.16%（合理）。
+//
+// ⚠️ 那个"60"现在是 AirCursor 导出的 Pose.PALM_WIDTH_FLOOR_PX（他们在 f0d30d5 里
+// 把这个像素假设显式导出了，起因就是我在这上面栽过）。下面的断言把两边绑住：
+// 如果上游改了下限而这里的 1000 没跟着调，比例会失真而**不会报错** —— 那正是
+// 原来那个 bug 的形状（数值悄悄失效，症状是"手势没反应"）。
 const FILTER_SPACE = 1000;
+
+// 掌宽下限占虚拟屏宽的比例。太大 ⟹ 真实的手总被判成"最小手"，速度全被压扁；
+// 太小 ⟹ 下限形同不存在，抖动会被当成大幅移动。6% 是手举在半米外的量级。
+const PALM_FLOOR_FRACTION = Pose.PALM_WIDTH_FLOOR_PX / FILTER_SPACE;
+if (!(PALM_FLOOR_FRACTION > 0.01 && PALM_FLOOR_FRACTION < 0.15)) {
+  // 启动时就炸，而不是等手势不响。上游改了下限就必须重新想 FILTER_SPACE。
+  throw new Error(
+    `掌宽下限占屏宽 ${(PALM_FLOOR_FRACTION * 100).toFixed(1)}%，超出合理区间 ——`
+    + ` AirCursor 的 PALM_WIDTH_FLOOR_PX 变成 ${Pose.PALM_WIDTH_FLOOR_PX} 了，`
+    + ' FILTER_SPACE 要跟着调');
+}
 
 // 把一只手的关键点从归一化升到 FILTER_SPACE 的像素空间。
 function toPixels(lm) {
@@ -296,8 +312,19 @@ class GestureInput {
 
   // 手掌上下倾斜 → 视角上看/下看，走棘轮所以可重复。
   //
-  // 参考角度用"手掌水平"（0 rad）而不是录制时的姿势：壁纸没有录制流程，用户直接
-  // 举手就该能用。代价是"水平"这个基准因人而异，所以触发角比 AirCursor 的默认更大。
+  // 参考角度用"手竖直举起"而不是录制时的姿势：壁纸没有录制流程，用户直接举手就该能用。
+  //
+  // ⚠️ 这里原来写的是 `templateAngle: 0, // 手掌水平`，那是个真 bug（外援 agent 从
+  // 我这边的调用方式反查出来的，f0d30d5）。poseAngle 量的是腕→中指根这根轴，而屏幕
+  // y 向下增长 ⟹ **手竖直举起读出的是 -90° 不是 0°**。
+  //
+  // 实测后果比"角度偏了"严重：delta 恒为 90°，而触发门 22° ⟹ 手一出现就触发一格；
+  // 之后 armed=false，而重新武装要 |delta| < 0.45×22 = 9.9°，也就是手要水平指向右侧。
+  // 竖着举手永远回不去 ⟹ **一次误触发，然后棘轮永久卡死在 waitingReturn**。
+  // 症状是"倾斜手势只响一次就再也不响"，而且不报错。
+  //
+  // 现在用 Motion.neutralTiltReference()（= -90°，即竖直手）。⚠️ 别再写字面量：
+  // 那个约定藏在 poseAngle 的实现里，而参数名叫 templateAngle 会让人以为 0 是中性。
   updateTilt(mirrored, palm, scale, now, config) {
     if (mirrored.length !== 1) return null;
     const angle = Pose.poseAngle(mirrored);
@@ -311,7 +338,9 @@ class GestureInput {
 
     const fired = this.ratchet.update({
       liveAngle: angle,
-      templateAngle: 0,   // 手掌水平
+      // 没有录制姿势时的中性参考。有录制姿势的话该传它存的 angle —— 那比任何常数
+      // 都好，因为那是这个用户的手真正会回到的位置。
+      templateAngle: Motion.neutralTiltReference(),
       wristSpeed,
       triggerDeg,
       now,
