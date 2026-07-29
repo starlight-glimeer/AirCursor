@@ -309,9 +309,15 @@ class GestureInput {
     })();
     const triggerDeg = (config && config.tiltTriggerDeg) || 22;
 
+    // 参考角必须是"手举着不动时 poseAngle 实际报的值"，不是 0。
+    //
+    // poseAngle 量腕→中指根这根轴，而屏幕 y 向下增长 ⟹ **一只正常竖着的手是 -90°**。
+    // 原来这里填 0 并注释"手掌水平"，于是 delta 恒为 ~88°、远超触发角 22° ⟹ 举手
+    // 就一直触发。是手势模块那侧改的：现在 `neutralTiltReference()` 把这个约定显式
+    // 导出，不用调用方猜。
     const fired = this.ratchet.update({
       liveAngle: angle,
-      templateAngle: 0,   // 手掌水平
+      templateAngle: Motion.neutralTiltReference(),
       wristSpeed,
       triggerDeg,
       now,

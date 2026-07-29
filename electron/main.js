@@ -1175,6 +1175,38 @@ ipcMain.on("aircursor:metrics", (_event, payload) => {
     dashboardWindow.webContents.send("aircursor:metrics", payload);
   }
 });
+// Raw landmark captures land next to the reports, since both are "what actually
+// happened on a real Mac" and both get handed back to the cloud side.
+ipcMain.on("aircursor:save-capture", (_event, payload) => {
+  try {
+    const dir = path.join(app.getPath("userData"), "captures");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `landmarks-${Date.now()}.json`);
+    fs.writeFileSync(file, JSON.stringify(payload));
+    const frames = payload?.frames?.length ?? 0;
+    const withHands = payload?.frames?.filter((f) => f.hands?.length).length ?? 0;
+    broadcast("aircursor:overlay-status", {
+      rule: `关键点已存：${frames} 帧（${withHands} 帧有手）→ ${file}`,
+    });
+  } catch (error) {
+    // Reported rather than swallowed: a capture that silently failed to write would
+    // send the user off to look for a file that is not there.
+    broadcast("aircursor:overlay-status", { rule: `关键点保存失败：${error.message}` });
+  }
+});
+ipcMain.handle("aircursor:start-capture", () => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return { ok: false, reason: "透明层没有运行" };
+  }
+  overlayWindow.webContents.send("aircursor:start-capture");
+  return { ok: true };
+});
+ipcMain.handle("aircursor:reveal-captures", () => {
+  const dir = path.join(app.getPath("userData"), "captures");
+  fs.mkdirSync(dir, { recursive: true });
+  shell.openPath(dir);
+  return { ok: true, dir };
+});
 ipcMain.handle("aircursor:write-report", (_event, note) => writeReport(note));
 ipcMain.handle("aircursor:reveal-reports", () => {
   const dir = path.join(app.getPath("userData"), "reports");

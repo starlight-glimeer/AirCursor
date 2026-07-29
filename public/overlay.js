@@ -33,6 +33,8 @@ const aircursor = window.aircursor || {
   onVoiceCommand: () => {},
   onRecording: () => {},
   onResetMetrics: () => {},
+  saveCapture: () => {},
+  onStartCapture: () => {},
 };
 
 const settings = {
@@ -199,6 +201,8 @@ const state = {
     sequenceProgress: 0,
     sequenceBlocked: null,
   },
+  // Non-null while a raw landmark capture is running.
+  capture: null,
   drag: { active: false, missingSince: 0 },
   pinch: {
     active: false,
@@ -1520,6 +1524,60 @@ function saveMotionRecording(recording, law, floor) {
   );
 }
 
+// Raw landmark capture: five seconds of exactly what MediaPipe reported.
+//
+// Every test on both sides of this project — mine and the wallpaper module's — runs
+// on synthetic hands, and synthetic hands are missing the one thing that decides
+// whether a gesture works: real tracking noise. Not its magnitude (that much is
+// measurable from a report) but its *time correlation* — consecutive frames drift
+// together, and a re-detection after a dropout jumps. Independent per-frame noise,
+// which is what a fixture produces, averages itself out; correlated noise does not.
+//
+// That difference is not theoretical. It decides whether the sequence matcher's
+// midpoint rule holds on a real hand, and neither of us can answer it: I cannot
+// build a credible correlated-noise fixture without knowing the structure, and
+// guessing a correlation parameter is the same mistake as a fixture that varies a
+// dimension the code is insensitive to.
+//
+// So this records the real thing. One file, replayable offline, no camera needed
+// afterwards — which turns every existing probe from "the mechanism is sound" into
+// "a real hand can do this".
+const CAPTURE_MS = 5000;
+
+function startLandmarkCapture() {
+  state.capture = { startedAt: performance.now(), frames: [], tuning: tuning() };
+  aircursor.status({ rule: `正在录制原始关键点 ${CAPTURE_MS / 1000} 秒…` });
+}
+
+function captureLandmarks(hands, handedness, now) {
+  const capture = state.capture;
+  if (!capture) return;
+  // Stored verbatim, including the frames where nothing was detected: a gap is data.
+  // Dropping empty frames would erase exactly the dropout structure this exists to
+  // record, and the replay would then be of a hand that was never lost.
+  capture.frames.push({
+    t: Math.round(now - capture.startedAt),
+    hands: hands.map((hand) => hand.map((p) => [round4(p.x), round4(p.y), round4(p.z || 0)])),
+    handedness: handedness.map((h) => h?.label || ""),
+  });
+  if (now - capture.startedAt < CAPTURE_MS) return;
+
+  state.capture = null;
+  aircursor.saveCapture({
+    v: 1,
+    capturedAt: new Date().toISOString(),
+    // The tuning in force matters: a replay judged against different constants than
+    // the ones that produced it is a different experiment.
+    tuning: capture.tuning,
+    durationMs: CAPTURE_MS,
+    frames: capture.frames,
+  });
+}
+
+function round4(value) {
+  return Math.round(value * 10000) / 10000;
+}
+
 function burst(x, y, count, color) {
   const maxParticles = settings.effects === "rich" ? 72 : 28;
   if (state.particles.length > maxParticles) {
@@ -1835,6 +1893,7 @@ async function setupHands() {
     state.resultAt = performance.now();
     metrics.markHands(state.hands.length, performance.now());
     metrics.markPipeline(state.frameCapturedAt, state.resultAt);
+    captureLandmarks(state.hands, state.handedness, state.resultAt);
   });
 
   const camera = new Camera(video, {
@@ -1968,6 +2027,7 @@ aircursor.onSettings((next) => {
 });
 // The rolling means live here, so a reset from the dashboard has to reach the
 // overlay; clearing only main's log would keep reporting the old numbers.
+aircursor.onStartCapture?.(() => startLandmarkCapture());
 aircursor.onResetMetrics(() => {
   metrics.reset();
   pointerFilter.reset();

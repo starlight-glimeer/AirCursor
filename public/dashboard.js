@@ -21,6 +21,8 @@ const pointerBanner = document.getElementById("pointerBanner");
 const diagnostics = document.getElementById("diagnostics");
 const diagnosticsPanel = document.getElementById("diagnosticsPanel");
 const overlayLog = document.getElementById("overlayLog");
+const captureLandmarks = document.getElementById("captureLandmarks");
+const revealCaptures = document.getElementById("revealCaptures");
 
 let settings = {
   overlayVisible: true,
@@ -698,6 +700,18 @@ document.querySelectorAll(".gesture-recorder [data-record-action]").forEach((but
 document.querySelectorAll(".gesture-recorder [data-clear-action]").forEach((button) => {
   button.addEventListener("click", () => clearRecorded(button.dataset.clearAction));
 });
+// Raw landmark capture. Every test on both sides of this project runs on synthetic
+// hands, and what they cannot reproduce is the time correlation of real tracking
+// noise — consecutive frames drift together, a re-detection jumps. This records the
+// real thing so probes can replay it instead of guessing at it.
+captureLandmarks.addEventListener("click", async () => {
+  const result = await window.aircursor.startCapture();
+  ruleState.textContent = result.ok
+    ? "正在录制原始关键点 5 秒：把手放进画面，做几个平时会用的动作"
+    : `无法录制：${result.reason}`;
+});
+revealCaptures.addEventListener("click", () => window.aircursor.revealCaptures());
+
 document.querySelectorAll(".gesture-recorder [data-enabled-action]").forEach((input) => {
   input.addEventListener("change", () => setActionEnabled(input.dataset.enabledAction, input.checked));
 });

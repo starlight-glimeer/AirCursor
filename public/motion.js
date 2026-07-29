@@ -63,6 +63,29 @@ function toDegrees(radians) {
 // hand and a real one carries tracking noise on top of the tilt.
 const DEGREES_PER_DISTANCE = 1 / 0.0196;
 
+// The angle `poseAngle` reports for a hand held upright, fingers up.
+//
+// It measures the wrist -> middle-knuckle axis, and screen y grows downward, so an
+// upright hand is about -90 degrees, not 0. That is not obvious from the name
+// `templateAngle`, and a caller with no recorded pose to compare against will
+// reasonably pass 0 meaning "neutral" — which makes the delta a constant ~88
+// degrees and fires the ratchet permanently from the moment a hand appears.
+//
+// That is exactly what happened in the wallpaper module: `templateAngle: 0, //
+// 手掌水平`. The bug is mine rather than the caller's, since the API offered no way
+// to say "neutral" without knowing the convention. So the convention is now a named
+// export, and `neutralTiltReference()` is what a caller without a recorded pose
+// should use.
+const UPRIGHT_HAND_ANGLE = -Math.PI / 2;
+
+// Reference angle for tilt when there is no recorded rest pose to measure against.
+// Callers that do have one should pass its stored `angle` instead — the recorded
+// pose is a better neutral than any constant, because it is the position this
+// particular user's hand actually returns to.
+function neutralTiltReference() {
+  return UPRIGHT_HAND_ANGLE;
+}
+
 function maxUsableTiltDeg(rotationToleranceDeg, matchThreshold) {
   const headroom = (matchThreshold || 0) * DEGREES_PER_DISTANCE;
   return (rotationToleranceDeg || 0) + headroom * 0.5;
@@ -502,6 +525,8 @@ class SequenceMatcher {
 }
 
 root.AirCursorMotion = {
+  UPRIGHT_HAND_ANGLE,
+  neutralTiltReference,
   KEYFRAME_SPACING,
   MAX_KEYFRAMES,
   MIN_KEYFRAMES,

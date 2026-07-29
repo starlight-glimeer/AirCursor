@@ -11,8 +11,23 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// Index-knuckle to pinky-knuckle: the one span on a hand that barely changes with
+// pose, so it works as the scale reference.
+//
+// ⚠️ The floor is in PIXELS. This whole file assumes pixel-scale coordinates, and
+// that assumption is baked into constants rather than stated anywhere — which cost
+// the wallpaper module real debugging time: feeding MediaPipe's normalized 0..1
+// landmarks straight in does not degrade accuracy, it clamps every palm width to 60,
+// so every speed normalized by palm width divides by 60 and comes out ~0. Swipes
+// then never fire, and the symptom is silence rather than an error.
+//
+// Callers working in normalized space must scale up first (the wallpaper module
+// multiplies by 1000 on the way in and divides on the way out). Exported as
+// PALM_WIDTH_FLOOR_PX so that requirement is at least discoverable.
+const PALM_WIDTH_FLOOR_PX = 60;
+
 function palmWidthOf(points) {
-  return Math.max(60, dist(points[5], points[17]));
+  return Math.max(PALM_WIDTH_FLOOR_PX, dist(points[5], points[17]));
 }
 
 function clamp(value, min, max) {
@@ -317,6 +332,7 @@ const ADVISORY_FACTOR = 2;
 
 root.AirCursorPose = {
   Z_WEIGHT,
+  PALM_WIDTH_FLOOR_PX,
   GestureResolver,
   SEPARATION_FACTOR,
   ADVISORY_FACTOR,
