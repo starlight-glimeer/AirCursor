@@ -7,7 +7,7 @@
 //
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -19,6 +19,9 @@ const Library = globalThis.GestureWallLibrary;
 // 系统动作（打开应用、媒体键）的定义，主进程和 dashboard 共用一份。
 require('./system.js');
 const System = globalThis.GestureWallSystem;
+// 系统投递层(真鼠标/键盘事件 + 本地语音)。整个抽自 AirCursor 的 main.js,不是重写 ——
+// 那一层的每条约定都是真机烧出来的,见文件头。
+const { createSystemBridge } = require('./system-bridge.js');
 
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
@@ -229,6 +232,11 @@ const defaultConfig = {
   // 壁纸上画手骨架和指针位置。默认开：录制和调手感时看不见手在哪，反馈只有文字，
   // 而"手势没反应"和"手没被检测到"是两件需要分开的事。
   showHands: true,
+  // 手 → 真光标。默认关:一开摄像头就抢走鼠标,用户会没法用鼠标去把它关掉。
+  // 需要辅助功能授权,而缺权限时 CGEvent 静默丢弃 —— 所以面板要显示投递层健康状态。
+  controlCursor: false,
+  // 每个动作上一版的录制,一级回退用。见 rememberPrevious。
+  recordUndo: {},
   // 图库：用户上传的素材。数组而不是字典，因为顺序有意义（新加的在后面）。
   library: [],
   // 已录制的手势，动作 id → { hands, template, keyframes, trigger, ... }。
@@ -257,7 +265,7 @@ function readConfig() {
 // mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
 // 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
 // 预设都在下次启动时被静默丢掉。
-const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions']);
+const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions', 'recordUndo']);
 
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
@@ -292,6 +300,39 @@ function broadcast(channel, payload) {
 // ---------------------------------------------------------------------------
 // Windows
 // ---------------------------------------------------------------------------
+
+// 一个实例,主进程持有。它需要 broadcast 和"语音说了什么"的回调,所以是工厂而非裸导出。
+const systemBridge = createSystemBridge({
+  // 仓库根,不是 wallpaper/ —— native/*.swift 只有一份,在根目录。早先我拷了一份到
+  // wallpaper/native/ 又删了:两份 Swift 源码意味着两个 hash、两次辅助功能授权。
+  root: path.join(__dirname, '..', '..'),
+  broadcast,
+  // 语音和手势走同一个动作分发:说"打开网易云"和做那个手势应该等价。
+  onVoiceText: (phrase) => handleVoiceText(phrase),
+});
+
+// 语音文本 → 动作。只认能明确对上的,认不出的报出来而不是静默丢弃 —— 否则"我说了它没反应"
+// 和"它没听见"分不开。
+const VOICE_PATTERNS = [
+  { match: /网易云|音乐/, action: 'open_netease' },
+  { match: /浏览器|chrome|谷歌/i, action: 'open_browser' },
+  { match: /访达|finder/i, action: 'open_finder' },
+  { match: /暂停|播放|停一下/, action: 'media_playpause' },
+  { match: /下一首|下一曲/, action: 'media_next' },
+  { match: /上一首|上一曲/, action: 'media_prev' },
+];
+
+function handleVoiceText(phrase) {
+  const text = String(phrase || '').trim();
+  if (!text) return;
+  const hit = VOICE_PATTERNS.find((p) => p.match.test(text));
+  if (!hit) {
+    broadcast('voice-status', { text: `没匹配上:${text}` });
+    return;
+  }
+  const result = runSystemAction(hit.action);
+  broadcast('voice-status', { text: `${result.ok ? '已执行' : '执行失败'}:${text}` });
+}
 
 function createWallWindow(strategyId) {
   const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
@@ -661,6 +702,10 @@ ipcMain.handle('delete-preset', (_event, name) => {
 // 两条都**不需要辅助功能授权** —— 这是刻意选的。移动光标/点击那条链需要授权，而缺权限时
 // CGEvent 是静默丢弃（不报错、不抛异常），AirCursor 在那上面烧掉四轮 debug。先做零风险
 // 的这半，光标控制等有健康状态可查再说。
+// 拖拽是"按住"语义,而手势事件是一次性的 —— 所以用开关:做一次按下,再做一次放开。
+// 直接映射成"手势在就按住"做不到,因为手势事件不带持续状态。
+let dragHeld = false;
+
 function runSystemAction(id) {
   const kind = System.systemKindOf(id);
   if (!kind) return { ok: false, error: 'NOT_SYSTEM_ACTION' };
@@ -678,6 +723,25 @@ function runSystemAction(id) {
     if (args) console.log(`[system] ${id} → open ${args.join(' ')}`);
     else console.warn(`[system] ${id} 全部候选都失败了`);
     return { ok: !!args, via: args };
+  }
+
+  if (kind === 'pointer') {
+    // 这一类走 systemBridge,也就是 CGEvent。缺授权时它静默丢弃,所以健康状态一起返回 ——
+    // 让调用方能区分"发出去了"和"系统收到了",那两件事在 AirCursor 上分不开时烧掉四轮。
+    const meta = System.POINTER_ACTIONS[id];
+    if (!meta) return { ok: false, error: 'UNKNOWN_POINTER_ACTION' };
+    if (meta.command === 'dragToggle') {
+      dragHeld = !dragHeld;
+      systemBridge.send({ type: dragHeld ? 'down' : 'up' });
+      return { ok: true, held: dragHeld, health: systemBridge.health() };
+    }
+    systemBridge.send({ type: meta.command });
+    const health = systemBridge.health();
+    // 没授权就直说,而不是报 ok:true 让用户以为点了
+    if (health.trusted === false) {
+      return { ok: false, error: 'NO_ACCESSIBILITY', health };
+    }
+    return { ok: true, health };
   }
 
   const meta = System.MEDIA_KEYS[id];
@@ -714,6 +778,19 @@ ipcMain.on('gesture', (_event, payload) => {
     return;
   }
 
+  // 连续指针:手 → 真光标。这是"手势替代鼠标"里最实在的一条,也是唯一需要每帧投递的。
+  //
+  // 默认关着,由 config.controlCursor 开。理由不是保守:一开摄像头就抢走鼠标会让人没法
+  // 用电脑去关掉它 —— 那是个能把自己锁在外面的开关。
+  if (payload && payload.action === 'pointer' && config.controlCursor) {
+    const display = screen.getPrimaryDisplay().bounds;
+    systemBridge.send({
+      type: 'move',
+      x: display.x + payload.x * display.width,
+      y: display.y + payload.y * display.height,
+    });
+  }
+
   if (wallWindow && !wallWindow.isDestroyed()) wallWindow.webContents.send('gesture', payload);
   if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.webContents.send('gesture', payload);
 });
@@ -721,6 +798,40 @@ ipcMain.on('gesture', (_event, payload) => {
 // 面板上手动试一个系统动作。录制之前先确认"这个动作在我机器上能用"，否则录完发现
 // 打不开应用，分不清是手势没认出来还是 App 找不到。
 ipcMain.handle('test-system-action', (_event, id) => runSystemAction(id));
+
+// 投递层的健康状态。这是"手势没反应"时第一个该看的东西:识别成功和事件送达是两个
+// 独立的 claim,而缺权限时 CGEvent 静默丢弃 —— AirCursor 为此烧掉四轮。
+ipcMain.handle('pointer-health', () => systemBridge.health());
+
+// 录 5 秒原始关键点。两边所有用例都是合成手,而合成手缺的是真机噪声的**时间相关结构**
+// (相邻帧一起漂、丢跟踪后重新检出会跳),而那个差异决定判定层在真手上成不成立。
+ipcMain.handle('start-capture', () => {
+  if (!sensorWindow || sensorWindow.isDestroyed()) {
+    return { ok: false, reason: '摄像头没有开着 —— 先勾上「开启摄像头手势」' };
+  }
+  sensorWindow.webContents.send('start-capture');
+  return { ok: true };
+});
+ipcMain.on('save-capture', (_event, payload) => {
+  try {
+    const dir = path.join(app.getPath('userData'), 'captures');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `landmarks-${Date.now()}.json`);
+    fs.writeFileSync(file, JSON.stringify(payload));
+    const frames = payload?.frames?.length ?? 0;
+    const withHands = payload?.frames?.filter((f) => f.hands?.length).length ?? 0;
+    broadcast('capture-saved', { file, frames, withHands });
+  } catch (error) {
+    // 报出来而不是吞掉:静默失败会让用户去找一个不存在的文件。
+    broadcast('capture-saved', { error: error.message });
+  }
+});
+ipcMain.handle('reveal-captures', () => {
+  const dir = path.join(app.getPath('userData'), 'captures');
+  fs.mkdirSync(dir, { recursive: true });
+  shell.openPath(dir);
+  return { ok: true, dir };
+});
 
 ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
 
@@ -759,8 +870,41 @@ ipcMain.handle('cancel-recording', () => {
   return { ok: true };
 });
 
+// 录制前先记住上一版,这样录坏了能退回。
+//
+// 没有回退,重录就是破坏性的:唯一能知道新的好不好的办法是留下它,而如果更差,旧的已经
+// 没了 —— 于是人根本不敢重录。而现在没有内置手型兜底,录制是唯一的路。
+//
+// 按动作各存一份,不是全局快照:录 B 不该吃掉 A 的回退,那是两件无关的编辑。
+function rememberPrevious(action) {
+  const undo = { ...(config.recordUndo || {}) };
+  // 用 null 表示"之前什么都没有",而不是不存这一条 —— 否则第一次录完点回退会把
+  // 刚录的又"恢复"一遍。
+  undo[action] = config.recorded?.[action] ?? null;
+  config.recordUndo = undo;
+}
+
+ipcMain.handle('undo-recording', (_event, action) => {
+  const undo = config.recordUndo || {};
+  if (!(action in undo)) return { ok: false, reason: '没有可回退的录制' };
+  const next = { ...config.recorded };
+  const previous = undo[action];
+  if (previous) next[action] = previous;
+  else delete next[action];
+  config.recorded = next;
+  // 用掉就删:一级回退,连点两次不该把同一版"恢复"两遍(那看起来生效了但什么都没变)。
+  const nextUndo = { ...undo };
+  delete nextUndo[action];
+  config.recordUndo = nextUndo;
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true, restored: !!previous };
+});
+
 ipcMain.handle('clear-recording', (_event, action) => {
   if (!config.recorded || !(action in config.recorded)) return { ok: false };
+  // 清除同样是破坏性的,所以一样可回退。
+  rememberPrevious(action);
   const next = { ...config.recorded };
   delete next[action];
   // 整个替换：recorded 在 OPAQUE_DICTS 里，传一个缺键的对象删不掉它。
@@ -784,6 +928,8 @@ ipcMain.on('recording-result', (_event, payload) => {
   // 成功就落盘。sensor 只负责产出模板，不碰配置 —— 两边都能写配置的话，"谁把它改了"
   // 就会变成一个需要查的问题。
   if (payload && payload.ok && payload.action && payload.entry) {
+    // 先记住上一版再覆盖,否则录坏了没有退路。
+    rememberPrevious(payload.action);
     config.recorded = { ...(config.recorded || {}), [payload.action]: payload.entry };
     writeConfig();
     broadcast('config', config);
@@ -814,6 +960,10 @@ app.whenReady().then(() => {
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.
+  // 投递层最后启动:它要现场编译 Swift,失败不该拖住窗口出现。start() 自己带 try/catch,
+  // 因为 AirCursor 上这里抛出去会让 pointerHelper 永远 undefined 而且不报错。
+  systemBridge.start();
+
   globalShortcut.register('Control+Shift+W', openDashboard);
   globalShortcut.register('Control+Shift+L', cycleStrategy);
   globalShortcut.register('Control+Shift+R', () => broadcast('reset-view', {}));
@@ -826,4 +976,9 @@ app.whenReady().then(() => {
 // Deliberately does not quit: closing the settings window is not quitting the
 // wallpaper. ⌃⇧Q is the way out.
 app.on('window-all-closed', () => {});
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  // helper 是独立进程,不会因为主进程退出而自动结束 —— 留着会占住摄像头/麦克风,
+  // 而且下次启动会看到"两个 helper 在跑"。
+  systemBridge.stop();
+});

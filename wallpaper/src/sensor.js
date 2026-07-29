@@ -43,9 +43,49 @@ function sendHands(list) {
   });
 }
 
+// 录 5 秒原始关键点。
+//
+// 从 AirCursor 搬过来的,而它存在的理由对两边都成立:所有用例都是合成手,而合成手缺的
+// 不是噪声的**大小**(那从报告里能算)而是它的**时间相关结构** —— 相邻帧一起漂、丢跟踪
+// 后重新检出会跳。独立同分布的噪声(夹具产的那种)会自己平均掉,相关噪声不会。
+//
+// 这个差异决定判定层在真手上成不成立,而两边都答不了:没有真机 landmark 就造不出可信的
+// 相关噪声夹具,硬猜一个相关性参数就是"夹具落在不敏感维度上"那个坑。
+const CAPTURE_MS = 5000;
+let capture = null;
+
+if (window.gw.onStartCapture) {
+  window.gw.onStartCapture(() => {
+    capture = { startedAt: performance.now(), frames: [] };
+    sendStatus('正在录制原始关键点 5 秒…');
+  });
+}
+
+function round4(v) {
+  return Math.round(v * 10000) / 10000;
+}
+
+function captureFrame(list, now) {
+  if (!capture) return;
+  // 空帧也存:丢跟踪本身就是数据,滤掉它等于把要记录的结构擦掉,回放出来的会是一只
+  // 从没丢过的手。
+  capture.frames.push({
+    t: Math.round(now - capture.startedAt),
+    hands: list.map((hand) => hand.map((p) => [round4(p.x), round4(p.y), round4(p.z || 0)])),
+  });
+  if (now - capture.startedAt < CAPTURE_MS) return;
+  const payload = { v: 1, capturedAt: new Date().toISOString(), durationMs: CAPTURE_MS, frames: capture.frames };
+  capture = null;
+  window.gw.saveCapture(payload);
+}
+
 function onResults(results) {
   const now = performance.now();
   const list = results.multiHandLandmarks || [];
+
+  // 关键点录制在最前面,而且**在录制守卫之前** —— 它记的是原始输入,和手势判定无关,
+  // 所以做录制动作那段时间的数据同样有价值(那正是真手在做动作的样子)。
+  captureFrame(list, now);
 
   // 录制中：整帧交给 recorder，不发任何手势事件 —— 否则做录制动作时会顺带触发
   // 已绑的动作，那正是 AirCursor 真机踩过的"录制被已有手势打断"。
