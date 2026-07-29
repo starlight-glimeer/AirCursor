@@ -406,6 +406,23 @@ function buildKeyframes(samples, threshold, distance) {
   return frames.map((f) => ({ template: f.template, offsetMs: Math.round(f.at - start) }));
 }
 
+// ⚠️ A fixed radius cannot work here, and the reason is arithmetic. Measured on
+// real landmarks: consecutive frames of a hand mid-movement are **0.499** apart
+// (median), while the match threshold is 0.28. One frame of hand travel already
+// exceeds the ball used to decide "reached" — so the sequence could never be
+// walked, no matter how the recording went. Diagnostics on a replay of the very
+// movement that was recorded: stuck at step 2 of 10 with distance 1.361 against a
+// 0.28 gate, while *not moving at all* scored 0.429.
+//
+// Making keyframes denser does not help: sampling the same movement at 20 frames
+// instead of 10 leaves the median gap at 0.510, because the gap is dominated by
+// per-frame noise, not by how finely the movement is cut.
+//
+// So "arrived" has to scale with the local gap. 0.55 of the way from the previous
+// keyframe to the next: past the midpoint (which is what the monotonic rule below
+// requires anyway) with a little margin for noise.
+const KEYFRAME_ARRIVAL = 0.55;
+
 // 单次宽限的上限（毫秒）。见 SequenceMatcher.excuse：它限的是**一次调用**跨越的时长，
 // 而逐帧调用时那就是一个帧间隔。250 和保持判定、丢帧宽限用的是同一个值。
 const EXCUSE_MAX_GAP_MS = 250;
@@ -479,8 +496,22 @@ class SequenceMatcher {
       // 差 10 倍 —— 前者要再摆准一点，后者说明这个起始姿势录坏了或者根本不是这个手势。
       this.toNext = Number(distance(pose, keyframes[0].template, rotationTolerance).toFixed(3));
       this.toPrev = null;
-      this.threshold = threshold;
-      if (this.toNext < threshold) {
+      // ⚠️ 入口的门要和**第一步**一样宽，不能是固定的 threshold。
+      //
+      // 推进用的是自适应半径（按两个关键帧的间距算），而入口一直用固定 0.28 ——
+      // 实测那是后面每一步的 **1/2 到 1/2.6**，也就是**入口比整条路上任何一步都严**。
+      // 用户报的「0/10 步，可是我的动作不至于这么差吧」就是这个：进不去，所以永远第 0 步。
+      //
+      // 真机重做同一段动作：固定 0.28 只有 3/45 帧能进，用第一步的半径是 7/45。
+      //
+      // 用第一步的间距算，而不是全局最大间距：入口的容忍应该和"从起始姿势到第一个关键帧
+      // 有多远"匹配 —— 那两个姿势隔得远，说明这个动作起手幅度大，入口也该宽一点。
+      const firstGap = keyframes.length > 1
+        ? distance(keyframes[1].template, keyframes[0].template, rotationTolerance)
+        : 0;
+      const entry = Math.max(threshold, firstGap * KEYFRAME_ARRIVAL);
+      this.threshold = Number(entry.toFixed(3));
+      if (this.toNext < entry) {
         this.blockedUntil = 0;
         this.index = 1;
         this.startedAt = now;
@@ -517,22 +548,7 @@ class SequenceMatcher {
     // How close counts as "arrived at a keyframe", as a fraction of the gap between
 // the two keyframes rather than a fixed distance.
 //
-// ⚠️ A fixed radius cannot work here, and the reason is arithmetic. Measured on
-// real landmarks: consecutive frames of a hand mid-movement are **0.499** apart
-// (median), while the match threshold is 0.28. One frame of hand travel already
-// exceeds the ball used to decide "reached" — so the sequence could never be
-// walked, no matter how the recording went. Diagnostics on a replay of the very
-// movement that was recorded: stuck at step 2 of 10 with distance 1.361 against a
-// 0.28 gate, while *not moving at all* scored 0.429.
-//
-// Making keyframes denser does not help: sampling the same movement at 20 frames
-// instead of 10 leaves the median gap at 0.510, because the gap is dominated by
-// per-frame noise, not by how finely the movement is cut.
-//
-// So "arrived" has to scale with the local gap. 0.55 of the way from the previous
-// keyframe to the next: past the midpoint (which is what the monotonic rule below
-// requires anyway) with a little margin for noise.
-const KEYFRAME_ARRIVAL = 0.55;
+
 
 // Advancing needs the hand to be *nearer* the next keyframe than the one it
     // came from — not merely inside the next one's radius.
@@ -616,6 +632,8 @@ root.AirCursorMotion = {
   UPRIGHT_HAND_ANGLE,
   neutralTiltReference,
   KEYFRAME_SPACING,
+  KEYFRAME_ARRIVAL,
+  EXCUSE_MAX_GAP_MS,
   MAX_KEYFRAMES,
   MIN_KEYFRAMES,
   MIN_SEQUENCE_SPAN,

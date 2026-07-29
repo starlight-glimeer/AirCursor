@@ -1083,4 +1083,76 @@ check('手离开时诊断说清序列还在等，而不是只说"手不在画面
     `手离开时没说序列还在等：${input.lastProbe()[0].why}`);
 });
 
+// ── 动态匹配的门 vs 静态的门 ──────────────────────────────────────────────
+//
+// 用户报「我发现一件事情，0/10 步，可是我的动作不至于这么差吧」。两个原因，都量出来了。
+//
+// ① **入口比整条路上任何一步都严**。推进用自适应半径（按关键帧间距算），而入口一直用
+//    固定 threshold —— 实测那是后面每一步的 1/2 到 1/2.6。进不去，所以永远第 0 步。
+//
+// ② **门本身选错了**。真机干净帧扫门（"同一瞬间的手"该匹配 vs "动作不同阶段"不该匹配）：
+//
+//      门     该匹配命中   不该匹配误配
+//      0.28      55%          1%      ← 原来在用的
+//      0.55      79%          5%      ← 现在用的
+//      0.90      87%         18%      ← 误配开始失控
+//
+//    0.28 白丢一半判别力，而误配那时才 1%。
+//
+// ⚠️ 只动动态这条。静态的 0.28 在真机上验过是好的，而静态和动态判别的**不是同一件事**：
+// 静态问"手是不是摆成了那个样子"（手能停住），动态问"手有没有经过那个中间姿势"（手一直
+// 在动，只是路过 —— 而路过时一帧就走掉 0.135，一个 0.28 的球只能停留 89ms）。
+check('动态匹配的门比静态宽（判别的不是同一件事）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const m = src.match(/const SEQUENCE_THRESHOLD_SCALE = ([\d.]+);/);
+  assert.ok(m, '找不到 SEQUENCE_THRESHOLD_SCALE');
+  const scale = Number(m[1]);
+  assert.ok(scale > 1.3, `倍数只有 ${scale} —— 0.28 那个门实测只有 55% 命中`);
+  assert.ok(scale < 3.5, `倍数 ${scale} 太大 —— 0.90 以上误配率跳到 18%`);
+
+  // 静态那条不能跟着变。同一个模板在两条路上用不同的门，而不是一起放宽。
+  const staticGate = src.slice(src.indexOf("if (!entry.law) {"), src.indexOf('} else {'));
+  assert.doesNotMatch(staticGate, /SEQUENCE_THRESHOLD_SCALE/,
+    '静态匹配也用上了动态的倍数 —— 静态的 0.28 是真机验过的，不该动');
+});
+
+check('序列入口的门和第一步一样宽，不是固定 threshold', () => {
+  // 入口比第一步严的话，动作再标准也进不去，而症状是"0/10 步"——它看起来像"动作太差"，
+  // 而实际是"门在入口处比路上任何一步都窄"。
+  const motion = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'vendor', 'aircursor', 'motion.js'), 'utf8');
+  const entry = motion.slice(motion.indexOf('if (this.index === 0) {'));
+  assert.match(entry.slice(0, 1400), /KEYFRAME_ARRIVAL/,
+    '入口还在用固定 threshold —— 那比后面每一步都严 2 到 2.6 倍');
+  assert.match(entry.slice(0, 1400), /keyframes\[1\]/,
+    '入口的自适应半径要按**第一步**的间距算');
+});
+
+check('KEYFRAME_ARRIVAL 在模块顶层，导得出来', () => {
+  // ⚠️ 我加导出时它是 undefined —— 因为我插注释的时候把它塞进了 updateInner 的方法体里。
+  // 方法内部仍然能用（所以自适应半径一直是生效的），但导不出去，而 `export` 列表里引用
+  // 一个方法内的常数会让**整个模块加载即抛 ReferenceError**。
+  assert.strictEqual(typeof Motion.KEYFRAME_ARRIVAL, 'number',
+    'KEYFRAME_ARRIVAL 导不出来 —— 它可能又被塞进了某个函数体内部');
+  assert.strictEqual(typeof Motion.EXCUSE_MAX_GAP_MS, 'number');
+});
+
+// ── "手举到画面最上方就不触发" ─────────────────────────────────────────────
+//
+// 用户报「我划到最上方…然后发现一次都触发不了了」。查证结论：**手的位置本身不影响匹配**
+// （模板按手腕做平移归一化，整体上移 40% 距离仍是 0.0000）。真正的原因是**关键点出画**
+// 之后 MediaPipe 给的是外推值 —— 那是形变，不是平移。
+//
+// 真机 capture 里手腕 y 最大 **1.156**（超出画面），46/101 帧有关键点贴边。
+check('手的位置不影响匹配（平移被归一化消掉）', () => {
+  const target = hand({ centerX: 0.5, centerY: 0.5 });
+  const raised = hand({ centerX: 0.5, centerY: 0.15 });   // 手举高
+  const a = P.buildPoseTemplate([px(I.mirror(target))]);
+  const b = P.buildPoseTemplate([px(I.mirror(raised))]);
+  const d = P.templateDistance(a, b, 0);
+  assert.ok(d < 0.01,
+    `同一个手型举高之后距离 ${d.toFixed(3)} —— 平移应该被归一化消掉，`
+    + '如果这条红了说明归一化坏了，而那会让"手在画面哪个位置"变成一个隐藏变量');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
