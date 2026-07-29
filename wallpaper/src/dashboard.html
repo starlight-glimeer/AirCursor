@@ -284,8 +284,25 @@
       <div class="toggle"><input type="checkbox" id="gestures"><label for="gestures">开启摄像头手势</label></div>
       <div class="toggle"><input type="checkbox" id="proTier"><label for="proTier">进阶模式（手势 + 录制）</label></div>
       <div class="toggle"><input type="checkbox" id="showHands"><label for="showHands">显示手骨架和指针（盖在所有窗口之上）</label></div>
+      <div class="toggle"><input type="checkbox" id="controlCursor"><label for="controlCursor">手控制真鼠标（需要辅助功能授权）</label></div>
       <div id="live">手势未开启</div>
       <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透 —— 所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
+      <!-- 投递层健康。这一行观测的是"缺权限时 CGEvent.post 静默丢弃"——不报错、不抛异常，
+           而症状和 CV 层问题长得一模一样。为这件事烧掉过四轮，所以它必须有地方看。
+           trusted 单独拎出来：没授权时 sent 照常增长，只看 sent 会以为一切正常。 -->
+      <div id="pointer-health" class="state">点击通道：检查中</div>
+    </div>
+
+    <h3>诊断</h3>
+    <div class="card">
+      <p class="hint">
+        录一段原始关键点，用来标定阈值。所有测试用的都是合成手，而合成手缺的不是噪声的
+        <b>大小</b>而是它的<b>时间相关结构</b>（相邻帧一起漂、丢跟踪后重新检出会跳）——
+        独立噪声会自己平均掉，相关噪声不会，而那个差异决定判定在真手上成不成立。
+      </p>
+      <button class="act" id="capture-start">录 5 秒关键点</button>
+      <button class="act" id="revealCaptures">打开关键点目录</button>
+      <div id="capture-state" class="state"></div>
     </div>
 
     <h3>连续控制（不用录，开了就能用）</h3>

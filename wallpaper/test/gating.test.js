@@ -146,4 +146,83 @@ check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时
     '主进程不再按 showHands || recordingAction 开窗口 —— 两边判据已经分叉');
 });
 
+// ── 能力可达性：接线齐了但用户点不到，等于没做 ──────────────────────────
+//
+// 这四条来自云端 agent，而它们逮到的正是我的错：我把 startCapture / undoRecording /
+// pointerHealth 都接了 preload + 主进程 + sensor 三层，面板零入口 —— 而我还跟用户说
+// "接进面板了"。三层各自都对，整条链没有入口，所有测试全绿。
+//
+// pointerHealth 那条最难看：它观测的正是"缺权限时 CGEvent.post 静默丢弃"，而我为那件事
+// 烧掉四轮。把观测手段建好却没地方看，等于没建。
+check('dashboard.js 用到的 CSS 类在 dashboard.html 里都有定义', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+
+  const used = new Set();
+  // className = 'x' / className = 'x y' / el('div', 'x')
+  for (const m of js.matchAll(/className\s*=\s*'([a-z0-9 -]+)'/g)) {
+    m[1].split(/\s+/).filter(Boolean).forEach((c) => used.add(c));
+  }
+  for (const m of js.matchAll(/\bel\('[a-z]+',\s*'([a-z0-9 -]+)'/g)) {
+    m[1].split(/\s+/).filter(Boolean).forEach((c) => used.add(c));
+  }
+
+  const missing = [...used].filter((c) => !style.includes(`.${c}`));
+  assert.deepStrictEqual(missing, [],
+    `这些类没有样式定义，控件会裸奔：${missing.join(', ')}`);
+});
+
+console.log('\n  面板可达性（接线齐了但点不到 = 功能不存在）');
+
+// ⚠️ 这条的由来：录关键点那条链在合并时主进程、preload、sensor 三层都接好了，
+// **唯独面板上没有按钮**。每一层单独看都对，整条链却没有入口 ⟹ 功能等于不存在，
+// 而且所有测试全绿。
+//
+// 这是本项目反复出现的那个形状的又一次（未读的 config 字段、没导入的 spawnSync、
+// 默认空的录制页）。所以按"preload 暴露了什么"反查"面板用了没有"。
+check('preload 暴露的调用，面板里都有地方触发', () => {
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.js'), 'utf8');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay-window.js'), 'utf8');
+  const consumers = dash + wall + sensor + overlay;
+
+  // 只查主动调用（invoke/send 那类），不查 onXxx 监听 —— 监听没人用是浪费，
+  // 但主动调用没人用意味着**用户点不到那个功能**。
+  const exposed = [...preload.matchAll(/^\s{2}(\w+):\s*\([^)]*\)\s*=>\s*ipcRenderer\.(invoke|send)/gm)]
+    .map((m) => m[1]);
+  assert.ok(exposed.length > 10, `只解析出 ${exposed.length} 个调用，正则失效了`);
+
+  const unreachable = exposed.filter((name) => !consumers.includes(name));
+  assert.deepStrictEqual(unreachable, [],
+    `这些通道齐了但没有任何界面能触发 ⟹ 功能点不到：${unreachable.join(', ')}`);
+});
+
+// 录关键点是两边共同盲区的唯一出口（所有测试都跑在合成手上，缺真机噪声的时间
+// 相关性）。它必须能被点到，而且失败要说得出原因。
+check('录关键点的三层都在，且按钮存在', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+
+  assert.match(html, /id="capture-start"/, '面板没有录关键点的按钮');
+  assert.match(dash, /gw\.startCapture\(\)/, '按钮没接 startCapture');
+  assert.match(main, /ipcMain\.handle\('start-capture'/, '主进程没注册 start-capture');
+  assert.match(sensor, /onStartCapture/, 'sensor 不听 start-capture ⟹ 录不到东西');
+
+  // ⚠️ 字段名对齐：主进程返回 {ok:false, reason:…}，面板读错字段就只会显示兜底文案，
+  // 而"摄像头没开"恰恰是最常见的失败原因。
+  assert.match(main, /ok:\s*false,\s*reason:/, '主进程的失败载荷不带 reason 了');
+  assert.match(dash, /result\.reason/, '面板没读 reason —— 最常见的失败原因会显示不出来');
+});
+
+// 0 帧有手也会存出一个"看起来成功"的文件（有大小、能打开），而它完全没用。
+check('录完报的是有手的帧数，不只是总帧数', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /withHands/, '没报有手帧数 —— 0 帧有手的空文件会看起来像成功');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

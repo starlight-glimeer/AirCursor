@@ -298,6 +298,61 @@ function recordOptions(action) {
   };
 }
 
+// 诊断:录关键点 + 投递层健康。
+//
+// 这一段是补入口 —— 三个能力(startCapture / revealCaptures / pointerHealth)之前
+// preload、主进程、sensor 三层都接好了,面板零入口,而我还报告说"接进面板了"。三层各自
+// 都对,整条链没有入口 ⟹ 功能等于不存在,而所有测试全绿。逮到它的是一条机械反查守卫。
+function wireDiagnostics() {
+  const capture = document.getElementById('capture-start');
+  const reveal = document.getElementById('revealCaptures');
+  const state = document.getElementById('capture-state');
+
+  capture.onclick = async () => {
+    const result = await window.gw.startCapture();
+    // 失败最常见的原因是摄像头没开,所以直接把原因显示出来而不是只说"失败"。
+    state.textContent = result.ok
+      ? '正在录制 5 秒:把手放进画面,做几个平时会用的动作'
+      : `无法录制:${result.reason || '未知原因'}`;
+    state.className = result.ok ? 'state ok' : 'state warn';
+  };
+  reveal.onclick = () => window.gw.revealCaptures();
+
+  window.gw.onCaptureSaved((payload) => {
+    if (!payload || payload.error) {
+      state.textContent = `保存失败:${payload && payload.error}`;
+      state.className = 'state warn';
+      return;
+    }
+    // 报**有手的帧数**而不只是总帧数:一个 0 帧有手的文件看起来存成功了,而它对标定
+    // 完全没用 —— 那是"看起来成功"的一种。
+    const ok = payload.withHands > 0;
+    state.textContent = ok
+      ? `已存 ${payload.frames} 帧（其中 ${payload.withHands} 帧有手）`
+      : `存了 ${payload.frames} 帧但一帧手都没有 —— 这份没法用来标定,重录一次`;
+    state.className = ok ? 'state ok' : 'state warn';
+  });
+}
+
+// 投递层健康。trusted 单独显示:没授权时 sent 照常增长(CGEvent.post 静默丢弃),
+// 只看 sent 会以为一切正常。
+function renderPointerHealth(health) {
+  const node = document.getElementById('pointer-health');
+  if (!node || !health) return;
+  if (health.trusted === false) {
+    node.textContent = '点击通道：无辅助功能授权 —— 手势能识别，但鼠标事件被系统丢弃';
+    node.className = 'state warn';
+    return;
+  }
+  if (health.state !== 'running') {
+    node.textContent = `点击通道：${health.state}${health.detail ? ' · ' + health.detail : ''}`;
+    node.className = 'state warn';
+    return;
+  }
+  node.textContent = `点击通道：正常 · 已发 ${health.sent}${health.failed ? ` · 失败 ${health.failed}` : ''}`;
+  node.className = 'state ok';
+}
+
 function renderRecordables() {
   stopAllPreviews();
   const grouped = T.groupedActions(config.template, config.proTier);
@@ -419,6 +474,23 @@ function renderActionGroup(hostId, actions) {
         const clear = el('button', 'act danger', '清除');
         clear.onclick = () => window.gw.clearRecording(action.id);
         buttons.append(clear);
+      }
+      // 回退:有上一版才出现。常显一个大部分时候没用的按钮会训练人忽略它,而它恰好是
+      // 录坏了唯一的退路 —— 没有它,唯一能知道新录的好不好的办法是留下它,而如果更差
+      // 旧的已经没了,于是人根本不敢重录。
+      if (config.recordUndo && action.id in config.recordUndo) {
+        const undo = el('button', 'act', '回退');
+        undo.title = config.recordUndo[action.id] ? '回到上一次录的那个手势' : '回到未录制状态';
+        undo.onclick = async () => {
+          const result = await window.gw.undoRecording(action.id);
+          // 说清落到哪个状态:光说"已回退"你不知道现在手上是旧手势还是没有。回退成功后
+          // 主进程会广播 config,面板整体重画,所以这里只在失败时留一行。
+          if (!result.ok) {
+            state.textContent = `回退失败:${result.reason || '未知原因'}`;
+            state.className = 'state warn';
+          }
+        };
+        buttons.append(undo);
       }
     }
     right.append(buttons);
@@ -585,6 +657,10 @@ function renderToggles() {
   bind('gestures', () => config.gestures.enabled, (v) => window.gw.setGestures(v));
   bind('proTier', () => config.proTier, (v) => window.gw.setConfig({ proTier: v }));
   bind('showHands', () => config.showHands, (v) => window.gw.setConfig({ showHands: v }));
+  // 手控制真鼠标。默认关,而且这不是保守:一开摄像头就抢走鼠标,用户会没法用鼠标去把它
+  // 关掉 —— 那是个能把自己锁在外面的开关。
+  bind('controlCursor', () => !!config.controlCursor,
+    (v) => window.gw.setConfig({ controlCursor: v }));
   bind('music', () => config.music.enabled, (v) => window.gw.setConfig({ music: { enabled: v } }));
   bind('moodFromCover', () => config.music.moodFromCover,
     (v) => window.gw.setConfig({ music: { moodFromCover: v } }));
@@ -613,6 +689,10 @@ function apply(next) {
     renderSliders('tuning', TUNING);
     renderSliders('musicTuning', MUSIC_TUNING);
     renderSliders('gestureTuning', GESTURE_TUNING);
+    // 只接一次:按钮的 onclick 每次 apply 都重设是幂等的,但 onCaptureSaved 是订阅,
+    // 重复订阅会让一次保存报好几遍。
+    wireDiagnostics();
+    refreshPointerHealth();
     built = true;
   } else if (pendingPresetRefresh) {
     pendingPresetRefresh = false;
@@ -622,6 +702,13 @@ function apply(next) {
     document.getElementById('live').textContent = '手势未开启';
   }
 }
+
+// 投递层健康:启动查一次,之后主进程状态变了会推过来。轮询会掩盖"从来没查过"这种情形,
+// 所以是"一次 + 推送"而不是定时。
+function refreshPointerHealth() {
+  window.gw.pointerHealth().then(renderPointerHealth).catch(() => {});
+}
+window.gw.onPointerHealth(renderPointerHealth);
 
 window.gw.onConfig(apply);
 window.gw.onStrategy((s) => { strategy = s; renderStrategy(); });
