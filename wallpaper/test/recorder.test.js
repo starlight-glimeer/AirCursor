@@ -18,6 +18,7 @@ require(path.join(vendor, 'motion.js'));
 require('../src/recorder.js');
 const R = globalThis.GestureWallRecorder;
 const P = globalThis.AirCursorPose;
+const Motion = globalThis.AirCursorMotion;
 
 let passed = 0;
 function check(name, fn) {
@@ -636,6 +637,39 @@ check('动态录制把保持的姿势当第一个关键帧', () => {
   const d = P.templateDistance(out.result.keyframes[0].template, rest, (20 * Math.PI) / 180);
   assert.ok(d < 0.3,
     `第一个关键帧离保持姿势 ${d.toFixed(3)} —— 用户从保持姿势进不去，会一直卡在 0/N 步`);
+});
+
+// ── 序列长度的代价是乘法 ─────────────────────────────────────────────────
+//
+// 用户报「4/10 这种多一些了，之前基本都是 0/10，还能优化吗」。
+//
+// **每个关键帧都要被命中一次，所以走完 N 个的概率是 p^N。**真机实测单帧命中率 79%
+// （门 0.55），于是 N=3 是 49%、N=6 是 24%、N=10 只有 **9%**。而 0.79^4 ≈ 39% ——
+// 正好是用户报的 4/10 那个量级，也就是**他的动作没问题，是序列太长**。
+//
+// 这是算术，不依赖夹具 —— 而那一点很重要，因为我造不出"同一个人重做一次"的夹具：
+// 用录制时的同一批帧回放是 100%（太理想），用另一段真机帧是 0%（那是动作的不同阶段，
+// 不是重做）。两个极端都不代表真实。
+check('关键帧数量有上限，而且余量够（抽稀不能掉到 MIN 以下）', () => {
+  assert.ok(Motion.MAX_KEYFRAMES <= 5,
+    `上限 ${Motion.MAX_KEYFRAMES} 太大 —— 单帧命中 79% 时走完 10 个的概率只有 9%`);
+  assert.ok(Motion.MAX_KEYFRAMES > Motion.MIN_KEYFRAMES,
+    `上限 ${Motion.MAX_KEYFRAMES} 不大于下限 ${Motion.MIN_KEYFRAMES} —— 抽稀会直接报错`);
+
+  // 各种长度的动作都要能抽出够用的关键帧。40 帧那档是"动作做得很慢"的情形。
+  const px2 = (h) => h.map(([x, y, z]) => ({ x: x * 1000, y: y * 1000, z: (z || 0) * 1000 }));
+  for (const len of [8, 15, 25, 40]) {
+    const samples = [];
+    for (let i = 0; i < len; i += 1) {
+      samples.push({ template: P.buildPoseTemplate([px2(NOISE.frames[(30 + i) % NOISE.frames.length])]),
+        at: i * 43 });
+    }
+    const kf = Motion.buildKeyframes(samples, 0.28, P.templateDistance);
+    assert.ok(kf.length >= Motion.MIN_KEYFRAMES,
+      `${len} 帧的动作只抽出 ${kf.length} 个关键帧，少于 MIN=${Motion.MIN_KEYFRAMES} 会报"关键帧不够"`);
+    assert.ok(kf.length <= Motion.MAX_KEYFRAMES,
+      `${len} 帧的动作抽出 ${kf.length} 个，超过上限 ${Motion.MAX_KEYFRAMES}`);
+  }
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -339,7 +339,25 @@ class SwipeDetector {
 // a stutter and animate a pose that barely moves. Expressed as a fraction of the
 // match threshold so it scales with the tolerance everything else uses.
 const KEYFRAME_SPACING = 0.55;
-const MAX_KEYFRAMES = 10;
+
+// 关键帧数量的上限。
+//
+// ⚠️ **序列长度的代价是乘法,不是加法。**每个关键帧都要被命中一次,所以走完 N 个的概率
+// 是 p^N。真机实测单帧命中率 79%(在门 0.55 下),于是:
+//
+//   N=3  →  49%      N=6  →  24%      N=10 →  9%
+//
+// 用户报「4/10 这种多一些」，而 0.79^4 ≈ 39% —— **数字对得上**，也就是他的动作没问题，
+// 是序列太长。原来的上限 10 意味着最坏情况只有 9% 能走完。
+//
+// 4 是"够表达一个动作"和"能走完"之间的折中：起点 + 两个中间态 + 终点。再多的中间帧
+// 并不增加判别力（相邻关键帧本来就靠得近，`KEYFRAME_SPACING` 只保证它们不重合），
+// 却每个都乘一次 0.79。
+//
+// ⚠️ 这个数**没有在真机上标定**。我造不出"同一个人重做一次同样动作"的夹具 ——
+// 用录制时的同一批帧回放是 100%（太理想），用另一段真机帧是 0%（那是动作的不同阶段，
+// 不是重做）。两个极端都不代表真实。而上面那个乘法是算术，不依赖夹具。
+const MAX_KEYFRAMES = 4;
 // Below this a "movement" is a hand sitting still, and saving it would produce a
 // gesture that fires on tracking noise.
 const MIN_KEYFRAMES = 3;
