@@ -8,7 +8,13 @@ const T = window.GestureWallTemplates;
 const Pose = window.AirCursorPose;
 
 // ~30/s。渲染侧自己有平滑，发更快买不到手感。
-const SEND_INTERVAL_MS = 33;
+// 骨架发送间隔:从 config 读,不再写死 —— 写死的话真机上想调只能改代码重启。
+function sendIntervalMs() {
+  return (config && config.gestureTuning && config.gestureTuning.handIntervalMs) || 33;
+}
+// 推理闸门的状态。没有它们时真机只有 14fps(串行堆积),见 onFrame。
+let inferenceBusy = false;
+let lastInferenceAt = 0;
 
 let hands = null;
 let camera = null;
@@ -108,12 +114,12 @@ function onResults(results) {
   // 已绑的动作，那正是 AirCursor 真机踩过的"录制被已有手势打断"。
   if (recorder && recorder.active) {
     // 骨架照发：录制时看不见手在哪，反馈就只剩文字。
-    if (now - lastSend >= SEND_INTERVAL_MS) { lastSend = now; sendHands(list); }
+    if (now - lastSend >= sendIntervalMs()) { lastSend = now; sendHands(list); }
     tickRecording(list, now);
     return;
   }
 
-  if (now - lastSend < SEND_INTERVAL_MS) return;
+  if (now - lastSend < sendIntervalMs()) return;
   lastSend = now;
 
   sendHands(list);
@@ -271,7 +277,29 @@ async function start() {
   const video = document.getElementById('cam');
   status('正在请求摄像头权限');
   camera = new Camera(video, {
-    onFrame: async () => { if (hands) await hands.send({ image: video }); },
+    // ⚠️ 两道闸,少任何一道帧率会掉一半以上。
+    //
+    // 实测:没有闸门时真机 14fps,而同一台机器上 AirCursor 3.x 跑 30fps、推理只花 12ms。
+    // 推理不是瓶颈 —— 瓶颈是**串行堆积**:每帧无条件 await 上一次 send,于是实际帧率变成
+    // 1/(推理 + 摄像头间隔) 而不是取两者较大值。
+    //
+    //   busy 闸  上一帧还在推理就直接丢掉这一帧。摄像头不会等我们,丢一帧的代价远小于
+    //            让整条链排队 —— 而排队会一路累积成"不灵敏"。
+    //   间隔闸   两次推理至少隔 inferenceIntervalMs。省下的 CPU 留给绘制。
+    onFrame: async () => {
+      if (!hands) return;
+      const now = performance.now();
+      const minInterval = (config && config.gestureTuning && config.gestureTuning.inferenceIntervalMs) || 20;
+      if (inferenceBusy || now - lastInferenceAt < minInterval) return;
+      inferenceBusy = true;
+      lastInferenceAt = now;
+      try {
+        await hands.send({ image: video });
+      } finally {
+        // finally,不是 then:推理抛异常时不解锁会让手势永久停住,而症状是"突然就不动了"。
+        inferenceBusy = false;
+      }
+    },
     width: 640,
     height: 480,
   });

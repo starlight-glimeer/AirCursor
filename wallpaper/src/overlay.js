@@ -47,18 +47,18 @@ function skeletonWidth(screenWidth) {
 // 手的位置仍然映射到全屏（抬手到屏幕右边，骨架就在右边），只有手的**尺寸**被压到固定
 // 大小。两者分开是关键：位置要覆盖整个屏幕才能指得到任何地方，尺寸不能跟着屏幕长。
 //
-// `center` 是这只手的掌心（归一化），缩放围绕它做，所以手不会因为缩放被拉到角落。
-function toCanvas(point, width, height, center, scale) {
-  if (!center || !scale) return { x: point.x * width, y: point.y * height };
-  const cx = center.x * width;
-  const cy = center.y * height;
-  return {
-    x: cx + (point.x * width - cx) * scale,
-    y: cy + (point.y * height - cy) * scale,
-  };
+// 归一化坐标 → 画布像素。**一比一,不缩放。**
+//
+// 原来这里把手按"固定手宽"缩放(围绕掌心压到 200px)。那是错的,而且错在一个不显眼的
+// 地方:缩放保住了掌心位置,却把**所有其他关键点朝掌心收缩** —— 实测压到 0.54 倍,于是
+// 指尖画出来离真实位置差一大截。用户的描述是"骨架位置不对、偏右",而根因不是偏移是收缩。
+//
+// 骨架的用途是"我的手现在在哪、指着什么",所以它必须和真实位置一一对应。手在画面里
+// 占多大,画出来就该占多大 —— 这本来就是摄像头看到的比例,不需要"修正"。
+function toCanvas(point, width, height) {
+  return { x: point.x * width, y: point.y * height };
 }
 
-// 一只手在归一化坐标里的宽度（包围盒），用来算该缩放多少。
 function handSpan(hand) {
   let minX = Infinity;
   let maxX = -Infinity;

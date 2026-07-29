@@ -225,4 +225,46 @@ check('录完报的是有手的帧数，不只是总帧数', () => {
   assert.match(dash, /withHands/, '没报有手帧数 —— 0 帧有手的空文件会看起来像成功');
 });
 
+// ── 和 AirCursor 3.x 的差距：三条都是真机数据逼出来的 ──────────────────────
+//
+// 用户报"现在不如 3.x 版本丝滑到位"，而那一版有真机报告可比：同一台机器 30fps、推理
+// 12ms。这次录的关键点是 14fps。三个根因，全部是这边缺了那边有的东西。
+
+check('推理有 busy 闸门（没有它真机只有 14fps）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /if \(inferenceBusy \|\|/,
+    '每帧无条件 await hands.send 会串行堆积：实际帧率变成 1/(推理+摄像头间隔)，'
+    + '而不是取两者较大值。3.x 有这道闸，跑 30fps；没有它实测 14fps');
+  assert.match(sensor, /finally \{[\s\S]{0,80}inferenceBusy = false/,
+    '解锁必须在 finally：推理抛异常时不解锁会让手势永久停住，症状是"突然就不动了"');
+});
+
+check('推理间隔可调，且默认值来自 3.x 的真机报告', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /inferenceIntervalMs: 20/, '20ms 来自 3.x 真机 30fps/推理12ms 那份报告');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /gestureTuning\.inferenceIntervalMs/,
+    '从 config 读而不是写死 —— 写死的话真机上想调只能改代码重启');
+});
+
+check('指针跟食指指尖，不是掌心', () => {
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.match(input, /const tip = lm\[8\];[\s\S]{0,200}this\.pointer\.update\(tip\.x, tip\.y/,
+    '实测同一帧掌心和指尖差 36-38% 屏宽 —— 用掌心等于"指着一处、光标出现在大半个屏幕外"。'
+    + '3.x 用的是 gesture.index（指尖），那一版的评价是"很到位"');
+});
+
+check('视差用掌心，指针用指尖 —— 两个信号分开发', () => {
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.js'), 'utf8');
+  assert.match(input, /palmX:/, 'pointer 事件要同时带掌心，否则视差只能用指尖');
+  assert.match(wall, /g\.palmX/, '视差要用掌心：指尖会随屈指乱跳，画面会跟着手指头而不是手');
+});
+
+check('骨架一比一映射，不做"固定手宽"缩放', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  assert.doesNotMatch(overlay, /function toCanvas\([^)]*center[^)]*scale/,
+    'toCanvas 不该再接 center/scale —— 那个缩放把指尖朝掌心收缩了（实测 0.54 倍）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

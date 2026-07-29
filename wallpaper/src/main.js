@@ -219,6 +219,12 @@ const defaultConfig = {
     maxPrediction: 0.026, // 外推上限，防止一次丢跟踪把画面甩出去
     swipeSpeed: 2.6,      // 挥动速度门，掌宽/秒
     tiltTriggerDeg: 22,   // 手掌倾斜多少度算一格
+    // 两次推理最少间隔。20ms 来自 AirCursor 3.x 的真机报告:那一版在同一台机器上
+    // 30fps、推理 12ms。太小会让推理挤掉绘制,太大直接变成帧率上限。
+    inferenceIntervalMs: 20,
+    // 骨架发送间隔。和摄像头同频(30fps),不额外降 —— 骨架的用途是"我的手在哪",
+    // 而降频在这上面直接表现为"不跟手"。
+    handIntervalMs: 33,
   },
   // 用户存的排布预设，名字 → 视觉参数。必须在这里声明，因为 mergeConfig 只遍历
   // defaultConfig 的键 —— 不声明的话存进去的预设在下次启动时被静默丢掉。

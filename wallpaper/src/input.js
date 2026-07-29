@@ -205,11 +205,22 @@ class GestureInput {
 
     // 指针走 One Euro：截止频率随手速自适应，所以静止时不抖、快速移动时不迟钝。
     // 这是替换掉固定平滑的那一步。坐标已在像素空间，滤波完除回归一化交给渲染层。
-    const filtered = this.pointer.update(palm.x, palm.y, now);
+    // ⚠️ 指针跟**食指指尖**,不是掌心。
+    //
+    // 实测同一帧两者差 36-38% 屏宽 —— 也就是指着一个地方,光标出现在大半个屏幕之外。
+    // AirCursor 3.x 用的是 `gesture.index`(指尖),而那一版用户的评价是"很丝滑很到位";
+    // 这里改成掌心之后就成了"不到位"。掌心适合做视差(要的是手整体在哪),指针要的是
+    // "我指着什么",而人指东西用的是指尖。
+    const tip = lm[8];
+    const filtered = this.pointer.update(tip.x, tip.y, now);
     events.push({
       action: 'pointer',
       x: clamp01(filtered.x / FILTER_SPACE),
       y: clamp01(filtered.y / FILTER_SPACE),
+      // 视差要的是"手整体在哪",指针要的是"指着什么" —— 两个信号差 36-38% 屏宽,所以
+      // 一起发,消费方各取所需。渲染层用 palm 做景深偏移,主进程用 x/y 移光标。
+      palmX: clamp01(palm.x / FILTER_SPACE),
+      palmY: clamp01(palm.y / FILTER_SPACE),
     });
 
     // 挥动：交给 SwipeDetector。它比我原来的实现多两道门（净位移、直线度）和一条
