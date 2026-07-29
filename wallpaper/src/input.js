@@ -71,6 +71,34 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// 从配置里取一个调参值，顶层和 gestureTuning 两层都查。
+//
+// 存在的理由：这些值住在 `config.gestureTuning` 里，而 `recorded` 住在顶层，所以调用方
+// 必须传整个 config。但纯逻辑用例里直接传 `{ matchThreshold: 0.3 }` 更自然，两种都要认。
+//
+// 写成一个函数而不是每处一条 `||` 链：`matchThreshold` 那两行原本在这个文件里出现
+// **两次**（continuousGate 和 updateRecorded 各一份），而漏改一处的后果是那半边悄悄用
+// 着默认值 —— 症状是"我调了灵敏度，有的手势跟着变有的没变"。
+function tunedValue(config, key, fallback) {
+  if (!config) return fallback;
+  if (config[key] !== undefined) return config[key];
+  const tuning = config.gestureTuning;
+  if (tuning && tuning[key] !== undefined) return tuning[key];
+  return fallback;
+}
+
+// 旋转容忍：配置里存的是**度**，`templateDistance` 要**弧度**。
+//
+// ⚠️ 这里原来直接把配置值当弧度用 ⟹ 默认 20 被当成 20 弧度 = 1146°，也就是**任何角度
+// 的手都匹配**（实测把手转 60°，距离从 0.5327 变成 0.0000）。方向是过于宽松，症状是
+// 手势互相串而不是没反应 —— 所以它和"录了没反应"是两个独立的 bug，只是住在相邻两行。
+//
+// sensor.js 那边一直是对的（`(deg * Math.PI) / 180`），两个文件对同一个配置项的单位理解
+// 不同。单位换算不能散落在读取点，所以收进这个函数。
+function rotationRadians(config) {
+  return (tunedValue(config, 'rotationTolerance', 20) * Math.PI) / 180;
+}
+
 // 食指根到小指根：一只手上唯一几乎不随姿势变化的跨度，所以能当尺度基准。
 // 直接用 pose.js 的实现而不是自己算 —— 那边对退化情形有下限保护。
 function palmWidth(lm) {
@@ -175,6 +203,15 @@ class GestureInput {
   }
 
   // hands: MediaPipe 的 multiHandLandmarks（未镜像）。now: 毫秒。
+  //
+  // ⚠️ config 是**整个配置对象**，不是 `config.gestureTuning`。这个函数读的字段跨两层：
+  //   顶层            recorded（用户录的手势）
+  //   gestureTuning   swipeSpeed / tiltTriggerDeg / matchThreshold / rotationTolerance
+  //
+  // 曾经这里被喂了 gestureTuning，结果 `config.recorded` 恒为 undefined ⟹ 录过的手势一个
+  // 都匹配不上，而挥动/倾斜照常工作（那两个字段恰好在 gestureTuning 里）。**半错比全错
+  // 难发现**：全错会立刻被当成"手势坏了"，半错只表现为"我录的那个没反应"。
+  //
   // 返回 { events: [...], status: '...' }。
   update(hands, now, config) {
     const list = Array.isArray(hands) ? hands : [];
@@ -255,7 +292,7 @@ class GestureInput {
     const displacement = this.path.displacement();
     const direction = this.swipe.update({
       displacement,
-      speedThreshold: (config && config.swipeSpeed) || Motion.SWIPE_MIN_SPEED,
+      speedThreshold: tunedValue(config, 'swipeSpeed', Motion.SWIPE_MIN_SPEED),
       now,
     });
     // 显式和 0 比：SwipeDetector 用 0 表示"没触发"、±1 表示方向。`if (direction)`
@@ -302,8 +339,8 @@ class GestureInput {
     const recorded = (config && config.recorded) || null;
     if (!recorded) return out;
 
-    const threshold = (config && config.matchThreshold) || 0.28;
-    const rotation = (config && config.rotationTolerance) || 0;
+    const threshold = tunedValue(config, 'matchThreshold', 0.28);
+    const rotation = rotationRadians(config);
     let pose = null;
 
     for (const action of ['zoom', 'parallax']) {
@@ -339,8 +376,8 @@ class GestureInput {
       return null;
     }
 
-    const threshold = (config && config.matchThreshold) || 0.28;
-    const rotation = (config && config.rotationTolerance) || 0;
+    const threshold = tunedValue(config, 'matchThreshold', 0.28);
+    const rotation = rotationRadians(config);
 
     // 诊断：每个录过的动作，这一帧离它多远、为什么没触发。
     //
@@ -453,7 +490,7 @@ class GestureInput {
       const d = this.path.displacement();
       return d ? d.speed : 0;
     })();
-    const triggerDeg = (config && config.tiltTriggerDeg) || 22;
+    const triggerDeg = tunedValue(config, 'tiltTriggerDeg', 22);
 
     const fired = this.ratchet.update({
       liveAngle: angle,

@@ -138,7 +138,18 @@ function onResults(results) {
   lastSend = now;
 
   sendHands(list);
-  const { events, status: text } = input.update(list, now, tuningOf());
+  // ⚠️ 传**整个 config**，不是 tuningOf()。
+  //
+  // 这是「录了手势没反应」的根因：`input.update` 的第三个参数被喂了
+  // `config.gestureTuning`，而 `updateRecorded` 读的是 `config.recorded` —— 那个字段在
+  // 配置的**顶层**，是 gestureTuning 的兄弟。于是录过的手势永远读不到，一个都匹配不上。
+  //
+  // 它没有早点爆出来，是因为**一半的字段恰好能读到**：input 读 5 个字段，其中
+  // swipeSpeed / tiltTriggerDeg 真在 gestureTuning 里，所以挥动和倾斜一直是好的，只有
+  // "用户录的手势"这一类静默失效。全错会立刻被发现，半错才能藏住。
+  //
+  // 构造函数和 setTuning 仍然可以吃整个 config —— filterTuning 只挑滤波那 5 个字段。
+  const { events, status: text } = input.update(list, now, config || {});
   for (const event of events) window.gw.sendGesture({ v: 1, at: Date.now(), ...event });
 
   // 匹配诊断：每个录过的动作，这一帧离触发有多远。
@@ -282,11 +293,11 @@ async function start() {
   }
 
   config = await window.gw.getConfig();
-  input = new GestureInput(tuningOf());
+  input = new GestureInput(config || {});
 
   window.gw.onConfig((next) => {
     config = next;
-    if (input) input.setTuning(tuningOf());
+    if (input) input.setTuning(config || {});
   });
 
   hands = new Hands({ locateFile: (file) => `vendor/mediapipe/hands/${file}` });

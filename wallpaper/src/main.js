@@ -340,7 +340,7 @@ function handleVoiceText(phrase) {
     broadcast('voice-status', { text: `没匹配上:${text}` });
     return;
   }
-  const result = runSystemAction(hit.action);
+  const result = runSystemAction(hit.action, '语音');
   broadcast('voice-status', { text: `${result.ok ? '已执行' : '执行失败'}:${text}` });
 }
 
@@ -754,7 +754,14 @@ ipcMain.handle('delete-preset', (_event, name) => {
 // 直接映射成"手势在就按住"做不到,因为手势事件不带持续状态。
 let dragHeld = false;
 
-function runSystemAction(id) {
+// `source` 说明是谁触发的：'手势' 还是 '试一下' 按钮。
+//
+// ⚠️ 不带这个参数时两条路径打出**一模一样**的日志，而用户点了「试一下」看到
+// `open_netease → ok` 会以为手势通了 —— 实测发生过，而它把排查方向整个带偏：那条 ok
+// 只证明 App 能打开，手势那侧可能一步都没走。
+//
+// 日志的第一要务是说清"这是谁干的"，否则它自己就是一个误导源。
+function runSystemAction(id, source = '?') {
   const kind = System.systemKindOf(id);
   if (!kind) return { ok: false, error: 'NOT_SYSTEM_ACTION' };
 
@@ -780,10 +787,12 @@ function runSystemAction(id) {
     //
     // 送进面板的日志窗格，不只是 console —— 用户看不到终端时 console.log 等于不存在，
     // 而这条链（录制 → 匹配 → 事件 → 执行）里"执行"是唯一能自证成败的一段。
-    for (const line of tried) broadcast('helper-log', { source: 'system', message: `${id} ${line}` });
+    for (const line of tried) {
+      broadcast('helper-log', { source: `system/${source}`, message: `${id} ${line}` });
+    }
     if (!args) {
       broadcast('helper-log', {
-        source: 'system',
+        source: `system/${source}`,
         message: `⚠️ ${id}：${tried.length} 个候选全失败 —— 这台机器上找不到那个 App，`
           + '和手势没关系（手势那侧已经走到这里了）',
       });
@@ -839,7 +848,7 @@ ipcMain.on('gesture', (_event, payload) => {
     // 这一行是"手势那侧全部走通了"的证明。没有它，「录了没反应」分不清是手势没认出来
     // 还是 App 打不开 —— 而两者的下一步完全不同（重录 vs 查 App 路径）。
     broadcast('helper-log', { source: 'gesture', message: `识别到「${payload.action}」→ 执行系统动作` });
-    const result = runSystemAction(payload.action);
+    const result = runSystemAction(payload.action, '手势');
     // dashboard 仍然要知道：它显示"最近事件"，而系统动作的成败是那里唯一的反馈。
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       dashboardWindow.webContents.send('gesture', { ...payload, system: true, ok: result.ok });
@@ -866,7 +875,10 @@ ipcMain.on('gesture', (_event, payload) => {
 
 // 面板上手动试一个系统动作。录制之前先确认"这个动作在我机器上能用"，否则录完发现
 // 打不开应用，分不清是手势没认出来还是 App 找不到。
-ipcMain.handle('test-system-action', (_event, id) => runSystemAction(id));
+ipcMain.handle('test-system-action', (_event, id) => {
+  broadcast('helper-log', { source: '面板', message: `「试一下」${id} —— 这条不代表手势通了` });
+  return runSystemAction(id, '试一下');
+});
 
 // 投递层的健康状态。这是"手势没反应"时第一个该看的东西:识别成功和事件送达是两个
 // 独立的 claim,而缺权限时 CGEvent 静默丢弃 —— AirCursor 为此烧掉四轮。

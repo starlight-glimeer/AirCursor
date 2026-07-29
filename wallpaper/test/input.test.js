@@ -664,4 +664,85 @@ check('什么都没录时说"还没录过"，不是空白', () => {
   assert.match(input.lastProbe()[0].why, /还没录/, '空配置时诊断是空的 —— 那和"坏了"分不开');
 });
 
+// ── 配置形状：input 读的字段跨两层 ────────────────────────────────────────
+//
+// **这是「录了打开网易云没反应」的根因。** sensor 把 `config.gestureTuning` 传给
+// `input.update`，而 `updateRecorded` 读 `config.recorded` —— 那个字段在配置的**顶层**，
+// 是 gestureTuning 的兄弟。于是录过的手势永远读不到，一个都匹配不上。
+//
+// 它藏了很久，因为**一半的字段恰好能读到**：input 读 5 个字段，swipeSpeed / tiltTriggerDeg
+// 真在 gestureTuning 里，所以挥动和倾斜一直好使，只有"用户录的手势"这一类静默失效。
+// 全错会立刻被当成"手势坏了"，半错只表现为"我录的那个没反应"。
+check('用真实的配置形状（顶层 recorded + 嵌套 gestureTuning）能匹配', () => {
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  // ⚠️ 这个形状必须和 main.js 的 defaultConfig 一致，否则这条用例就是在测一个想象中的配置
+  const config = {
+    recorded: { open_netease: { hands: 1, template, dynamic: false, law: null } },
+    gestureTuning: { matchThreshold: 0.28, rotationTolerance: 20, swipeSpeed: 2.6 },
+  };
+  const input = new I.GestureInput(config);
+  const out = input.update([target], 1000, config);
+  assert.ok(out.events.some((e) => e.action === 'open_netease'),
+    '真实配置下录过的手势没触发 —— 这正是"录了没反应"');
+});
+
+check('sensor 传的是整个 config，不是它的某个子对象', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const call = sensor.split('\n').find((l) => l.includes('input.update(list'));
+  assert.ok(call, '找不到 input.update 的调用');
+  assert.doesNotMatch(call, /tuningOf\(\)/,
+    'input.update 又被喂了 gestureTuning —— config.recorded 会读不到，录过的手势全部失效');
+  assert.match(call, /config/, 'input.update 没有拿到 config');
+});
+
+check('调参项在 gestureTuning 里也读得到（两种传法都认）', () => {
+  // 纯逻辑用例里直接传 `{ matchThreshold: 0.3 }` 更自然，真实链路传的是嵌套形状。
+  // 两种都要认，否则改一边就会把另一边悄悄打回默认值。
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const entry = { hands: 1, template, dynamic: false, law: null };
+  // 门限设成 0：任何姿势都不该匹配（距离 >= 0 恒成立）
+  for (const config of [
+    { recorded: { spin: entry }, matchThreshold: 0 },
+    { recorded: { spin: entry }, gestureTuning: { matchThreshold: 0 } },
+  ]) {
+    const input = new I.GestureInput(config);
+    const out = input.update([target], 1000, config);
+    assert.ok(!out.events.some((e) => e.action === 'spin'),
+      `门限 0 却触发了 —— 这层的 matchThreshold 没读到：${JSON.stringify(Object.keys(config))}`);
+  }
+});
+
+check('旋转容忍按度解释，不是弧度', () => {
+  // ⚠️ 原来直接把配置值当弧度 ⟹ 默认 20 被当成 20 弧度 = 1146°，也就是**任何角度的手都
+  // 匹配**（实测把手转 60°，距离从 0.5327 掉到 0.0000）。方向是过于宽松，症状是手势互相
+  // 串，而不是没反应 —— 和上面那条是两个独立的 bug，只是住在相邻两行。
+  const upright = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(upright))]);
+  const rotated = rotateHand(upright, 60);
+  const config = {
+    recorded: { spin: { hands: 1, template, dynamic: false, law: null } },
+    gestureTuning: { matchThreshold: 0.28, rotationTolerance: 20 },
+  };
+  const input = new I.GestureInput(config);
+  const out = input.update([rotated], 1000, config);
+  assert.ok(!out.events.some((e) => e.action === 'spin'),
+    '手转了 60° 还匹配 —— rotationTolerance 被当成弧度了（20 弧度 = 1146°，等于不设限）');
+});
+
+// 绕手心转一只手，度数入。测旋转容忍必须真的转手，而不是改别的量。
+function rotateHand(lm, deg) {
+  const rad = (deg * Math.PI) / 180;
+  const cx = lm[0].x;
+  const cy = lm[0].y;
+  const c = Math.cos(rad);
+  const sn = Math.sin(rad);
+  return lm.map((p) => ({
+    x: cx + (p.x - cx) * c - (p.y - cy) * sn,
+    y: cy + (p.x - cx) * sn + (p.y - cy) * c,
+    z: p.z,
+  }));
+}
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
