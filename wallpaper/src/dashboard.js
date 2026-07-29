@@ -386,6 +386,59 @@ function renderRecordables() {
   const grouped = T.groupedActions(config.template, config.proTier);
   renderActionGroup('recordables', grouped.wall.filter((a) => a.recordable));
   renderActionGroup('systemActions', grouped.system.filter((a) => a.recordable));
+  renderModelGestures();
+}
+
+// 用模型识别手势：开关 + 7 个内置手势各绑一个动作。
+//
+// ⚠️ 这里列的是**动作**的下拉，而不是"给手势录制" —— 方向是反的：模型认出 Open_Palm，
+// 我们查表看它绑了哪个动作。所以每一行是"这个手势 → 干什么"。
+function renderModelGestures() {
+  const host = document.getElementById('model-bindings');
+  const toggle = document.getElementById('model-enabled');
+  if (!host || !toggle) return;
+  const M = window.GestureWallModelGestures;
+  const cfg = config.modelGestures || {};
+  toggle.checked = !!cfg.enabled;
+  toggle.onchange = () => window.gw.setConfig({
+    modelGestures: { ...cfg, enabled: toggle.checked },
+  });
+
+  host.innerHTML = '';
+  if (!cfg.enabled) return;
+  // 类名和显示名都从模块拿 —— 手抄一份会和 model-gestures.js 悄悄分叉，而那个分叉
+  // 的表现是"绑了但永远不触发"（键名对不上）。
+  const canned = (M && M.CANNED) || [];
+  const labels = (M && M.LABELS) || {};
+  if (!canned.length) {
+    host.append(el('p', 'hint', '⚠️ model-gestures.js 没加载 —— 面板拿不到手势列表'));
+    return;
+  }
+  // 可绑的动作：所有可录制的（它们的执行链是现成的），加一个"不绑"。
+  const actions = T.recordableActionsOf(config.template, config.proTier);
+  for (const name of canned) {
+    const row = el('div', 'rec');
+    const info = el('div');
+    info.append(el('span', 'nm', labels[name] || name));
+    info.append(el('span', 'hint2', name));
+    row.append(info);
+    const select = document.createElement('select');
+    for (const [value, label] of [['', '不绑'], ...actions.map((a) => [a.id, a.label])]) {
+      const node = document.createElement('option');
+      node.value = value;
+      node.textContent = label;
+      if (value === ((cfg.bindings || {})[name] || '')) node.selected = true;
+      select.append(node);
+    }
+    select.onchange = () => {
+      const next = { ...(config.modelGestures.bindings || {}) };
+      if (select.value) next[name] = select.value; else delete next[name];
+      // bindings 在 OPAQUE_DICTS 里，所以整体替换 —— 传一个缺键的对象删不掉那个键。
+      window.gw.setConfig({ modelGestures: { ...config.modelGestures, bindings: next } });
+    };
+    row.append(select);
+    host.append(row);
+  }
 }
 
 function renderActionGroup(hostId, actions) {
@@ -817,6 +870,29 @@ window.gw.onSensorStatus((s) => {
 
   // 异常的堆栈进日志窗格。这一层没有开发者工具，不转出来就只剩"某个功能不工作"。
   if (s && s.error) logLine('骨架层', s.error.split('\n').slice(0, 3).join(' / '));
+
+  // 模型识别的状态。**包括没绑动作的手势** —— 用户要能看到"模型认出了 Open_Palm 但我
+  // 没把它绑到任何动作上"，否则"没反应"又变成一句没有指向的话。
+  if (s && s.modelGestures) {
+    const m = s.modelGestures;
+    const node = document.getElementById('model-state');
+    if (node) {
+      const seen = m.seen && m.seen.length
+        ? m.seen.map((g) => `${g.label} ${g.score}${g.score < m.minScore ? '（低于门槛）' : ''}`).join('，')
+        : '没认出手势';
+      node.textContent = `模型：${seen}`
+        + (m.fired && m.fired.length ? ` → 触发 ${m.fired.join('、')}` : '');
+      node.className = m.fired && m.fired.length ? 'state ok' : 'state';
+    }
+  }
+  if (s && typeof s.modelReady === 'boolean') {
+    const node = document.getElementById('model-state');
+    if (node && !s.modelReady) {
+      node.textContent = `模型加载失败：${s.modelError || '未知原因'}`;
+      node.className = 'state warn';
+    }
+    logLine('模型', s.modelReady ? '手势模型已加载' : `加载失败：${s.modelError}`);
+  }
 
   // 匹配诊断。每个录过的动作一行：离触发多远、为什么没触发。
   //

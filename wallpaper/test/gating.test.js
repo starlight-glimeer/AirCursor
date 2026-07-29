@@ -764,4 +764,56 @@ check('骨架层的整层停摆能被观测到', () => {
   assert.match(frame, /catch \(error\)/, 'hands.send 的异常被吞掉了');
 });
 
+// ── 用模型识别手势:旁路的四层都要通,而且必须能关 ──────────────────────────
+//
+// 这一层的定位是**旁路**:内置那 7 个手势交给模型,其余继续用录制。存在的理由是现在的
+// 判定是手写几何(逐点距离),没有"什么叫摊开的手"这种语义 —— 实测手动着的时候一个 0.28
+// 的球只能停留 89ms,而序列匹配要求依次进入 N 个这样的球。
+check('模型识别的开关四层都通,而且默认关', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const overlayHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+
+  // 默认关:19MB(11MB wasm + 8MB 模型),不用这个功能不该付这个代价。
+  assert.match(main, /modelGestures: \{\s*\n\s*enabled: false/,
+    'modelGestures 必须默认关 —— 19MB 的加载代价不该强加给不用它的人');
+  assert.match(sensor, /tickModelGestures/, 'sensor 没接模型旁路');
+  assert.match(dash, /renderModelGestures/, '面板没有渲染这一块');
+  assert.ok(html.includes('id="model-enabled"'), '面板没有开关');
+  assert.ok(html.includes('id="model-bindings"'), '面板没有绑定表的容器');
+
+  // 两个 html 都要加载这个模块:骨架层用它做识别,面板用它拿手势名和显示名。
+  assert.match(overlayHtml, /model-gestures\.js/, '骨架层没加载 model-gestures.js');
+  assert.match(html, /model-gestures\.js/,
+    '面板没加载 model-gestures.js —— 手势列表会是空的（我第一版就漏了这个）');
+
+  // bindings 的键是用户选的,深合并会让"删掉一个绑定"变成"保留旧值"。
+  assert.match(main, /OPAQUE_DICTS[\s\S]{0,200}'bindings'/,
+    "bindings 不在 OPAQUE_DICTS 里 —— 传一个缺键的对象删不掉那个绑定");
+});
+
+check('关掉开关时释放模型（19MB 不该一直占着）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const block = sensor.slice(sensor.indexOf('function tickModelGestures'));
+  assert.match(block.slice(0, 600), /model\.dispose\(\)/,
+    '关掉开关不释放模型 —— 那 19MB 会一直占着，而且它还在每帧推理');
+  const mg = fs.readFileSync(path.join(__dirname, '..', 'src', 'model-gestures.js'), 'utf8');
+  assert.match(mg, /close\(\)/, 'dispose 没有真的关掉 recognizer');
+});
+
+check('模型加载失败不影响现有链路', () => {
+  const mg = fs.readFileSync(path.join(__dirname, '..', 'src', 'model-gestures.js'), 'utf8');
+  // 旁路挂了不该让整层停摆 —— 那是「摄像头亮着但骨架没了」那一族。
+  const load = mg.slice(mg.indexOf('async load('), mg.indexOf('dispose()'));
+  assert.match(load, /catch \(error\)/, 'load() 会抛 —— 旁路的失败会冒到 onResults');
+  assert.match(load, /this\.error =/, '没记下失败原因，面板就只能显示"加载失败"');
+  // vendor 取不到的时候整个功能不可用，但那不该挡住 npm install。
+  const vendorSh = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'fetch-vendor.sh'), 'utf8');
+  assert.match(vendorSh, /tasks-vision/, 'vendor 脚本没取 tasks-vision');
+  assert.match(vendorSh, /\|\| true|2>\/dev\/null/,
+    'tasks-vision 取不到会让 npm install 失败 —— 它是旁路，不该阻塞安装');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
