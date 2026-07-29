@@ -5,6 +5,7 @@
 const T = window.GestureWallTemplates;
 const Lib = window.GestureWallLibrary;
 const P = window.GestureWallPreview;
+const Sys = window.GestureWallSystem;
 
 let config = null;
 let strategy = null;
@@ -298,17 +299,23 @@ function recordOptions(action) {
 }
 
 function renderRecordables() {
-  const host = document.getElementById('recordables');
   stopAllPreviews();
+  const grouped = T.groupedActions(config.template, config.proTier);
+  renderActionGroup('recordables', grouped.wall.filter((a) => a.recordable));
+  renderActionGroup('systemActions', grouped.system.filter((a) => a.recordable));
+}
+
+function renderActionGroup(hostId, actions) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
   host.innerHTML = '';
   const t = T.template(config.template);
-  const actions = T.recordableActionsOf(config.template, config.proTier);
   if (!actions.length) {
-    // 分清两种空：这套模板真的没有可录制动作，还是它们都在 pro 档而 pro 没开。
-    // 第一版只写了前一句，于是"勾一下就有了"这个出路完全看不出来。
+    // 分清两种空：真的没有可录制动作，还是进阶模式没开。第一版只写了前一句，于是
+    // "勾一下就有了"这个出路完全看不出来。
     const withPro = T.recordableActionsOf(config.template, true);
-    host.append(el('p', 'hint', withPro.length
-      ? `这套模板的 ${withPro.length} 个可录制动作都是进阶的 —— 勾上上面的「显示进阶动作」`
+    host.append(el('p', 'hint', withPro.length && !config.proTier
+      ? '这些动作要开「进阶模式」才能录 —— 勾上上面那个'
       : '这套模板没有需要录制的动作'));
     return;
   }
@@ -351,6 +358,17 @@ function renderRecordables() {
 
     // ---- 右：选项 + 按钮 ----
     const right = el('div');
+    // 系统动作先给一个"试一下"：确认这个动作在这台机器上能用，再花时间录手势。
+    if (action.system) {
+      const test = el('button', 'act', '试一下');
+      test.onclick = async () => {
+        test.textContent = '…';
+        const r = await window.gw.testSystemAction(action.id);
+        test.textContent = r && r.ok ? '✅ 能用' : '❌ 失败';
+        setTimeout(() => { test.textContent = '试一下'; }, 1800);
+      };
+      right.append(test);
+    }
     const opts = el('div', 'opts');
     {
       const kindSelect = document.createElement('select');

@@ -5,6 +5,7 @@
 // 守的是这个设计的两条硬约束：动作 id 不能改（改了用户已录的手势就失效）、加模板/模块
 // 不该需要改渲染或录制代码。
 const assert = require('node:assert');
+require('../src/system.js');
 require('../src/templates.js');
 const T = globalThis.GestureWallTemplates;
 
@@ -42,7 +43,7 @@ check('进阶档开放全部动作，两档不重叠', () => {
   const t = T.template('depthStage');
   assert.ok(t.actions.pro.length > 0, '进阶档没有动作');
   assert.strictEqual(t.actions.pro.length, Object.keys(T.ACTIONS).length,
-    '进阶档没有开放全部动作');
+    '进阶档没有开放全部动作（新增动作要记得加进模板，否则它存在但没人能用）');
   const overlap = t.actions.basic.filter((id) => t.actions.pro.includes(id));
   assert.strictEqual(overlap.length, 0, `两档重叠：${overlap.join(',')}`);
 });
@@ -117,6 +118,29 @@ check('每个动作都有 label 和 hint（UI 不会显示空白）', () => {
     assert.ok(action.label, `${action.id} 缺 label`);
     assert.ok(action.hint, `${action.id} 缺 hint`);
   }
+});
+
+console.log('\n  系统动作');
+
+// 手势的定位是替代鼠标键盘，所以"控制壁纸"和"控制电脑"是同一批动作里的两类。
+check('系统动作接在同一张 ACTIONS 表里', () => {
+  const system = Object.values(T.ACTIONS).filter((a) => a.system);
+  assert.ok(system.length >= 6, `系统动作只有 ${system.length} 个`);
+  for (const action of system) {
+    assert.ok(action.label && action.hint, `${action.id} 缺 label/hint`);
+    assert.strictEqual(action.recordable, true, `${action.id} 不可录制`);
+    assert.strictEqual(action.kind, 'discrete');
+  }
+});
+
+// 八个壁纸动作和八个系统动作混在一张长列表里找不到东西。
+check('分组把壁纸动作和系统动作分开', () => {
+  const g = T.groupedActions('depthStage', true);
+  assert.ok(g.wall.length > 0 && g.system.length > 0, '有一组是空的');
+  assert.ok(g.wall.every((a) => !a.system), '壁纸组里混进了系统动作');
+  assert.ok(g.system.every((a) => a.system), '系统组里混进了壁纸动作');
+  assert.strictEqual(g.wall.length + g.system.length,
+    T.actionsOf('depthStage', true).length, '分组丢了动作');
 });
 
 console.log('\n  槽位与模块');

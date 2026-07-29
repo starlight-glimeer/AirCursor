@@ -10,11 +10,15 @@
 const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 // 图库的纯逻辑（无 DOM、无 Electron），主进程和 dashboard 共用同一份 —— 两份实现
 // 只要有一点不同，就会出现"面板里显示的和实际存的不一样"。
 require('./library.js');
 const Library = globalThis.GestureWallLibrary;
+// 系统动作（打开应用、媒体键）的定义，主进程和 dashboard 共用一份。
+require('./system.js');
+const System = globalThis.GestureWallSystem;
 
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
@@ -652,6 +656,44 @@ ipcMain.handle('delete-preset', (_event, name) => {
 // Gesture and music events both land here and go straight through. Main relays
 // rather than translates: whoever produces an event decides what it means, so
 // there is one place to look when something fires that should not have.
+// 系统动作：打开应用走 /usr/bin/open，媒体键走 osascript。
+//
+// 两条都**不需要辅助功能授权** —— 这是刻意选的。移动光标/点击那条链需要授权，而缺权限时
+// CGEvent 是静默丢弃（不报错、不抛异常），AirCursor 在那上面烧掉四轮 debug。先做零风险
+// 的这半，光标控制等有健康状态可查再说。
+function runSystemAction(id) {
+  const kind = System.systemKindOf(id);
+  if (!kind) return { ok: false, error: 'NOT_SYSTEM_ACTION' };
+
+  if (kind === 'app') {
+    const args = System.openApp(id, (candidate) => {
+      try {
+        return spawnSync('/usr/bin/open', candidate, { stdio: 'ignore' }).status === 0;
+      } catch {
+        return false;
+      }
+    });
+    // 报出用了哪个候选：同一个 App 在不同机器上路径/bundle id/名字都可能不同，而
+    // "试了四个都失败"和"第二个成功了"需要分开看。
+    if (args) console.log(`[system] ${id} → open ${args.join(' ')}`);
+    else console.warn(`[system] ${id} 全部候选都失败了`);
+    return { ok: !!args, via: args };
+  }
+
+  const meta = System.MEDIA_KEYS[id];
+  if (!meta) return { ok: false, error: 'UNKNOWN_MEDIA_KEY' };
+  try {
+    // System Events 的 key code 走的不是 CGEvent，所以不吃辅助功能授权。
+    const script = `tell application "System Events" to key code ${meta.keyCode}`;
+    const result = spawnSync('/usr/bin/osascript', ['-e', script], { stdio: 'ignore' });
+    if (result.status !== 0) console.warn(`[system] ${id} osascript 失败`);
+    return { ok: result.status === 0 };
+  } catch (error) {
+    console.warn(`[system] ${id} 失败：${error.message}`);
+    return { ok: false, error: error.message };
+  }
+}
+
 ipcMain.on('gesture', (_event, payload) => {
   // 录制期间丢掉所有手势事件。
   //
@@ -660,9 +702,25 @@ ipcMain.on('gesture', (_event, payload) => {
   // 各种中间姿势，触发已绑的动作 —— 而那些动作会切模块、转视角、甚至退出模式，把录制
   // 打断。AirCursor 真机上就是这么坏的。
   if (recordingAction) return;
+
+  // 系统动作在主进程执行，不转给壁纸 —— 壁纸不知道怎么打开应用，转过去只是让它
+  // 收到一个不认识的 action 然后什么都不做（那正是"手势没反应"的一种）。
+  if (payload && System.systemKindOf(payload.action)) {
+    const result = runSystemAction(payload.action);
+    // dashboard 仍然要知道：它显示"最近事件"，而系统动作的成败是那里唯一的反馈。
+    if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+      dashboardWindow.webContents.send('gesture', { ...payload, system: true, ok: result.ok });
+    }
+    return;
+  }
+
   if (wallWindow && !wallWindow.isDestroyed()) wallWindow.webContents.send('gesture', payload);
   if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.webContents.send('gesture', payload);
 });
+
+// 面板上手动试一个系统动作。录制之前先确认"这个动作在我机器上能用"，否则录完发现
+// 打不开应用，分不清是手势没认出来还是 App 找不到。
+ipcMain.handle('test-system-action', (_event, id) => runSystemAction(id));
 
 ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
 

@@ -10,6 +10,9 @@
 //
 // 无 DOM、无 Electron，所以能跑纯逻辑用例。
 (function (root) {
+// 系统动作（打开应用、媒体键）由 system.js 提供。手势的定位是替代鼠标键盘，所以
+// "控制壁纸"和"控制电脑"是同一批动作里的两类，而不是两个功能。
+const System = root.GestureWallSystem;
 
 // 分档不是"手势分两档"，是**有没有手势**。
 //
@@ -99,6 +102,9 @@ const ACTIONS = {
     law: null,
     recordable: true,
   },
+  // 系统动作接在同一张表里：对录制、冲突检测、预览来说它们和壁纸动作没有区别 ——
+  // 区别只在"触发之后干什么"，而那是主进程的事。
+  ...(System ? System.systemActions() : {}),
 };
 
 // 槽位里可选的模块。每个模块只描述**怎么表现**，不描述用什么图 —— 图是用户的，
@@ -187,7 +193,13 @@ const TEMPLATES = {
     // （鼠标交互不需要"动作列表"）。见文件头 TIERS 的说明。
     actions: {
       basic: [],
-      pro: ['zoom', 'parallax', 'yawLeft', 'yawRight', 'pitchUp', 'pitchDown', 'spin', 'resetView'],
+      pro: [
+        // 壁纸动作
+        'zoom', 'parallax', 'yawLeft', 'yawRight', 'pitchUp', 'pitchDown', 'spin', 'resetView',
+        // 系统动作：手势替代鼠标键盘，所以打开应用和控制播放也在这套里
+        'open_netease', 'open_music', 'open_spotify', 'open_browser', 'open_finder',
+        'media_toggle', 'media_next', 'media_prev',
+      ],
     },
   },
 };
@@ -209,6 +221,16 @@ function actionsOf(templateId, includePro) {
 // 没有意义，而给它们做录制入口只会让用户以为录了才能用。
 function recordableActionsOf(templateId, includePro) {
   return actionsOf(templateId, includePro).filter((a) => a.recordable);
+}
+
+// 按"控制什么"分组，UI 用它分区显示 —— 八个壁纸动作和八个系统动作混在一张长列表里
+// 找不到东西。
+function groupedActions(templateId, includePro) {
+  const actions = actionsOf(templateId, includePro);
+  return {
+    wall: actions.filter((a) => !a.system),
+    system: actions.filter((a) => a.system),
+  };
 }
 
 function moduleOf(slot, id) {
@@ -240,6 +262,7 @@ root.GestureWallTemplates = {
   template,
   actionsOf,
   recordableActionsOf,
+  groupedActions,
   moduleOf,
   resolveSlots,
 };

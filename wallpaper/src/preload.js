@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('gw', {
   setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
+  testSystemAction: (id) => ipcRenderer.invoke('test-system-action', id),
 
   // Sensor -> main -> wall/dashboard. Fire and forget: a dropped gesture is better
   // than a stalled camera loop waiting for an ack.
