@@ -9,3 +9,11 @@ yarn-error.log*
 .vscode/
 native/AirCursorPointer
 dist/
+
+# Vendored third-party bundles. `wallpaper/` itself is gone, but its vendor step used
+# to copy 24MB of MediaPipe binaries into the worktree, and a `git add -A` in a later
+# commit swept them into the repo — 24MB that every clone then pays for, and nobody
+# noticed until the pull output was read line by line. Ignored so the same accident
+# cannot repeat if any vendoring script is ever run here again.
+wallpaper/
+**/src/vendor/
