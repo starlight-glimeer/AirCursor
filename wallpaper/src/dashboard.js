@@ -798,6 +798,26 @@ window.gw.onSensorStatus((s) => {
     if (grants) grants.hidden = false;
   }
 
+  // 心跳。停了要**主动变红**，因为"没有日志"和"一切正常"在面板上长得一模一样。
+  if (s && s.heartbeat) {
+    const h = s.heartbeat;
+    const node = document.getElementById('heartbeat');
+    if (node) {
+      // 摄像头帧数和推理帧数分开显示：它们背离的那一刻就指明了是哪一层停的。
+      // 摄像头涨、推理不涨 = 卡在推理；两个都不涨 = 摄像头或整层没了。
+      node.textContent = `心跳：${h.stalled ? '⚠️ 推理停了' : `${h.fps}/s`}`
+        + ` · 推理累计 ${h.frames} 帧 · 摄像头 ${h.cameraFrames} 帧`
+        + (h.errors ? ` · 判定异常 ${h.errors} 次` : '')
+        + (h.busy ? ' · 上一帧还在推理' : '');
+      node.className = h.stalled ? 'state warn' : 'state ok';
+    }
+    // 停摆要进日志窗格：面板那一格会被下一次心跳覆盖，而"什么时候停的"要留痕。
+    if (h.stalled) logLine('骨架层', `推理停了（累计 ${h.frames} 帧，摄像头 ${h.cameraFrames} 帧）`);
+  }
+
+  // 异常的堆栈进日志窗格。这一层没有开发者工具，不转出来就只剩"某个功能不工作"。
+  if (s && s.error) logLine('骨架层', s.error.split('\n').slice(0, 3).join(' / '));
+
   // 匹配诊断。每个录过的动作一行：离触发多远、为什么没触发。
   //
   // 报**距离和门限两个数**，不是"匹配/不匹配"：差 0.01 和差 10 倍指向完全不同的处理

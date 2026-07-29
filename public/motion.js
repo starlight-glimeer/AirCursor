@@ -435,12 +435,28 @@ class SequenceMatcher {
     this.toNext = null;
     this.toPrev = null;
     this.threshold = null;
+    // 上一次看到有效帧的时刻，以及这次尝试宽限了几帧。见 excuse()。
+    this.lastSeenAt = null;
+    this.excused = 0;
   }
 
   // `slack` multiplies the recorded timings: a movement performed a bit slower
   // than it was recorded still counts, one performed at half speed does not (by
   // then it is a different gesture, or the hand is doing something else).
-  update({ pose, keyframes, threshold, rotationTolerance, distance, now, slack = 2.2, cooldownMs = 500 }) {
+  update(args) {
+    // 包一层，只为保证 `lastSeenAt` 在**所有**返回路径上都被更新 —— 那个函数有六个 return，
+    // 逐个加赋值必然漏一个，而漏掉的那条路会让 excuse() 算出错误的 gap。
+    try {
+      return this.updateInner(args);
+    } finally {
+      this.lastSeenAt = args.now;
+    }
+  }
+
+  updateInner({ pose, keyframes, threshold, rotationTolerance, distance, now, slack = 2.2, cooldownMs = 500 }) {
+    // ⚠️ `lastSeenAt` 在**这个函数末尾**才更新，不是开头。excuse() 要用它算"丢了多久"，
+    // 而开头就覆盖等于每次 gap 都是 0 ⟹ 宽限一秒都不给，整件事变成 no-op。
+    // （第一版就是这么写的，还留了个用不到的 `sinceSeen` 变量。）
     if (!pose || !keyframes?.length) {
       this.blocked = "notBound";
       return false;
@@ -560,6 +576,22 @@ const KEYFRAME_ARRIVAL = 0.55;
     // 分开报，因为处理相反：没进半径 = 动作做小了；进了但没过中点 = 方向不对或关键帧太近。
     this.blocked = toNext >= arrival ? "notReached" : "beforeMidpoint";
     return false;
+  }
+
+  // 这一帧不算：手数不够（丢跟踪）时把时间还给序列，而不是让超时预算白流。
+  //
+  // ⚠️ 真机上双手连续段的中位长度只有 3 帧，而一个 10 关键帧的序列要走 10 帧连续双手。
+  // 不还这个时间的话，双手动态手势**必然**在中途 tooSlow —— 而那看起来像"判据太严"，
+  // 实际是"人做得到的动作在丢帧下走不完"。
+  //
+  // 只延长预算，不推进进度：丢帧期间手确实可能在动，但我们没看到，所以不能假设它到位了。
+  excuse(now) {
+    if (this.index === 0 || this.startedAt === null) return;
+    const gap = this.lastSeenAt ? now - this.lastSeenAt : 0;
+    // 单次宽限有上限：真把手放下了不该无限期挂着。250ms 和保持判定用的是同一个值。
+    if (gap > 0 && gap < 250) this.startedAt += gap;
+    this.lastSeenAt = now;
+    this.excused = (this.excused || 0) + 1;
   }
 
   fire(now) {

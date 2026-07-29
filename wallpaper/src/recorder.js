@@ -468,12 +468,16 @@ function conflictingAction(action, template, recorded, threshold, rotationTolera
     if (other === action || !entry || !entry.template) continue;
     if (!againstDisabled && entry.enabled === false) continue;
     const distance = Pose.templateDistance(template, entry.template, rotationTolerance);
-    if (distance < threshold * Pose.SEPARATION_FACTOR) {
+    // 双手的门放宽一倍，和匹配侧一致。**不一致的后果是自相矛盾的提示**：
+    // 录的时候说没冲突（用宽门算间距），跑起来两个手势互抢（宽门也用于匹配）；
+    // 或者反过来，能匹配的手势被判成冲突而存不进去。
+    const gate = Pose.thresholdFor(template, threshold) * Pose.SEPARATION_FACTOR;
+    if (distance < gate) {
       return {
         action: other,
         distance: Number(distance.toFixed(3)),
         // 报出"要多远才够" —— 只说"太像了"用户不知道该改多少。
-        need: Number((threshold * Pose.SEPARATION_FACTOR).toFixed(3)),
+        need: Number(gate.toFixed(3)),
         otherDisabled: entry.enabled === false,
       };
     }

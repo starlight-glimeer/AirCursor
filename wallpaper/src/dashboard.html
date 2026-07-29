@@ -190,7 +190,7 @@
      后果不是"丑"，是**读不到**：`white-space` 默认把 textContent 里的 `\n` 折叠成空格，
      于是多个手势的诊断挤成一行长文本，用户看到的就是"没有更多信息"。
      用户原话：「我没有看到更多的日志信息」。 */
-  #match-probe, #overlay-geom {
+  #heartbeat, #match-probe, #overlay-geom {
     font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5;
     white-space: pre-wrap;              /* 换行必须保留，这是这条规则存在的理由 */
     margin-top: 6px; padding: 7px 9px;
@@ -198,8 +198,8 @@
     color: var(--dim);
     max-height: 160px; overflow-y: auto;   /* 手势多了要能滚，不能截断 */
   }
-  #match-probe.ok, #overlay-geom.ok { color: var(--accent); }
-  #match-probe.warn, #overlay-geom.warn { color: var(--warn); }
+  #heartbeat.ok, #match-probe.ok, #overlay-geom.ok { color: var(--accent); }
+  #heartbeat.warn, #match-probe.warn, #overlay-geom.warn { color: var(--warn); }
   .bar { height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 6px; }
   .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; width: 0; transition: width .1s; }
   .tier {
@@ -345,6 +345,11 @@
            「录了没反应」对应六段链路（录制 → 存盘 → 读配置 → 匹配 → 发事件 → 执行），
            而在此之前只有两头可见。这一块是第四段，也是最常断的一段：手数不对、距离差
            一点、armed 没复位，三种原因指向完全不同的处理，症状却是同一句"没反应"。 -->
+      <!-- 心跳。⚠️ 这一格存在的理由:「摄像头亮着但骨架突然没了、录制也点不动」这种
+           **整层静默停摆**没有任何输出 —— 它的特征恰恰是"什么都没有",而"没有日志"和
+           "一切正常"在面板上长得一模一样。所以要有一个东西主动每秒说一次话。
+           摄像头帧数和推理帧数分开报:它们背离的那一刻就指明了是哪一层停的。 -->
+      <div id="heartbeat" class="state">心跳：等骨架层启动</div>
       <div id="match-probe" class="state">手势匹配：摆出手势看这里</div>
       <pre id="log" class="log"></pre>
       <button class="act" id="capture-start">录 5 秒关键点</button>

@@ -23,6 +23,9 @@ function sendIntervalMs() {
 // 推理闸门的状态。没有它们时真机只有 14fps(串行堆积),见 onFrame。
 let inferenceBusy = false;
 let lastInferenceAt = 0;
+// 摄像头交付的帧数。见 onFrame:它和推理出结果的帧数分开,用来定位是哪一层停了。
+let cameraFrameCount = 0;
+let inferenceErr = 0;
 // 匹配诊断的发送间隔。给人读的数字不需要 30/s —— 那样面板上只会看到一片闪烁。
 const PROBE_INTERVAL_MS = 250;
 let lastProbeAt = 0;
@@ -117,8 +120,64 @@ function captureFrame(list, now) {
   window.gw.saveCapture(payload);
 }
 
+// MediaPipe 的结果回调。**整个包在 try 里**,而这不是防御性编程的仪式。
+//
+// 这是 MediaPipe 从它自己的循环里调的回调:这里抛一次异常,它可能就再也不回调了 ——
+// 而摄像头**继续亮着**,骨架停在最后一帧然后淡出,录制按钮点了没反应。用户报的正是
+// 这个:「摄像头亮着,但是骨架突然消失了,点击录制也录不了了」,而且**没有任何报错记录**。
+//
+// 一次异常让整层永久停摆,却什么都不留下 —— 那是这个项目里最贵的失败形状。
 function onResults(results) {
+  try {
+    onResultsInner(results);
+    frameOk += 1;
+  } catch (error) {
+    // 只报前几次和之后每 100 次:同一个异常会每帧重复,刷屏会把别的信息挤掉。
+    frameErr += 1;
+    if (frameErr <= 3 || frameErr % 100 === 0) {
+      status(`⚠️ 判定抛异常(第 ${frameErr} 次):${error && error.message}`, {
+        error: String((error && error.stack) || error).slice(0, 400),
+      });
+    }
+    // 不再抛出去 —— 抛出去就回到"MediaPipe 不再回调"那条路。宁可这一帧丢掉。
+  }
+}
+
+// 心跳:每秒报一次"这一层还活着吗"。
+//
+// ⚠️ 存在的理由是**整层静默停摆这件事本身没有任何输出**——它的特征恰恰是"什么都没有"。
+// 而"没有日志"和"一切正常"在面板上长得一模一样,所以必须有一个东西**主动**说话:
+// 只要心跳停了,就知道断在推理这一层,而不是判定/匹配/投递。
+let frameOk = 0;
+let frameErr = 0;
+let framesAtLastBeat = 0;
+let lastBeatAt = 0;
+const HEARTBEAT_MS = 1000;
+
+function heartbeat(now) {
+  if (now - lastBeatAt < HEARTBEAT_MS) return;
+  const fps = Math.round(((frameOk - framesAtLastBeat) * 1000) / (now - lastBeatAt || 1));
+  const stalled = fps === 0;
+  lastBeatAt = now;
+  framesAtLastBeat = frameOk;
+  window.gw.sendSensorStatus({
+    heartbeat: {
+      fps,
+      frames: frameOk,
+      errors: frameErr,
+      // 摄像头在出帧但推理没结果 = 卡在推理层。这两个数分开报,因为"摄像头亮着但骨架
+      // 没了"就是它们不一致的那个状态。
+      cameraFrames: cameraFrameCount,
+      busy: inferenceBusy,
+      stalled,
+    },
+    ...(stalled ? { text: '⚠️ 推理停了 —— 摄像头可能还在出帧,但没有结果回来' } : {}),
+  });
+}
+
+function onResultsInner(results) {
   const now = performance.now();
+  heartbeat(now);
   const list = results.multiHandLandmarks || [];
 
   // 关键点录制在最前面,而且**在录制守卫之前** —— 它记的是原始输入,和手势判定无关,
@@ -296,6 +355,25 @@ window.gw.onCancelRecording(() => {
 // ---------------------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------------------
+// 兜底:这一层任何没被 catch 的异常和 Promise 拒绝都报出来。
+//
+// `onResults` 已经包了 try,但那只护住判定那一段。定时器回调、事件处理、await 链里的
+// 拒绝都绕过它,而骨架层**没有开发者工具、不在视线里** —— 不接这两个钩子,它们只会
+// 表现为"某个功能突然不工作了",一行输出都没有。
+//
+// 这两个钩子接在 start() 之前,因为加载期(vendor 404、wasm 初始化失败)的异常同样要抓。
+window.addEventListener('error', (event) => {
+  status(`⚠️ 未捕获异常:${event.message} @ ${event.filename || '?'}:${event.lineno || 0}`, {
+    error: String((event.error && event.error.stack) || event.message).slice(0, 400),
+  });
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  status(`⚠️ 未处理的 Promise 拒绝:${(reason && reason.message) || reason}`, {
+    error: String((reason && reason.stack) || reason).slice(0, 400),
+  });
+});
+
 async function start() {
   status('正在加载手势模型');
   if (!window.Hands || !window.Camera) {
@@ -339,6 +417,9 @@ async function start() {
     //   间隔闸   两次推理至少隔 inferenceIntervalMs。省下的 CPU 留给绘制。
     onFrame: async () => {
       if (!hands) return;
+      // 摄像头交付的帧数。和 frameOk(推理出结果的帧数)分开计,因为"摄像头亮着但骨架
+      // 没了"正是这两个数背离的那个状态 —— 一个数说不出是哪一层停了。
+      cameraFrameCount += 1;
       const now = performance.now();
       const minInterval = (config && config.gestureTuning && config.gestureTuning.inferenceIntervalMs) || 20;
       if (inferenceBusy || now - lastInferenceAt < minInterval) return;
@@ -346,6 +427,14 @@ async function start() {
       lastInferenceAt = now;
       try {
         await hands.send({ image: video });
+      } catch (error) {
+        // ⚠️ 原来只有 finally,异常被静默吞掉。而 `hands.send` 失败(wasm 崩了、显存不够、
+        // 视频轨道断了)正是"摄像头亮着但没有骨架"的另一个候选原因 —— 吞掉它等于把这
+        // 条线索删了。
+        inferenceErr += 1;
+        if (inferenceErr <= 3 || inferenceErr % 100 === 0) {
+          status(`⚠️ 推理失败(第 ${inferenceErr} 次):${error && error.message}`);
+        }
       } finally {
         // finally,不是 then:推理抛异常时不解锁会让手势永久停住,而症状是"突然就不动了"。
         inferenceBusy = false;

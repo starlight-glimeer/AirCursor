@@ -526,9 +526,15 @@ check('录了 zoom 的手型：手型对上才给推进', () => {
 
 check('录了 zoom 的手型：手型不对就不给推进（这才叫门）', () => {
   const input = new I.GestureInput({});
-  // 模板是"屈指"的姿势，实时是"伸开捏合"—— 实测距离 0.3001 > 阈值 0.28
+  // 模板是"屈指"的姿势，实时是"伸开捏合"。
+  //
+  // ⚠️ 屈指幅度从 0.9 提到 1.4：**双手的门是 0.56**（单手 0.28 的两倍，见 pose.js 的
+  // thresholdFor），而 curl 0.9 只有 0.369 —— 落在门内了。curl 1.4 = 0.685 才够。
+  //
+  // 这条记下来是因为它是个陷阱：反向夹具的幅度必须跟着**实际生效的那个门**走，而这里
+  // 生效的门取决于手数。按 matchThreshold 去算会得到一个"看着够但其实不够"的夹具。
   const template = P.buildPoseTemplate(
-    pinchPair(0.2).map((lm) => I.toPixels(I.mirror(curled(lm, 0.9)))),
+    pinchPair(0.2).map((lm) => I.toPixels(I.mirror(curled(lm, 1.4)))),
   );
   const config = { recorded: { zoom: { hands: 2, template, dynamic: false, law: null } } };
   const off = input.update(pinchPair(0.2), 1000, config);
@@ -790,6 +796,87 @@ check('关掉连续动作的手型 = 回到内置映射，不是禁用那个动�
   const out = input.update(pinchPair(0.2), 1000, config);
   assert.ok(out.events.some((e) => e.action === 'zoom'),
     '关掉手型门之后捏合也不给推进了 —— 那是把开关变成了"禁用这个动作"');
+});
+
+// ── 双手的匹配门要放宽 ───────────────────────────────────────────────────
+//
+// 用户报「单手的动态稳定性还好，但是两只手的动态就不稳定，我成功触发过，说明是通的，
+// 但是很难触发」。这句话里"成功触发过"是关键 —— 它排除了"链路断了"，剩下的只能是概率。
+//
+// 真机实测（同一个**没动**的手，离它自己的 40 帧中位模板）：
+//
+//          中位距离   门 0.28 的命中率
+//   单手     0.214       67%
+//   双手     0.278       51%     ← 中位几乎压在门上
+//
+// 双手模板不是"两个单手模板"，它是一个 126 维向量、两份独立噪声。而动态手势要"命中起始
+// + 连续推进"，逐帧 51% 复合下来就很低。
+//
+// 扫门的结论是这条修法的依据：门放到 0.55 时双手命中率 86%，而**误配率在 0.70 都还是 0%**
+// ⟹ 0.28 白丢一半的帧却没换来任何判别力。
+check('双手模板的门是单手的两倍', () => {
+  assert.strictEqual(P.thresholdFor({ hands: 1 }, 0.28), 0.28);
+  assert.strictEqual(P.thresholdFor({ hands: 2 }, 0.28), 0.56);
+  // 缺 hands 字段当单手 —— 存量模板都带这个字段，但缺了不该崩。
+  assert.strictEqual(P.thresholdFor({}, 0.28), 0.28);
+  assert.strictEqual(P.thresholdFor(null, 0.28), 0.28);
+});
+
+check('双手静态手势用放宽后的门（0.28 下会丢一半的帧）', () => {
+  const pair = [hand({ centerX: 0.35 }), hand({ centerX: 0.65 })];
+  const template = P.buildPoseTemplate(pair.map((lm) => px(I.mirror(lm))));
+  const input = new I.GestureInput({});
+  const config = {
+    recorded: { spin: { hands: 2, template, dynamic: false, law: null } },
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  input.update(pair, 1000, config);
+  const probe = input.lastProbe()[0];
+  assert.strictEqual(probe.threshold, 0.56,
+    '诊断报的门不是放宽后的值 —— 面板会显示"距离 0.4 / 门 0.28"而它其实过了');
+});
+
+check('匹配、序列、冲突三处用同一个门（不一致会给出自相矛盾的提示）', () => {
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const rec = fs.readFileSync(path.join(__dirname, '..', 'src', 'recorder.js'), 'utf8');
+  // 漏掉任何一处的后果：录的时候说没冲突、跑起来两个手势互抢；或者反过来，
+  // 能匹配的手势被判成冲突而存不进去。
+  assert.ok((input.match(/thresholdFor/g) || []).length >= 4,
+    `input.js 只有 ${(input.match(/thresholdFor/g) || []).length} 处用了 thresholdFor —— `
+    + '静态/有律/序列/连续四条路都要用');
+  assert.match(rec, /Pose\.thresholdFor/, '冲突检测没用放宽后的门');
+});
+
+// ── 丢跟踪不该消耗序列的超时预算 ──────────────────────────────────────────
+//
+// 真机 capture 实测：双手帧只占 69%（单手 86%），而**双手连续段的中位长度只有 3 帧**。
+// 一个 10 关键帧的序列要走 10 帧连续双手，只有 2/4 段够长。
+//
+// 掉的那些帧既不能推进序列、又照样消耗超时预算 ⟹ 必然 tooSlow。这是「帧驱动的判定要给
+// 丢帧宽限」在这个项目里的第四次（保持判定、点击、trackingRate、这里）。
+check('手数不够时把时间还给序列，不让预算白流', () => {
+  const m = new Motion.SequenceMatcher();
+  const a = { hands: 1, angle: 0, values: new Array(63).fill(0) };
+  const b = { hands: 1, angle: 0, values: new Array(63).fill(0.5) };
+  const keyframes = [{ template: a, offsetMs: 0 }, { template: b, offsetMs: 400 }];
+  m.update({ pose: a, keyframes, threshold: 0.28, rotationTolerance: 0,
+    distance: P.templateDistance, now: 1000 });
+  assert.strictEqual(m.index, 1, '起始姿势没命中，后面的比较没意义');
+  const started = m.startedAt;
+
+  m.excuse(1100);                       // 丢了 100ms
+  assert.strictEqual(m.startedAt, started + 100, '宽限没把时间还回来');
+  assert.strictEqual(m.excused, 1, '没记宽限次数');
+
+  m.excuse(1500);                       // 丢了 400ms，超过 250ms 上限
+  assert.strictEqual(m.startedAt, started + 100,
+    '丢了 400ms 还在宽限 —— 真把手放下了不该无限期挂着');
+});
+
+check('还没开始的序列不宽限（没有预算可还）', () => {
+  const m = new Motion.SequenceMatcher();
+  m.excuse(1000);
+  assert.strictEqual(m.startedAt, null, 'index 0 时 excuse 应该是 no-op');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

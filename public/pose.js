@@ -339,6 +339,40 @@ class GestureResolver {
 // the guarantee is gone but the nearest-match resolver still picks correctly most
 // of the time, so it saves and warns instead of blocking a pose the user wants.
 const SEPARATION_FACTOR = 1;
+
+// 匹配阈值按手数放宽的倍数。
+//
+// ⚠️ 双手模板不是"两个单手模板",它是一个 126 维向量,而两只手各自贡献一份独立噪声。
+// 真机实测(同一个没动的手,离它自己的 40 帧中位模板):
+//
+//            中位距离   门 0.28 的命中率
+//   单手      0.214        67%
+//   双手      0.278        51%     ← 中位几乎压在门上
+//
+// 而双手动态手势要"命中起始 + 连续推进",逐帧 51% 复合下来就很低 —— 这正是
+// 「单手动态还好,双手动态很难触发」。
+//
+// 扫门实测(该命中 vs 该拒绝的另一个手型):
+//
+//   门     单手命中  双手命中  误配率
+//   0.28     67%      51%      0%
+//   0.40     74%      70%      0%
+//   0.55     86%      86%      0%    ← 双手取这个
+//   0.70     89%      91%      0%
+//
+// **0.28 白丢一半的帧却没换来任何判别力** —— 误配率在 0.70 都还是 0%。取 0.55/0.28 ≈ 2,
+// 也就是双手把门放宽一倍。不直接把单手也放宽:单手 0.28 已经在用、有真机验证过的手感,
+// 而这次要修的是双手。
+const TWO_HAND_THRESHOLD_SCALE = 2;
+
+// 一个模板在当前阈值下的实际判定门限。
+//
+// 收进函数而不是散在调用点:这个乘数要被匹配、冲突检测、序列推进三处用到,而漏掉任何
+// 一处就会出现"能匹配但报冲突"或者反过来的自相矛盾。
+function thresholdFor(template, threshold) {
+  const hands = (template && template.hands) || 1;
+  return hands >= 2 ? threshold * TWO_HAND_THRESHOLD_SCALE : threshold;
+}
 const ADVISORY_FACTOR = 2;
 
 root.AirCursorPose = {
@@ -346,6 +380,8 @@ root.AirCursorPose = {
   PALM_WIDTH_FLOOR_PX,
   GestureResolver,
   SEPARATION_FACTOR,
+  TWO_HAND_THRESHOLD_SCALE,
+  thresholdFor,
   ADVISORY_FACTOR,
   dist,
   palmWidthOf,

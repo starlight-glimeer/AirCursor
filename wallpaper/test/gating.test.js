@@ -724,4 +724,44 @@ check('多行诊断的容器保留换行（否则挤成一行 = 看不到）', (
     `这些容器写入多行文本但不保留换行，会挤成一行读不了：${bad.join(', ')}`);
 });
 
+// ── 整层静默停摆必须能被看见 ─────────────────────────────────────────────
+//
+// 用户报「摄像头亮着，但是骨架突然消失了，点击录制也录不了了」，并且**没有任何报错记录**。
+//
+// `onResults` 是 MediaPipe 从它自己的循环里调的回调 —— 这里抛一次异常，它可能就再也不
+// 回调了，而摄像头继续亮着。一次异常让整层永久停摆，却什么都不留下。
+//
+// 而这类失败的特征恰恰是"**没有输出**"，所以"没有日志"和"一切正常"在面板上长得一模一样。
+// 唯一的解法是有个东西**主动**每秒说一次话。
+check('骨架层的整层停摆能被观测到', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+
+  // ① MediaPipe 的回调必须包 try —— 它抛出去就可能不再回调
+  assert.match(sensor, /function onResults\(results\) \{\s*\n\s*try \{/,
+    'onResults 没包 try —— 抛一次异常整层可能永久停摆，而摄像头继续亮着');
+  assert.match(sensor, /onResultsInner/, '没有分出内层函数');
+
+  // ② 心跳：停了要主动说话
+  assert.match(sensor, /heartbeat/, 'sensor 没有心跳');
+  assert.match(sensor, /stalled/, '心跳不报"停了"');
+  assert.match(dash, /s\.heartbeat/, '面板没读心跳');
+  assert.ok(html.includes('id="heartbeat"'), '面板没有显示心跳的地方');
+
+  // ③ 摄像头帧数和推理帧数必须**分开**报：它们背离的那一刻指明是哪一层停的。
+  //    一个数说不出"摄像头亮着但骨架没了"是摄像头的问题还是推理的问题。
+  assert.match(sensor, /cameraFrameCount/, '没单独计摄像头帧数');
+  assert.match(dash, /cameraFrames/, '面板没显示摄像头帧数');
+
+  // ④ 兜底钩子：onResults 之外的路径（定时器、事件、await 链）绕过那个 try
+  assert.match(sensor, /addEventListener\('error'/, '没接未捕获异常');
+  assert.match(sensor, /addEventListener\('unhandledrejection'/, '没接未处理的 Promise 拒绝');
+
+  // ⑤ 推理失败不能被静默吞掉 —— 原来只有 finally，而 hands.send 失败正是
+  //    "摄像头亮着但没有骨架"的另一个候选原因
+  const frame = sensor.slice(sensor.indexOf('onFrame: async'), sensor.indexOf('width: 640'));
+  assert.match(frame, /catch \(error\)/, 'hands.send 的异常被吞掉了');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

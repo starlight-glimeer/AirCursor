@@ -352,7 +352,8 @@ class GestureInput {
       // 惰性建模板：大多数时候两个都没录，那就一次距离计算都不做。
       if (!pose) pose = Pose.buildPoseTemplate(mirrored);
       if (!pose) { out[action] = false; continue; }
-      out[action] = Pose.templateDistance(pose, entry.template, rotation) < threshold;
+      out[action] = Pose.templateDistance(pose, entry.template, rotation)
+        < Pose.thresholdFor(entry.template, threshold);
     }
     return out;
   }
@@ -401,8 +402,28 @@ class GestureInput {
       if (action === 'zoom' || action === 'parallax') continue;
       // 手数必须对得上：单手模板不该被双手姿势匹配，反之亦然。templateDistance 自己
       // 会返回 Infinity，但显式跳过省掉一次距离计算。
+      //
+      // ⚠️ 但**手数不够不等于手势失败** —— 那多半只是丢跟踪。真机 capture 实测：双手帧
+      // 只占 69%（单手 86%），而**双手连续段的中位长度只有 3 帧**，最长那段才 48 帧。
+      // 一个 10 关键帧的序列要走 10 帧连续双手，只有 2/4 段够长。
+      //
+      // 这就是「双手动态很难触发」：不是判据严，是**中间必然掉帧**，而掉的那些帧既不能
+      // 推进序列、又照样消耗超时预算 ⟹ 必然 tooSlow。
+      //
+      // 所以：手数不够时**把这一帧的时间还给序列**（延长它的预算），而不是让它白流。
+      // 这是「帧驱动的判定要给丢帧宽限」在这个项目里的第四次（保持判定、点击、
+      // trackingRate、这里）。
       if (entry.hands !== mirrored.length) {
-        this.probe.push({ action, why: `要 ${entry.hands} 只手，现在 ${mirrored.length} 只` });
+        const short = mirrored.length < entry.hands;
+        if (short && entry.keyframeData && entry.keyframeData.length) {
+          const matcher = this.sequenceFor(action);
+          matcher.excuse(now);
+        }
+        this.probe.push({
+          action,
+          why: short ? `丢跟踪：要 ${entry.hands} 只手，现在 ${mirrored.length} 只（已宽限）`
+            : `要 ${entry.hands} 只手，现在 ${mirrored.length} 只`,
+        });
         continue;
       }
 
@@ -412,7 +433,9 @@ class GestureInput {
         const fired = matcher.update({
           pose,
           keyframes: entry.keyframeData,
-          threshold,
+          // 双手的门放宽一倍，和静态那条一致 —— 两个判据对同一个模板必须给同一个门，
+          // 否则会出现"静态能匹配、录成动态就不行"这种说不通的差异。
+          threshold: Pose.thresholdFor(entry.template, threshold),
           rotationTolerance: rotation,
           distance: Pose.templateDistance,
           now,
@@ -475,18 +498,21 @@ class GestureInput {
       // 没有律又没有关键帧的，就当纯静态手势直接触发。
       if (!entry.law) {
         const distance = Pose.templateDistance(pose, entry.template, rotation);
+        // 双手的门放宽一倍 —— 见 pose.js 的 thresholdFor：双手模板是 126 维、两份独立
+        // 噪声，同一个没动的手在 0.28 下只有 51% 的帧命中（单手 67%）。
+        const gate = Pose.thresholdFor(entry.template, threshold);
         const state = this.staticState(action);
         // 距离和门一起报：只报"没匹配"说不出是差 0.01 还是差 10 倍，而那决定
         // 是"再摆准一点"还是"这个模板录坏了"。
         this.probe.push({
           action,
           distance: Number(distance.toFixed(3)),
-          threshold,
+          threshold: gate,
           armed: state.armed,
-          why: distance >= threshold ? '姿势不够近'
+          why: distance >= gate ? '姿势不够近'
             : state.armed ? '触发' : '要先离开这个姿势再回来',
         });
-        if (distance >= threshold) {
+        if (distance >= gate) {
           // 离开了姿势才重新武装。这一条是"保持住不连发"的真正机制 —— 光靠时间冷却
           // 不够：一直摆着的手型会每过一个冷却期就再触发一次，而用户只做了一个动作。
           state.armed = true;
@@ -500,11 +526,12 @@ class GestureInput {
         // 有律的动作：模板只是一道门，触发交给挥动/倾斜。这里报出来是因为
         // "录了有律的动作却没反应"的原因往往是**律那一侧**没触发，而不是姿势不对。
         const distance = Pose.templateDistance(pose, entry.template, rotation);
+        const gate = Pose.thresholdFor(entry.template, threshold);
         this.probe.push({
           action,
           distance: Number(distance.toFixed(3)),
-          threshold,
-          why: distance < threshold ? `手型对上了，等${entry.law === 'swipe' ? '挥动' : '倾斜'}`
+          threshold: gate,
+          why: distance < gate ? `手型对上了，等${entry.law === 'swipe' ? '挥动' : '倾斜'}`
             : '手型不对（有律的动作要手型 + 动作都对）',
         });
       }
