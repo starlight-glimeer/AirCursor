@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>GestureWall</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  /* A wallpaper has no cursor of its own; the system one belongs to whatever is
+     in front. Hiding it also stops a stray arrow from sitting on the desktop when
+     the mouse is used to drive the wall during development. */
+  body { cursor: default; }
+  #stage { display: block; width: 100vw; height: 100vh; }
+
+  /* Placeholder shown when no images are set, so a fresh install looks
+     deliberate rather than broken. */
+  #empty {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    font: 500 16px/1.9 -apple-system, "PingFang SC", sans-serif;
+    color: rgba(255,255,255,.62); text-align: center;
+    background: radial-gradient(120% 90% at 50% 40%, #23252e 0%, #14151a 55%, #0d0e12 100%);
+    pointer-events: none;
+  }
+  #empty.hide { display: none; }
+  #empty b { display: block; font-size: 26px; color: #fff; margin-bottom: 12px; letter-spacing: .06em; }
+  #empty kbd {
+    font: 600 13px/1 ui-monospace, monospace; padding: 3px 7px; border-radius: 5px;
+    background: rgba(255,255,255,.13); color: #fff;
+  }
+
+  #hud {
+    position: fixed; left: 18px; top: 18px; z-index: 10;
+    font: 500 12px/1.65 ui-monospace, SFMono-Regular, monospace;
+    color: rgba(255,255,255,.9); background: rgba(8,9,12,.62);
+    padding: 12px 14px; border-radius: 10px; backdrop-filter: blur(9px);
+    max-width: 46ch; pointer-events: none;
+    border: 1px solid rgba(255,255,255,.08);
+  }
+  #hud b { color: #9fe6ff; }
+  #hud .note { color: #ffd48a; }
+  #hud .ok { color: #8affc1; }
+  #hud .keys { color: rgba(255,255,255,.45); }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="empty">
+    <div>
+      <b>GestureWall</b>
+      按 <kbd>⌃⇧W</kbd> 打开设置，选三张图：背景 / 主体 / 碎片<br>
+      <span style="opacity:.7">看不见壁纸？按 <kbd>⌃⇧L</kbd> 换一种壁纸层策略</span>
+    </div>
+  </div>
+  <div id="hud"></div>
+
+  <script src="vendor/three.r128.min.js"></script>
+  <script src="system.js"></script>
+  <script src="templates.js"></script>
+  <script src="layers.js"></script>
+  <script src="mood.js"></script>
+  <script src="wall.js"></script>
+  <script>
+    // Hide the placeholder as soon as any layer has an image.
+    //
+    // Both paths matter: onConfig covers later changes, but a freshly created
+    // window (every ⌃⇧L press makes a new one) gets its config by asking, and
+    // without the second call the placeholder flashed black over an already
+    // configured wallpaper on every strategy switch.
+    const empty = document.getElementById('empty');
+    function syncPlaceholder(c) {
+      const any = c && (c.layers.background || c.layers.subject || c.layers.shard);
+      empty.classList.toggle('hide', !!any);
+    }
+    window.gw.onConfig(syncPlaceholder);
+    window.gw.getConfig().then(syncPlaceholder);
+  </script>
+</body>
+</html>
