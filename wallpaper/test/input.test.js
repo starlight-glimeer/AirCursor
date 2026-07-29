@@ -798,42 +798,43 @@ check('关掉连续动作的手型 = 回到内置映射，不是禁用那个动�
     '关掉手型门之后捏合也不给推进了 —— 那是把开关变成了"禁用这个动作"');
 });
 
-// ── 双手的匹配门要放宽 ───────────────────────────────────────────────────
+// ── 双手的匹配门**不**放宽（一个被证伪的结论） ────────────────────────────
 //
-// 用户报「单手的动态稳定性还好，但是两只手的动态就不稳定，我成功触发过，说明是通的，
-// 但是很难触发」。这句话里"成功触发过"是关键 —— 它排除了"链路断了"，剩下的只能是概率。
+// 曾经这里断言"双手门 = 单手 × 2"，依据是"双手命中率只有 51%、单手 67%"。
+// **那两个数是假的。**它们来自一个把真机逐帧增量累加到静止基准上的夹具，而增量累加会
+// 随机游走式堆积 ⟹ 实测抖动被夸大 **5.7 倍**（相邻帧距离中位 0.275，真机 0.048）。
 //
-// 真机实测（同一个**没动**的手，离它自己的 40 帧中位模板）：
+// 用真机绝对帧重测（各取手最静止的窗口）：
 //
-//          中位距离   门 0.28 的命中率
-//   单手     0.214       67%
-//   双手     0.278       51%     ← 中位几乎压在门上
+//            离自己模板   门 0.28 的命中率
+//   单手     中位 0.050      **100%**
+//   双手     中位 0.079      **100%**
 //
-// 双手模板不是"两个单手模板"，它是一个 126 维向量、两份独立噪声。而动态手势要"命中起始
-// + 连续推进"，逐帧 51% 复合下来就很低。
+// 双手只比单手噪声大 1.6 倍，0.28 对两者都够。而放宽一倍还直接引出了下一个 bug：
+// 那个门同时是"离开姿势"的判据 ⟹ 双手触发一次就要把手完全放开才能再触发。
 //
-// 扫门的结论是这条修法的依据：门放到 0.55 时双手命中率 86%，而**误配率在 0.70 都还是 0%**
-// ⟹ 0.28 白丢一半的帧却没换来任何判别力。
-check('双手模板的门是单手的两倍', () => {
+// 双手真正难触发的原因是**丢跟踪**（双手帧占 69%，连续段中位 3 帧），单独修了。
+check('匹配阈值不按手数放宽（那个结论来自被夸大 5.7 倍的夹具）', () => {
   assert.strictEqual(P.thresholdFor({ hands: 1 }, 0.28), 0.28);
-  assert.strictEqual(P.thresholdFor({ hands: 2 }, 0.28), 0.56);
-  // 缺 hands 字段当单手 —— 存量模板都带这个字段，但缺了不该崩。
-  assert.strictEqual(P.thresholdFor({}, 0.28), 0.28);
-  assert.strictEqual(P.thresholdFor(null, 0.28), 0.28);
+  assert.strictEqual(P.thresholdFor({ hands: 2 }, 0.28), 0.28,
+    '双手门又被放宽了 —— 真机实测 0.28 对双手也是 100% 命中，放宽只会降低判别力');
+  assert.strictEqual(P.thresholdFor(null, 0.28), 0.28, '缺模板时不该崩');
 });
 
-check('双手静态手势用放宽后的门（0.28 下会丢一半的帧）', () => {
-  const pair = [hand({ centerX: 0.35 }), hand({ centerX: 0.65 })];
-  const template = P.buildPoseTemplate(pair.map((lm) => px(I.mirror(lm))));
-  const input = new I.GestureInput({});
-  const config = {
-    recorded: { spin: { hands: 2, template, dynamic: false, law: null } },
-    gestureTuning: { matchThreshold: 0.28 },
-  };
-  input.update(pair, 1000, config);
-  const probe = input.lastProbe()[0];
-  assert.strictEqual(probe.threshold, 0.56,
-    '诊断报的门不是放宽后的值 —— 面板会显示"距离 0.4 / 门 0.28"而它其实过了');
+check('真机静止帧下双手和单手都能稳定命中', () => {
+  // 直接用真机绝对帧，不合成 —— 这条用例存在的理由就是上面那个假数据。
+  const S = 1000;
+  const px2 = (h) => h.map(([x, y, z]) => ({ x: x * S, y: y * S, z: z * S }));
+  const fixture = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'real-landmark-noise.json'), 'utf8'));
+  const two = fixture.twoHandFrames.slice(6, 16);       // stillWindow 附近最静止的双手段
+  assert.ok(two.length >= 8, '夹具里的双手帧不够');
+  const tpl = P.medianTemplate(two.map((hs) => P.buildPoseTemplate(hs.map(px2))));
+  const rot = (20 * Math.PI) / 180;
+  const hits = two.filter((hs) => P.templateDistance(P.buildPoseTemplate(hs.map(px2)), tpl, rot) < 0.28);
+  assert.ok(hits.length >= two.length * 0.8,
+    `双手真机静止帧在门 0.28 下只命中 ${hits.length}/${two.length} —— `
+    + '如果这条红了，说明放宽门的理由重新成立，但要先确认夹具是绝对帧');
 });
 
 check('匹配、序列、冲突三处用同一个门（不一致会给出自相矛盾的提示）', () => {
@@ -902,32 +903,32 @@ check('重新武装的门低于触发的门', () => {
   assert.ok(Number(m[1]) > 0.3, '松开门太低了 —— 手稍微一抖就重新武装，会连发');
 });
 
-check('重新武装要求持续离开，不是单帧越线', () => {
-  // ⚠️ 位置滞回在这里**原理上不成立**，这一点是量出来的：手完全不动时逐帧距离在
-  // 0.12–1.33 之间抖，24 帧里穿越 0.56 这个门 5 次。而滞回带哪怕取 40% 也只有 0.22 宽，
-  // 比噪声幅度小得多 ⟹ 每次"从门外抖回门内"都是一次新触发。
-  // 扫参证实：0.5 到 0.95 每一档都连发，连接近原设计的 0.95 都是 8 次而不是 6 次。
+check('真机噪声下手一直保持姿势不会连发', () => {
+  // ⚠️ 这条替代了一条被证伪的用例（"重新武装要求持续离开 250ms"）。那条的依据是
+  // "手不动时距离在 0.12–1.33 抖、24 帧穿越门 5 次"，而那个测量来自一个把真机逐帧增量
+  // 累加到静止基准上的夹具 —— 增量累加随机游走式堆积，抖动被夸大 **5.7 倍**。
   //
-  // 所以判据必须带时间。这是「帧驱动的门槛要用时间当单位」在这个项目里的第五次。
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
-  assert.match(src, /RE_ARM_MS/, '重新武装没有时间维度 —— 位置滞回挡不住噪声穿越');
-  assert.match(src, /state\.awaySince/, '没有记"从哪一刻开始离开"');
-
-  // 行为验证：越线一帧然后立刻回来，不该重新武装。
-  const target = hand({ palm: 0.12 });
-  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  // 真机绝对帧重测：保持段距离 **0.011–0.155，穿越门 0 次**。所以位置滞回够用，
+  // 那个时间机制在解决一个不存在的问题。
+  const fixture = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'real-landmark-noise.json'), 'utf8'));
+  const raw = fixture.frames
+    .slice(fixture.stillWindow.from, fixture.stillWindow.from + fixture.stillWindow.count)
+    .map((h) => h.map(([x, y, z]) => ({ x, y, z })));
+  const template = P.medianTemplate(raw.map((h) => P.buildPoseTemplate([px(I.mirror(h))])));
   const config = {
     recorded: { spin: { hands: 1, template, dynamic: false, law: null } },
     gestureTuning: { matchThreshold: 0.28 },
   };
   const input = new I.GestureInput(config);
-  assert.ok(input.update([target], 1000, config).events.some((e) => e.action === 'spin'),
-    '第一帧就该触发');
-  // 离开一帧（用一个远的手型），再立刻回来
-  input.update([curled(hand({ palm: 0.12 }), 1.4)], 1040, config);
-  const again = input.update([target], 1080, config);
-  assert.ok(!again.events.some((e) => e.action === 'spin'),
-    '离开一帧就重新武装了 —— 噪声在门附近抖动会连发');
+  let fires = 0;
+  // 200 帧 ≈ 8.6 秒，手一直保持不松开
+  for (let i = 0; i < 200; i += 1) {
+    const out = input.update([raw[i % raw.length]], 1000 + i * 43, config);
+    if (out.events.some((e) => e.action === 'spin')) fires += 1;
+  }
+  assert.strictEqual(fires, 1,
+    `保持姿势 8.6 秒触发了 ${fires} 次 —— armed 机制失效了（应该只有第一次）`);
 });
 
 check('持续离开够久之后能再触发', () => {
@@ -947,9 +948,9 @@ check('持续离开够久之后能再触发', () => {
     '手离开了 600ms 还不能再触发 —— 那就是"第一次好触发，后面很难"');
 });
 
-check('诊断报出松开门和已离开时长', () => {
+check('诊断报出松开门（否则用户不知道该松多少）', () => {
   // 「后面很难触发」那个状态在诊断里必须说得出来：手够近所以不算离开、但已经触发过，
-  // 于是看起来没反应。只说"要先离开"用户不知道该松多少、松多久。
+  // 于是看起来没反应。只说"要先离开"用户不知道该松到什么程度。
   const target = hand({ palm: 0.12 });
   const template = P.buildPoseTemplate([px(I.mirror(target))]);
   const config = {
@@ -962,7 +963,8 @@ check('诊断报出松开门和已离开时长', () => {
   const probe = input.lastProbe()[0];
   assert.strictEqual(probe.armed, false, 'armed 没被清掉');
   assert.strictEqual(typeof probe.reArm, 'number', '没报松开门');
-  assert.match(probe.why, /\d+ms/, `没说要保持多久：${probe.why}`);
+  assert.match(probe.why, /离开到 [\d.]+/, `没说要松到多少：${probe.why}`);
 });
+
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -253,15 +253,27 @@ const NOISE = JSON.parse(fs.readFileSync(
   path.join(__dirname, 'fixtures', 'real-landmark-noise.json'), 'utf8'));
 
 const S = 1000;
-const basePose = NOISE.basePose.map(([x, y, z]) => ({ x: x * S, y: y * S, z: z * S }));
+const px = (hand) => hand.map(([x, y, z]) => ({ x: x * S, y: y * S, z: z * S }));
+
+// ⚠️ 夹具 v2:直接回放**真机绝对帧**，不再"基准姿势 + 帧间增量"。
+//
+// v1 把真机的逐帧增量累加到一个静止基准上，理由是"这样'用户确实没动'是构造出来的事实"。
+// 那个理由是对的，做法是错的：**增量累加会随机游走式堆积** ⟹ 实测抖动被夸大 **5.7 倍**
+// （相邻帧距离中位 0.275，而真机静止手是 0.048）。
+//
+// 而这几轮所有阈值都是按那个夸大的噪声标的。最贵的一次：得出"双手命中率只有 51%"，
+// 据此把双手的门放宽一倍，而那个门同时是"离开姿势"的判据 ⟹ 引出「第一次好触发，
+// 后面又很难」。真值是单手双手在 0.28 下都 **100%** 命中。
+//
+// 现在"手没动"用真机里手腕位移最小的那 12 帧（`stillWindow`，位移 0.14 掌宽）——
+// 它不是完美静止，但那正是真手的样子。
+const STILL = NOISE.frames.slice(NOISE.stillWindow.from,
+  NOISE.stillWindow.from + NOISE.stillWindow.count).map(px);
 
 // 第 seed 次试验的第 i 帧。shape 可选:改变手形(用来构造"手真的动了")。
 function noisyFrame(i, seed, shape) {
-  const n = NOISE.frameNoise[(i * 7 + seed) % NOISE.frameNoise.length];
-  const src = shape ? shape(basePose, i) : basePose;
-  return src.map((p, k) => ({
-    x: p.x + n[k][0] * S, y: p.y + n[k][1] * S, z: p.z + n[k][2] * S,
-  }));
+  const src = STILL[(i + seed) % STILL.length];
+  return shape ? shape(src, i) : src;
 }
 
 // 跑一次完整的"保持不动",返回是否录成。dt/丢帧模式都来自真机。
@@ -321,7 +333,7 @@ check('短暂丢帧不清空进度,长时间丢手才重来', () => {
   rec.start('click', { hands: 1, dynamic: false, law: null, now: 0 });
   // 先攒够一点进度
   let out = null;
-  for (let i = 0; i < 10; i += 1) out = rec.update(P.buildPoseTemplate([basePose]), 1, 2000 + i * 43);
+  for (let i = 0; i < 10; i += 1) out = rec.update(P.buildPoseTemplate([STILL[i % STILL.length]]), 1, 2000 + i * 43);
   const before = out.progress;
   assert.ok(before > 0, '没有攒到进度,后面的比较没意义');
   // 丢 3 帧(~129ms,宽限内):进度必须继续涨,不能归零
