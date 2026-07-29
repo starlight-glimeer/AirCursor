@@ -148,12 +148,12 @@ class HandOverlay {
       const hue = handHue(index, this.recording) + Math.sin(t * 2.2 + index) * 22;
       const stroke = `hsl(${hue}, 100%, 64%)`;
       const core = `hsl(${hue + 25}, 100%, 82%)`;
-      // 按固定手宽缩放：位置铺满屏（指得到任何地方），尺寸压到一只手该有的大小。
-      const span = handSpan(hand);
-      const targetPx = skeletonWidth(this.width);
-      const currentPx = Math.max(1e-6, span.width * this.width);
-      const scale = Math.min(1, targetPx / currentPx);
-      const points = hand.map((p) => toCanvas(p, this.width, this.height, span.center, scale));
+      // 一比一,不缩放。
+      //
+      // 这里原来按"固定手宽"围绕掌心缩放。上一轮我改了 toCanvas 的签名却漏了这个调用点 ——
+      // 多余的实参被 JS 静默忽略,于是缩放照旧生效,而我以为改完了。用户第二次报"还是偏右"
+      // 才发现。⚠️ 改函数签名时必须同时查所有调用点:JS 不会为多传的参数报错。
+      const points = hand.map((p) => toCanvas(p, this.width, this.height));
 
       ctx.globalAlpha = alpha * 0.9;
       ctx.strokeStyle = stroke;
@@ -182,7 +182,7 @@ class HandOverlay {
       // 指针环画在食指指尖：这是"我在指哪"的答案，而那个问题之前完全没有答案。
       const tip = indexTip(hand);
       if (tip) {
-        this.drawPointer(toCanvas(tip, this.width, this.height, span.center, scale), alpha, t, hue);
+        this.drawPointer(toCanvas(tip, this.width, this.height), alpha, t, hue);
       }
     }
     ctx.restore();

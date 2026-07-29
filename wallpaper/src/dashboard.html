@@ -285,6 +285,15 @@
       <div class="toggle"><input type="checkbox" id="proTier"><label for="proTier">进阶模式（手势 + 录制）</label></div>
       <div class="toggle"><input type="checkbox" id="showHands"><label for="showHands">显示手骨架和指针（盖在所有窗口之上）</label></div>
       <div class="toggle"><input type="checkbox" id="controlCursor"><label for="controlCursor">手控制真鼠标（需要辅助功能授权）</label></div>
+      <!-- 默认关。开着会占麦克风，而 macOS 上抢占音频输入会切换输入设备 —— 用户报过
+           "每次打开这个产品，正在听的音乐音道就变了"。可选功能不该有这种副作用。 -->
+      <div class="toggle"><input type="checkbox" id="voice"><label for="voice">语音命令（会占用麦克风）</label></div>
+      <div id="voice-state" class="state" hidden></div>
+      <div id="voice-grants" hidden>
+        <button class="act" id="grantMic">麦克风权限</button>
+        <button class="act" id="grantSpeech">语音识别权限</button>
+        <p class="hint">语音识别那一项授给的是 <b>AirCursorVoice</b> 这个 helper，不是主 App —— 在列表里找它。</p>
+      </div>
       <div id="live">手势未开启</div>
       <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透 —— 所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
       <!-- 投递层健康。这一行观测的是"缺权限时 CGEvent.post 静默丢弃"——不报错、不抛异常，

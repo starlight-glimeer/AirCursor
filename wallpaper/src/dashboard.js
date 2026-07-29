@@ -320,6 +320,15 @@ function wireDiagnostics() {
 
   document.getElementById('grantAccessibility').onclick = () => window.gw.openAccessibility();
   document.getElementById('grantCamera').onclick = () => window.gw.openCameraSettings();
+  document.getElementById('grantMic').onclick = () => window.gw.openMicrophoneSettings();
+  document.getElementById('grantSpeech').onclick = () => window.gw.openSpeechSettings();
+
+  window.gw.onVoiceStatus((s) => {
+    const state = document.getElementById('voice-state');
+    if (!state || !s) return;
+    state.textContent = `语音：${s.text || '—'}`;
+    state.className = /失败|不可用/.test(s.text || '') ? 'state warn' : 'state';
+  });
 
   window.gw.onCaptureSaved((payload) => {
     if (!payload || payload.error) {
@@ -667,6 +676,18 @@ function renderToggles() {
   // 关掉 —— 那是个能把自己锁在外面的开关。
   bind('controlCursor', () => !!config.controlCursor,
     (v) => window.gw.setConfig({ controlCursor: v }));
+  // 语音走专用通道而不是 setConfig:开关要同时启停 helper,而 setConfig 只写配置。
+  bind('voice', () => !!config.voice, async (v) => {
+    const grants = document.getElementById('voice-grants');
+    const state = document.getElementById('voice-state');
+    if (grants) grants.hidden = !v;
+    if (state) state.hidden = !v;
+    const result = await window.gw.setVoice(v);
+    if (state && result && result.ok === false) {
+      state.textContent = `语音启动失败：${result.reason}`;
+      state.className = 'state warn';
+    }
+  });
   bind('music', () => config.music.enabled, (v) => window.gw.setConfig({ music: { enabled: v } }));
   bind('moodFromCover', () => config.music.moodFromCover,
     (v) => window.gw.setConfig({ music: { moodFromCover: v } }));

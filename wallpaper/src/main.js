@@ -238,6 +238,8 @@ const defaultConfig = {
   // 壁纸上画手骨架和指针位置。默认开：录制和调手感时看不见手在哪，反馈只有文字，
   // 而"手势没反应"和"手没被检测到"是两件需要分开的事。
   showHands: true,
+  // 语音命令。默认关:开着会占麦克风,而那会切换音频输入设备、影响正在播放的音乐。
+  voice: false,
   // 手 → 真光标。默认关:一开摄像头就抢走鼠标,用户会没法用鼠标去把它关掉。
   // 需要辅助功能授权,而缺权限时 CGEvent 静默丢弃 —— 所以面板要显示投递层健康状态。
   controlCursor: false,
@@ -538,13 +540,27 @@ function ensureSensor() {
   //
   // 所以窗口是可见的,只是挪到屏幕外:既满足系统要求,又不占用户的桌面。第一次开会弹
   // 系统授权对话框,那是必须的。
-  const away = screen.getPrimaryDisplay().bounds;
+  // 窗口必须"可见"但用户看不到。
+  //
+  // 两次都没做对:show:false 拿不到摄像头授权(macOS 只对可见窗口弹),而挪到屏幕外之后
+  // macOS **把它钳回了可见区域** —— 用户第二次报"右上角摄像头窗口没消失"。
+  //
+  // 现在的做法:留在屏幕内、1x1 像素、全透明、鼠标穿透、不进任务栏。系统认为它可见,
+  // 所以授权照给;而 1 个像素的透明窗口用户看不见。
+  // 尺寸不能压到 1x1:那样 <video> 可能被判定为不可见而停止解码,而 MediaPipe 要的
+  // 就是一个真在播的 video。所以保持足够大,靠**全透明 + 藏在菜单栏下面**让它看不见。
+  const home = screen.getPrimaryDisplay().bounds;
   sensorWindow = new BrowserWindow({
     width: 360,
     height: 270,
-    x: away.x + away.width + 400,
-    y: away.y,
+    // y 负值:整个窗口在屏幕顶边之上,只有下沿那点在菜单栏区域 —— macOS 的钳制是按
+    // "窗口至少有一部分可见"算的,所以它不会被拉回来,而透明背景让那一部分也看不见。
+    x: home.x,
+    y: home.y - 268,
     show: true,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
     focusable: false,
     skipTaskbar: true,
     webPreferences: {
@@ -554,6 +570,8 @@ function ensureSensor() {
       backgroundThrottling: false,
     },
   });
+  // 鼠标穿透:1x1 也会吃掉那一个像素的点击,而那个像素在屏幕左上角(菜单栏附近)。
+  sensorWindow.setIgnoreMouseEvents(true, { forward: true });
   sensorWindow.loadFile(path.join(__dirname, 'sensor.html'));
   sensorWindow.webContents.on('did-finish-load', () => {
     sensorWindow.webContents.send('config', config);
@@ -830,6 +848,29 @@ ipcMain.handle('open-accessibility', () => {
 });
 
 // 打开摄像头授权页。同理:摄像头被拒之后光说"启动失败"没用。
+// 语音按需开关。默认关,而且这不是保守 —— helper 一启动就占麦克风,而 macOS 上抢占音频
+// 输入会切换输入设备、连带影响正在播放的音轨(用户报过:"每次打开我们的产品音道就变了")。
+// 一个可选功能不该有这种副作用。
+ipcMain.handle('set-voice', (_event, enabled) => {
+  config.voice = !!enabled;
+  writeConfig();
+  const result = enabled ? systemBridge.startVoice() : systemBridge.stopVoice();
+  broadcast('config', config);
+  return result;
+});
+
+// 麦克风授权页。和辅助功能/摄像头同一个原则:说了缺什么就得给路径。
+ipcMain.handle('open-microphone-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+  return { ok: true };
+});
+// 语音识别单独一项授权,而且授给的是 AirCursorVoice 那个 helper 不是主 App ——
+// 这一条在 AirCursor 上花过时间,写下来免得再查。
+ipcMain.handle('open-speech-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition');
+  return { ok: true };
+});
+
 ipcMain.handle('open-camera-settings', () => {
   shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Camera');
   return { ok: true };

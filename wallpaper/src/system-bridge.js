@@ -289,11 +289,30 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
       } catch (error) {
         setPointerHealth({ state: 'start-failed', detail: `启动失败:${error.message}`, lastError: error.message });
       }
+      // ⚠️ 语音**不在启动时拿**。
+      //
+      // 用户报告:每次打开这个产品,正在听的音乐音轨就变了。推断得对 —— helper 一启动就
+      // 占用麦克风,而 macOS 上进程抢占音频输入会触发输入设备切换,连带影响正在播放的
+      // 音频路由。而语音是个可选功能,为它在启动时无条件抢麦克风是纯粹的副作用。
+      //
+      // 所以改成按需:用户在面板上打开语音才启动。
+    },
+    startVoice() {
+      if (voiceHelper && !voiceHelper.killed) return { ok: true, already: true };
       try {
         startVoiceHelper();
+        return { ok: true };
       } catch (error) {
         voiceStatus = `语音启动失败:${error.message}`;
+        return { ok: false, reason: error.message };
       }
+    },
+    stopVoice() {
+      if (voiceHelper && !voiceHelper.killed) voiceHelper.kill();
+      voiceHelper = null;
+      voiceStatus = '已关闭';
+      broadcast('voice-status', { text: voiceStatus });
+      return { ok: true };
     },
     stop() {
       if (pointerHelper && !pointerHelper.killed) pointerHelper.kill();

@@ -267,4 +267,56 @@ check('骨架一比一映射，不做"固定手宽"缩放', () => {
     'toCanvas 不该再接 center/scale —— 那个缩放把指尖朝掌心收缩了（实测 0.54 倍）');
 });
 
+
+check('改函数签名后调用点都跟上了（JS 不会为多传的参数报错）', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  // 上一轮我把 toCanvas 从 (p,w,h,center,scale) 改成 (p,w,h)，却漏了两个调用点。
+  // 多余的实参被静默忽略 ⟹ 缩放照旧生效，而我以为改完了，用户第二次报"还是偏右"。
+  const calls = [...overlay.matchAll(/toCanvas\(([^)]*)\)/g)]
+    .map((m) => m[1].split(',').length)
+    .filter((n) => n > 3);
+  assert.deepStrictEqual(calls, [],
+    `toCanvas 有调用点还在传 4 个以上参数 —— 那是旧的缩放签名，JS 不会报错但缩放会照旧生效`);
+});
+
+check('摄像头窗口不可见，但不是用 show:false 或 1x1 做的', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const block = main.slice(main.indexOf('function ensureSensor'), main.indexOf('function ensureSensor') + 1400);
+  // show:false → macOS 不给摄像头授权（只对可见窗口弹）
+  // 1x1      → <video> 可能被判定不可见而停止解码，而 MediaPipe 要一个真在播的 video
+  // 纯屏幕外 → macOS 把窗口钳回可见区域（实测：用户两次都看到它）
+  assert.doesNotMatch(block, /show: false/, 'show:false 拿不到摄像头授权');
+  assert.match(block, /width: 360/, '尺寸不能压到 1x1，video 会停止解码');
+  assert.match(block, /transparent: true/, '靠透明而不是靠尺寸来隐藏');
+});
+
+check('语音默认关，且不在启动时抢麦克风', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8');
+  assert.match(main, /voice: false/, '语音必须默认关');
+  // 用户报："每次打开我们的产品，正在听的音乐音道就变了" —— helper 一启动就占麦克风，
+  // 而 macOS 上抢占音频输入会切换输入设备。可选功能不该有这种副作用。
+  const start = bridge.slice(bridge.indexOf('    start() {'), bridge.indexOf('    startVoice()'));
+  assert.doesNotMatch(start, /startVoiceHelper\(\)/,
+    'start() 里还在启动语音 helper —— 那会在打开产品时抢走麦克风');
+  assert.match(bridge, /startVoice\(\)/, '语音要能按需启动');
+  assert.match(bridge, /stopVoice\(\)/, '关掉时要真的杀掉 helper，否则麦克风一直被占');
+});
+
+check('三种权限都有授权入口（麦克风/语音识别单列）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  for (const [name, handler, button] of [
+    ['辅助功能', 'open-accessibility', 'grantAccessibility'],
+    ['摄像头', 'open-camera-settings', 'grantCamera'],
+    ['麦克风', 'open-microphone-settings', 'grantMic'],
+    ['语音识别', 'open-speech-settings', 'grantSpeech'],
+  ]) {
+    assert.ok(main.includes(handler), `${name} 没有打开设置的处理`);
+    assert.ok(html.includes(button), `${name} 没有按钮`);
+  }
+  // 语音识别授给的是 helper 不是主 App，这条在 AirCursor 上花过时间。
+  assert.match(html, /AirCursorVoice/, '没告诉用户语音识别那项要找 helper 的名字');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
