@@ -28,7 +28,19 @@ Then open `http://127.0.0.1:5177`.
 - Thumb-index pinch: click on release.
 - Thumb-middle pinch: right click.
 - Fist and hold: hide the control layer.
-- Drag, scroll and desktop switching have no built-in pose — record one (see below).
+- Open palm tilted up/down: scroll. Open palm swept sideways: switch desktop.
+- Drag is the one action with no built-in pose — record one (see below).
+
+Everything except drag works without recording anything. Recording only improves
+accuracy: it replaces the built-in shape with yours and, for the tilt, replaces the
+guessed trigger angle with the extent you actually demonstrated.
+
+Open palm is deliberately shared by wake, both scroll directions and both desktop
+directions. Those five are separated by *movement*, not shape — a palm held still for
+a second wakes, a palm that tilts scrolls, a palm that sweeps switches desktop, and a
+palm doing none of those fires nothing. Drag has no default because there are four
+built-in shapes and click/drag/rightClick all need mutually exclusive ones (nothing
+separates them but the shape itself), while openPalm and fist are spoken for.
 - Voice: "启动/控制", "退出/停止", "打开网易云", "点击".
 
 Click and drag are separate actions rather than one pose that upgrades when the

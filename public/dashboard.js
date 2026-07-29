@@ -386,11 +386,26 @@ function paintRecorderRow(row) {
   paintPreview(row, recorded);
   if (isRecording) return;
   row.querySelector("[data-progress-action]").style.width = "0%";
-  row.querySelector("[data-hint-action]").textContent = recorded ? describeRecorded(recorded) : "未录制";
+  // "未录制" alone read as "this does not work yet", which was true for five actions
+  // and false for the rest. Saying which it is means the user can try an action
+  // immediately instead of being pushed through recording first.
+  row.querySelector("[data-hint-action]").textContent = recorded
+    ? describeRecorded(recorded)
+    : hasBuiltIn(action)
+      ? "未录制（有内置判定，可以直接用；录了更准）"
+      : "未录制（这个动作只能靠录制）";
 }
 
 // What was captured, in the terms the user performed it in: a motion gesture is
 // described by the movement it measured, not just "已录制".
+// Which actions work without being recorded. Read from the live gestureMap rather
+// than a second hardcoded list here, so this cannot drift from what main actually
+// falls back to.
+function hasBuiltIn(action) {
+  const mapped = settings.gestureMap?.[action];
+  return Boolean(mapped) && mapped !== "none" && !mapped.startsWith("custom:");
+}
+
 function describeRecorded(recorded) {
   const hands = recorded.hands === 2 ? "双手" : "单手";
   const motion = recorded.motion;

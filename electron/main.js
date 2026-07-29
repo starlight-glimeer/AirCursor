@@ -230,10 +230,42 @@ const actionLabels = {
 // The scroll and desktop actions have no built-in pose: there is no sensible
 // default palm shape for "scroll up", and picking one would silently steal a pose
 // from click or wake.
+// Built-in detection so nothing has to be recorded before it works.
+//
+// This used to cover four actions, which meant drag, both scroll directions and both
+// desktop directions were unusable until the user recorded a gesture — and when
+// recording itself had bugs, that was the whole feature at zero. Customisation
+// should be an optimisation, not an entry gate. (Lesson taken from the wallpaper
+// module's "未录制（有内置判定，录了更准）" before it was removed.)
+//
+// There are only four distinct built-in hand shapes, and nine actions. The
+// directional ones do not need a fifth shape: they are law-driven, so the same shape
+// plus a different *movement* separates them — an open palm tilted up scrolls up and
+// tilted down scrolls down, swept left switches left and right switches right. The
+// law reads the movement; the pose only says "I am addressing this control".
+//
+// So openPalm is deliberately reused across wake and the four directional actions.
+// That is not a conflict: wake needs a *held* palm for a second, while the
+// directional ones need a palm that tilts or sweeps, and a palm doing neither fires
+// nothing.
+// `drag` is the one action left without a default, and that is a counted result
+// rather than an oversight: there are four built-in shapes, and click / drag /
+// rightClick all need *mutually exclusive* ones — they are told apart by which shape
+// is held, with no movement to separate them. pinch and middlePinch go to click and
+// rightClick; openPalm and fist are taken by wake and exit, which are told apart by
+// being held for a second. Assigning drag either of those two would collide with no
+// second signal to break the tie.
+//
+// So drag stays record-only, and the recorder says so. Better an honest gap in one
+// action than a default that misfires against exit.
 const defaultGestureMap = {
   wake: "openPalm",
   click: "pinch",
   rightClick: "middlePinch",
+  scrollUp: "openPalm",
+  scrollDown: "openPalm",
+  spaceLeft: "openPalm",
+  spaceRight: "openPalm",
   exit: "fist",
 };
 
