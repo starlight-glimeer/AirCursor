@@ -131,4 +131,19 @@ check('骨架窗口不可聚焦（不抢焦点）', () => {
   assert.match(block[0], /focusable: false/);
 });
 
+// 主进程按 `showHands || recordingAction` 决定开不开骨架窗口，sensor 按自己的条件决定发不发
+// 关键点。**这两个判据必须一致** —— 不一致的那半边不报错，只是录制时开出一个空窗口，
+// 症状和"骨架坏了"分不清。这条守的是两个文件之间的一致性，不是单个函数的正确性。
+check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时都放行）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const send = sensor.slice(sensor.indexOf('function sendHands'), sensor.indexOf('function onResults'));
+  assert.ok(/recorder\s*&&\s*recorder\.active/.test(send),
+    'sendHands 没有为录制放行 —— 关掉骨架再录制会开出空窗口');
+
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const sync = main.slice(main.indexOf('function syncOverlayVisibility'));
+  assert.ok(/showHands\s*\|\|\s*recordingAction/.test(sync.slice(0, 400)),
+    '主进程不再按 showHands || recordingAction 开窗口 —— 两边判据已经分叉');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -30,7 +30,11 @@ function tuningOf() {
 // 只发归一化的 x/y，不发 z：画的是 2D 骨架，而 z 是最噪的一轴，带上它只是白占带宽。
 // 录制期间也发 —— 录制时最需要看见手在哪，那是"录制反馈很差"的核心。
 function sendHands(list) {
-  if (!config || !config.showHands) return;
+  // 录制时无条件发：主进程那边（syncOverlayVisibility）是按 `showHands || recordingAction`
+  // 开骨架窗口的，如果这里只看 showHands，关掉骨架再去录制就会开出一个空窗口 ——
+  // 症状是"录制时什么都看不见"，和骨架坏了一模一样。两边的判据必须一致。
+  if (!config) return;
+  if (!config.showHands && !(recorder && recorder.active)) return;
   window.gw.sendHands({
     // 镜像后发：壁纸上看到的手要和自己的手同向，否则抬右手屏幕上左边亮，人会以为坏了。
     hands: list.map((lm) => lm.map((p) => ({ x: 1 - p.x, y: p.y }))),
