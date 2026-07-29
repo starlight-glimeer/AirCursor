@@ -408,6 +408,7 @@ class GestureInput {
 
       if (entry.keyframeData && entry.keyframeData.length) {
         const matcher = this.sequenceFor(action);
+        const before = matcher.index || 0;
         const fired = matcher.update({
           pose,
           keyframes: entry.keyframeData,
@@ -416,10 +417,54 @@ class GestureInput {
           distance: Pose.templateDistance,
           now,
         });
+        // 动态手势的诊断要报**三样**：卡在第几步、离下一个关键帧多远、被什么挡住。
+        //
+        // 此前只报步数，而"卡在 2/7"说不出为什么 —— 五种 blocked 原因要完全不同的处理：
+        //   waitingStart    起始姿势没对上（可能是录坏了，也可能只差一点）
+        //   notReached      到了这一步但姿势没做到位 ⟹ 动作做大一点
+        //   beforeMidpoint  进了半径但还没过中点 ⟹ 方向不对，或两个关键帧本来就太近
+        //   tooSlow         起始对上了但整体超时 ⟹ 做快一点（不是改起始姿势）
+        //   cooldown        刚触发过，500ms 内不再认
+        const why = fired ? '触发' : ({
+          waitingStart: '等起始姿势',
+          notReached: '这一步没做到位',
+          beforeMidpoint: '还没过中点（方向不对？）',
+          tooSlow: '起始对上了但整体超时 —— 做快一点',
+          cooldown: '刚触发过，冷却中',
+          notBound: '没有关键帧',
+        }[matcher.blocked] || matcher.blocked || '进行中');
         this.probe.push({
           action,
-          why: fired ? '触发' : `关键帧 ${matcher.index || 0}/${entry.keyframeData.length}`,
+          why,
           dynamic: true,
+          step: matcher.index || 0,
+          steps: entry.keyframeData.length,
+          // 距离在 fire()/reset() 里会被清掉，所以触发的那一帧没有数字 —— 那时也不需要。
+          distance: matcher.toNext ?? undefined,
+          fromPrev: matcher.toPrev ?? undefined,
+          threshold: matcher.threshold ?? threshold,
+          blocked: matcher.blocked || undefined,
+        });
+        // 跨帧累计：这次尝试走到过的**最远**一步，以及在哪一步耗了最多帧。
+        //
+        // 4/s 的快照会漏掉"卡了一下又过去了"，而"每次都停在第 4 步"和"每次停在不同的
+        // 步"指向完全不同的原因（那一个关键帧录坏了 vs 整体太慢/噪声大）。这个累计值
+        // 是唯一能分开它们的东西，而单帧快照按定义做不到。
+        const trail = this.trailFor(action, entry.keyframeData.length);
+        if (matcher.index === 0 && before > 0) trail.attempts += 1;   // 一次尝试结束了
+        if (matcher.index > trail.furthest) trail.furthest = matcher.index;
+        trail.frames[before] = (trail.frames[before] || 0) + 1;
+        if (fired) { trail.fired += 1; trail.furthest = 0; }
+        // 最卡的那一步 = 耗帧最多的那一步（不算第 0 步，那是"手在画面里但没做手势"）
+        let stall = 0;
+        for (let i = 1; i < trail.frames.length; i += 1) {
+          if ((trail.frames[i] || 0) > (trail.frames[stall] || 0)) stall = i;
+        }
+        Object.assign(this.probe[this.probe.length - 1], {
+          furthest: trail.furthest,
+          stallStep: stall || undefined,
+          stallFrames: stall ? trail.frames[stall] : undefined,
+          firedCount: trail.fired,
         });
         if (fired) return { action };
         continue;
@@ -465,6 +510,24 @@ class GestureInput {
       }
     }
     return null;
+  }
+
+  // 动态手势的跨帧累计。按动作 id 一份，因为每个动作的关键帧数不同。
+  trailFor(action, steps) {
+    if (!this.trails) this.trails = new Map();
+    let trail = this.trails.get(action);
+    if (!trail || trail.frames.length !== steps + 1) {
+      // 关键帧数变了（重录过）就重开一份 —— 沿用旧的会让"最远第几步"跨两个不同的手势。
+      trail = { furthest: 0, fired: 0, attempts: 0, frames: new Array(steps + 1).fill(0) };
+      this.trails.set(action, trail);
+    }
+    return trail;
+  }
+
+  // 清掉累计。面板上按一下"重置诊断"用 —— 调完一个参数要能从干净的计数开始看，
+  // 否则前后两次的帧数混在一起，改好了也看不出来。
+  resetTrails() {
+    if (this.trails) this.trails.clear();
   }
 
   // 上一帧的诊断快照。sensor 每隔一段时间取一次发给面板 —— 每帧发是 30/s 的噪声，

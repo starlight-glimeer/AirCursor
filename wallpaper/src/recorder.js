@@ -86,6 +86,13 @@ const MIN_MOVE_EXTENT = 1.6;
 // 门限 0.448 = matchThreshold 0.28 × MIN_MOVE_EXTENT 1.6。
 const EXTENT_RUN = 5;
 
+// 中位数。用在"手停住了"的判定上 —— 均值会被一帧丢跟踪拖走，而那正是最常见的噪声。
+function median(list) {
+  if (!list.length) return 0;
+  const sorted = list.slice().sort((a, b) => a - b);
+  return sorted[sorted.length >> 1];
+}
+
 const PHASE = { COUNTDOWN: 'countdown', CAPTURE: 'capture', READY: 'ready', MOVE: 'move' };
 
 class Recorder {
@@ -122,6 +129,8 @@ class Recorder {
       peak: 0,
       // 最近几帧的幅度。取它们的最小值，所以单帧尖峰进不了 peak。
       extentRun: [],
+      // 同样最近几帧，但取中位数 —— 用来判"手停住了"。见 tickMove。
+      extentSmooth: [],
       lastExtent: null,
       stillSince: 0,
       readyUntil: 0,
@@ -294,6 +303,7 @@ class Recorder {
     s.readyUntil = now + MOVE_READY_MS;
     s.peak = 0;
     s.extentRun = [];
+    s.extentSmooth = [];
     s.lastExtent = null;
     s.stillSince = 0;
     s.frames = [];
@@ -341,12 +351,28 @@ class Recorder {
       }
 
       // "动作结束" = 幅度不再变化，不是"手回到起点"。见文件头。
-      if (s.lastExtent !== null && Math.abs(extent - s.lastExtent) < this.threshold * 0.06) {
+      //
+      // ⚠️ 判据不能是"逐帧变化 < 0.017"。实测静止的手，extent 的逐帧变化中位 **0.173**、
+      // 90 分位 0.975 —— 连续 320ms(~7 帧)全部低于 0.017 的概率是 **0.0000%**，
+      // 也就是"手停住了"**永远不成立**，于是每次都录到 4 秒超时。
+      //
+      // 而超时那几秒手其实早就停了 ⟹ 那段的"关键帧"全是噪声跳变 ⟹ 关键帧间距变成噪声
+      // 距离(~0.5)，序列谁都走不完。三个 bug 串成一条，这是第一环。
+      //
+      // 改成比**平滑后的幅度**：拿最近 EXTENT_RUN 帧的中位数当当前幅度，它的帧间变化是
+      // 噪声的 1/3 左右。而"不再变化"的门也放宽到匹配阈值的 0.25（0.07），那是实测
+      // 静止手在平滑之后的 60 分位。
+      //
+      // 这是这个项目里"拿单帧值当判据"的第三次（保持不动、动作幅度、这里）。
+      s.extentSmooth.push(extent);
+      if (s.extentSmooth.length > EXTENT_RUN) s.extentSmooth.shift();
+      const smooth = median(s.extentSmooth);
+      if (s.lastExtent !== null && Math.abs(smooth - s.lastExtent) < this.threshold * 0.25) {
         if (!s.stillSince) s.stillSince = now;
       } else {
         s.stillSince = 0;
       }
-      s.lastExtent = extent;
+      s.lastExtent = smooth;
 
       if (s.stillSince && now - s.stillSince > SETTLE_MS && s.peak > this.threshold * MIN_MOVE_EXTENT) {
         return this.finish();

@@ -430,6 +430,11 @@ class SequenceMatcher {
     // failure. reset() deliberately leaves it alone — it outlives the attempt.
     this.blockedUntil = 0;
     this.progress = 0;
+    // 最近一帧到"下一个关键帧"和"上一个关键帧"的距离，以及当时生效的阈值。
+    // 面板拿它显示"卡在第几步、差多少" —— 这条链此前只报得出步数。
+    this.toNext = null;
+    this.toPrev = null;
+    this.threshold = null;
   }
 
   // `slack` multiplies the recorded timings: a movement performed a bit slower
@@ -450,7 +455,12 @@ class SequenceMatcher {
 
     // Waiting to start: the hand has to arrive at the movement's first pose.
     if (this.index === 0) {
-      if (distance(pose, keyframes[0].template, rotationTolerance) < threshold) {
+      // 记下这一帧离起始姿势多远。`waitingStart` 只说"还没开始"，说不出是差 0.01 还是
+      // 差 10 倍 —— 前者要再摆准一点，后者说明这个起始姿势录坏了或者根本不是这个手势。
+      this.toNext = Number(distance(pose, keyframes[0].template, rotationTolerance).toFixed(3));
+      this.toPrev = null;
+      this.threshold = threshold;
+      if (this.toNext < threshold) {
         this.blockedUntil = 0;
         this.index = 1;
         this.startedAt = now;
@@ -484,7 +494,27 @@ class SequenceMatcher {
       return false;
     }
 
-    // Advancing needs the hand to be *nearer* the next keyframe than the one it
+    // How close counts as "arrived at a keyframe", as a fraction of the gap between
+// the two keyframes rather than a fixed distance.
+//
+// ⚠️ A fixed radius cannot work here, and the reason is arithmetic. Measured on
+// real landmarks: consecutive frames of a hand mid-movement are **0.499** apart
+// (median), while the match threshold is 0.28. One frame of hand travel already
+// exceeds the ball used to decide "reached" — so the sequence could never be
+// walked, no matter how the recording went. Diagnostics on a replay of the very
+// movement that was recorded: stuck at step 2 of 10 with distance 1.361 against a
+// 0.28 gate, while *not moving at all* scored 0.429.
+//
+// Making keyframes denser does not help: sampling the same movement at 20 frames
+// instead of 10 leaves the median gap at 0.510, because the gap is dominated by
+// per-frame noise, not by how finely the movement is cut.
+//
+// So "arrived" has to scale with the local gap. 0.55 of the way from the previous
+// keyframe to the next: past the midpoint (which is what the monotonic rule below
+// requires anyway) with a little margin for noise.
+const KEYFRAME_ARRIVAL = 0.55;
+
+// Advancing needs the hand to be *nearer* the next keyframe than the one it
     // came from — not merely inside the next one's radius.
     //
     // Radius alone was not enough, and the reason is arithmetic rather than
@@ -503,7 +533,22 @@ class SequenceMatcher {
     // actually travelled past the midpoint between them.
     const toNext = distance(pose, keyframes[this.index].template, rotationTolerance);
     const toPrev = distance(pose, keyframes[this.index - 1].template, rotationTolerance);
-    if (toNext < threshold && toNext < toPrev) {
+    // 命中半径按**这两个关键帧之间的距离**算，不是固定 0.28。见 KEYFRAME_ARRIVAL：
+    // 真机上一帧手的移动就有 0.499，固定 0.28 的球谁都进不去。
+    // 下限保留 threshold，这样间距很小的两帧不会变得比固定阈值还严。
+    const gap = distance(keyframes[this.index].template, keyframes[this.index - 1].template,
+      rotationTolerance);
+    const arrival = Math.max(threshold, gap * KEYFRAME_ARRIVAL);
+    // 两个距离都留下。推进要求"进了半径**而且**比上一帧近"，所以卡住有两种原因，而它们
+    // 要反方向的处理：`toNext >= threshold` 是没到位（动作做小了），`toNext >= toPrev`
+    // 是还没过中点（动作方向不对，或者两个关键帧本来就太近）。
+    // 只报一个 `midMovement` 的话这两种分不开。
+    this.toNext = Number(toNext.toFixed(3));
+    this.toPrev = Number(toPrev.toFixed(3));
+    // 报生效的那个半径，不是 threshold —— 面板上显示 `距离 0.4 / 门 0.28` 而它其实过了，
+    // 会把人送去查一个不存在的问题。
+    this.threshold = Number(arrival.toFixed(3));
+    if (toNext < arrival && toNext < toPrev) {
       this.index += 1;
       this.lastAdvanceAt = now;
       this.progress = this.index / keyframes.length;
@@ -512,7 +557,8 @@ class SequenceMatcher {
       return false;
     }
 
-    this.blocked = "midMovement";
+    // 分开报，因为处理相反：没进半径 = 动作做小了；进了但没过中点 = 方向不对或关键帧太近。
+    this.blocked = toNext >= arrival ? "notReached" : "beforeMidpoint";
     return false;
   }
 

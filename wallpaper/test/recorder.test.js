@@ -516,4 +516,73 @@ check('冲突报出"至少要多远"，不只是"太像了"', () => {
   assert.ok(hit.need > hit.distance, '门限应该大于实测距离');
 });
 
+// ── "手停住了"不能用逐帧变化判 ───────────────────────────────────────────
+//
+// 实测静止的手，extent 的**逐帧变化**中位 0.173、90 分位 0.975。而原判据是
+// "连续 320ms(~7 帧)变化都 < threshold*0.06 = 0.017" ⟹ 概率 **0.0000%**。
+//
+// 后果是三个 bug 串成一条：
+//   ① "手停住了"永不成立 ⟹ 每次都录到 4 秒超时
+//   ② 超时那几秒手早就停了 ⟹ 那段的"关键帧"全是噪声跳变
+//   ③ 关键帧间距变成噪声距离(~0.5) > 命中半径 ⟹ **序列谁都走不完**
+//
+// 这是"拿单帧值当判据"在这个项目里的第三次（保持不动、动作幅度、这里）。
+check('动作停住后能及时收尾，不拖到超时', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  // 做一个 900ms 的动作，然后**停住**。收尾时间应该接近 900ms + SETTLE_MS，
+  // 而不是 MOVE_TIMEOUT_MS(4000)。
+  let out = null;
+  let phase = '';
+  let moveStart = null;
+  let finishedAt = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let lm;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      lm = stroked(noisyFrame(i + 50, 3), Math.min(1, (now - moveStart) / 900), 1.0);
+    } else {
+      lm = noisyFrame(i, 0);
+    }
+    out = NOISE.handPresent[i % NOISE.handPresent.length]
+      ? rec.update(P.buildPoseTemplate([lm]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) { finishedAt = now - moveStart; break; }
+  }
+  assert.ok(out && out.done, `录制失败：${out && out.error}`);
+  // 4000ms 是超时值。收在 2500 以内说明"停住"被认出来了而不是靠超时兜底。
+  assert.ok(finishedAt < 2500,
+    `动作 900ms 就停了，却录了 ${finishedAt}ms —— "手停住了"的判据没成立，靠超时收尾`);
+});
+
+check('关键帧不覆盖动作结束后的静止段', () => {
+  // 静止段的"关键帧"是噪声跳变，它们之间的距离就是噪声距离(~0.5)，而那会让整个序列
+  // 的间距超出命中半径。所以关键帧的时间跨度必须贴近真实动作，不能一路铺到超时。
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  let out = null;
+  let phase = '';
+  let moveStart = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let lm;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      lm = stroked(noisyFrame(i + 50, 3), Math.min(1, (now - moveStart) / 900), 1.0);
+    } else {
+      lm = noisyFrame(i, 0);
+    }
+    out = NOISE.handPresent[i % NOISE.handPresent.length]
+      ? rec.update(P.buildPoseTemplate([lm]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(out.result && out.result.keyframes, '没有关键帧');
+  const span = out.result.keyframes[out.result.keyframes.length - 1].offsetMs;
+  assert.ok(span < 2500,
+    `动作只有 900ms，关键帧却铺到 ${span}ms —— 后面那些是静止的手 + 噪声，`
+    + '它们之间的距离是噪声距离，会让序列走不完');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

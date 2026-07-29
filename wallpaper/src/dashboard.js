@@ -810,7 +810,14 @@ window.gw.onSensorStatus((s) => {
         const d = p.distance !== undefined
           ? ` · 距离 ${p.distance} / 门 ${p.threshold}${p.distance < p.threshold ? ' ✓' : ''}`
           : '';
-        return `${p.action}${d} · ${p.why}`;
+        // 动态手势多报两样：走到第几步，以及"离上一个关键帧多远"。
+        //
+        // 后者是中点规则的另一半：推进要求离下一帧**比离上一帧近**，所以 `0.31→0.24`
+        // （在往前走）和 `0.31→0.09`（还黏在上一帧）是完全不同的处境，而只看 toNext
+        // 两者一模一样。
+        const step = p.steps ? ` · 第 ${p.step}/${p.steps} 步` : '';
+        const back = p.fromPrev !== undefined ? ` · 离上一步 ${p.fromPrev}` : '';
+        return `${p.action}${step}${d}${back} · ${p.why}`;
       });
       node.textContent = `手势匹配：\n${lines.join('\n')}`;
       // 有任何一个够近就转绿 —— 那说明手势这侧是通的，问题在下游（执行/绑定）。
