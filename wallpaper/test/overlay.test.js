@@ -41,6 +41,17 @@ function hand(offset = 0) {
   return lm;
 }
 
+// 占画面 25% 宽的手 —— 手举在摄像头半米内时的真实量级。
+// 上面那个 `hand()` 只占 8%，用它测缩放会命中 `Math.min(1, ...)` 那条分支（不放大小手），
+// 于是断言红了而代码是对的。夹具的量级本身是个变量。
+function bigHand(offset = 0) {
+  const lm = [];
+  for (let i = 0; i < 21; i += 1) {
+    lm.push({ x: 0.3 + offset + (i % 5) * 0.0625, y: 0.3 + Math.floor(i / 5) * 0.06 });
+  }
+  return lm;
+}
+
 console.log('\noverlay.js');
 
 check('归一化坐标映射到画布像素', () => {
@@ -72,6 +83,65 @@ check('录制时色调明显不同（不用读文字就知道在录）', () => {
   const recording = O.handHue(0, true);
   assert.ok(Math.abs(normal - recording) > 60,
     `录制色调只差 ${Math.abs(normal - recording)}，看不出区别`);
+});
+
+console.log('\n  尺寸');
+
+// 回归守卫：第一版把归一化坐标直接乘满屏，手在摄像头里占 25% 就在 1470px 的屏上画成
+// 368px —— 比真手大好几倍，糊住半个屏幕。骨架是叠加信息不是内容。
+check('骨架按固定手宽缩放，不跟着屏幕长', () => {
+  const h = bigHand();
+  const span = O.handSpan(h);
+  for (const screenWidth of [1470, 2940, 3840]) {
+    const target = O.skeletonWidth(screenWidth);
+    const raw = span.width * screenWidth;
+    const scale = Math.min(1, target / raw);
+    const drawn = raw * scale;
+    assert.ok(Math.abs(drawn - target) < 1, `屏宽 ${screenWidth} 画出 ${drawn.toFixed(0)}px，目标 ${target.toFixed(0)}px`);
+    assert.ok(drawn < screenWidth * 0.2, `骨架占屏宽 ${(drawn / screenWidth * 100).toFixed(0)}%，太大`);
+  }
+});
+
+// 只缩不放：手离摄像头远时画面里的手很小，强行拉到 200px 会让骨架比手大得离谱，
+// 而且会把"手离得远"这个信息抹掉。
+check('小手不放大（只缩不放）', () => {
+  const small = hand();   // 占画面 8%
+  const span = O.handSpan(small);
+  const raw = span.width * 1470;
+  const scale = Math.min(1, O.skeletonWidth(1470) / raw);
+  assert.strictEqual(scale, 1, '小手被强行放大了');
+});
+
+check('目标手宽有下限（小屏上别缩到看不见）', () => {
+  assert.ok(O.skeletonWidth(400) >= 120, '小屏上骨架太小');
+});
+
+// 位置和尺寸是两件事：位置要铺满屏才指得到任何地方，尺寸不能跟着屏幕长。
+check('位置仍映射到全屏（手在右边骨架就在右边）', () => {
+  const left = hand(0);      // 手在偏左
+  const right = hand(0.5);   // 手在偏右
+  const lc = O.handSpan(left).center;
+  const rc = O.handSpan(right).center;
+  const lp = O.toCanvas(left[0], 1000, 800, lc, 0.5);
+  const rp = O.toCanvas(right[0], 1000, 800, rc, 0.5);
+  assert.ok(rp.x > lp.x + 200, `位置没跟着手走：${lp.x.toFixed(0)} vs ${rp.x.toFixed(0)}`);
+});
+
+check('缩放围绕掌心做（手不被拉到角落）', () => {
+  const h = hand();
+  const span = O.handSpan(h);
+  const centerBefore = O.toCanvas(
+    { x: span.center.x, y: span.center.y }, 1000, 800, span.center, 1);
+  const centerAfter = O.toCanvas(
+    { x: span.center.x, y: span.center.y }, 1000, 800, span.center, 0.3);
+  assert.ok(Math.abs(centerAfter.x - centerBefore.x) < 0.01, '缩放把掌心挪走了');
+  assert.ok(Math.abs(centerAfter.y - centerBefore.y) < 0.01);
+});
+
+check('不传 center/scale 时退回全屏映射（旧行为仍可用）', () => {
+  const p = O.toCanvas({ x: 0.5, y: 0.25 }, 1000, 800);
+  assert.strictEqual(p.x, 500);
+  assert.strictEqual(p.y, 200);
 });
 
 console.log('\n  淡出');

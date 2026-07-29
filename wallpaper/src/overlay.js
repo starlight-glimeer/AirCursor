@@ -27,9 +27,54 @@ function handHue(index, recording) {
   return index === 0 ? 188 : 292;
 }
 
-// 归一化坐标 → 画布像素。
-function toCanvas(point, width, height) {
-  return { x: point.x * width, y: point.y * height };
+// 骨架的目标手宽，屏幕像素。
+//
+// 第一版把归一化坐标直接乘满屏：手在摄像头画面里占 25%，在 1470px 宽的屏上就画成
+// 367px —— 比真手大好几倍，糊住半个屏幕。骨架是叠加信息不是内容，它该像一只手，
+// 而不是像一张手的海报。
+//
+// 200px 大约是一只手在半米外看起来的大小。跟着屏幕缩放（`SKELETON_SCREEN_FRACTION`）
+// 而不是写死，因为在 4K 屏上 200px 又太小了。
+const SKELETON_WIDTH_PX = 200;
+const SKELETON_SCREEN_FRACTION = 0.14;
+
+function skeletonWidth(screenWidth) {
+  return Math.max(120, Math.min(SKELETON_WIDTH_PX, screenWidth * SKELETON_SCREEN_FRACTION));
+}
+
+// 归一化坐标 → 画布像素，但**按固定手宽缩放，不铺满屏**。
+//
+// 手的位置仍然映射到全屏（抬手到屏幕右边，骨架就在右边），只有手的**尺寸**被压到固定
+// 大小。两者分开是关键：位置要覆盖整个屏幕才能指得到任何地方，尺寸不能跟着屏幕长。
+//
+// `center` 是这只手的掌心（归一化），缩放围绕它做，所以手不会因为缩放被拉到角落。
+function toCanvas(point, width, height, center, scale) {
+  if (!center || !scale) return { x: point.x * width, y: point.y * height };
+  const cx = center.x * width;
+  const cy = center.y * height;
+  return {
+    x: cx + (point.x * width - cx) * scale,
+    y: cy + (point.y * height - cy) * scale,
+  };
+}
+
+// 一只手在归一化坐标里的宽度（包围盒），用来算该缩放多少。
+function handSpan(hand) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of hand) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return {
+    width: maxX - minX,
+    height: maxY - minY,
+    center: { x: (minX + maxX) / 2, y: (minY + maxY) / 2 },
+  };
 }
 
 // 食指指尖（8 号）是指针位置。AirCursor 用它当光标，因为它是手上最容易精确指向的一点。
@@ -103,7 +148,12 @@ class HandOverlay {
       const hue = handHue(index, this.recording) + Math.sin(t * 2.2 + index) * 22;
       const stroke = `hsl(${hue}, 100%, 64%)`;
       const core = `hsl(${hue + 25}, 100%, 82%)`;
-      const points = hand.map((p) => toCanvas(p, this.width, this.height));
+      // 按固定手宽缩放：位置铺满屏（指得到任何地方），尺寸压到一只手该有的大小。
+      const span = handSpan(hand);
+      const targetPx = skeletonWidth(this.width);
+      const currentPx = Math.max(1e-6, span.width * this.width);
+      const scale = Math.min(1, targetPx / currentPx);
+      const points = hand.map((p) => toCanvas(p, this.width, this.height, span.center, scale));
 
       ctx.globalAlpha = alpha * 0.9;
       ctx.strokeStyle = stroke;
@@ -131,7 +181,9 @@ class HandOverlay {
 
       // 指针环画在食指指尖：这是"我在指哪"的答案，而那个问题之前完全没有答案。
       const tip = indexTip(hand);
-      if (tip) this.drawPointer(toCanvas(tip, this.width, this.height), alpha, t, hue);
+      if (tip) {
+        this.drawPointer(toCanvas(tip, this.width, this.height, span.center, scale), alpha, t, hue);
+      }
     }
     ctx.restore();
   }
@@ -161,6 +213,10 @@ root.GestureWallOverlay = {
   HAND_LINES,
   FADE_MS,
   INDEX_TIP,
+  SKELETON_WIDTH_PX,
+  SKELETON_SCREEN_FRACTION,
+  skeletonWidth,
+  handSpan,
   handHue,
   toCanvas,
   indexTip,
