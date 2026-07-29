@@ -67,71 +67,6 @@ function sendHands(list) {
   else window.gw.sendHands(payload);
 }
 
-// ---------------------------------------------------------------------------
-// 用模型识别手势（旁路）
-// ---------------------------------------------------------------------------
-let model = null;
-let modelLoading = false;
-// 上一次报状态的时刻。模型的置信度分数要给用户看（那是它比尺子好的地方：这个数有明确
-// 含义），但 23/s 会糊成一片。
-let lastModelReport = 0;
-const MODEL_REPORT_MS = 250;
-
-function modelEnabled() {
-  return !!(config && config.modelGestures && config.modelGestures.enabled);
-}
-
-function tickModelGestures(now) {
-  const M = window.GestureWallModelGestures;
-  if (!M) return;
-
-  if (!modelEnabled()) {
-    if (model) { model.dispose(); model = null; }
-    return;
-  }
-
-  // 按需加载：11MB wasm + 8MB 模型，不开这个开关就不该付这个代价。
-  if (!model) {
-    if (modelLoading) return;
-    modelLoading = true;
-    model = new M.ModelGestures();
-    const wanted = (config && config.modelGestures && config.modelGestures.numHands) || 2;
-    model.load(wanted).then((ok) => {
-      modelLoading = false;
-      status(ok ? '✅ 手势模型已加载（GestureRecognizer）'
-        : `⚠️ 手势模型加载失败：${model.error}`, { modelReady: ok, modelError: model.error });
-    });
-    return;
-  }
-  if (!model.ready) return;
-
-  const video = document.getElementById('cam');
-  if (!video || !video.videoWidth) return;
-  const detection = model.detect(video, now);
-  if (!detection) return;
-
-  const cfg = config.modelGestures || {};
-  const minScore = cfg.minScore || M.DEFAULT_SCORE;
-  const fired = model.actionsFor(detection, cfg.bindings, minScore);
-  for (const hit of fired) {
-    window.gw.sendGesture({ v: 1, at: Date.now(), action: hit.action, viaModel: true,
-      gesture: hit.gesture, score: hit.score });
-  }
-
-  // 报出这一帧模型看到了什么 —— 包括**没绑定动作的**手势。用户要能看到"模型认出了
-  // Open_Palm 但我没把它绑到任何动作上"，否则"没反应"又变成一句没有指向的话。
-  if (now - lastModelReport >= MODEL_REPORT_MS) {
-    lastModelReport = now;
-    window.gw.sendSensorStatus({
-      modelGestures: {
-        seen: detection.gestures,
-        fired: fired.map((f) => f.action),
-        minScore,
-      },
-    });
-  }
-}
-
 // 录 5 秒原始关键点。
 //
 // 从 AirCursor 搬过来的,而它存在的理由对两边都成立:所有用例都是合成手,而合成手缺的
@@ -244,12 +179,6 @@ function onResultsInner(results) {
   const now = performance.now();
   heartbeat(now);
   const list = results.multiHandLandmarks || [];
-
-  // 用模型识别手势（旁路，默认关）。
-  //
-  // 和下面那条手写几何的链**并行**跑，不替代它 —— 这样"模型认出来了没有"和"尺子认出来
-  // 了没有"能并排看。开关在面板上，见 model-gestures.js 的文件头。
-  tickModelGestures(now);
 
   // 关键点录制在最前面,而且**在录制守卫之前** —— 它记的是原始输入,和手势判定无关,
   // 所以做录制动作那段时间的数据同样有价值(那正是真手在做动作的样子)。

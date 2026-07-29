@@ -69,41 +69,6 @@ else
   echo "     → 手势会不可用。用 AIRCURSOR_REPO=<路径> 指定仓库位置。"
 fi
 
-# MediaPipe tasks-vision 的 GestureRecognizer（可选，取不到不影响现有链路）。
-#
-# 为什么加这个：现在的手势判定是**手写几何**——把 21 个关键点拼成 63 维向量算欧氏距离，
-# 小于 0.28 就算命中。它没有"什么叫摊开的手"这种语义，只知道"和存的那 63 个数字差多少"。
-# 实测代价：手动着的时候一个 0.28 的球只能停留 89ms，而序列匹配要求依次进入 N 个这样的
-# 球 ⟹ 同一个人相邻两秒做同样的动作，10 个关键帧一个都走不到。
-#
-# GestureRecognizer 在 hand_landmark 之上多一层**分类头**，内置 8 类：
-#   None / Closed_Fist / Open_Palm / Pointing_Up / Thumb_Down / Thumb_Up / Victory / ILoveYou
-# 其中 Open_Palm 正好是用户报"录得最费劲"的那个双手摊开。它是本地推理、12ms 级、免费，
-# 而且输出里**同时带 landmarks** ⟹ 可以整体替代现在的 hands 而不丢任何东西。
-#
-# ⚠️ 自定义手势仍然要训练（`customGesturesClassifierOptions` 只配置已训练好的分类器的
-# 阈值和白名单，它不训练模型），而 Model Maker 官方已标"不再积极维护"。所以这条路的
-# 定位是"内置那 8 类用模型、其余继续用尺子"，不是全面替代。
-#
-# 取不到就跳过：这是旁路，不能让它挡住 npm install。
-mkdir -p "$vendor/mediapipe/tasks-vision"
-if [ ! -f "$vendor/mediapipe/tasks-vision/vision_bundle.mjs" ]; then
-  echo "取 tasks-vision（GestureRecognizer，可选）"
-  if curl -fsSL --max-time 120 -o "$vendor/mediapipe/tasks-vision/vision_bundle.mjs" \
-      https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.0/vision_bundle.mjs 2>/dev/null; then
-    # wasm 和模型也要本地化 —— 运行时联网取会让"没网就不能用手势"，而这是个桌面应用。
-    for f in vision_wasm_internal.js vision_wasm_internal.wasm; do
-      curl -fsSL --max-time 120 -o "$vendor/mediapipe/tasks-vision/$f" \
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.0/wasm/$f" 2>/dev/null || true
-    done
-    curl -fsSL --max-time 180 -o "$vendor/mediapipe/tasks-vision/gesture_recognizer.task" \
-      https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task 2>/dev/null || true
-    echo "  tasks-vision：已取"
-  else
-    echo "  ⚠️ tasks-vision 取不到（跳过）——「用模型识别手势」那个开关会不可用，其余不受影响"
-  fi
-fi
-
 # three.js 是 MIT，独立取。
 if [ ! -f "$vendor/three.r128.min.js" ]; then
   echo "下载 three.js r128"

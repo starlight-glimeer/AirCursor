@@ -190,7 +190,7 @@
      后果不是"丑"，是**读不到**：`white-space` 默认把 textContent 里的 `\n` 折叠成空格，
      于是多个手势的诊断挤成一行长文本，用户看到的就是"没有更多信息"。
      用户原话：「我没有看到更多的日志信息」。 */
-  #model-state, #heartbeat, #match-probe, #overlay-geom {
+  #heartbeat, #match-probe, #overlay-geom {
     font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5;
     white-space: pre-wrap;              /* 换行必须保留，这是这条规则存在的理由 */
     margin-top: 6px; padding: 7px 9px;
@@ -198,8 +198,8 @@
     color: var(--dim);
     max-height: 160px; overflow-y: auto;   /* 手势多了要能滚，不能截断 */
   }
-  #model-state.ok, #heartbeat.ok, #match-probe.ok, #overlay-geom.ok { color: var(--accent); }
-  #model-state.warn, #heartbeat.warn, #match-probe.warn, #overlay-geom.warn { color: var(--warn); }
+  #heartbeat.ok, #match-probe.ok, #overlay-geom.ok { color: var(--accent); }
+  #heartbeat.warn, #match-probe.warn, #overlay-geom.warn { color: var(--warn); }
   .bar { height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 6px; }
   .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; width: 0; transition: width .1s; }
   .tier {
@@ -365,25 +365,6 @@
          静默地。用户报"我希望手势打开网易云这个加进来" —— 而它早就在动作表里了
          （system.js 的 open_netease，4 个候选路径），只是面板上看不到。
          和之前那次「三层接好、面板零入口」完全同形。 -->
-    <!-- 用模型识别手势。⚠️ 这一块的定位是**旁路** —— 内置那 8 个手势交给模型，其余继续
-         用录制。存在的理由：现在的判定是手写几何（把 21 个点拼成 63 维向量算欧氏距离），
-         它没有"什么叫摊开的手"这种语义，而实测手动着的时候一个 0.28 的球只能停留 89ms
-         ⟹ 动态手势要求依次进入 N 个这样的球，结构上走不通。 -->
-    <h3>用模型识别手势（内置 7 个，不用录）</h3>
-    <div class="card">
-      <label class="toggle">
-        <input type="checkbox" id="model-enabled">
-        <span>开启（首次会加载 19MB 模型，之后本地推理、不联网）</span>
-      </label>
-      <div id="model-state" class="state">未开启</div>
-      <div id="model-bindings"></div>
-      <p class="hint">
-        这 7 个手势是模型**学**过的，所以手大一点小一点、角度偏一点都认 —— 和录制那套
-        "逐点距离"不是一个原理。⚠️ 只有这 7 个：自定义手势要训练（Apple 参考量是 100 段
-        视频/类），所以其余动作继续用录制。
-      </p>
-    </div>
-
     <h3>系统动作（打开应用 / 控制播放，不需要辅助功能授权）</h3>
     <div class="card" id="systemActions"></div>
 
@@ -424,10 +405,6 @@
 </main>
 
 <script src="system.js"></script>
-<!-- 只为拿 CANNED / LABELS 两张表。面板不做识别（那在骨架层），但手势名和显示名必须
-     和 model-gestures.js 是同一份 —— 手抄一份会悄悄分叉，而分叉的表现是"绑了但永远
-     不触发"（键名对不上），那个症状完全看不出是名字的问题。 -->
-<script src="model-gestures.js"></script>
 <script src="templates.js"></script>
 <script src="preview.js"></script>
 <script src="library.js"></script>

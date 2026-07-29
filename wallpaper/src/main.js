@@ -260,18 +260,6 @@ const defaultConfig = {
   library: [],
   // 已录制的手势，动作 id → { hands, template, keyframes, trigger, ... }。
   recorded: {},
-  // 用模型识别手势（GestureRecognizer 旁路）。默认关：11MB wasm + 8MB 模型，不用就不该付。
-  //
-  // 存在的理由见 model-gestures.js 的文件头 —— 简短版：现在的判定是手写几何（逐点距离），
-  // 它没有"什么叫摊开的手"这种语义，而实测一个 0.28 的球手只能停留 89ms ⟹ 动态手势
-  // 结构上走不通。模型学过那 8 个手势，所以手大一点小一点都认。
-  modelGestures: {
-    enabled: false,
-    numHands: 2,
-    minScore: 0.6,
-    // { 内置手势名: 动作 id }。绑了的那个动作就不需要录制。
-    bindings: {},
-  },
   // 每个动作的录制选项：静态还是动态、几只手。
   //
   // 静态/动态是**用户的选择**而不是按动作名查表。AirCursor 那边一开始硬编码，结果既
@@ -296,10 +284,7 @@ function readConfig() {
 // mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
 // 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
 // 预设都在下次启动时被静默丢掉。
-// `bindings` 也在里面：它的键是用户选的（内置手势名 → 动作），而深合并会把"删掉一个
-// 绑定"变成"那个键保留旧值" —— 传一个缺键的对象删不掉它。
-const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions', 'recordUndo',
-  'bindings']);
+const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions', 'recordUndo']);
 
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
