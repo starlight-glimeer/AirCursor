@@ -535,4 +535,57 @@ check('vendor 里的手势判定和 public/ 源头一致（改了源头不重跑
     `这些副本和源头不一致，跑一次 npm run vendor：${stale.join(', ')}`);
 });
 
+// ── renderActionGroup 要的容器必须在 HTML 里 ─────────────────────────────
+//
+// `renderActionGroup` 第一行是 `if (!host) return;`。而 `systemActions` 这个容器在
+// dashboard.html 里**根本不存在** ⟹ 8 个系统动作（打开网易云/浏览器/访达、播放暂停、
+// 上下一曲…）一个都没渲染，静默地。
+//
+// 用户报"我希望手势打开网易云这个加进来" —— 而 `open_netease` 早就在动作表里了
+// （system.js，4 个候选路径），只是面板上看不到。这和之前那次「三层接好、面板零入口」
+// 完全同形：每一层单独看都对，整条链没有出口，所有测试全绿。
+check('面板渲染函数要的容器 id 在 HTML 里都存在', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // getElementById('x') 和 renderActionGroup('x', …) 两种取法都算
+  const ids = new Set([
+    ...[...dash.matchAll(/getElementById\('([\w-]+)'\)/g)].map((m) => m[1]),
+    ...[...dash.matchAll(/renderActionGroup\('([\w-]+)'/g)].map((m) => m[1]),
+  ]);
+  assert.ok(ids.size > 10, `只解析出 ${ids.size} 个 id，正则失效了`);
+  const missing = [...ids].filter((id) => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `这些容器在 HTML 里不存在，对应的界面会静默空白：${missing.join(', ')}`);
+});
+
+// 系统动作是"手势替代鼠标键盘"这个定位的落点，而它整块消失过一次。
+check('系统动作在面板上有自己的区域，而且真的被渲染', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(dash, /renderActionGroup\('systemActions'/, '面板没有渲染系统动作');
+  assert.ok(html.includes('id="systemActions"'), '系统动作没有容器');
+  // 打开应用不需要辅助功能授权，所以它是"能立刻用来验证手势通不通"的那一类 ——
+  // 用户就是要拿它直观测试效果。
+  const system = fs.readFileSync(path.join(__dirname, '..', 'src', 'system.js'), 'utf8');
+  assert.match(system, /open_netease/, '网易云那条规则没了');
+});
+
+// 界面主动说谎在这个项目里有过代价（识别行显示了手势名但动作不发生，因为显示和触发
+// 用了两个时间尺度）。这条守的是同一件事的另一半。
+check('静态/动态的显示读存下来的字段，不靠 keyframeData 猜', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // 猜的后果：**有律的动态动作不产生 keyframes**（recorder.js 里 `s.dynamic && !s.law`
+  // 才建关键帧序列），于是录了动态却显示"静态"。四格实测：动态+有律 是唯一说谎的那格。
+  const line = dash.split('\n').find((l) => l.includes("? '动态' : '静态'"));
+  assert.ok(line, '找不到静态/动态的判断 —— 被改写了');
+  assert.match(line, /recorded\.dynamic/,
+    '静态/动态是靠 keyframeData 猜的 —— 有律的动态动作不产生关键帧，会显示成静态');
+
+  // 而 recorder 那边必须真的存这个字段，否则读了也是 undefined。
+  const rec = fs.readFileSync(path.join(__dirname, '..', 'src', 'recorder.js'), 'utf8');
+  assert.match(rec, /dynamic: s\.dynamic/, 'recorder 没有把 dynamic 存进结果');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /dynamic: entry\.dynamic/, 'sensor 转发时把 dynamic 丢了');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

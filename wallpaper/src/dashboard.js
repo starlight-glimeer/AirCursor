@@ -267,21 +267,6 @@ function renderGestureLead() {
     `「${t.label}」这套模板的手势。换模板会换一整套动作 —— 手势和模板是绑定的。`;
 }
 
-function renderContinuous() {
-  const host = document.getElementById('continuous');
-  host.innerHTML = '';
-  const actions = T.actionsOf(config.template, config.proTier)
-    .filter((a) => a.kind === 'continuous');
-  for (const action of actions) {
-    const row = el('div', 'rec');
-    const info = el('div');
-    info.append(el('span', 'nm', action.label));
-    info.append(el('span', 'hint2', action.hint));
-    row.append(info);
-    host.append(row);
-  }
-}
-
 // 录制选项：静态还是动态、几只手。
 //
 // 静态/动态是**用户的选择**，不是按动作名查表 —— AirCursor 那边一开始是硬编码的，
@@ -428,10 +413,23 @@ function renderActionGroup(hostId, actions) {
       state.textContent = '准备中…';
       state.className = 'state ok';
     } else if (recorded) {
-      const kind = recorded.keyframeData && recorded.keyframeData.length ? '动态' : '静态';
+      // ⚠️ 读存下来的 `dynamic` 字段，不是靠 keyframeData 的长度猜。
+      //
+      // 猜的后果：**有律的动态动作不产生 keyframes**（recorder.js 里 `s.dynamic && !s.law`
+      // 才建关键帧序列，有律的走律），于是录了动态却显示"静态"。用户报「我点击的动态
+      // 动作，录制过程看起来很顺畅，但是怎么显示已录制·静态」—— 录制是对的，显示在说谎。
+      //
+      // 而"界面主动说谎"在这个项目里已经有过一次代价（识别行显示了手势名但动作不发生，
+      // 因为显示和触发用了两个时间尺度）。存了什么就显示什么。
+      const kind = recorded.dynamic ? '动态' : '静态';
       state.textContent = `已录制 · ${kind} · ${recorded.hands} 只手`
-        + (recorded.keyframes ? ` · ${recorded.keyframes} 关键帧` : '');
+        + (recorded.keyframes ? ` · ${recorded.keyframes} 关键帧` : '')
+        + (recorded.dynamic && recorded.law ? ` · 按${recorded.law === 'swipe' ? '挥动' : '倾斜'}判方向` : '');
       state.className = 'state ok';
+    } else if (action.kind === 'continuous') {
+      // 连续动作不录也能用（内置的捏合/移动映射），所以"未录制"不是缺陷状态。
+      state.textContent = '未录制（在用内置映射，录一个手型可以当开关）';
+      state.className = 'state';
     } else {
       state.textContent = action.law ? '未录制（有内置判定，录了更准）' : '未录制';
       state.className = 'state';
@@ -731,7 +729,6 @@ function apply(next) {
   renderPresets();
   renderGallery();
   renderGestureLead();
-  renderContinuous();
   renderRecordables();
   renderToggles();
   if (!built) {

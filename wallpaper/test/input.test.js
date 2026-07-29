@@ -25,6 +25,7 @@ require('../src/input.js');
 const I = globalThis.GestureWallInput;
 // 倾斜那一节直接测 TiltRatchet 的契约，所以要拿到 Motion 本身。
 const Motion = globalThis.AirCursorMotion;
+const P = globalThis.AirCursorPose;
 
 let passed = 0;
 function check(name, fn) {
@@ -462,6 +463,120 @@ check('input.js 用 neutralTiltReference 而不是字面量', () => {
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
   assert.ok(!/templateAngle:\s*0\b/.test(code), 'input.js 的代码里还有 templateAngle: 0');
+});
+
+// ── 连续控制的门：录了才需要手型，没录照旧可用 ─────────────────────────────
+//
+// zoom / parallax 原来是 `recordable: false`，理由是"录一个静态姿势没有意义"。那把两个
+// **正交**的维度绑在一起了：静态/动态说的是"手势本身是姿势还是动作"，离散/连续说的是
+// "触发一次还是每帧给值"。一个静态手型完全可以驱动连续推进 —— 摆出它就一直推进，手型
+// 变了就停。用户原话：「一个特定的静态手势画面连续推进放大，这也是可以实现的啊，手势
+// 变了不就停了」。
+//
+// 这一节守两件事，而**第二件比第一件重要**：门要真的起作用；没录时绝不能挡。
+// 把一个现成能用的功能改成"必须先配置"是回归，而它不会报错 —— 只会表现为"推进拉远
+// 突然不好用了"。
+
+// 双手捏合的一帧。zoom 要求两只手都捏住（拇指+食指靠拢）。
+function pinchPair(gap) {
+  return [hand({ centerX: 0.35, pinchGap: gap }), hand({ centerX: 0.65, pinchGap: gap })];
+}
+
+// 把一只手屈指，用来构造"手型不同"。
+//
+// ⚠️ 这个 helper 存在是因为**我第四次用了无效的反向夹具**。前三次：纯平移（模板按腕
+// 平移归一化，2000px 距离仍是 0.0000）、只改一个点（63 维 RMS 摊平）、变化到某帧就
+// 停（之后是一只静止的手）。这次是第四种：**只改 `palm`**。
+//
+// 掌宽正是尺度归一化的**分母** ⟹ `palm: 0.12` 和 `palm: 0.30` 的模板距离恰好 0.0000。
+// 一只"大手"和一只"小手"在模板空间里是同一个手型，这是设计如此（手离摄像头远近不该
+// 改变手势），而我拿它当"手型不同"。
+//
+// 实测能拉开距离的量：屈指 0.9 → 0.3001，刚过阈值 0.28。捏合 vs 张开只有 0.1867，
+// **不够** —— 反向夹具必须实测超过阈值，不能看着不一样就算。
+function curled(lm, amount) {
+  const wrist = lm[0];
+  return lm.map((p, k) => {
+    if (k < 5) return p;
+    const w = [8, 12, 16, 20].includes(k) ? 1 : [7, 11, 15, 19].includes(k) ? 0.6 : 0.25;
+    return {
+      x: p.x + (wrist.x - p.x) * amount * w,
+      y: p.y + (wrist.y - p.y) * amount * w,
+      z: p.z,
+    };
+  });
+}
+
+check('没录 zoom 时，捏合照旧驱动推进（不能变成必须先录）', () => {
+  const input = new I.GestureInput({});
+  const { events } = input.update(pinchPair(0.2), 1000, {});   // config 里没有 recorded
+  assert.ok(events.some((e) => e.action === 'zoom'),
+    '没录过就不给 zoom 了 —— 那是把现成的功能改成必须先配置');
+});
+
+check('录了 zoom 的手型：手型对上才给推进', () => {
+  const input = new I.GestureInput({});
+  // 用"两只手都捏住"那个姿势本身当模板 —— 那是用户会摆的手型
+  const pose = P.buildPoseTemplate(pinchPair(0.2).map((lm) => I.toPixels(I.mirror(lm))));
+  const config = { recorded: { zoom: { hands: 2, template: pose, dynamic: false, law: null } } };
+
+  const on = input.update(pinchPair(0.2), 1000, config);
+  assert.ok(on.events.some((e) => e.action === 'zoom'), '录的手型就在场，却不给推进');
+});
+
+check('录了 zoom 的手型：手型不对就不给推进（这才叫门）', () => {
+  const input = new I.GestureInput({});
+  // 模板是"屈指"的姿势，实时是"伸开捏合"—— 实测距离 0.3001 > 阈值 0.28
+  const template = P.buildPoseTemplate(
+    pinchPair(0.2).map((lm) => I.toPixels(I.mirror(curled(lm, 0.9)))),
+  );
+  const config = { recorded: { zoom: { hands: 2, template, dynamic: false, law: null } } };
+  const off = input.update(pinchPair(0.2), 1000, config);
+  // 门关着时不该有 zoom 事件。**也不该报错、不该退化成别的动作。**
+  assert.ok(!off.events.some((e) => e.action === 'zoom'),
+    '手型完全不同却照样推进 —— 门没起作用');
+});
+
+check('视差的门是独立字段，不是把 palmX 设成 null', () => {
+  // ⚠️ 第一版用 `palmX: null` 表示"门关着"，而消费方那句
+  //   `typeof g.palmX === 'number' ? g.palmX : g.x`
+  // 是给"旧版事件没带掌心"准备的兜底 ⟹ 门一关就回落到**指尖**，视差跟着手指头跳。
+  // 「门关着」和「这个字段不存在」撞成了同一个值，而后者早就有含义了。
+  //
+  // 这是哨兵值撞值的第三次（angle:0 既是"指向右"又是"没有轴"、lastFiredAt:0 吃掉第一
+  // 次触发）。所以：门是新语义，就给它新字段，而 palmX 永远是个坐标。
+  const input = new I.GestureInput({});
+  const template = P.buildPoseTemplate(
+    [curled(hand({ palm: 0.12 }), 0.9)].map((lm) => I.toPixels(I.mirror(lm))),
+  );
+  const config = { recorded: { parallax: { hands: 1, template, dynamic: false, law: null } } };
+  const out = input.update([hand({ palm: 0.12 })], 1000, config);
+  const pointer = out.events.find((e) => e.action === 'pointer');
+  assert.ok(pointer, '没有 pointer 事件');
+  assert.strictEqual(typeof pointer.palmX, 'number',
+    'palmX 被设成了 null —— 消费方会回落到指尖，视差跟着手指头跳');
+  assert.strictEqual(pointer.parallax, false, '门关着，但事件里没说');
+  // 指针本身不受这道门影响：它是鼠标，不该被壁纸视差的手型开关关掉。
+  assert.strictEqual(typeof pointer.x, 'number', '指针被视差的门挡住了');
+});
+
+check('壁纸端认这个门，而且缺字段时放行', () => {
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.js'), 'utf8');
+  // `!== false` 而不是 `=== true`：不带这个字段的事件（旧版/其他来源）照旧放行。
+  assert.match(wall, /g\.parallax === false/,
+    '壁纸端没读这道门 —— 那门就只存在于事件里，不影响画面');
+});
+
+check('连续动作不走"触发一次"那条路', () => {
+  // 摆出 zoom 的手型不该同时"触发一次 zoom 事件"和"开启连续 zoom"。前者没有意义 ——
+  // zoom 消费的是 value，一个不带 value 的 zoom 事件会被当成 value=undefined。
+  const input = new I.GestureInput({});
+  const pose = P.buildPoseTemplate([hand({ palm: 0.12 })].map((lm) => I.toPixels(I.mirror(lm))));
+  const config = { recorded: { parallax: { hands: 1, template: pose, dynamic: false, law: null } } };
+  const out = input.update([hand({ palm: 0.12 })], 1000, config);
+  const bare = out.events.filter((e) => e.action === 'parallax');
+  assert.deepStrictEqual(bare, [],
+    'parallax 被当成离散手势触发了一次 —— 它是连续量，没有"触发一次"的语义');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

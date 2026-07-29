@@ -188,8 +188,18 @@ class GestureInput {
     const mirrored = list.map((lm) => toPixels(mirror(lm)));
     const events = [];
 
+    // 连续控制的门：用户为 zoom/parallax 录了手型的话，手型不在场就不给这个动作。
+    //
+    // 静态/动态（手势本身是姿势还是动作）和离散/连续（触发一次还是每帧给值）是两个
+    // **正交**的维度，原来的代码把它们绑在一起了（continuous ⟹ 不可录）。一个静态手型
+    // 完全可以驱动连续推进：摆出它就一直推进，手型变了就停 —— 那正是静态手势的语义。
+    //
+    // 录了 = 加一道门，不是换驱动方式：捏合仍然决定推进多少，只是必须先摆对手型。
+    // 没录 = 和以前一样，内置映射直接可用。
+    const gate = this.continuousGate(mirrored, config);
+
     // 双手捏合优先：它是主控制，而且做这个手势时单手逻辑没有意义。
-    const zoom = twoHandZoom(mirrored);
+    const zoom = gate.zoom ? twoHandZoom(mirrored) : null;
     if (zoom) {
       events.push({ action: 'zoom', value: zoom.value });
       this.path.reset();
@@ -219,8 +229,20 @@ class GestureInput {
       y: clamp01(filtered.y / FILTER_SPACE),
       // 视差要的是"手整体在哪",指针要的是"指着什么" —— 两个信号差 36-38% 屏宽,所以
       // 一起发,消费方各取所需。渲染层用 palm 做景深偏移,主进程用 x/y 移光标。
+      //
       palmX: clamp01(palm.x / FILTER_SPACE),
       palmY: clamp01(palm.y / FILTER_SPACE),
+      // ⚠️ 视差的门是**独立字段**，不是把 palmX 设成 null。
+      //
+      // 第一版用 null 表示"门关着"，而消费方那句 `typeof g.palmX === 'number' ? … : g.x`
+      // 是给"旧版事件没带掌心"准备的兜底 ⟹ 门一关就回落到**指尖**，视差跟着手指头跳。
+      // 「门关着」和「这个字段不存在」撞成了同一个值，而后者已经有含义了。
+      //
+      // 这是哨兵值撞值的第三次（angle:0 既是"指向右"又是"没有轴"、lastFiredAt:0 吃掉
+      // 第一次触发）。门是一个新的语义，就给它一个新的字段。
+      parallax: gate.parallax,
+      // 指针不受这道门影响：它是**鼠标**，不该被壁纸视差的手型开关关掉。两个信号共用
+      // 一个事件但归属不同功能，这里是唯一需要知道这件事的地方。
     });
 
     // 挥动：交给 SwipeDetector。它比我原来的实现多两道门（净位移、直线度）和一条
@@ -262,6 +284,36 @@ class GestureInput {
     };
   }
 
+  // 连续动作（zoom / parallax）的门。返回 { zoom: bool, parallax: bool }。
+  //
+  // 规则很简单，复杂的是**为什么默认放行**：没录过的连续动作必须照旧可用。给它们做了
+  // 录制入口之后，如果"没录"变成"不能用"，那就是把一个现成的功能改成了必须先配置 ——
+  // 而用户要的是"也变成可录制的，不要现在这样钉死"，不是"必须录"。
+  //
+  // 手型匹配只看 template，不看 keyframeData：连续控制的门是"现在这只手是不是那个手型"，
+  // 是个每帧的判断。录成动态（一段动作）的话取它的起始姿势当门 —— 那是关键帧序列的第
+  // 一帧，也就是用户摆好准备做动作时的样子。
+  continuousGate(mirrored, config) {
+    const out = { zoom: true, parallax: true };
+    const recorded = (config && config.recorded) || null;
+    if (!recorded) return out;
+
+    const threshold = (config && config.matchThreshold) || 0.28;
+    const rotation = (config && config.rotationTolerance) || 0;
+    let pose = null;
+
+    for (const action of ['zoom', 'parallax']) {
+      const entry = recorded[action];
+      if (!entry || !entry.template) continue;      // 没录 ⟹ 放行，见上面
+      if (entry.hands !== mirrored.length) { out[action] = false; continue; }
+      // 惰性建模板：大多数时候两个都没录，那就一次距离计算都不做。
+      if (!pose) pose = Pose.buildPoseTemplate(mirrored);
+      if (!pose) { out[action] = false; continue; }
+      out[action] = Pose.templateDistance(pose, entry.template, rotation) < threshold;
+    }
+    return out;
+  }
+
   // 匹配用户录的手势。
   //
   // 这一段一开始漏了 —— 录制能存下来，但这里从不读它，所以用户录完手势不生效。
@@ -282,6 +334,9 @@ class GestureInput {
 
     for (const [action, entry] of Object.entries(recorded)) {
       if (!entry || !entry.template) continue;
+      // 连续动作的录制走 continuousGate（每帧的门），不在这里触发一次 —— 否则摆出
+      // zoom 的手型会同时"触发一次 zoom 事件"和"开启连续 zoom"，前者是无意义的。
+      if (action === 'zoom' || action === 'parallax') continue;
       // 手数必须对得上：单手模板不该被双手姿势匹配，反之亦然。templateDistance 自己
       // 会返回 Infinity，但显式跳过省掉一次距离计算。
       if (entry.hands !== mirrored.length) continue;

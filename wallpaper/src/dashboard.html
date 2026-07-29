@@ -332,11 +332,16 @@
       <div id="capture-state" class="state"></div>
     </div>
 
-    <h3>连续控制（不用录，开了就能用）</h3>
-    <div class="card" id="continuous"></div>
-
-    <h3>可录制的动作</h3>
+    <h3>壁纸动作</h3>
     <div class="card" id="recordables"></div>
+
+    <!-- ⚠️ 这个容器原来**不存在**，而 renderActionGroup 第一行是 `if (!host) return;`
+         ⟹ 8 个系统动作（打开网易云/浏览器/访达、播放暂停、上下一曲…）一个都没渲染，
+         静默地。用户报"我希望手势打开网易云这个加进来" —— 而它早就在动作表里了
+         （system.js 的 open_netease，4 个候选路径），只是面板上看不到。
+         和之前那次「三层接好、面板零入口」完全同形。 -->
+    <h3>系统动作（打开应用 / 控制播放，不需要辅助功能授权）</h3>
+    <div class="card" id="systemActions"></div>
 
     <h3>手感调参</h3>
     <div class="card">
