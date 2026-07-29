@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('gw', {
   cancelRecording: () => ipcRenderer.invoke('cancel-recording'),
   clearRecording: (action) => ipcRenderer.invoke('clear-recording', action),
   undoRecording: (action) => ipcRenderer.invoke('undo-recording', action),
+  toggleRecording: (action, enabled) => ipcRenderer.invoke('toggle-recording', action, enabled),
 
   // 投递层健康 + 原始关键点录制(从 AirCursor 搬过来的两样)
   pointerHealth: () => ipcRenderer.invoke('pointer-health'),

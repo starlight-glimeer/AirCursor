@@ -1072,6 +1072,26 @@ ipcMain.handle('clear-recording', (_event, action) => {
   return { ok: true };
 });
 
+// 单个手势的开关。
+//
+// 存在 `recorded[action].enabled` 上而不是另开一张表：它跟着模板走，清除录制时一起消失，
+// 不会留下一堆指向已删手势的孤儿开关。
+//
+// 不需要回退：这个操作本身是可逆的（再点一下就回来），而 rememberPrevious 是给破坏性
+// 操作准备的。给可逆操作也存快照会把真正需要回退的那一版挤掉。
+ipcMain.handle('toggle-recording', (_event, action, enabled) => {
+  const entry = config.recorded && config.recorded[action];
+  if (!entry) return { ok: false, error: '这个动作还没录过' };
+  config.recorded = { ...config.recorded, [action]: { ...entry, enabled: !!enabled } };
+  writeConfig();
+  broadcast('config', config);
+  broadcast('helper-log', {
+    source: '面板',
+    message: `${enabled ? '启用' : '关闭'}手势「${action}」`,
+  });
+  return { ok: true, enabled: !!enabled };
+});
+
 ipcMain.on('recording-progress', (_event, payload) => {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.webContents.send('recording-progress', payload);

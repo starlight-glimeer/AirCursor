@@ -346,6 +346,8 @@ class GestureInput {
     for (const action of ['zoom', 'parallax']) {
       const entry = recorded[action];
       if (!entry || !entry.template) continue;      // 没录 ⟹ 放行，见上面
+      // 关掉的手势不当门用 —— 那等于回到"没录"的状态，内置映射照旧可用。
+      if (entry.enabled === false) continue;
       if (entry.hands !== mirrored.length) { out[action] = false; continue; }
       // 惰性建模板：大多数时候两个都没录，那就一次距离计算都不做。
       if (!pose) pose = Pose.buildPoseTemplate(mirrored);
@@ -389,6 +391,11 @@ class GestureInput {
 
     for (const [action, entry] of Object.entries(recorded)) {
       if (!entry || !entry.template) { this.probe.push({ action, why: '没有模板' }); continue; }
+      // 用户关掉的手势不参与匹配。
+      //
+      // `!== false` 而不是 `=== true`：这个字段是后加的，存量录制没有它，缺字段必须
+      // 当成"开着" —— 否则升级会把用户已经录好的手势全部静默关掉。
+      if (entry.enabled === false) { this.probe.push({ action, why: '已关闭' }); continue; }
       // 连续动作的录制走 continuousGate（每帧的门），不在这里触发一次 —— 否则摆出
       // zoom 的手型会同时"触发一次 zoom 事件"和"开启连续 zoom"，前者是无意义的。
       if (action === 'zoom' || action === 'parallax') continue;

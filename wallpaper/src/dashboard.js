@@ -428,10 +428,13 @@ function renderActionGroup(hostId, actions) {
       // 而"界面主动说谎"在这个项目里已经有过一次代价（识别行显示了手势名但动作不发生，
       // 因为显示和触发用了两个时间尺度）。存了什么就显示什么。
       const kind = recorded.dynamic ? '动态' : '静态';
-      state.textContent = `已录制 · ${kind} · ${recorded.hands} 只手`
+      // `!== false`：这个字段是后加的，存量录制没有它，缺字段当成"开着"。
+      const on = recorded.enabled !== false;
+      state.textContent = `${on ? '已录制' : '已关闭'} · ${kind} · ${recorded.hands} 只手`
         + (recorded.keyframes ? ` · ${recorded.keyframes} 关键帧` : '')
         + (recorded.dynamic && recorded.law ? ` · 按${recorded.law === 'swipe' ? '挥动' : '倾斜'}判方向` : '');
-      state.className = 'state ok';
+      // 关掉的用灰色（默认 state），不用 ok 的绿色 —— 一眼扫过去要能看出哪些在用。
+      state.className = on ? 'state ok' : 'state';
     } else if (action.kind === 'continuous') {
       // 连续动作不录也能用（内置的捏合/移动映射），所以"未录制"不是缺陷状态。
       state.textContent = '未录制（在用内置映射，录一个手型可以当开关）';
@@ -512,6 +515,15 @@ function renderActionGroup(hostId, actions) {
       rec.onclick = () => window.gw.startRecording(action.id);
       buttons.append(rec);
       if (recorded) {
+        // 单个手势的开关。放在「重录」旁边，因为"先关掉它试试"和"重录一个"是同一个
+        // 处境下的两个选择 —— 手势串了的时候。
+        const on = recorded.enabled !== false;
+        const toggle = el('button', on ? 'act' : 'act primary', on ? '关闭' : '启用');
+        toggle.onclick = async () => {
+          await window.gw.toggleRecording(action.id, !on);
+        };
+        buttons.append(toggle);
+
         const clear = el('button', 'act danger', '清除');
         clear.onclick = () => window.gw.clearRecording(action.id);
         buttons.append(clear);
@@ -837,7 +849,14 @@ window.gw.onRecordingResult((r) => {
   let text;
   if (r && r.ok) text = `✅ ${r.action} 录制成功`;
   else if (r && r.conflictWith) {
-    text = `❌ 和「${T.ACTIONS[r.conflictWith] ? T.ACTIONS[r.conflictWith].label : r.conflictWith}」的手势太像（距离 ${r.distance}），换一个差别更大的`;
+    // 报出**要多远才够**，不只是"太像了" —— 后者读不出该改多少。
+    // 而如果撞上的那个手势当时是关着的，必须说清楚：否则用户会去找一个自己看不见
+    // 在用的东西，而"我明明把它关了"和"它还在挡我"看起来是矛盾的。
+    const label = T.ACTIONS[r.conflictWith] ? T.ACTIONS[r.conflictWith].label : r.conflictWith;
+    text = `❌ 和「${label}」的手势太像（距离 ${r.distance}，至少要 ${r.need ?? '?'}）`
+      + (r.otherDisabled ? '。那个手势现在是关着的，但关掉不代表可以撞 ——'
+        + '重新打开它的时候两个就串了。要么把它清除，要么换一个差别更大的手势'
+        : '，换一个差别更大的');
   } else if (r) text = `❌ ${r.error || '录制失败'}`;
   if (text) {
     node.textContent = text;

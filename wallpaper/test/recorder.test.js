@@ -464,4 +464,24 @@ check('录制失败写进日志窗格，不只写会被覆盖的那一行', () =
     '录制结果没进日志窗格 —— #live 每帧被覆盖，用户看不到失败原因');
 });
 
+// 开关管"现在要不要用"，冲突管"这两个手势能不能共存" —— 两件事。
+check('关掉的手势照样参与冲突检测', () => {
+  const a = poseOf({ spread: 120 });
+  // 不检测的话会形成一个陷阱：把 A 关掉 → 录一个和 A 很像的 B → 之后重新打开 A ——
+  // 那一刻两个撞在一起的手势同时生效，而用户得到的是"另一个动作"，看起来就是坏的。
+  // 而那时他已经不记得当初关掉 A 是为了什么。
+  const hit = R.conflictingAction('spin', a, { yawLeft: { template: a, enabled: false } }, 0.28, 0);
+  assert.ok(hit, '和一个关着的手势撞了却放过 —— 重新打开它的时候就串了');
+  assert.strictEqual(hit.otherDisabled, true, '没说清对方是关着的');
+});
+
+check('冲突报出"至少要多远"，不只是"太像了"', () => {
+  // "太像了"读不出该改多少。距离 0.109 对门限 0.28 是差一倍多，而 0.27 只差 4% ——
+  // 前者要换个完全不同的手型，后者稍微夸张一点就行。
+  const a = poseOf({ spread: 120 });
+  const hit = R.conflictingAction('spin', a, { yawLeft: { template: a } }, 0.28, 0);
+  assert.strictEqual(typeof hit.need, 'number', '没报门限');
+  assert.ok(hit.need > hit.distance, '门限应该大于实测距离');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

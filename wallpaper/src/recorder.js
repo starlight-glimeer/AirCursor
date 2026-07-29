@@ -430,9 +430,23 @@ class Recorder {
 function conflictingAction(action, template, recorded, threshold, rotationTolerance) {
   for (const [other, entry] of Object.entries(recorded || {})) {
     if (other === action || !entry || !entry.template) continue;
+    // ⚠️ **关掉的手势照样参与冲突检测。**
+    //
+    // 不检测的话会形成一个陷阱：把 A 关掉、录一个和 A 很像的 B、之后重新打开 A ——
+    // 那一刻两个撞在一起的手势同时生效，而用户得到的是"另一个动作"，看起来就是坏的。
+    // 而那时他已经不记得当初关掉 A 是为了什么。
+    //
+    // 开关管的是"现在要不要用"，冲突管的是"这两个手势能不能共存"，两件事。
     const distance = Pose.templateDistance(template, entry.template, rotationTolerance);
     if (distance < threshold * Pose.SEPARATION_FACTOR) {
-      return { action: other, distance: Number(distance.toFixed(3)) };
+      return {
+        action: other,
+        distance: Number(distance.toFixed(3)),
+        // 报出"要多远才够" —— 只说"太像了"用户不知道该改多少。
+        need: Number((threshold * Pose.SEPARATION_FACTOR).toFixed(3)),
+        // 那个手势当时是关着的话要说清楚，否则用户会去找一个自己看不见在用的东西。
+        otherDisabled: entry.enabled === false,
+      };
     }
   }
   return null;

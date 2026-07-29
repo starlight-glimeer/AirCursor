@@ -745,4 +745,51 @@ function rotateHand(lm, deg) {
   }));
 }
 
+// ── 单个手势的开关 ───────────────────────────────────────────────────────
+//
+// 用户要"每个手势的启动和关闭按钮，方便精准使用"。真实处境是手势串了：想先关掉一个
+// 看看是不是它在抢，而"清除"是破坏性的（录一次要 4 秒保持 + 一次动作）。
+check('关掉的手势不参与匹配', () => {
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const input = new I.GestureInput({});
+  const config = {
+    recorded: { spin: { hands: 1, template, dynamic: false, law: null, enabled: false } },
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  const out = input.update([target], 1000, config);
+  assert.ok(!out.events.some((e) => e.action === 'spin'), '关掉的手势还在触发');
+  assert.match(input.lastProbe()[0].why, /已关闭/,
+    '诊断没说是被关掉了 —— 那会和"姿势不够近"混起来，用户会去重录一个本来好的手势');
+});
+
+check('缺 enabled 字段当成开着（存量录制不能被静默关掉）', () => {
+  // ⚠️ `!== false` 而不是 `=== true`。这个字段是后加的，用户已经录好的手势里没有它 ——
+  // 判成"关闭"等于升级之后所有手势静默失效，而那看起来就是"新版本坏了"。
+  const target = hand({ palm: 0.12 });
+  const template = P.buildPoseTemplate([px(I.mirror(target))]);
+  const input = new I.GestureInput({});
+  const config = {
+    recorded: { spin: { hands: 1, template, dynamic: false, law: null } },   // 没有 enabled
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  const out = input.update([target], 1000, config);
+  assert.ok(out.events.some((e) => e.action === 'spin'), '存量录制被当成关闭了');
+});
+
+check('关掉连续动作的手型 = 回到内置映射，不是禁用那个动作', () => {
+  // 关掉 zoom 的手型门之后，捏合应该照旧能用（回到"没录"的状态），而不是 zoom 失效。
+  const input = new I.GestureInput({});
+  const template = P.buildPoseTemplate(
+    pinchPair(0.2).map((lm) => I.toPixels(I.mirror(curled(lm, 0.9)))),
+  );
+  const config = {
+    recorded: { zoom: { hands: 2, template, dynamic: false, law: null, enabled: false } },
+    gestureTuning: { matchThreshold: 0.28 },
+  };
+  const out = input.update(pinchPair(0.2), 1000, config);
+  assert.ok(out.events.some((e) => e.action === 'zoom'),
+    '关掉手型门之后捏合也不给推进了 —— 那是把开关变成了"禁用这个动作"');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

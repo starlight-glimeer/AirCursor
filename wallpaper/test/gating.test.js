@@ -621,4 +621,25 @@ check('系统动作的执行过程可见（含每个候选的失败原因）', (
   assert.match(block, /helper-log/, '执行结果没进面板日志 —— 用户看不到终端');
 });
 
+// 每个手势的开关：用户要"精准使用"，也就是手势串了的时候能先关掉一个试试。
+check('单个手势的开关四层都通，而且不需要重录', () => {
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.match(preload, /toggleRecording/, 'preload 没暴露开关');
+  assert.match(main, /ipcMain\.handle\('toggle-recording'/, '主进程没注册开关');
+  assert.match(dash, /gw\.toggleRecording\(/, '面板上没有按钮 —— 前三层齐了也点不到');
+  assert.match(input, /entry\.enabled === false/, '判定侧没读这个字段 —— 开关是假的');
+
+  // ⚠️ 缺字段必须当成"开着"。用 `=== true` 会让存量录制在升级后全部静默失效。
+  assert.doesNotMatch(input, /entry\.enabled === true/,
+    '用了 `=== true` —— 存量录制没有这个字段，会被静默关掉');
+
+  // 开关存在 recorded[action] 上，跟着模板走：清除录制时一起消失，不留孤儿开关。
+  const handler = main.slice(main.indexOf("ipcMain.handle('toggle-recording'"));
+  assert.match(handler.slice(0, 500), /config\.recorded/,
+    '开关没存在 recorded 上 —— 另开一张表会留下指向已删手势的孤儿');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
