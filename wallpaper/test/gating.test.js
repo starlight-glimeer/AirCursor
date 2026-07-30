@@ -179,13 +179,37 @@ check('registerSchemesAsPrivileged 在 app.whenReady 之前', () => {
   assert.ok(reg < ready, 'registerSchemesAsPrivileged 在 whenReady 之后，特权不生效');
 });
 
-// 壁纸是 Vite 的 ES module，file:// 下加载不了（CORS）。所以必须走自定义 protocol。
-check('WE 壁纸走自定义 protocol 而不是 loadFile', () => {
+// web 类壁纸是 Vite 的 ES module，file:// 下加载不了（CORS）⟹ 必须走自定义 protocol。
+//
+// ⚠️ 但 video 类**必须**用 loadFile：那条装的是我们自己的 video.html，
+// 而视频文件本身仍然走 wall:// 送进去。所以这条守卫查的是"web 那条分支不许用
+// loadFile"，不是"整个函数不许出现 loadFile" —— 后者会把正确的实现判成错。
+check('web 类走自定义 protocol，video 类走自己的页面', () => {
   const create = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
     mainSrc.indexOf('function sendWEProperties'));
-  assert.ok(/loadURL/.test(create), 'WE 窗口没用 loadURL');
-  assert.ok(!/loadFile/.test(create),
-    'WE 窗口用了 loadFile —— Vite 的 ES module 在 file:// 下加载不了，会白屏');
+  assert.ok(/loadURL\(`\$\{WE_SCHEME\}/.test(create),
+    'web 类没走 wall:// protocol —— ES module 会加载失败');
+  // video 那条分支要存在，而且它送进去的视频 URL 也得走 protocol
+  assert.match(create, /type === 'video'/, 'video 和 web 的装载路径没分开');
+  assert.match(create, /video-source/, 'video 页面没收到视频 URL');
+  // ⚠️ 关键：loadFile 只能出现在 video 分支里
+  const videoBranch = create.slice(create.indexOf("type === 'video'"),
+    create.indexOf('} else {'));
+  const webBranch = create.slice(create.indexOf('} else {'));
+  assert.ok(/loadFile/.test(videoBranch), 'video 分支没用 loadFile 装自己的页面');
+  assert.ok(!/loadFile/.test(webBranch),
+    'web 分支用了 loadFile —— Vite 的 ES module 在 file:// 下加载不了，会白屏');
+});
+
+// 两种 preload 不能混：video 是我们自己的页面（要 gw 那套），
+// web 是第三方壁纸（只给 WE 的 5 个全局函数，不给主进程通道）。
+// ⚠️ 混了的后果：第三方壁纸拿到 gw.* ⟹ 能调我们所有 IPC。
+check('video 和 web 用不同的 preload（第三方壁纸不该拿到 gw）', () => {
+  const create = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
+    mainSrc.indexOf('function sendWEProperties'));
+  assert.match(create, /type === 'video'\s*\n?\s*\?\s*path\.join\(__dirname, 'preload\.js'\)/,
+    'video 没用普通 preload');
+  assert.match(create, /'we-preload\.js'/, 'web 没用受限的 we-preload');
 });
 
 // ⚠️ 这条翻过一次，翻的方向值得记：我原来为了拿到页面挂的
@@ -349,7 +373,10 @@ check('preload 暴露的调用，面板里都有地方触发', () => {
   const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.js'), 'utf8');
   const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
   const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay-window.js'), 'utf8');
-  const consumers = dash + wall + sensor + overlay;
+  // ⚠️ 消费者名单要跟着新页面走。漏一个的后果是**假阳性** —— 守卫说"点不到"
+  // 而其实接好了，于是我会去"修"一个不存在的问题。加新渲染进程页面时要加到这里。
+  const video = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
+  const consumers = dash + wall + sensor + overlay + video;
 
   // 只查主动调用（invoke/send 那类），不查 onXxx 监听 —— 监听没人用是浪费，
   // 但主动调用没人用意味着**用户点不到那个功能**。
@@ -450,6 +477,94 @@ check('权限提示按打包状态分叉（npm start 下那个权限不可达）
   const idx = mainSrc.indexOf('AudioSource.start(');
   assert.match(mainSrc.slice(idx, idx + 900), /packaged:\s*app\.isPackaged/,
     'main.js 没把打包状态传给音频层');
+});
+
+console.log('\n  创意工坊与诊断');
+
+check('workshop.js 被 main.js 加载', () => {
+  assert.match(mainSrc, /require\('\.\/workshop\.js'\)/);
+  assert.match(mainSrc, /const Workshop = globalThis\.GestureWallWorkshop/);
+});
+
+// ⚠️ 这条是安全边界，不是洁癖：诊断报告是设计给用户导出后发给别人看的，
+// 而 config 里存着 Steam 明文密码。忘了脱敏 = 让用户把密码贴进聊天记录。
+check('诊断报告里的 Steam 密码被脱敏', () => {
+  assert.match(mainSrc, /function redactConfig/, '没有脱敏函数');
+  const fn = mainSrc.slice(mainSrc.indexOf('function redactConfig'),
+    mainSrc.indexOf('function redactConfig') + 500);
+  assert.match(fn, /password/, '没处理 password');
+  assert.match(fn, /guardCode/, '没处理 guardCode');
+  // 报告组装处必须调它，光有函数没用
+  const report = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('export-diagnostics'"),
+    mainSrc.indexOf("function redactConfig"));
+  assert.match(report, /redactConfig\(config\)/, '报告里直接放了原始 config');
+});
+
+// 日志里也有密码（steamcmd 的参数）。
+check('steamcmd 参数进日志前脱敏', () => {
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-download'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-set-steam'"));
+  assert.match(handler, /redactArgs/, 'steamcmd 参数没脱敏就进日志了');
+});
+
+// ⚠️ steamcmd 说"成功"不等于文件在我们以为的地方 —— 那个根目录是**推断**的
+// （steamcmd 所在目录的上两级）。不验证就报成功的话，症状是"下载完了什么都没发生"。
+check('下载后验证文件真的落地了，才报成功', () => {
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-download'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-set-steam'"));
+  assert.match(handler, /existsSync\(path\.join\(dir, 'project\.json'\)\)/,
+    '没验证下载目录里真有 project.json');
+  // 找不到时要把找过的路径报出来，否则完全没法查
+  assert.match(handler, /expectedDir/, '找不到文件时没说找过哪里');
+});
+
+// 诊断报告的第一要素。⚠️ packaged: false 时权限类结论全都不可信
+//（npm start 下屏幕录制/辅助功能根本不可达）—— 这条是另一个模块烧掉四轮的教训。
+check('诊断报告带 app.isPackaged', () => {
+  const report = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('export-diagnostics'"),
+    mainSrc.indexOf('const dir = path.join(app.getPath(\'userData\'), \'diagnostics\')'));
+  assert.match(report, /packaged:\s*app\.isPackaged/,
+    '报告没带打包状态 —— 权限类结论会被误读');
+});
+
+// 报告里要有"实际拿到的窗口尺寸 vs 屏幕尺寸" —— 菜单栏那条缝就是这么看出来的。
+check('诊断报告带窗口存活状态和实际尺寸', () => {
+  const report = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('export-diagnostics'"), -1);
+  assert.match(report, /weBounds/, '没带 WE 窗口的实际尺寸');
+  assert.match(report, /display:/, '没带屏幕尺寸，没法比对');
+});
+
+// ⚠️ 事件环是兜底：我的关键字分类可能漏，而原始时间戳记录不会。
+check('事件有上限（不然长跑会吃内存）', () => {
+  assert.match(mainSrc, /EVENT_LIMIT/, '事件环没有上限');
+  const fn = mainSrc.slice(mainSrc.indexOf('function logEvent'),
+    mainSrc.indexOf('function logEvent') + 400);
+  assert.match(fn, /events\.shift\(\)/, '超上限没丢旧的');
+});
+
+console.log('\n  video 类');
+
+// ⚠️ 黑屏有五种原因且长得一样。这条守的是"在放但看不见"那个信号 ——
+// 没有它，"解码正常但层级不对"和"根本放不了"分不开，而修法完全不同。
+check('video 页面汇报分辨率和播放位置（区分"放不了"和"看不见"）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
+  assert.match(src, /videoWidth/, '没报分辨率 —— 那是解码成功的硬证据');
+  assert.match(src, /currentTime/, '没报播放位置');
+  assert.match(src, /timeupdate/, '没监听播放进度');
+});
+
+// HEVC 是真实风险：WE 工坊里有 H.265 的视频，而 Electron 的 Chromium 默认不带解码器。
+// 那种壁纸黑屏，原因和"我们代码坏了"完全不同。
+check('解码失败时点名 HEVC/AV1（最可能的真实原因）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
+  assert.match(src, /HEVC/, '没提 HEVC —— 那是工坊视频最常见的放不了原因');
+  assert.match(src, /MediaError|video\.error/, '没读 MediaError');
+});
+
+check('换源时显式 load（否则旧视频继续放）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
+  assert.match(src, /video\.load\(\)/,
+    '换源没调 load —— 旧的那段会继续放，看起来像装载失败');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

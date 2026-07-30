@@ -11,7 +11,8 @@ const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme
   protocol, net, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+// spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
+const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 // 图库的纯逻辑（无 DOM、无 Electron），主进程和 dashboard 共用同一份 —— 两份实现
@@ -27,6 +28,9 @@ const { createSystemBridge } = require('./system-bridge.js');
 
 require('./we-host.js');
 const WE = globalThis.GestureWallWE;
+
+require('./workshop.js');
+const Workshop = globalThis.GestureWallWorkshop;
 
 const AudioSource = require('./audio-source.js');
 
@@ -268,6 +272,9 @@ const defaultConfig = {
     // 音源。ScreenCaptureKit 抓系统音频，要屏幕录制权限。
     // 'off' 时壁纸会走它自己的空闲动画（样本有 idleWaveEnabled）。
     audioSource: 'off',
+    // Steam 创意工坊。⚠️ 密码存在本地配置文件里（明文），诊断报告导出时会脱敏。
+    steam: { username: null, password: null, guardCode: null },
+    steamCmdPath: null,
     // WE 壁纸单独的层策略：默认 bottom-normal（能收鼠标），不跟 wallStrategy 走。
     // 三层景深那边靠手势控制、不需要鼠标，所以两者的最优选择不一样。
     strategy: 'bottom-normal',
@@ -1014,14 +1021,36 @@ function loadWEProject(dir) {
     const parsed = WE.parseProject(JSON.parse(raw));
     if (!parsed) return { ok: false, error: 'project.json 解析后为空' };
     if (!parsed.supported) {
-      // scene / video 要解 WE 的私有 .pkg/.tex 格式。那条路连 Open Wallpaper Engine
-      // 都只做到"显示静态底图"（粒子代码是死的、零 shader），不值得走。
-      return { ok: false, error: `暂不支持 type=${parsed.type}，只支持 Web 类型` };
+      // ⚠️ 不支持时给的是**理由 + 预览图**，不是一句"不支持"。
+      // 而且明确说"这不是坏了" —— 否则用户会去排查一个不存在的 bug。
+      return {
+        ok: false,
+        error: WE.refusalReason(parsed),
+        project: { ...parsed, dir },
+        preview: previewPathOf(dir, parsed),
+      };
+    }
+    // video 类的入口是视频文件不是 html，这里先做个明显性检查。
+    if (parsed.type === 'video') {
+      const hint = WE.videoHint(parsed.file);
+      if (hint) return { ok: false, error: hint, project: { ...parsed, dir } };
     }
     return { ok: true, project: { ...parsed, dir } };
   } catch (error) {
     return { ok: false, error: `读 project.json 失败：${error.message}` };
   }
+}
+
+// 找预览图。不支持的类型至少让用户看见"这个壁纸长什么样"，从而知道该不该找替代。
+// ⚠️ project.json 的 preview 字段可能指向不存在的文件，所以逐个试。
+function previewPathOf(dir, project) {
+  const names = [project && project.preview, 'preview.gif', 'preview.jpg', 'preview.png']
+    .filter(Boolean);
+  for (const name of names) {
+    const candidate = path.join(dir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 function destroyWEWindow() {
@@ -1061,7 +1090,11 @@ function createWEWindow() {
     backgroundColor: '#000000',
     ...strategy.options,
     webPreferences: {
-      preload: path.join(__dirname, 'we-preload.js'),
+      // ⚠️ 两种 preload：video 是我们自己的页面（要 gw 那套），
+      // web 是第三方壁纸（只给 WE 的 5 个全局函数，见 we-preload.js 的注释）。
+      preload: weProject.type === 'video'
+        ? path.join(__dirname, 'preload.js')
+        : path.join(__dirname, 'we-preload.js'),
       // ⚠️ 这里曾经是 contextIsolation: false，因为属性接口是反向的（壁纸自己挂
       // window.wallpaperPropertyListener 等宿主去调），而隔离世界读不到页面挂的东西。
       //
@@ -1074,6 +1107,7 @@ function createWEWindow() {
       nodeIntegration: false,
       // 第三方 HTML 就该按第三方对待。sandbox 会限制 preload 里能 require 的东西，
       // 而 we-preload 只用 electron 的 contextBridge/ipcRenderer，两个都在白名单内。
+      // ⚠️ video 那条走我们自己的 preload.js，它 require 的也只有 electron。
       sandbox: true,
       // 壁纸持续动画，而"不是焦点窗口"对壁纸是常态 —— 让 Chromium 在那里节流
       // 等于永久卡住动画。
@@ -1081,7 +1115,19 @@ function createWEWindow() {
     },
   });
 
-  win.loadURL(`${WE_SCHEME}://wallpaper/${weProject.file}`);
+  // ⚠️ web 和 video 的装载路径必须分开：video 的 project.file 是视频文件名不是 html，
+  // 拿它去 loadURL 会让 Chromium 直接下载或黑屏（不报错）。
+  if (weProject.type === 'video') {
+    // 页面是我们自己的 video.html，视频文件通过 IPC 把 wall:// 的 URL 送进去。
+    win.loadFile(path.join(__dirname, 'video.html'));
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.send('video-source', {
+        url: `${WE_SCHEME}://wallpaper/${encodeURIComponent(weProject.file)}`,
+      });
+    });
+  } else {
+    win.loadURL(`${WE_SCHEME}://wallpaper/${weProject.file}`);
+  }
   try {
     strategy.apply(win);
   } catch (error) {
@@ -1275,7 +1321,245 @@ ipcMain.handle('we-controls', () => {
   };
 });
 
-ipcMain.handle('we-status', () => ({ ...weStatus(null), audio: audioStatus }));
+// ---------------------------------------------------------------------------
+// 创意工坊：用用户的 Steam 账号拉壁纸
+// ---------------------------------------------------------------------------
+//
+// 用户买了 Wallpaper Engine（Windows-only），但**工坊内容不是平台相关的** ——
+// 那些就是文件，而 steamcmd 有 mac 版。所以账号里的资源能直接用。
+
+// 最近的事件环，进诊断报告。
+// ⚠️ 这条链的失败模式又多又静默（没装/没登录/Guard 过期/ID 不存在/下了但目录空），
+// 每一种都表现成"壁纸没出来"。所以留一份带时间戳的原始记录，
+// 而不是只留最后一句结论 —— 结论是我判断出来的，可能判错。
+const EVENT_LIMIT = 200;
+const events = [];
+function logEvent(source, message, extra) {
+  const entry = { at: Date.now(), source, message, ...(extra || {}) };
+  events.push(entry);
+  if (events.length > EVENT_LIMIT) events.shift();
+  // B 层：终端日志。白屏这类问题只有逐环节的时间戳能看出卡在第几步。
+  console.log(`[${source}] ${message}`);
+  return entry;
+}
+
+function findSteamCmd() {
+  const custom = config.we.steamCmdPath;
+  const candidates = custom ? [custom, ...Workshop.STEAMCMD_CANDIDATES]
+    : Workshop.STEAMCMD_CANDIDATES;
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch { /* 权限问题当没找到 */ }
+  }
+  return null;
+}
+
+let downloading = null;
+
+ipcMain.handle('workshop-download', async (_event, input) => {
+  const workshopId = Workshop.parseWorkshopId(input);
+  if (!workshopId) {
+    return { ok: false, error: '认不出工坊 ID —— 贴数字 ID 或者创意工坊页面的链接都行' };
+  }
+  if (downloading) return { ok: false, error: '已经在下一个了，等它完成' };
+
+  const steamcmd = findSteamCmd();
+  if (!steamcmd) {
+    logEvent('workshop', 'steamcmd 没找到');
+    return { ok: false, error: Workshop.installHint(), needsInstall: true };
+  }
+
+  const creds = config.we.steam || {};
+  if (!creds.username) {
+    return { ok: false, error: '先填 Steam 用户名（工坊物品要登录才能下）', needsLogin: true };
+  }
+
+  const args = Workshop.downloadArgs({
+    username: creds.username,
+    password: creds.password,
+    guardCode: creds.guardCode,
+    workshopId,
+  });
+  // ⚠️ 日志里必须脱敏：诊断报告会发给别人看，而 args 里有明文密码。
+  logEvent('workshop', `steamcmd ${Workshop.redactArgs(args).join(' ')}`);
+
+  return new Promise((resolve) => {
+    const lines = [];
+    const child = spawn(steamcmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    downloading = { workshopId, child };
+
+    let buffer = '';
+    const onChunk = (chunk) => {
+      buffer += String(chunk);
+      const parts = buffer.split('\n');
+      buffer = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        lines.push(line);
+        const hit = Workshop.classifyLine(line);
+        if (hit) {
+          logEvent('workshop', hit.text, { kind: hit.kind });
+          broadcast('workshop-progress', hit);
+        }
+      }
+    };
+    child.stdout.on('data', onChunk);
+    child.stderr.on('data', onChunk);
+
+    child.on('exit', (code) => {
+      downloading = null;
+      const summary = Workshop.summarize(lines);
+      // steamcmd 的根目录 = 它自己所在目录的上一级（brew 装的话是 libexec）。
+      // ⚠️ 这个推断可能错，所以下载完要**验证目录真的存在**再说成功。
+      const root = path.dirname(path.dirname(steamcmd));
+      const dir = Workshop.contentPath(root, workshopId);
+      const landed = dir && fs.existsSync(path.join(dir, 'project.json'));
+
+      if (landed) {
+        logEvent('workshop', `下载成功：${dir}`);
+        const out = setWEWallpaper(dir);
+        config.we.dir = dir;
+        writeConfig(config);
+        broadcast('config', config);
+        resolve({ ok: true, dir, ...out });
+        return;
+      }
+      // ⚠️ 走到这里说明 steamcmd 退出了但我们找不到文件。**分开报两种情况**：
+      // 有明确原因（登录/ID）就报那个；没有就报"下载完了但找不到文件"并给出
+      // 我们找过的路径 —— 那种情况多半是 steamcmd 的根目录推断错了，
+      // 而不给路径的话完全没法查。
+      const reason = summary && summary.kind !== 'downloaded'
+        ? summary.text
+        : `steamcmd 退出（code ${code}）但找不到文件`;
+      logEvent('workshop', `失败：${reason}`, { expectedDir: dir });
+      resolve({
+        ok: false,
+        error: reason,
+        expectedDir: dir,
+        // 最后 30 行原始输出。⚠️ 我的关键字分类可能漏，原文是兜底。
+        tail: lines.slice(-30),
+      });
+    });
+
+    child.on('error', (error) => {
+      downloading = null;
+      logEvent('workshop', `起不来：${error.message}`);
+      resolve({ ok: false, error: `steamcmd 起不来：${error.message}` });
+    });
+  });
+});
+
+ipcMain.handle('workshop-set-steam', (_event, patch) => {
+  config.we.steam = { ...(config.we.steam || {}), ...(patch || {}) };
+  writeConfig(config);
+  return { ok: true, username: config.we.steam.username || null };
+});
+
+ipcMain.handle('workshop-probe', () => {
+  const steamcmd = findSteamCmd();
+  return {
+    steamcmd,
+    installed: !!steamcmd,
+    hint: steamcmd ? null : Workshop.installHint(),
+    username: (config.we.steam && config.we.steam.username) || null,
+  };
+});
+
+// video 页面汇报播放状态。
+// ⚠️ 这是"放了但你看不见"的唯一证据：有 currentTime 在涨、有分辨率，
+// 就说明解码正常、问题在窗口层级或遮挡 —— 那和"放不了"是两种完全不同的修法。
+let videoStatus = null;
+ipcMain.on('video-status', (_event, payload) => {
+  videoStatus = payload;
+  if (payload && payload.ok === false) {
+    logEvent('video', `${payload.kind}：${payload.detail || ''}`);
+  }
+  broadcast('video-status', payload);
+});
+
+// ---------------------------------------------------------------------------
+// 诊断报告（C 层）
+// ---------------------------------------------------------------------------
+//
+// 用户点一下导出，比自然语言描述准得多。这个形状是另一个模块验证过的 ——
+// 他靠诊断报告定位了四个根因，并且明确说"比自然语言描述准得多"。
+ipcMain.handle('export-diagnostics', () => {
+  const report = {
+    v: 1,
+    at: new Date().toISOString(),
+    app: {
+      version: app.getVersion(),
+      // ⚠️ packaged 必须在最前面：它决定权限类结论是否可信
+      //（npm start 下屏幕录制/辅助功能根本不可达）。
+      packaged: app.isPackaged,
+      electron: process.versions.electron,
+      arch: process.arch,
+    },
+    wallpaper: weProject ? {
+      type: weProject.type,
+      typeLabel: weProject.typeLabel,
+      supported: weProject.supported,
+      gifScene: weProject.gifScene,
+      file: weProject.file,
+      dir: weProject.dir,
+      title: weProject.title,
+      wantsAudio: weProject.wantsAudio,
+      propertyCount: Object.keys(weProject.properties || {}).length,
+    } : null,
+    windows: {
+      // 哪些窗口活着 —— "画面没出来"时第一件要确认的事。
+      wall: !!(wallWindow && !wallWindow.isDestroyed()),
+      we: !!(weWindow && !weWindow.isDestroyed()),
+      dashboard: !!(dashboardWindow && !dashboardWindow.isDestroyed()),
+      sensor: !!(sensorWindow && !sensorWindow.isDestroyed()),
+      strategy: currentStrategy ? currentStrategy.id : null,
+      weStrategy: config.we.strategy,
+      // 实际拿到的窗口尺寸 vs 屏幕尺寸 —— 菜单栏那条缝就是这里看出来的。
+      display: screen.getPrimaryDisplay().bounds,
+      weBounds: weWindow && !weWindow.isDestroyed() ? weWindow.getBounds() : null,
+    },
+    we: { ready: weReady },
+    video: videoStatus,
+    audio: audioStatus,
+    workshop: {
+      steamcmd: findSteamCmd(),
+      username: (config.we.steam && config.we.steam.username) || null,
+      downloading: downloading ? downloading.workshopId : null,
+    },
+    // 配置快照，但**去掉密码**。
+    config: redactConfig(config),
+    events: events.slice(-EVENT_LIMIT),
+  };
+
+  const dir = path.join(app.getPath('userData'), 'diagnostics');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `gesturewall-${Date.now()}.json`);
+  fs.writeFileSync(file, JSON.stringify(report, null, 2));
+  return { ok: true, file };
+});
+
+// ⚠️ 诊断报告是要发给别人看的，而 config 里有 Steam 密码和 Guard 码。
+// 忘了这一步就等于让用户把密码贴进聊天记录。
+function redactConfig(source) {
+  const copy = JSON.parse(JSON.stringify(source || {}));
+  if (copy.we && copy.we.steam) {
+    if (copy.we.steam.password) copy.we.steam.password = '***';
+    if (copy.we.steam.guardCode) copy.we.steam.guardCode = '***';
+  }
+  return copy;
+}
+
+ipcMain.handle('reveal-diagnostics', () => {
+  const dir = path.join(app.getPath('userData'), 'diagnostics');
+  fs.mkdirSync(dir, { recursive: true });
+  shell.openPath(dir);
+  return { ok: true, dir };
+});
+
+ipcMain.handle('we-status', () => ({
+  ...weStatus(null), audio: audioStatus, video: videoStatus,
+}));
 
 // 切音源。'netease' / 'system' / 'off'
 ipcMain.handle('we-set-audio-source', (_event, source) => {

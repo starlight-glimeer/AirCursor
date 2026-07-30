@@ -921,6 +921,90 @@ document.getElementById('we-clear').onclick = async () => {
   renderWEStatus();
 };
 
+// ---------------------------------------------------------------------------
+// 创意工坊
+// ---------------------------------------------------------------------------
+
+const wsState = document.getElementById('ws-state');
+
+// 用户名/密码/Guard 码改了就存。⚠️ 不做"保存"按钮：那会让人以为填完不点就没生效，
+// 而下载失败时又多一个可疑原因。
+for (const [id, key] of [['ws-user', 'username'], ['ws-pass', 'password'], ['ws-guard', 'guardCode']]) {
+  document.getElementById(id).onchange = (e) => {
+    window.gw.workshopSetSteam({ [key]: e.target.value || null });
+  };
+}
+
+document.getElementById('ws-download').onclick = async () => {
+  const input = document.getElementById('ws-id').value;
+  wsState.textContent = '开始…';
+  const result = await window.gw.workshopDownload(input);
+  if (result.ok) {
+    wsState.innerHTML = `✅ 装载成功\n${result.dir}`;
+    renderWEStatus();
+    return;
+  }
+  // ⚠️ 失败时把能行动的信息全给出来：原因 + 我们找过的路径 + 原始输出末尾。
+  // 只说"下载失败"的话，用户和我都没法判断是账号、ID、还是我的路径推断错了。
+  let html = `<span class="warn">${result.error}</span>`;
+  if (result.expectedDir) html += `\n找过这个路径：${result.expectedDir}`;
+  if (result.tail && result.tail.length) {
+    html += `\n\nsteamcmd 最后几行：\n${result.tail.slice(-8).join('\n')}`;
+  }
+  wsState.innerHTML = html;
+};
+
+// 进度实时显示。⚠️ 没有它，下载大壁纸时界面一动不动，和卡死分不清。
+window.gw.onWorkshopProgress((hit) => {
+  if (!hit) return;
+  wsState.textContent = hit.text;
+});
+
+// 启动时探一下 steamcmd 在不在 —— 提前说比等下载失败再说好。
+window.gw.workshopProbe().then((probe) => {
+  if (!probe) return;
+  if (!probe.installed) {
+    wsState.innerHTML = `<span class="warn">${probe.hint}</span>`;
+    return;
+  }
+  document.getElementById('ws-user').value = probe.username || '';
+  wsState.textContent = `steamcmd 就绪：${probe.steamcmd}`;
+}).catch(() => {});
+
+// ---------------------------------------------------------------------------
+// 诊断报告
+// ---------------------------------------------------------------------------
+
+const diagState = document.getElementById('diag-state');
+
+document.getElementById('diag-export').onclick = async () => {
+  const result = await window.gw.exportDiagnostics();
+  diagState.innerHTML = result.ok
+    ? `✅ 已导出\n${result.file}\n把这个文件发过来`
+    : `<span class="warn">导出失败：${result.error || '未知'}</span>`;
+};
+
+document.getElementById('diag-reveal').onclick = () => window.gw.revealDiagnostics();
+
+// 视频播放状态。⚠️ 这是"放了但你看不见"的唯一证据 —— 有分辨率和时间在涨，
+// 就说明解码正常、问题在窗口层级或遮挡，那和"放不了"是两种完全不同的修法。
+window.gw.onVideoStatus((status) => {
+  if (!status) return;
+  const node = document.getElementById('we-state');
+  if (!node) return;
+  if (status.ok === false) {
+    node.innerHTML = `<span class="warn">视频：${status.kind}</span>\n${status.hint || ''}`;
+    return;
+  }
+  if (status.loading) return;
+  if (status.width) {
+    node.innerHTML = `▶ 视频在放 ${status.currentTime}s`
+      + `${status.duration ? ' / ' + status.duration + 's' : ''}`
+      + `\n${status.width}×${status.height}（有分辨率 = 解码正常；`
+      + `如果你看到的是黑屏，那是层级或遮挡问题，不是播放问题）`;
+  }
+});
+
 window.gw.onWeStatus(() => renderWEStatus());
 window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
 

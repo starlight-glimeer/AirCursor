@@ -44,12 +44,15 @@ check('认出 Web 类型并取出入口文件', () => {
   assert.strictEqual(p.file, 'index.html');
 });
 
-// scene / video 要解 WE 的私有 .pkg/.tex 格式。那条路连 Open Wallpaper Engine 都只做到
-// "显示静态底图"（粒子代码是死的、零 shader、DXT 直接放弃），所以明确不支持比
-// 装作支持然后画出一张静态图好。
-check('scene / video 明确判为不支持（不假装能放）', () => {
+// scene 要解 WE 的私有 .pkg/.tex 格式 + 它自己方言的 GLSL。那条路连
+// Open Wallpaper Engine 都只做到"显示静态底图"（粒子代码是死的、零 shader、
+// 零动画、DXT 直接放弃），所以明确不支持比装作支持然后画一张静态图好。
+//
+// ⚠️ video 曾经也在这条断言里。2026-07-30 起 video 支持了（一个 <video> 标签），
+// 所以那半条挪到下面「四种类型的分派」里 —— 留在这会变成一条反向的谎。
+check('scene 明确判为不支持（不假装能放）', () => {
   assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, false);
-  assert.strictEqual(WE.parseProject({ type: 'video' }).supported, false);
+  assert.strictEqual(WE.parseProject({ type: 'application' }).supported, false);
 });
 
 check('入口文件缺省是 index.html', () => {
@@ -337,6 +340,72 @@ check('坏编码返回 null 而不是抛', () => {
 
 check('没有目录时返回 null', () => {
   assert.strictEqual(WE.resolveAsset('/index.html', null, 'index.html'), null);
+});
+
+console.log('\n  四种类型的分派（不支持要说清，不能假装成功）');
+
+// WE 一共四种类型，实测 project.json 的取值。
+check('四种类型都认识，两种支持', () => {
+  assert.deepStrictEqual(Object.keys(WE.TYPES).sort(),
+    ['application', 'scene', 'video', 'web']);
+  assert.strictEqual(WE.parseProject({ type: 'web' }).supported, true);
+  assert.strictEqual(WE.parseProject({ type: 'video', file: 'a.mp4' }).supported, true);
+  assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, false);
+  assert.strictEqual(WE.parseProject({ type: 'application' }).supported, false);
+});
+
+// ⚠️ "认识但不支持" vs "完全没见过" 要分开：前者能给出理由（"scene 是私有格式"），
+// 后者只能说"不认识"。混在一起的话用户不知道是我们的问题还是壁纸的问题。
+check('认识但不支持 vs 不认识，分开', () => {
+  assert.strictEqual(WE.parseProject({ type: 'scene' }).known, true);
+  assert.strictEqual(WE.parseProject({ type: 'zzz' }).known, false);
+  assert.match(WE.refusalReason(WE.parseProject({ type: 'zzz' })), /不认识/);
+});
+
+// GIF 壁纸不是独立类型 —— WE 把它包成 scene，入口叫 gifscene.json。
+// 这条是查出来的（OWE 的 SceneWallpaperViewModel:49 注释），不是猜的。
+check('GIF 被认出来是 scene 的一种（gifscene）', () => {
+  const gif = WE.parseProject({ type: 'scene', file: 'gifscene.json' });
+  assert.strictEqual(gif.gifScene, true);
+  assert.strictEqual(WE.isGifScene('gifscene.json'), true);
+  assert.strictEqual(WE.isGifScene('scene.json'), false);
+  // 理由里要点出它是 GIF，否则用户以为自己装错了文件
+  assert.match(WE.refusalReason(gif), /GIF/);
+});
+
+// ⚠️ "不支持"三个字对用户没有价值。他需要知道为什么、以及能不能换一个。
+// 更要紧的是说清"这不是坏了" —— 否则他会去排查一个不存在的 bug
+//（我们已经在这类混淆上烧掉过一整天）。
+check('每种拒绝都给出具体理由，不是一句"不支持"', () => {
+  const scene = WE.refusalReason(WE.parseProject({ type: 'scene', file: 'scene.json' }));
+  assert.match(scene, /私有格式|shader|渲染/, `scene 的理由太笼统：${scene}`);
+  const app = WE.refusalReason(WE.parseProject({ type: 'application' }));
+  assert.match(app, /Windows|exe/, `application 的理由太笼统：${app}`);
+  // 每条都得比"暂不支持"长，否则等于没说
+  for (const t of ['scene', 'application', 'zzz']) {
+    assert.ok(WE.refusalReason(WE.parseProject({ type: t })).length > 12);
+  }
+});
+
+check('project.json 读不到时也给人话', () => {
+  assert.match(WE.refusalReason(null), /project\.json/);
+});
+
+console.log('\n  video 类');
+
+// ⚠️ video 的 project.file 是**视频文件名**不是 html。拿它去 loadURL 会让
+// Chromium 直接下载或黑屏，而且不报错 —— 所以两条装载路径必须分开。
+check('入口不像视频时提前说出来', () => {
+  assert.strictEqual(WE.videoHint('a.mp4'), null);
+  assert.strictEqual(WE.videoHint('clip.webm'), null);
+  assert.match(WE.videoHint('index.html'), /不像视频/);
+  assert.match(WE.videoHint(''), /不像视频/);
+});
+
+check('常见容器都认（mp4/webm/m4v/mov）', () => {
+  for (const f of ['a.mp4', 'a.webm', 'a.m4v', 'a.MOV']) {
+    assert.strictEqual(WE.videoHint(f), null, `${f} 被误判成不是视频`);
+  }
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

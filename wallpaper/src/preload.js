@@ -54,6 +54,18 @@ contextBridge.exposeInMainWorld('gw', {
   weSetProperty: (key, value) => ipcRenderer.invoke('we-set-property', key, value),
   weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
 
+  // 创意工坊
+  workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),
+  workshopSetSteam: (patch) => ipcRenderer.invoke('workshop-set-steam', patch),
+  workshopProbe: () => ipcRenderer.invoke('workshop-probe'),
+
+  // 诊断报告
+  exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
+  revealDiagnostics: () => ipcRenderer.invoke('reveal-diagnostics'),
+
+  // video 页面 → 主进程
+  sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),
+
   setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
@@ -79,5 +91,8 @@ contextBridge.exposeInMainWorld('gw', {
   onStartRecording: on('start-recording'),
   onWeStatus: on('we-status'),
   onWeAudioStatus: on('we-audio-status'),
+  onWorkshopProgress: on('workshop-progress'),
+  onVideoStatus: on('video-status'),
+  onVideoSource: on('video-source'),
   onCancelRecording: on('cancel-recording'),
 });

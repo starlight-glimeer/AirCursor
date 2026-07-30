@@ -27,19 +27,51 @@ const BANDS = [6, 18, 35, 60, 95, 145, 210, 300];
 // project.json 里 type 是 "text" 的项是分隔标题（sep_render_title 那些），不是配置。
 const DECORATIVE_TYPES = new Set(['text']);
 
-// 解析 project.json，取出我们需要的那几样。
+// WE 一共四种壁纸类型（实测 project.json 的取值，不是猜的）。
 //
-// 只认 type: "Web"。scene / video 那两种要解 WE 的私有 .pkg/.tex 格式，而那条路
-// 连 Open Wallpaper Engine 都只做到"显示静态底图"（粒子代码是死的、零 shader）。
+// 每种的处置和理由：
+const TYPES = {
+  // 就是 HTML+JS。用户要的"交互式 2D/3D 场景"落在这里（样本用 React+Three.js+GLSL）。
+  web: { support: 'full', label: '交互网页' },
+  // mp4/webm。一个 <video loop muted> 的事。
+  video: { support: 'full', label: '视频' },
+  // ⚠️ WE 编辑器的原生格式：私有 PKGV 归档 + TEXV 纹理 + 它自己方言的 GLSL。
+  // 不支持，而且**明确说出来比画一张静止的图好** —— 静止的图看起来像坏了。
+  //
+  // 证据（读 Open Wallpaper Engine 的代码，5 项）：粒子函数定义 1 处调用 0 处、
+  // 零 shader、零动画代码、加色层直接 skip、DXT 纹理 return nil。
+  // ⟹ 连专门做这件事的开源项目都只画静态底图。
+  // 唯一真做了 Scene 渲染的是 linux-wallpaperengine（C++/OpenGL），
+  // 移植评估在 aicursor-helper/scene-wallpaper-feasibility.md。
+  scene: { support: 'none', label: '场景（WE 编辑器格式）' },
+  // 别人编译的 Windows .exe。跑不了也不该跑（用户已明确不做）。
+  application: { support: 'none', label: 'Windows 程序' },
+};
+
+// GIF 壁纸不是独立类型 —— WE 把它包成 scene，入口文件叫 gifscene.json。
+// ⚠️ 这条是查出来的，不是猜的（OWE 的 SceneWallpaperViewModel:49 那行注释）。
+// 单独认出来是因为它**可能是 scene 里最简单的一种**（一张会动的图，
+// 大概不需要粒子和 shader），将来做 scene 时它是最划算的切入点。
+function isGifScene(file) {
+  return /^gifscene\./i.test(String(file || ''));
+}
+
+// 解析 project.json，取出我们需要的那几样。
 function parseProject(json) {
   if (!json || typeof json !== 'object') return null;
   const type = String(json.type || '').toLowerCase();
   const general = json.general || {};
+  const spec = TYPES[type] || null;
+  const file = json.file || 'index.html';
   return {
     type,
-    supported: type === 'web',
+    // 认识但不支持 vs 完全没见过 —— 前者能给出理由，后者只能说"不认识"。
+    known: !!spec,
+    typeLabel: spec ? spec.label : `未知类型 ${type || '(空)'}`,
+    gifScene: type === 'scene' && isGifScene(file),
+    supported: !!spec && spec.support === 'full',
     title: json.title || json.name || '未命名壁纸',
-    file: json.file || 'index.html',
+    file,
     preview: json.preview || null,
     // 壁纸自己声明要不要音频。没声明就不用费劲去抓系统音频（那要屏幕录制权限）。
     // ⚠️ 外层的 !! 是必须的：`false || undefined` 求值成 undefined 而不是 false，
@@ -210,7 +242,50 @@ function resolveAsset(pathname, dir, entryFile) {
   return target;
 }
 
+// 装载被拒时给一句人话 + 一个可行的下一步。
+//
+// ⚠️ "不支持"三个字对用户没有价值。他需要知道的是：为什么、以及能不能换一个。
+// 而且要说清"这不是坏了" —— 否则他会去排查一个不存在的 bug（我们已经在
+// 这类混淆上烧掉过一整天）。
+function refusalReason(project) {
+  if (!project) return '读不到 project.json —— 这个目录是 WE 壁纸吗？';
+  if (!project.known) {
+    return `不认识的壁纸类型「${project.type || '(空)'}」—— WE 只有 web / video / scene / application 四种`;
+  }
+  if (project.type === 'application') {
+    return '这是 Windows 程序类壁纸（别人编译的 .exe），macOS 上跑不了';
+  }
+  if (project.gifScene) {
+    return 'GIF 壁纸暂不支持 —— 它在 WE 里被包成 scene 格式（gifscene），'
+      + '而 scene 的渲染还没做。下面是它的预览图';
+  }
+  if (project.type === 'scene') {
+    return 'scene 类暂不支持 —— 那是 WE 编辑器的私有格式（含它自己方言的 shader 和粒子），'
+      + '需要重新实现渲染引擎。下面是它的预览图';
+  }
+  return `暂不支持 ${project.typeLabel}`;
+}
+
+// video 类的入口文件。⚠️ project.json 的 file 字段就是视频文件名（不是 html），
+// 所以 video 和 web 的装载路径必须分开 —— 拿 <video> 去加载 index.html 会静默黑屏。
+const VIDEO_EXT = /\.(mp4|webm|m4v|mov)$/i;
+
+// Chromium 能不能解这个视频，只从扩展名看不出来（HEVC 也装在 .mp4 里）。
+// 所以这里只做**明显不行**的判断，剩下的交给 <video> 的 error 事件 ——
+// 那个能拿到真实的解码失败原因。
+function videoHint(file) {
+  if (!VIDEO_EXT.test(String(file || ''))) {
+    return `入口文件「${file}」不像视频 —— project.json 的 file 字段对吗？`;
+  }
+  return null;
+}
+
 root.GestureWallWE = {
+  TYPES,
+  isGifScene,
+  refusalReason,
+  videoHint,
+  VIDEO_EXT,
   resolveAsset,
   AUDIO_BINS,
   BANDS,
