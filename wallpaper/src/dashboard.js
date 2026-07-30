@@ -843,6 +843,34 @@ window.gw.onMouseStatus((status) => {
     : `<span class="warn">${status.text}</span>`;
 });
 
+// ⚠️ 这一段是"点了没反应"的分辨器。三种原因长得一样，而这里把它们拆开：
+//   注入数 0        → helper 没抓到（转发没起来 / Finder 门挡住了）
+//   注入了但页面 0  → 坐标算错，注到窗口外
+//   mouse 有 pointer 无 → 事件族问题（壁纸监听 pointerdown 而我们注 mouseDown）
+function renderMouseDiag(mouse) {
+  if (!mouse) return '';
+  const injected = mouse.injected || 0;
+  const saw = mouse.pageSaw;
+  if (!injected) {
+    return '\n⚠️ 一个鼠标事件都没转发进去 —— 转发没起来，'
+      + '或者「只在桌面被聚焦时」那个门挡住了（试试勾上"任何时候都转发"）';
+  }
+  if (!saw) {
+    return `\n⚠️ 已转发 ${injected} 个事件，但页面一个都没收到 —— `
+      + `坐标可能算错了${mouse.lastEvent ? `（最近注入位置 ${mouse.lastEvent.x},${mouse.lastEvent.y}）` : ''}`;
+  }
+  const parts = [`已转发 ${injected}`];
+  parts.push(`页面收到 mousedown ${saw.mousedown} / pointerdown ${saw.pointerdown} / click ${saw.click}`);
+  // ⚠️ 这条区分最关键：我们注入的是 mouseDown，而很多壁纸监听 pointerdown。
+  // Chromium 通常会合成，但如果没合成，症状就是"点了没反应"而事件其实到了。
+  if (saw.mousedown > 0 && saw.pointerdown === 0) {
+    parts.push('\n⚠️ mousedown 到了但 pointerdown 没有 —— '
+      + '这个壁纸监听的是 pointer 事件，而注入的 mouse 事件没被合成成 pointer。'
+      + '这是个真问题，把这行发给我。');
+  }
+  return `\n${parts.join(' · ')}`;
+}
+
 // 状态分三层显示，因为它们代表不同的失败：
 //   装载了没有 → 根本没选壁纸
 //   ready 没有 → 页面加载了但里面的 JS 没跑起来（ES module 挂了就是这样）
@@ -887,6 +915,13 @@ async function renderWEStatus() {
       + menuBar;
   }
   renderAudioStatus(status.audio);
+  if (mouseStateNode && status.mouse) {
+    const base = status.mouse.status
+      ? (status.mouse.status.ok ? `✅ ${status.mouse.status.text}`
+        : `<span class="warn">${status.mouse.status.text}</span>`)
+      : '转发未启用（只有「真壁纸层」需要）';
+    mouseStateNode.innerHTML = base + renderMouseDiag(status.mouse);
+  }
   await renderWEControls();
 }
 

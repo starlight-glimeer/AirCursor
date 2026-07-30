@@ -80,6 +80,39 @@ ipcRenderer.on('we-media-thumbnail', (_event, p) => emit('mediaThumbnail', p));
 ipcRenderer.on('we-media-playback', (_event, p) => emit('mediaPlayback', p));
 ipcRenderer.on('we-media-timeline', (_event, p) => emit('mediaTimeline', p));
 
+// ─────────────────────────────────────────────────────────────────────────
+// 鼠标事件探针
+// ─────────────────────────────────────────────────────────────────────────
+//
+// ⚠️ 这是"点了没反应"的唯一分辨手段。那个症状有三种原因，长得一模一样：
+//   ① helper 没抓到（转发压根没起来）
+//   ② 抓到了但坐标算错，注到窗口外
+//   ③ 注进去了，但页面不响应
+//
+// 主进程能报 ①②（注入计数 + 最近坐标）。而 ③ 只有页面自己知道 ——
+// 所以在这里挂监听，如实报告"页面收到了什么"。
+//
+// ⚠️ 特别要区分 mouse 和 pointer 两族：我们注入的是 mouseDown，
+// 而这个样本壁纸监听的是 **pointerdown**。Chromium 通常会从 mouse 合成 pointer，
+// 但 sendInputEvent 是底层注入 —— 会不会走那条合成路径**我验不了**。
+// ⟹ 两族都记，那样"mouse 收到了但 pointer 没有"会直接显示出来，
+// 而不是笼统的"点了没反应"。
+const seen = { mousedown: 0, pointerdown: 0, click: 0, wheel: 0, mousemove: 0 };
+let seenReported = 0;
+
+for (const type of Object.keys(seen)) {
+  // capture 阶段监听：壁纸自己可能 stopPropagation，那样冒泡阶段就收不到了 ——
+  // 而我们要测的是"事件到没到页面"，不是"壁纸处理没处理"。
+  window.addEventListener(type, () => {
+    seen[type] += 1;
+    // 节流上报：mousemove 每秒上百次。
+    const now = Date.now();
+    if (now - seenReported < 500) return;
+    seenReported = now;
+    ipcRenderer.send('we-mouse-seen', { ...seen });
+  }, { capture: true, passive: true });
+}
+
 // ⚠️ 属性那条**不在这里**。它是反向的（页面挂对象、我们去调），而隔离世界里读不到
 // 页面挂的东西。主进程用 executeJavaScript 在主世界里调，见 main.js sendWEProperties。
 // 这里留这段注释是因为"为什么 preload 里没有属性通道"本身是个会被人问的问题。

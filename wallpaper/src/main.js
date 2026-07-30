@@ -354,6 +354,10 @@ const defaultConfig = {
     // 音源。ScreenCaptureKit 抓系统音频，要屏幕录制权限。
     // 'off' 时壁纸会走它自己的空闲动画（样本有 idleWaveEnabled）。
     audioSource: 'off',
+    // 把系统原生壁纸设成当前壁纸的静态帧。⚠️ 这不是装饰：我们的窗口在壁纸层之上，
+    // 切 Space 时有一帧延迟会露出下面那层。设成一样的图就看不出来了。
+    // 退出时会还原用户原来的壁纸。
+    placeholderWallpaper: true,
     // Steam 创意工坊。⚠️ 密码存在本地配置文件里（明文），诊断报告导出时会脱敏。
     steam: { username: null, password: null, guardCode: null },
     steamCmdPath: null,
@@ -405,6 +409,39 @@ function mergeConfig(base, saved, key) {
   const out = {};
   for (const k of Object.keys(base)) out[k] = mergeConfig(base[k], saved[k], k);
   return out;
+}
+
+// 一次性迁移：把存量配置里已经作废的选择改掉。
+//
+// ⚠️ 为什么需要这个：mergeConfig 会**保留**用户存过的值（那是对的 ——
+// 用户改过的设置不该被新版本覆盖）。但有些旧值现在是**明确错的**，
+// 不是"用户的偏好"。
+//
+// 实测踩到的那次：我把 we.strategy 的默认值从 bottom-normal 改成 desktop
+//（因为鼠标转发让"真壁纸层 + 能点"同时成立了），而用户的 config.json 里
+// 存着旧的 bottom-normal ⟹ 三个现象一个根因：
+//   覆盖不了菜单栏（普通窗口画不到那层）
+//   点击没反应（转发只在 desktop 层开）
+//   切桌面看到原生壁纸（普通窗口叠在壁纸层之上，有一帧延迟）
+//
+// ⟹ 改默认值对存量用户是无效的，必须显式迁移。
+function migrateConfig(cfg) {
+  let changed = false;
+  const we = cfg.we || {};
+
+  // bottom-normal 现在没有存在理由了：它唯一的优势（能收鼠标）已经被
+  // desktop + 鼠标转发覆盖，而它的劣势（画不到菜单栏那层）无法弥补。
+  if (we.strategy === 'bottom-normal') {
+    we.strategy = 'desktop';
+    changed = true;
+    console.log('[config] 迁移：we.strategy bottom-normal → desktop'
+      + '（真壁纸层能覆盖菜单栏，鼠标靠转发补回来）');
+  }
+  // 老配置里没有这两个键（mergeConfig 会补上默认值，但如果用户存过 false 就不动）
+  if (we.mouseForward === undefined) { we.mouseForward = true; changed = true; }
+
+  cfg.we = we;
+  return changed;
 }
 
 function writeConfig() {
@@ -1133,6 +1170,62 @@ function loadWEProject(dir) {
   }
 }
 
+// 把系统原生壁纸设成我们壁纸的静态帧（占位）。
+//
+// ⚠️ 这解决的是用户实测的"来回切换桌面会有延迟，看到 mac 的原生壁纸"。
+//
+// 原因：我们的窗口在壁纸层**之上**，而切 Space 时窗口重新合成有一帧延迟 ——
+// 那一帧露出下面的系统壁纸。这不是 bug，是图层顺序的必然结果。
+//
+// ⟹ Open Wallpaper Engine 的解法很聪明：**把系统壁纸设成我们内容的静态帧**。
+// 那样下面那层和我们画的东西长得一样，露出来也看不出来。
+//（它的 setPlacehoderWallpaper 就干这个，用视频第一帧。）
+//
+// Electron 没有 setDesktopImageURL 的等价 API，但 osascript 可以 ——
+// 而且 System Events 设桌面图片**不需要任何权限**（标准 AppleScript 词典）。
+//
+// ⚠️ 必须先存下用户原来的壁纸，退出时还回去。不然我们改了他的系统设置不还原，
+// 那是很讨人嫌的行为。
+let originalWallpaper = null;
+
+function readSystemWallpaper() {
+  const result = spawnSync('/usr/bin/osascript', ['-e',
+    'tell application "System Events" to get picture of current desktop'],
+    { encoding: 'utf8', timeout: 5000 });
+  if (result.status !== 0) return null;
+  const out = String(result.stdout || '').trim();
+  return out || null;
+}
+
+function setSystemWallpaper(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return false;
+  // ⚠️ 路径里的引号要转义 —— 壁纸目录名是用户可控的，
+  // 一个引号就能把 AppleScript 劈开（而那会静默失败）。
+  const escaped = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const result = spawnSync('/usr/bin/osascript', ['-e',
+    `tell application "System Events" to set picture of every desktop to "${escaped}"`],
+    { encoding: 'utf8', timeout: 8000 });
+  if (result.status !== 0) {
+    // 说出来而不是静默 —— 失败的后果是切桌面时仍然闪，
+    // 而那看起来像"这个修复没用"。
+    logEvent('wallpaper', `设置系统壁纸失败：${(result.stderr || '').trim().slice(0, 150)}`);
+    return false;
+  }
+  return true;
+}
+
+// 用壁纸的预览图当占位。
+//
+// ⚠️ 用 preview 而不是"视频第一帧"：抽第一帧要 ffmpeg，而 preview.gif/jpg
+// 工坊物品基本都有，而且它就是这个壁纸的代表画面 —— 正好合用。
+function placeholderFromProject(dir, project) {
+  const preview = previewPathOf(dir, project);
+  if (!preview) return null;
+  // ⚠️ GIF 不能直接当桌面图片（macOS 只取第一帧，而且有时候整个失败）。
+  // 有 jpg/png 优先用，只有 gif 时也试一下 —— 失败会被 setSystemWallpaper 报出来。
+  return preview;
+}
+
 // 找预览图。不支持的类型至少让用户看见"这个壁纸长什么样"，从而知道该不该找替代。
 // ⚠️ project.json 的 preview 字段可能指向不存在的文件，所以逐个试。
 function previewPathOf(dir, project) {
@@ -1360,10 +1453,25 @@ function setWEWallpaper(dir) {
   weWindow = createWEWindow();
   syncAudioSource();
   syncMouseForward();
+
+  // 把系统壁纸换成这个壁纸的静态帧，消掉切桌面时那一帧的闪烁。
+  // ⚠️ 先记住原来的，退出时还回去。
+  if (originalWallpaper === null) originalWallpaper = readSystemWallpaper();
+  const placeholder = placeholderFromProject(weProject.dir, weProject);
+  if (placeholder && config.we.placeholderWallpaper !== false) {
+    const ok = setSystemWallpaper(placeholder);
+    logEvent('wallpaper', ok
+      ? `系统壁纸已设为占位图（消掉切桌面那一帧的闪烁）：${path.basename(placeholder)}`
+      : '系统壁纸占位图没设上 —— 切桌面时可能会闪一下原生壁纸');
+  }
   return { ok: true, project: { title: weProject.title, dir: weProject.dir } };
 }
 
 // 壁纸自己调 wallpaperReady 了 —— 这是"里面的 JS 活着"的唯一证据。
+ipcMain.on('we-mouse-seen', (_event, payload) => {
+  pageMouseSeen = { ...payload, at: Date.now() };
+});
+
 ipcMain.on('we-ready', () => {
   weReady = true;
   broadcast('we-status', weStatus(null));
@@ -1860,7 +1968,11 @@ ipcMain.handle('export-diagnostics', () => {
     we: { ready: weReady },
     video: videoStatus,
     audio: audioStatus,
-    mouse: { status: mouseStatus, lastEvent: lastMouseEvent },
+    mouse: {
+      status: mouseStatus, lastEvent: lastMouseEvent, injected: mouseInjected,
+      // ⚠️ 页面那边有没有真的收到，只能由页面自己报 —— 见下面的探针。
+      pageSaw: pageMouseSeen,
+    },
     workshop: {
       steamcmd: findSteamCmd(),
       username: (config.we.steam && config.we.steam.username) || null,
@@ -1898,6 +2010,10 @@ ipcMain.handle('reveal-diagnostics', () => {
 
 ipcMain.handle('we-status', () => ({
   ...weStatus(null), audio: audioStatus, video: videoStatus,
+  mouse: {
+    status: mouseStatus, injected: mouseInjected,
+    lastEvent: lastMouseEvent, pageSaw: pageMouseSeen,
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -1908,6 +2024,16 @@ let mouseStatus = null;
 // 最近一次转发的事件，进诊断报告。
 // ⚠️ 没有它，"点了没反应"分不清是：helper 没抓到 / 坐标算错 / 注入了但页面不响应。
 let lastMouseEvent = null;
+// 注入计数。⚠️ "点了没反应"现在有三种可能，而它们长得一样：
+//   ① helper 没抓到事件（转发压根没起来）
+//   ② 抓到了、坐标算错，注到窗口外
+//   ③ 注进去了，但页面不响应（比如它只听 pointerdown 而我们注的是 mouseDown）
+// 计数 + 最近一次的坐标能把 ①② 排掉，剩下的就是 ③。
+let mouseInjected = 0;
+// 页面那边实际收到了什么（we-preload 的探针报的）。
+// ⚠️ 这是分辨"注进去了但页面不响应"的唯一证据 —— 尤其
+// "mousedown 收到了但 pointerdown 没有"直接说明是事件族的问题。
+let pageMouseSeen = null;
 
 function syncMouseForward() {
   // 只有 desktop 层需要转发 —— 普通窗口自己就能收鼠标，
@@ -1935,7 +2061,11 @@ function syncMouseForward() {
       const input = MouseBridge.toInputEvent(event, point);
       if (!input) return;
       weWindow.webContents.sendInputEvent(input);
-      lastMouseEvent = { kind: event.kind, x: point.x, y: point.y, at: Date.now() };
+      mouseInjected += 1;
+      lastMouseEvent = {
+        kind: event.kind, x: point.x, y: point.y,
+        injected: input.type, at: Date.now(),
+      };
     },
     onStatus: (status) => {
       mouseStatus = status;
@@ -2082,6 +2212,8 @@ require('./nowplaying').install({
 
 app.whenReady().then(() => {
   config = readConfig();
+  // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
+  if (migrateConfig(config)) writeConfig();
   registerWEProtocol();
   // 上次装的 WE 壁纸还在就恢复它，否则用我们自己的三层景深。
   if (config.we.dir && fs.existsSync(path.join(config.we.dir, 'project.json'))) {
@@ -2119,4 +2251,7 @@ app.on('will-quit', () => {
   systemBridge.stop();
   if (audioTap) audioTap.stop();
   if (mouseTap) mouseTap.stop();
+  // ⚠️ 把用户原来的壁纸还回去。改了别人的系统设置不还原是很讨人嫌的行为，
+  // 而且他可能根本不知道是我们改的。
+  if (originalWallpaper) setSystemWallpaper(originalWallpaper);
 });

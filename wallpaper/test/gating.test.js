@@ -772,4 +772,84 @@ check('三条策略都调 liftOverMenuBar 并带策略名', () => {
     `策略名不全或没带：${calls.join(', ')}`);
 });
 
+console.log('\n  存量配置迁移 + 占位壁纸');
+
+// ⚠️ 这条来自一次真实的"改了默认值但没生效"。
+//
+// 我把 we.strategy 默认值从 bottom-normal 改成 desktop（因为鼠标转发让两者兼得），
+// 而用户的 config.json 里存着旧的 bottom-normal ⟹ 三个现象一个根因：
+//   覆盖不了菜单栏 / 点击没反应（转发只在 desktop 层开）/ 切桌面看到原生壁纸
+//
+// mergeConfig 保留存量值是**对的**（用户改过的不该被覆盖），
+// 所以作废的旧值必须显式迁移。
+check('存量配置里作废的 strategy 会被迁移', () => {
+  assert.match(mainSrc, /function migrateConfig/, '没有迁移函数');
+  const fn = mainSrc.slice(mainSrc.indexOf('function migrateConfig'),
+    mainSrc.indexOf('function writeConfig'));
+  assert.match(fn, /bottom-normal/, '没处理作废的 bottom-normal');
+  assert.match(fn, /'desktop'/, '没迁移到 desktop');
+});
+
+// ⚠️ 顺序是硬约束：层策略是**创建窗口时**定的，迁移晚了这次启动仍用旧值 ——
+// 那样用户重启一次还是老样子，而他会以为修复没用。
+check('迁移在建窗口之前跑', () => {
+  // ⚠️ 只在启动块里找。`createWallWindow(config.wallStrategy)` 在 setWEWallpaper
+  // 里也出现（卸载壁纸时重建），拿全文 indexOf 会命中那个更早的位置 ——
+  // 于是断言变成永远失败而代码是对的。切片式守卫都有这个坑。
+  const boot = mainSrc.slice(mainSrc.indexOf('app.whenReady().then'));
+  const migrate = boot.indexOf('migrateConfig(config)');
+  const createWall = boot.indexOf('createWallWindow(config.wallStrategy)');
+  const setWE = boot.indexOf('setWEWallpaper(config.we.dir)');
+  assert.ok(migrate > 0, '启动时没调迁移');
+  assert.ok(migrate < createWall && migrate < setWE,
+    '迁移在建窗口之后 —— 这次启动仍会用旧策略，用户重启一次还是老样子');
+});
+
+// 切 Space 时我们的窗口重新合成有一帧延迟，那一帧露出下面的系统壁纸。
+// OWE 的解法：把系统壁纸设成我们内容的静态帧，露出来也看不出来。
+check('装载壁纸时设置系统占位壁纸', () => {
+  assert.match(mainSrc, /function setSystemWallpaper/, '没有设置系统壁纸的函数');
+  assert.match(mainSrc, /placeholderFromProject/, '没用预览图当占位');
+});
+
+// ⚠️ 改了用户的系统设置不还原是很讨人嫌的行为，而且他可能不知道是我们改的。
+check('退出时还原用户原来的壁纸', () => {
+  assert.match(mainSrc, /originalWallpaper = readSystemWallpaper/, '没记住原来的壁纸');
+  const quit = mainSrc.slice(mainSrc.indexOf("app.on('will-quit'"));
+  assert.match(quit.slice(0, 500), /setSystemWallpaper\(originalWallpaper\)/,
+    '退出时没还原壁纸');
+});
+
+// ⚠️ 壁纸目录名是用户可控的，一个引号就能把 AppleScript 劈开（而那会静默失败）。
+check('AppleScript 里的路径做了转义', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function setSystemWallpaper'),
+    mainSrc.indexOf('// 用壁纸的预览图当占位'));
+  assert.match(fn, /replace\(/, '路径没转义 —— 目录名带引号会静默失败');
+});
+
+console.log('\n  "点了没反应"的分辨器');
+
+// ⚠️ 那个症状有三种原因、长得一模一样。没有这一层就只能猜。
+check('页面侧有探针报告实际收到了什么', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-preload.js'), 'utf8');
+  assert.match(src, /we-mouse-seen/, '页面侧没有探针');
+  // ⚠️ mouse 和 pointer 两族都要记：我们注入 mouseDown，而很多壁纸监听 pointerdown。
+  // Chromium 通常会合成，但没合成时症状就是"点了没反应"而事件其实到了。
+  assert.match(src, /pointerdown/, '没记 pointerdown —— 那是最可能的失效点');
+  assert.match(src, /mousedown/, '没记 mousedown');
+  // capture 阶段：壁纸自己可能 stopPropagation，而我们要测的是"到没到页面"
+  assert.match(src, /capture: true/, '没用 capture 阶段 —— 壁纸 stopPropagation 会让探针失灵');
+});
+
+check('主进程报注入计数，面板能分辨三种原因', () => {
+  assert.match(mainSrc, /mouseInjected/, '没有注入计数');
+  assert.match(mainSrc, /pageMouseSeen/, '没收集页面侧的观测');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /renderMouseDiag/, '面板没有分辨逻辑');
+  // 三条分支都要有
+  assert.match(dash, /一个鼠标事件都没转发/, '缺"转发没起来"这条');
+  assert.match(dash, /页面一个都没收到/, '缺"坐标算错"这条');
+  assert.match(dash, /pointerdown 没有/, '缺"事件族不对"这条');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
