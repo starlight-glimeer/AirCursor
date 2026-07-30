@@ -670,4 +670,54 @@ check('WE 壁纸默认策略仍是能收鼠标的那条', () => {
   assert.match(fn, /config\.we\.strategy\s*\|\|\s*'bottom-normal'/);
 });
 
+console.log('\n  菜单栏覆盖（推完要核对，不是开火就不管）');
+
+// ⚠️ 这条来自真机反馈：菜单栏那条缝又出现了。
+//
+// 原来的做法是"创建时推三次"（立刻 / ready-to-show / 350ms），也就是开火就不管。
+// 而窗口是**后来**被 macOS 夹回去的 —— macOS 会在窗口加入 Space、切桌面回来、
+// 分辨率变化时重新把 frame 夹进 visibleFrame，那时候那三次早就跑完了。
+check('推完之后核对实际 bounds（不假设 setBounds 生效了）', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
+    mainSrc.indexOf('let menuBarState = null'));
+  assert.match(fn, /win\.getBounds\(\)/,
+    '没核对实际拿到的 bounds —— setBounds 被夹了也不知道');
+  assert.match(fn, /clamped/, '没判断是否被夹');
+});
+
+// ⚠️ 重试必须有上限：不然会和 macOS 的夹取来回打架，
+// 表现是壁纸每 400ms 抖一下 —— 那比一条缝糟得多。
+check('重试有次数上限（否则和 macOS 打架，壁纸会抖）', () => {
+  assert.match(mainSrc, /MENU_BAR_RETRIES/, '重试没有上限常量');
+  const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
+    mainSrc.indexOf('let menuBarState = null'));
+  assert.match(fn, /attempts >= MENU_BAR_RETRIES/, '没检查上限');
+  assert.match(fn, /clearInterval/, '成功或放弃后没停掉定时器');
+});
+
+// 成功之后也要停 —— 一直推会让 macOS 和我们轮流设 frame。
+check('盖住之后就停，不继续推', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
+    mainSrc.indexOf('let menuBarState = null'));
+  const successBranch = fn.slice(fn.indexOf('if (!state.clamped)'));
+  assert.match(successBranch.slice(0, 200), /clearInterval/,
+    '盖住之后没停定时器 —— 会和 macOS 轮流设 frame');
+});
+
+// ⚠️ 这条缝是"看得见但查不到原因"的典型：用户只能看到顶上有一条别的东西。
+// 所以核对结果必须能被看到。
+check('核对结果进诊断报告和面板', () => {
+  assert.match(mainSrc, /menuBar: menuBarState/, '核对结果没进报告/状态');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /menuBar/, '面板不显示菜单栏覆盖状态');
+  assert.match(dash, /盖不住|菜单栏/, '面板没有给人看的说明');
+});
+
+// 三条策略都要盖菜单栏，而且要带上策略名 —— 否则报错时不知道是哪条策略失败的。
+check('三条策略都调 liftOverMenuBar 并带策略名', () => {
+  const calls = [...mainSrc.matchAll(/liftOverMenuBar\(win, '([a-z-]+)'\)/g)].map((m) => m[1]);
+  assert.deepStrictEqual(calls.sort(), ['bottom-normal', 'desktop', 'floating'],
+    `策略名不全或没带：${calls.join(', ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

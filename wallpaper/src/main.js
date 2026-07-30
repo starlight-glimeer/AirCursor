@@ -84,7 +84,7 @@ const WALL_STRATEGIES = [
       // reserves it, and setBounds gets clamped just below it. Verified against the
       // system's own wallpaper, which does cover it — so the window has to be told
       // it may sit outside the visible frame, and then asked again.
-      liftOverMenuBar(win);
+      liftOverMenuBar(win, 'desktop');
     },
   },
   {
@@ -105,7 +105,7 @@ const WALL_STRATEGIES = [
       //（OWE 就这么写的），关键在 **.stationary**：跨 Space 存在但**不随切换移动**。
       // ⚠️ 而 Electron 只暴露了 canJoinAllSpaces 那半边，没有 stationary。
       // ⟹ 拿不到那个组合，所以这条策略只能待在当前桌面。
-      liftOverMenuBar(win);
+      liftOverMenuBar(win, 'bottom-normal');
     },
   },
   {
@@ -122,7 +122,7 @@ const WALL_STRATEGIES = [
       // 那时候跟着切桌面走是符合意图的。而 bottom-normal 那条不行 ——
       // 那是当壁纸用的，壁纸跟着你跑就成了"覆盖别的桌面"。
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      liftOverMenuBar(win);
+      liftOverMenuBar(win, 'floating');
     },
   },
 ];
@@ -140,19 +140,78 @@ const WALL_STRATEGIES = [
 //
 // Bounds are read fresh on every call rather than captured once, because this is
 // also what runs when the display changes resolution.
-function liftOverMenuBar(win) {
+// 推到整块屏幕，菜单栏那条带子也盖上。
+//
+// ⚠️ 这个函数改过一次，原因值得写下来。原来的做法是"创建时推三次"
+//（立刻 / ready-to-show / 350ms 后），也就是**开火就不管了**。
+//
+// 实测（用户截图）：菜单栏那条缝又出现了。而那三次早就跑完了 ——
+// 说明窗口是**后来**被 macOS 夹回去的。macOS 会在窗口加入 Space、
+// 切桌面回来、分辨率变化时重新把 frame 夹进 visibleFrame。
+//
+// ⟹ 所以改成三件事：
+//   ① 推完**核对**（getBounds vs 屏幕 bounds），而不是假设生效了
+//   ② 被夹回去时再推，有次数上限（不然会变成死循环打架）
+//   ③ 核对结果报出来，进诊断报告 —— 那条缝是"看得见但查不到"的典型
+const MENU_BAR_RETRIES = 8;
+const MENU_BAR_RETRY_MS = 400;
+
+function liftOverMenuBar(win, label) {
+  let attempts = 0;
+  let timer = null;
+
+  const check = () => {
+    if (!win || win.isDestroyed()) return null;
+    const want = screen.getPrimaryDisplay().bounds;
+    const got = win.getBounds();
+    // 差多少。⚠️ 只看 y 和 height 不够 —— 多显示器时 x 也会被夹。
+    const gap = {
+      x: got.x - want.x, y: got.y - want.y,
+      width: want.width - got.width, height: want.height - got.height,
+    };
+    const clamped = gap.x !== 0 || gap.y !== 0 || gap.width !== 0 || gap.height !== 0;
+    return { want, got, gap, clamped };
+  };
+
   const push = () => {
-    if (!win || win.isDestroyed()) return;
+    if (!win || win.isDestroyed()) { if (timer) clearInterval(timer); return; }
     try {
       win.setBounds(screen.getPrimaryDisplay().bounds);
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
+      return;
+    }
+    attempts += 1;
+    const state = check();
+    if (!state) return;
+    if (!state.clamped) {
+      // 成功了就停。⚠️ 不停的话会和 macOS 的夹取来回打架，
+      // 表现是壁纸每 400ms 抖一下。
+      if (timer) { clearInterval(timer); timer = null; }
+      menuBarState = { ok: true, attempts, label };
+      return;
+    }
+    if (attempts >= MENU_BAR_RETRIES) {
+      if (timer) { clearInterval(timer); timer = null; }
+      // ⚠️ 放弃时**说出来**。这条缝用户看得见但查不到原因 ——
+      // 而"我们试了 8 次仍然被夹住 25px"是一句能行动的话。
+      menuBarState = { ok: false, attempts, gap: state.gap, label };
+      console.warn(`[wall] 菜单栏那条缝盖不住：试了 ${attempts} 次，`
+        + `仍差 y=${state.gap.y} height=${state.gap.height}（策略 ${label || '?'}）`);
     }
   };
+
+  if (timer) clearInterval(timer);
   push();
   win.once('ready-to-show', push);
-  setTimeout(push, 350);
+  // 持续核对而不是打一枪：macOS 夹回去的时机不确定（加入 Space、切桌面回来）。
+  timer = setInterval(push, MENU_BAR_RETRY_MS);
+  win.once('closed', () => { if (timer) clearInterval(timer); });
+  return check;
 }
+
+// 最近一次覆盖核对的结果，进诊断报告。
+let menuBarState = null;
 
 // Follow the display when it changes.
 //
@@ -1242,6 +1301,8 @@ function sendWEProperties() {
 
 function weStatus(error) {
   return {
+    // 菜单栏覆盖的核对结果 —— 那条缝和壁纸装载是两件事，但用户看到的是同一块屏幕。
+    menuBar: menuBarState,
     dir: weProject ? weProject.dir : null,
     title: weProject ? weProject.title : null,
     wantsAudio: weProject ? weProject.wantsAudio : false,
@@ -1773,6 +1834,9 @@ ipcMain.handle('export-diagnostics', () => {
       // 实际拿到的窗口尺寸 vs 屏幕尺寸 —— 菜单栏那条缝就是这里看出来的。
       display: screen.getPrimaryDisplay().bounds,
       weBounds: weWindow && !weWindow.isDestroyed() ? weWindow.getBounds() : null,
+      // ⚠️ 菜单栏那条缝：覆盖到底成没成，试了几次，还差多少。
+      // 那条缝用户看得见但查不到原因，所以核对结果必须进报告。
+      menuBar: menuBarState,
     },
     we: { ready: weReady },
     video: videoStatus,

@@ -803,8 +803,16 @@ async function renderWEStatus() {
   const status = await window.gw.weStatus();
   const node = document.getElementById('we-state');
   if (!node) return;
+  // 菜单栏那条缝：盖住了不用说，盖不住要说清"试了几次、还差多少"。
+  // ⚠️ 那条缝是"看得见但查不到"的典型 —— 用户只能看到顶上有一条别的东西。
+  const menuBar = status.menuBar && !status.menuBar.ok
+    ? `\n⚠️ 顶部菜单栏那条带子盖不住（试了 ${status.menuBar.attempts} 次，`
+      + `还差 ${status.menuBar.gap.height || status.menuBar.gap.y}px）—— `
+      + 'macOS 把窗口夹进了可见区域。⌃⇧L 换个壁纸层策略可能有效。'
+    : '';
+
   if (!status.dir) {
-    node.innerHTML = '未装载 —— 现在显示的是三层景深壁纸';
+    node.innerHTML = '未装载 —— 现在显示的是三层景深壁纸' + menuBar;
   } else if (status.error) {
     node.innerHTML = `<span class="warn">${status.error}</span>\n${status.dir}`;
   } else {
@@ -812,7 +820,8 @@ async function renderWEStatus() {
       + (status.ready
         ? '✅ 壁纸里的脚本已经跑起来了'
         : '⏳ 页面加载了，但壁纸还没报 ready —— 如果一直这样，是里面的脚本没跑起来')
-      + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频');
+      + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频')
+      + menuBar;
   }
   renderAudioStatus(status.audio);
   await renderWEControls();
