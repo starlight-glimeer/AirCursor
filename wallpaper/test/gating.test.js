@@ -804,4 +804,25 @@ check('手重新出现后的头几帧不进判定和录制', () => {
     + '包括这些坏帧，那正是用来发现这个问题的数据');
 });
 
+// ── 骨架滤波依赖加载顺序,而失效是静默的 ──────────────────────────────────
+//
+// `overlay.js` 在**加载时**就取 `root.AirCursorTracking.OneEuroFilter`。tracking.js 排在它
+// 后面的话那个引用是 undefined,而 `smooth()` 会原样返回 —— **骨架又变回不滤波,一行报错
+// 都没有**。我在写用例时踩到了这个:抖动从 5.040 降到 5.040,而用例"通过"了一个什么都没做
+// 的实现。
+check('overlay.html 里 tracking.js 排在 overlay.js 之前', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  const trackingAt = html.indexOf('vendor/aircursor/tracking.js');
+  const overlayAt = html.indexOf('src="overlay.js"');
+  assert.ok(trackingAt > 0, '骨架层没加载 tracking.js —— 滤波会静默失效');
+  assert.ok(overlayAt > 0, '骨架层没加载 overlay.js');
+  assert.ok(trackingAt < overlayAt,
+    'tracking.js 排在 overlay.js 之后 —— OneEuroFilter 拿不到，骨架滤波静默失效');
+
+  // overlay.js 必须对"拿不到滤波器"有兜底：那种情况下宁可不滤波，也不该没有骨架。
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  assert.match(overlay, /if \(!OneEuro\) return hands;/,
+    'smooth() 没有兜底 —— tracking.js 缺失时会抛，而那会让整个骨架层挂掉');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

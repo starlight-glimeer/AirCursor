@@ -7,6 +7,35 @@
 // 无 DOM 依赖的部分（几何、颜色）抽出来可测；绘制留在类里。
 (function (root) {
 
+// One Euro：截止频率随手速自适应 —— 静止时压得住抖，快速移动时不迟钝。
+// 指针一直在用它，而骨架路径**一直没有** —— 那就是"骨架很抖"的原因。
+const OneEuro = root.AirCursorTracking && root.AirCursorTracking.OneEuroFilter;
+
+// 骨架滤波的参数。比指针**更平滑**，因为两者要的东西不同：
+//
+//   指针  要"跟手"——它是鼠标，延迟直接体现为"指不准"
+//   骨架  要"看着稳"——它是反馈，抖动比几十毫秒的延迟更让人觉得坏了
+//
+// ⚠️ 真机实测(5 份 capture,21 点在屏幕像素上的帧间跳动,屏宽 1470)：
+// 中位 **84px**、90 分位 220px、最大 **1247px** ⟹ 手每帧跳 5.7% 屏宽。
+// 用户报的「骨架手很抖」就是这个，而它一直没被处理。
+//
+// 扫参实测(同一批数据,统一口径 —— 只用连续有手的段):
+//
+//   minCutoff  beta    抖动中位   抖动最大   滞后中位
+//   （不滤波）           85px      1247px       0
+//   1.2       0.045      40px       282px    138px    ← 指针在用的参数
+//   **0.6     0.02**     26px       159px    165px    ← 取这个
+//   0.3       0.01       14px        98px    180px
+//   0.15      0.005       7px        55px    188px
+//
+// 取 0.6/0.02：抖动降 **69%**，而滞后 165px 只比指针那档多 27px。再往下压抖动还能降，
+// 但滞后收益已经很小（180→188px 换 14→7px）——**滞后就是"不跟手"**，那是用户报过的另一个问题。
+//
+// ⚠️ 只有 23 帧连续数据支撑这张表(五份 capture 里手连续在画面的段很短)。方向确定，
+// 数值待真机体感确认 —— 如果觉得"跟不上手"就把 minCutoff 调回 1.2。
+const SKELETON_FILTER = { minCutoff: 0.6, beta: 0.02, derivativeCutoff: 1 };
+
 const HAND_LINES = [
   [0, 1, 2, 3, 4],
   [0, 5, 6, 7, 8],
@@ -143,11 +172,34 @@ class HandOverlay {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
+  // 把一帧关键点过滤波器。每只手每个点各一对 x/y 滤波器 —— 一共 2×21×2 个。
+  //
+  // 按"第几只手的第几个点"索引，而不是跟着手的身份：MediaPipe 的手序帧间会换位，
+  // 而对骨架来说画错哪只手比抖动更明显。sendHands 那边已经按 handedness 排过序。
+  smooth(hands, now) {
+    if (!OneEuro) return hands;      // tracking.js 没加载时原样画，不该因此没有骨架
+    if (!this.filters) this.filters = [];
+    return hands.map((hand, hi) => {
+      if (!this.filters[hi]) this.filters[hi] = [];
+      const bank = this.filters[hi];
+      return hand.map((p, ki) => {
+        if (!bank[ki]) {
+          bank[ki] = { x: new OneEuro(SKELETON_FILTER), y: new OneEuro(SKELETON_FILTER) };
+        }
+        return { x: bank[ki].x.filter(p.x, now), y: bank[ki].y.filter(p.y, now) };
+      });
+    });
+  }
+
   update(payload, now) {
     const next = (payload && payload.hands) || [];
     this.recording = !!(payload && payload.recording);
     if (next.length) {
-      this.hands = next;
+      // ⚠️ 只有**画**的时候滤波，判定用的是未经滤波的原始坐标。
+      //
+      // 两者要的东西不同：判定要的是"手真实在哪"（滤波会让快速动作的幅度变小，
+      // 而幅度正是动作判据），骨架要的是"看着稳"。同一份数据两个用途，各走各的。
+      this.hands = this.smooth(next, now);
       this.lastAt = now;
       return;
     }
@@ -156,7 +208,12 @@ class HandOverlay {
     // 第一版直接 `this.hands = []`，于是 opacityAt 立刻返回 0，淡出代码一行都跑不到 ——
     // 骨架瞬间消失。而丢一两帧跟踪很常见，瞬间消失会让骨架频闪，那比没有骨架更让人
     // 以为出问题了。淡出的全部意义就在这里，而我把它写成了死代码。
-    if (this.lastAt && now - this.lastAt > FADE_MS) this.hands = [];
+    if (this.lastAt && now - this.lastAt > FADE_MS) {
+      this.hands = [];
+      // 滤波器一起清掉：留着的话下次举手时骨架会从上次的位置"飞"过来，
+      // 而那比抖动更奇怪 —— One Euro 的状态是"上一个位置"，跨越一次手不在的间隔没有意义。
+      this.filters = [];
+    }
   }
 
   // 返回 0..1 的不透明度。手在场是 1，离开后按 FADE_MS 淡出。

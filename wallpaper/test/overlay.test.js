@@ -5,6 +5,12 @@
 // 这一层存在的理由：没有它，"手势没反应"和"手根本没被检测到"是同一个症状。所以这些
 // 断言守的是"看得见"这件事本身 —— 坐标对不对、丢帧时会不会频闪、关掉了会不会残留。
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+// ⚠️ tracking.js 要在 overlay.js **之前** —— overlay 在加载时就取 OneEuroFilter，
+// 顺序反了的话 `OneEuro` 是 undefined 而 smooth() 原样返回，
+// 而那时滤波的用例会通过一个什么都没做的实现（实测抖动 5.040 → 5.040）。
+require(path.join(__dirname, '..', 'src', 'vendor', 'aircursor', 'tracking.js'));
 require('../src/overlay.js');
 const O = globalThis.GestureWallOverlay;
 
@@ -251,6 +257,74 @@ check('骨架连线覆盖全部 21 个关键点', () => {
   for (let i = 0; i < 21; i += 1) {
     assert.ok(covered.has(i), `关键点 ${i} 不在任何连线里`);
   }
+});
+
+// ── 骨架滤波:只在绘制侧 ──────────────────────────────────────────────────
+//
+// 用户报「这次我发现骨架手很抖，可能上次也有我没注意」。真机实测(5 份 capture,
+// 21 个点在**屏幕像素**上的帧间跳动,屏宽 1470):中位 **85px**、最大 **1247px**
+// ⟹ 手每帧跳 5.7% 屏宽,而骨架路径**一直零滤波**(指针有 One Euro,骨架没有)。
+//
+// 滤波后:抖动中位 26px(降 **69%**)、最大 159px(降 87%),代价是滞后 165px。
+check('骨架过 One Euro 滤波', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  assert.match(src, /SKELETON_FILTER/, '骨架没有滤波参数 —— 那就是"很抖"');
+  assert.match(src, /OneEuroFilter/, '没用 One Euro（截止频率随手速自适应）');
+  // 参数要比指针更平滑：两者要的东西不同。
+  const m = src.match(/minCutoff:\s*([\d.]+),\s*beta:\s*([\d.]+)/);
+  assert.ok(m, '找不到滤波参数');
+  assert.ok(Number(m[1]) < 1.2,
+    `minCutoff ${m[1]} 不比指针的 1.2 小 —— 骨架是反馈，宁可慢半拍也不要抖`);
+});
+
+check('滤波真的降低抖动（拿真机数据回测）', () => {
+  const O = globalThis.GestureWallOverlay;
+  const fake = { getContext: () => ({ setTransform() {}, clearRect() {} }),
+    width: 0, height: 0, clientWidth: 0, clientHeight: 0 };
+  const ov = new O.HandOverlay(fake);
+  if (!ov.smooth) { assert.fail('HandOverlay 没有 smooth 方法'); }
+
+  // 造一只"抖动的静止手"：固定姿势 + 交替偏移，那正是真机噪声的形状。
+  const base = [];
+  for (let k = 0; k < 21; k += 1) base.push({ x: 0.5 + k * 0.01, y: 0.5 });
+  const raw = [];
+  for (let i = 0; i < 12; i += 1) {
+    raw.push(base.map((p) => ({ x: p.x + (i % 2 ? 0.02 : -0.02), y: p.y })));
+  }
+  const smoothed = raw.map((h, i) => ov.smooth([h], i * 35)[0]);
+  const jit = (seq) => {
+    let sum = 0;
+    for (let i = 6; i < seq.length; i += 1) {
+      for (let k = 0; k < 21; k += 1) sum += Math.abs(seq[i][k].x - seq[i - 1][k].x);
+    }
+    return sum;
+  };
+  const before = jit(raw);
+  const after = jit(smoothed);
+  assert.ok(after < before * 0.5,
+    `滤波只把抖动从 ${before.toFixed(3)} 降到 ${after.toFixed(3)} —— 不到一半，参数没起作用`);
+});
+
+check('判定侧不滤波（滤波会削掉动作幅度，而幅度是判据）', () => {
+  // ⚠️ 同一份数据两个用途：判定要"手真实在哪"，骨架要"看着稳"。
+  // 给判定也滤波会让快速动作的幅度变小，而幅度正是动作录制的判据
+  // （`MIN_MOVE_EXTENT`）—— 那会把"动作幅度不够"变成一个滤波器造出来的问题。
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.doesNotMatch(input, /SKELETON_FILTER/, '判定侧用上了骨架的滤波参数');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  // sendHands 发的是原始坐标，滤波发生在 overlay 那一侧
+  const send = sensor.slice(sensor.indexOf('function sendHands'));
+  assert.doesNotMatch(send.slice(0, 600), /smooth/,
+    'sensor 在发送前就滤波了 —— 那样判定和录制也会吃到滤波后的坐标');
+});
+
+check('手离开时清掉滤波器状态', () => {
+  // 留着的话下次举手骨架会从上次的位置"飞"过来 —— One Euro 的状态是"上一个位置"，
+  // 跨越一次手不在的间隔没有意义，而那比抖动更奇怪。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  const block = src.slice(src.indexOf('if (this.lastAt && now - this.lastAt > FADE_MS)'));
+  assert.match(block.slice(0, 400), /this\.filters = \[\]/,
+    '手离开后没清滤波器 —— 下次举手骨架会从旧位置插值过来');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
