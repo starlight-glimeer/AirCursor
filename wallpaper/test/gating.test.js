@@ -978,6 +978,47 @@ check('骨架层的整层停摆能被观测到', () => {
   assert.match(frame, /catch \(error\)/, 'hands.send 的异常被吞掉了');
 });
 
+// ── 壁纸的空状态和调试 HUD:收缩之后它们的理由都过期了 ──────────────────────
+//
+// 用户报「我的这个产品一打开,即出现这个把壁纸盖住了」——**两个东西同时盖着**:
+//
+//   ① 空状态引导页,判据是"三张图设了没有",而那个入口(图库/模板 tab)已经砍掉
+//      ⟹ 它**永远显示**,还指着一个不存在的功能("按 ⌃⇧W 选三张图")
+//   ② 调试 HUD,`showHud: true` 是开发遗留,而它的复选框在「壁纸与音乐」tab 里
+//      ⟹ 打开就关不掉
+//
+// ⟹ **删一个 tab 时要查:有没有别处的逻辑依赖它提供的入口。**这两个都是"功能删了但
+// 引导/开关还指着它"。
+check('调试 HUD 默认关，而且有不依赖面板的开关', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /showHud: false/, 'HUD 默认开着 —— 它盖在壁纸左上角');
+  // ⚠️ "默认关 + 没有开关"等于这个观测手段不存在，而 HUD 报的壁纸层策略/帧率/
+  // 鼠标事件收不收到，正是壁纸出问题时第一个该看的东西。原来那个复选框在已删的 tab 里。
+  assert.match(main, /Control\+Shift\+H[\s\S]{0,200}showHud/,
+    'HUD 没有快捷键开关 —— 默认关之后它就彻底没入口了');
+  // 写在代码里但用户不知道等于没有。
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(dash, /⌃⇧H/, '面板没列出这个快捷键');
+});
+
+check('壁纸空状态的判据包含"装载了 WE 壁纸"', () => {
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.html'), 'utf8');
+  const fn = wall.slice(wall.indexOf('function syncPlaceholder'));
+  assert.match(fn.slice(0, 600), /we\s*&&\s*c\.we\.dir|weLoaded/,
+    '空状态只看三张图 —— 那个入口已经砍掉，而装载 WE 壁纸之后也不该再显示引导');
+  // 文案不能指向已删的功能。
+  //
+  // ⚠️ 只看**非注释**内容。这个文件的注释里有一句"还指着一个不存在的功能(选三张图)"——
+  // 那是解释为什么改的,而按整段文本匹配会把那句解释当成违规。**守卫太宽会逼人删掉解释,
+  // 而解释正是下次别再犯的唯一依据。**这个错我在 focusable 那条守卫上犯过一次。
+  const visible = wall
+    .replace(/<!--[\s\S]*?-->/g, '')      // HTML 注释
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(visible, /选三张图/,
+    '引导页还在说"选三张图" —— 图库和模板 tab 已经删了，那是个不存在的操作');
+  assert.match(wall, /创意工坊/, '引导页没指向现在真实存在的入口');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
 // ⚠️ 关键点录制的载荷必须带当时生效的 tuning。
 //

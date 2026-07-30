@@ -401,7 +401,12 @@ const defaultConfig = {
     // 那比"点壁纸完全没反应"可接受得多。
     mouseGateFinder: false,
   },
-  debug: { showHud: true },
+  // ⚠️ 默认**关**。这是开发时的遗留:HUD 盖在壁纸左上角,而它报的东西(fps、壁纸层策略、
+  // 鼠标事件收不收到、三层设了没)全是调试信息。用户报「一打开就出现这个把壁纸盖住了」。
+  //
+  // 而且那个开关原来在「壁纸与音乐」tab 里,收缩之后没了入口 ⟹ 打开就关不掉。
+  // 要看它的话 ⌃⇧H。
+  debug: { showHud: false },
 };
 
 let config = null;
@@ -2376,8 +2381,19 @@ app.whenReady().then(() => {
     broadcast('helper-log', { source: 'main', message: '骨架层已拆掉(⌃⇧X) —— 鼠标恢复。重新勾选「显示手骨架」可以再开' });
   });
 
+  // 调试 HUD 的开关。默认关(它盖在壁纸上),而原来那个复选框在「壁纸与音乐」tab 里 ——
+  // 收缩之后那个 tab 没了 ⟹ 没有快捷键的话它就彻底没入口了。
+  //
+  // ⚠️ 这条不是可选的:一个"默认关且没有开关"的观测手段等于不存在,而 HUD 报的
+  // 壁纸层策略/帧率/鼠标事件收不收到,正是壁纸出问题时第一个该看的东西。
+  globalShortcut.register('Control+Shift+H', () => {
+    config.debug = { ...config.debug, showHud: !config.debug.showHud };
+    writeConfig();
+    broadcast('config', config);
+  });
+
   console.log('\n=== GestureWall ===');
-  console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角');
+  console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧H 调试信息');
   console.log('  ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
 
