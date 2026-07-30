@@ -140,40 +140,38 @@ const WALL_STRATEGIES = [
 //
 // Bounds are read fresh on every call rather than captured once, because this is
 // also what runs when the display changes resolution.
-// 推到整块屏幕，菜单栏那条带子也盖上。
+// 把窗口推到整块屏幕（含菜单栏那 25px 的区域）。
 //
-// ⚠️ 这个函数改过两次，两次的根因都值得写下来，因为它们是不同的错。
+// ⚠️ 这个函数改了三次，而**前三次都在修错的东西**。诊断报告（2026-07-30）证明了这点：
 //
-// 第一版：创建时推三次（立刻 / ready-to-show / 350ms）就不管了。
-//   → 窗口后来被 macOS 夹回去，那三次早跑完了。
+//   weBounds: { x:0, y:0, width:1470, height:956 }
+//   display:  { x:0, y:0, width:1470, height:956 }
+//   menuBar:  { ok: true, pushes: 0 }
 //
-// 第二版：定时轮询（每 400ms），**盖住之后 clearInterval**。
-//   → 用户实测："切一个桌面再切回来是铺满的，但我点击终端（任何不全屏的应用），
-//     上面就会出现那条缝。"
-//   → 那条反馈精确指出了缺陷：切桌面回来能铺满（轮询在起作用），
-//     而点应用之后出缝（那时候定时器已经停了，没人再推）。
-//   ⚠️ "盖住就停"这个决定本身是对的（不停会和 macOS 轮流设 frame，壁纸每 400ms 抖），
-//     但它让"之后再被夹"变成无人处理。
+// 窗口尺寸和屏幕**一像素不差**，pushes:0 说明压根没被夹过。
+// 而用户仍然看到顶上那条带子。
 //
-// 第三版（现在）：**事件驱动**。macOS 在窗口层级关系变化时夹取，而那些时刻是可监听的：
-//   resize  ← 被夹本身就是一次 resize，这是最直接的信号
-//   blur    ← 别的应用被激活（用户点终端就是这个）
-//   show / ready-to-show
-// ⟹ 不再轮询，所以不会打架；而每个夹取时刻都有人推，所以缝不会留下。
+// ⟹ 真相：那不是"窗口没盖住"，是**普通窗口画不到菜单栏那一层**。
+// 菜单栏是系统绘制的独立图层，普通窗口（bottom-normal / floating 策略）无论多大，
+// 那 25px 永远画在它上面。而真壁纸层（desktop 策略）在菜单栏**之下**，
+// 半透明的菜单栏会透出壁纸 —— 所以那条策略下用户实测过是"铺满"的。
 //
-// 防打架靠两条：① 已经是对的尺寸就不推（幂等）② 同一轮里限次数。
-const MENU_BAR_MAX_PUSHES = 12;
-const MENU_BAR_SETTLE_MS = 3000;
-
+// ⟹ 也就是说这是个**取舍**，不是 bug：
+//     desktop        菜单栏区域有内容 ✅，收不到鼠标 ❌
+//     bottom-normal  能收鼠标 ✅，菜单栏那 25px 是系统的 ⚠️
+//
+// 我在这上面连错三轮的教训：**尺寸是可测的，而我三次都没去测**。
+// 前两版加的是"推得更执着"（重试、事件驱动），第三版才想到核对实际 bounds ——
+// 而那个核对一上线就证明前提是错的。⟹ 报出可核对的数字比修得更用力重要。
+//
+// 现在这个函数只做两件事：把 frame 设成整屏（分辨率变化时仍然需要），
+// 以及**如实报告尺寸对不对** —— 后者让"那条带子"不再被误判成尺寸问题。
 function liftOverMenuBar(win, label) {
-  let pushes = 0;
-  let windowStart = 0;
-
   const measure = () => {
     if (!win || win.isDestroyed()) return null;
     const want = screen.getPrimaryDisplay().bounds;
     const got = win.getBounds();
-    // ⚠️ 四个方向都要看：只查 y 和 height 的话，多显示器时 x 被夹会漏掉。
+    // 四个方向都量：只查 y 和 height 的话，多显示器时 x 被夹会漏掉。
     const gap = {
       x: got.x - want.x, y: got.y - want.y,
       width: want.width - got.width, height: want.height - got.height,
@@ -184,54 +182,37 @@ function liftOverMenuBar(win, label) {
   const push = (reason) => {
     const before = measure();
     if (!before) return;
-    // ⚠️ 幂等：已经是对的就不设。这是防打架的第一道 ——
-    // 无条件 setBounds 会和 macOS 轮流改 frame，表现是壁纸抖。
+    // 幂等：已经对了就不设。无条件 setBounds 会和 macOS 轮流改 frame（壁纸会抖），
+    // 而且它让 resize→setBounds→resize 的递归自己断掉。
     if (!before.clamped) {
-      menuBarState = { ok: true, pushes, label, lastReason: reason };
-      return;
-    }
-
-    // 同一轮限次。⚠️ 窗口过了就重新计数 —— 否则用户开一天之后
-    // 次数早就耗尽，再被夹就没人管了（那正是第二版的病）。
-    const now = Date.now();
-    if (now - windowStart > MENU_BAR_SETTLE_MS) { windowStart = now; pushes = 0; }
-    if (pushes >= MENU_BAR_MAX_PUSHES) {
       menuBarState = {
-        ok: false, pushes, label, lastReason: reason, gap: before.gap,
+        sizeOk: true, label, lastReason: reason,
+        // ⚠️ 尺寸对 ≠ 菜单栏区域有内容。这两件事必须分开报，
+        // 否则"尺寸没问题"会被读成"那条带子是 bug"。
+        coversMenuBar: label === 'desktop',
       };
       return;
     }
-
     try {
-      win.setBounds(screen.getPrimaryDisplay().bounds);
-      pushes += 1;
+      win.setBounds(want ? want : screen.getPrimaryDisplay().bounds);
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
       return;
     }
-
     const after = measure();
-    if (!after) return;
     menuBarState = {
-      ok: !after.clamped, pushes, label, lastReason: reason,
-      gap: after.clamped ? after.gap : null,
+      sizeOk: after ? !after.clamped : false,
+      gap: after && after.clamped ? after.gap : null,
+      label, lastReason: reason,
+      coversMenuBar: label === 'desktop',
     };
-    if (after.clamped && pushes >= MENU_BAR_MAX_PUSHES) {
-      // ⚠️ 放弃时说出来。这条缝用户看得见但查不到原因，
-      // 而"推了 12 次仍差 25px"是一句能行动的话。
-      console.warn(`[wall] 菜单栏那条缝盖不住：推了 ${pushes} 次，`
-        + `仍差 y=${after.gap.y} height=${after.gap.height}（${label || '?'}，因 ${reason}）`);
-    }
   };
 
   push('create');
   win.once('ready-to-show', () => push('ready-to-show'));
   win.on('show', () => push('show'));
-  // ⚠️ resize 是最直接的信号 —— 被夹本身就是一次 resize。
+  // resize 覆盖分辨率变化和 macOS 的夹取 —— 那两件都需要重设 frame。
   win.on('resize', () => push('resize'));
-  // ⚠️ 这条是用户那个现象的正解：点别的应用 ⟹ 我们失焦 ⟹ macOS 重排层级 ⟹ 夹。
-  win.on('blur', () => push('blur'));
-  win.on('focus', () => push('focus'));
   return measure;
 }
 
@@ -1904,6 +1885,26 @@ ipcMain.handle('reveal-diagnostics', () => {
 ipcMain.handle('we-status', () => ({
   ...weStatus(null), audio: audioStatus, video: videoStatus,
 }));
+
+// 切 WE 壁纸的层策略。
+//
+// ⚠️ 这个开关存在是因为那是个**真取舍**，不该由我替用户决定：
+//   desktop        菜单栏区域有内容，但收不到鼠标（点击掉流星那类交互失效）
+//   bottom-normal  能收鼠标，但菜单栏那 25px 是系统的
+ipcMain.handle('we-set-strategy', (_event, id) => {
+  if (!WALL_STRATEGIES.some((s) => s.id === id)) {
+    return { ok: false, error: `未知策略 ${id}` };
+  }
+  config.we.strategy = id;
+  writeConfig(config);
+  // 层策略是创建时定的，只能重建窗口。
+  if (weProject) {
+    destroyWEWindow();
+    weWindow = createWEWindow();
+  }
+  broadcast('config', config);
+  return { ok: true, strategy: id };
+});
 
 // 切音源。'netease' / 'system' / 'off'
 ipcMain.handle('we-set-audio-source', (_event, source) => {

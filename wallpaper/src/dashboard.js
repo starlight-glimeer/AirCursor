@@ -619,6 +619,7 @@ function apply(next) {
   renderToggles();
   cursorToggle.checked = !!config.controlCursor;
   renderAudioSource();
+  renderWEStrategy();
   if (!built) {
     renderSliders('tuning', TUNING);
     renderSliders('musicTuning', MUSIC_TUNING);
@@ -794,6 +795,34 @@ function renderAudioSource() {
   }
 }
 
+// 壁纸层策略选择。⚠️ 做成开关而不是我替用户定，因为那是个真取舍：
+// 菜单栏区域有内容 vs 鼠标交互能用，两者在 macOS 上不可兼得。
+const WE_STRATEGIES = [
+  { id: 'desktop', label: '真壁纸层', hint: '菜单栏区域也有内容，但壁纸收不到鼠标' },
+  { id: 'bottom-normal', label: '普通窗口压最底', hint: '能收鼠标，顶部 25px 是系统菜单栏' },
+  { id: 'floating', label: '悬浮最上层', hint: '只用来验渲染，会盖住所有窗口' },
+];
+
+function renderWEStrategy() {
+  const host = document.getElementById('we-strategy');
+  if (!host) return;
+  const current = (config.we && config.we.strategy) || 'bottom-normal';
+  host.className = 'we-src';
+  host.innerHTML = '';
+  for (const s of WE_STRATEGIES) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = s.id === current ? 'on' : '';
+    button.textContent = s.label;
+    button.title = s.hint;
+    button.onclick = async () => {
+      await window.gw.weSetStrategy(s.id);
+      renderWEStatus();
+    };
+    host.appendChild(button);
+  }
+}
+
 // 状态分三层显示，因为它们代表不同的失败：
 //   装载了没有 → 根本没选壁纸
 //   ready 没有 → 页面加载了但里面的 JS 没跑起来（ES module 挂了就是这样）
@@ -808,12 +837,22 @@ async function renderWEStatus() {
   // ⚠️ 带上触发原因（lastReason）：那是查因的线索。
   // "因 blur 被夹"意味着点别的应用触发的，"因 resize"是尺寸变化触发的 ——
   // 两者指向不同的 macOS 行为。
-  const menuBar = status.menuBar && !status.menuBar.ok && status.menuBar.gap
+  // ⚠️ 尺寸对不对、和菜单栏区域有没有内容，是**两件事**。
+  //
+  // 诊断报告证明过：窗口 1470×956 一像素不差，而用户仍然看到顶上那条带子 ——
+  // 因为普通窗口画不到菜单栏那一层（系统的独立图层）。
+  // 所以这里只在**尺寸真的不对**时报警，而"那条带子"用另一句话解释。
+  const menuBarNote = status.menuBar && status.menuBar.sizeOk
+    && !status.menuBar.coversMenuBar
+    ? '\n顶部那 25px 是系统菜单栏画的（我们的窗口已经铺满整屏）—— '
+      + '想让那块也有内容就切「真壁纸层」，代价是壁纸收不到鼠标。'
+    : '';
+  const menuBar = menuBarNote || (status.menuBar && !status.menuBar.sizeOk && status.menuBar.gap
     ? `\n⚠️ 顶部菜单栏那条带子盖不住（推了 ${status.menuBar.pushes} 次，`
       + `还差 ${status.menuBar.gap.height || status.menuBar.gap.y}px，`
       + `最近因 ${status.menuBar.lastReason}）—— macOS 把窗口夹进了可见区域。`
       + '⌃⇧L 切到 desktop 层能盖住，代价是鼠标交互失效。'
-    : '';
+    : '');
 
   if (!status.dir) {
     node.innerHTML = '未装载 —— 现在显示的是三层景深壁纸' + menuBar;

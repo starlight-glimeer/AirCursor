@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('gw', {
   weStatus: () => ipcRenderer.invoke('we-status'),
   weSetProperty: (key, value) => ipcRenderer.invoke('we-set-property', key, value),
   weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
+  weSetStrategy: (id) => ipcRenderer.invoke('we-set-strategy', id),
 
   // 创意工坊
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),

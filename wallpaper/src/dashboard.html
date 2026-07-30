@@ -367,6 +367,19 @@
       </p>
     </div>
 
+    <h3>壁纸层</h3>
+    <div class="card">
+      <div id="we-strategy" class="we-src"></div>
+      <p class="hint">
+        ⚠️ 这是个<b>取舍，没有两全的选项</b>：
+        <br>· <b>真壁纸层</b> —— 顶部菜单栏区域也有内容，但<b>收不到鼠标</b>
+        （壁纸自己的点击交互会失效，手势不受影响）
+        <br>· <b>普通窗口压最底</b> —— 能收鼠标，但顶部那 25px 是系统菜单栏画的，
+        我们画不进去（那不是 bug，是 macOS 的图层规则）
+        <br>· <b>悬浮最上层</b> —— 只用来验渲染，会盖住所有窗口
+      </p>
+    </div>
+
     <h3>音源</h3>
     <div class="card">
       <div id="we-audio-source"></div>
