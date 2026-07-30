@@ -764,4 +764,57 @@ check('骨架层的整层停摆能被观测到', () => {
   assert.match(frame, /catch \(error\)/, 'hands.send 的异常被吞掉了');
 });
 
+// ── 打包配置:MediaPipe 的运行时资源不能封在 asar 里 ────────────────────────
+//
+// 云端 agent 指出的(他没实测,我核了机制):`sensor.js` 用
+// `locateFile: (file) => \`vendor/mediapipe/hands/${file}\`` 让 MediaPipe 在**运行时 fetch**
+// 那些 `.wasm` / `.tflite` / `.data`,而 **asar 是归档不是目录** ⟹ 那些请求读不到。
+//
+// ⚠️ 这类错**只在打包后爆**,开发模式全好 —— 而症状是"摄像头永远不开且什么都不说",
+// 和 `fdc795c` 修的那个 postinstall bug 一模一样(vendor 空 → 404 → 静默失败)。
+//
+// ⚠️ 我在云端**证不了**它(跑不了 electron-builder)。这条守卫钉的是"配置在位",
+// 不是"打包后真的能跑" —— 后者只能真机验。
+check('进 asar 的 vendor 目录都在 asarUnpack 里', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const build = pkg.build || {};
+  // asar 默认就是 true，所以不能靠"没写"来判断。
+  const asar = build.asar !== false;
+  if (!asar) return;   // 关了 asar 就没这个问题
+
+  const unpack = build.asarUnpack || [];
+  // `files` 里凡是 vendor（MediaPipe 的 wasm/tflite 在那儿）都要 unpack。
+  const vendorFiles = (build.files || []).filter((f) => f.includes('vendor'));
+  assert.ok(vendorFiles.length > 0, 'files 里没有 vendor —— 那 MediaPipe 怎么进包的？');
+  const missing = vendorFiles.filter((f) => {
+    const prefix = f.split('**')[0];
+    return !unpack.some((u) => u.split('**')[0] === prefix);
+  });
+  assert.deepStrictEqual(missing, [],
+    `这些 vendor 目录会被封进 asar，而 MediaPipe 在运行时 fetch 它们 ⟹ `
+    + `打包后摄像头永远不开：${missing.join(', ')}`);
+
+  // ⚠️ `native/` **不该**在 asarUnpack 里：它走 extraResources，压根不进 asar。
+  // 写进去不报错但是噪声，而噪声会让下次读这份配置的人以为它需要 unpack。
+  assert.ok(!unpack.some((u) => u.startsWith('native/')),
+    'native/ 走 extraResources 不进 asar —— 不需要 unpack，写进去是误导');
+});
+
+// 每个用到系统权限的功能都要有对应的 Info.plist key，否则 macOS **不弹授权框而是直接拒**。
+// 那个失败模式是"点了开启但一直没反应" —— 和"用户拒绝了"完全分不开。
+check('四种系统权限都有 Info.plist 的用途说明', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const info = ((pkg.build || {}).mac || {}).extendInfo || {};
+  for (const [key, why] of [
+    ['NSCameraUsageDescription', '摄像头'],
+    ['NSMicrophoneUsageDescription', '麦克风'],
+    ['NSSpeechRecognitionUsageDescription', '语音识别'],
+    // ⚠️ 抓系统音频在 macOS 上归**屏幕录制**权限，不是麦克风 —— 云端 agent 指出的。
+    ['NSScreenCaptureUsageDescription', '屏幕录制（抓系统音频驱动壁纸）'],
+  ]) {
+    assert.ok(info[key], `缺 ${key}（${why}）—— macOS 会直接拒而不弹框，`
+      + '而那和"用户拒绝了"分不开');
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -1,6 +1,6 @@
 {
   "name": "aircursor",
-  "version": "0.9.10",
+  "version": "0.9.11",
   "description": "Transparent macOS hand and voice control overlay.",
   "author": "starlight-glimeer",
   "main": "wallpaper/src/main.js",
@@ -17,6 +17,10 @@
     "appId": "com.starlightglimeer.aircursor",
     "productName": "GestureWall",
     "asar": true,
+    "asarUnpack": [
+      "wallpaper/src/vendor/**/*",
+      "public/vendor/**/*"
+    ],
     "files": [
       "wallpaper/**/*",
       "public/pose.js",
@@ -45,7 +49,8 @@
         "NSCameraUsageDescription": "AirCursor uses the camera to recognize your hand gestures.",
         "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
         "NSSpeechRecognitionUsageDescription": "AirCursor uses speech recognition for optional local voice commands.",
-        "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request."
+        "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request.",
+        "NSScreenCaptureUsageDescription": "GestureWall 读取系统音频来驱动壁纸的音频响应。"
       },
       "target": [
         "dmg"
