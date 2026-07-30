@@ -512,10 +512,14 @@ check('steamcmd 参数进日志前脱敏', () => {
 check('下载后验证文件真的落地了，才报成功', () => {
   const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-download'"),
     mainSrc.indexOf("ipcMain.handle('workshop-set-steam'"));
-  assert.match(handler, /existsSync\(path\.join\(dir, 'project\.json'\)\)/,
-    '没验证下载目录里真有 project.json');
-  // 找不到时要把找过的路径报出来，否则完全没法查
-  assert.match(handler, /expectedDir/, '找不到文件时没说找过哪里');
+  // 验证逻辑在 workshop.js 的 findDownloaded 里（纯函数、可测），main 只注入 existsSync。
+  assert.match(handler, /findDownloaded\(workshopId, \(p\) => fs\.existsSync\(p\)\)/,
+    '没验证文件真的落地了');
+  // ⚠️ 找不到时要把找过的**所有**路径报出来。我在这条上栽过：原来按
+  // "steamcmd 二进制的上两级"推数据根目录，而 brew 装的话那是 /opt/homebrew，
+  // 完全不对（真实位置是 ~/Library/Application Support/Steam）。
+  // 不列路径的话，那种失败完全没法查。
+  assert.match(handler, /searched/, '找不到文件时没列出找过哪些路径');
 });
 
 // 诊断报告的第一要素。⚠️ packaged: false 时权限类结论全都不可信

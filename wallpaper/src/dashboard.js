@@ -947,7 +947,9 @@ document.getElementById('ws-download').onclick = async () => {
   // ⚠️ 失败时把能行动的信息全给出来：原因 + 我们找过的路径 + 原始输出末尾。
   // 只说"下载失败"的话，用户和我都没法判断是账号、ID、还是我的路径推断错了。
   let html = `<span class="warn">${result.error}</span>`;
-  if (result.expectedDir) html += `\n找过这个路径：${result.expectedDir}`;
+  if (result.searched && result.searched.length) {
+    html += `\n找过这些路径：\n${result.searched.join('\n')}`;
+  }
   if (result.tail && result.tail.length) {
     html += `\n\nsteamcmd 最后几行：\n${result.tail.slice(-8).join('\n')}`;
   }

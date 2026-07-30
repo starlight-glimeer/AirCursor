@@ -28,14 +28,47 @@ function parseWorkshopId(input) {
   return match[1];
 }
 
-// steamcmd 的下载目录布局是它自己定的，不可配：
-//   <steamcmd 的安装目录>/steamapps/workshop/content/431960/<工坊 ID>/
+// steamcmd 在 macOS 上的数据根目录。
 //
-// ⚠️ 这个路径要和 steamcmd 实际写的地方一致，否则下载成功但我们找不到 ⟹
-// 症状是"下载完了什么都没发生"。
+// ⚠️ 这条是实测出来的，之前我猜错了。我原来按"steamcmd 二进制所在目录的上两级"推，
+// 而那在 brew 装的情况下是 /opt/homebrew —— 完全不对。真实位置来自 steamcmd
+// 自己的启动输出：
+//   Logging directory: '/Users/moon/Library/Application Support/Steam/logs'
+//
+// 而且 brew 的 /opt/homebrew/bin/steamcmd 只是**包装脚本**，真二进制在
+// Caskroom/steamcmd/<版本号>/MacOS/ 下 ⟹ 从二进制路径反推根目录这个思路本身就错，
+// 不管怎么推都错。
+//
+// 猜错的后果：下载真的成功了，但我们去错的地方找文件 ⟹ 报"下载完了但找不到"。
+const STEAM_ROOTS = [
+  `${process.env.HOME || '~'}/Library/Application Support/Steam`,
+  // 手动装 tar 包的话，steamcmd 会在自己所在目录下建 steamapps/
+  `${process.env.HOME || '~'}/steamcmd`,
+  `${process.env.HOME || '~'}/Steam`,
+];
+
+// 下载目录布局是 steamcmd 自己定的、不可配。
 function contentPath(steamRoot, workshopId) {
   if (!steamRoot || !workshopId) return null;
   return `${steamRoot}/steamapps/workshop/content/${WE_APP_ID}/${workshopId}`;
+}
+
+// 在所有可能的根目录下找那个工坊物品。
+//
+// ⚠️ 逐个试而不是推断，理由见上：路径推断这条路已经错过一次。exists 由调用方注入，
+// 这样这个函数仍然是纯的、可测。
+function findDownloaded(workshopId, exists, roots) {
+  for (const root of roots || STEAM_ROOTS) {
+    const dir = contentPath(root, workshopId);
+    if (dir && exists(`${dir}/project.json`)) return dir;
+  }
+  return null;
+}
+
+// 所有找过的路径。⚠️ 找不到时必须报出来 —— 否则用户和我都不知道该往哪查，
+// 而这条链最可能的失败恰恰是"路径不对"。
+function searchedPaths(workshopId, roots) {
+  return (roots || STEAM_ROOTS).map((r) => contentPath(r, workshopId)).filter(Boolean);
 }
 
 // 把 steamcmd 的一行输出翻译成状态。
@@ -127,10 +160,18 @@ function summarize(lines) {
 
 // steamcmd 可能在哪。⚠️ 顺序有意义：brew 的两个前缀（Apple Silicon 和 Intel）
 // 在前，因为那是绝大多数人的安装方式。
+//
+// ⚠️ 后两条是官方 tar 包的手动安装位置。加它们的理由很具体：brew 装 steamcmd 要先
+// 自更新索引（连 GitHub），国内经常卡好几分钟甚至超时 —— 那时候用户会走 Valve 官方
+// 的 steamcmd_osx.tar.gz，解到 ~/steamcmd/ 里。不认这条路的话，装好了我们还说"没找到"。
+//
+// 注意 tar 包给的是 **steamcmd.sh**（shell 包装脚本）不是同名二进制。
 const STEAMCMD_CANDIDATES = [
   '/opt/homebrew/bin/steamcmd',
   '/usr/local/bin/steamcmd',
   '/usr/bin/steamcmd',
+  `${process.env.HOME || '~'}/steamcmd/steamcmd.sh`,
+  `${process.env.HOME || '~'}/Steam/steamcmd.sh`,
 ];
 
 // steamcmd 没装的话给出能直接粘贴的命令。
@@ -188,6 +229,9 @@ function redactArgs(args) {
 root.GestureWallWorkshop = {
   WE_APP_ID,
   STEAMCMD_CANDIDATES,
+  STEAM_ROOTS,
+  findDownloaded,
+  searchedPaths,
   parseWorkshopId,
   contentPath,
   classifyLine,

@@ -1410,13 +1410,13 @@ ipcMain.handle('workshop-download', async (_event, input) => {
     child.on('exit', (code) => {
       downloading = null;
       const summary = Workshop.summarize(lines);
-      // steamcmd 的根目录 = 它自己所在目录的上一级（brew 装的话是 libexec）。
-      // ⚠️ 这个推断可能错，所以下载完要**验证目录真的存在**再说成功。
-      const root = path.dirname(path.dirname(steamcmd));
-      const dir = Workshop.contentPath(root, workshopId);
-      const landed = dir && fs.existsSync(path.join(dir, 'project.json'));
+      // ⚠️ 不从 steamcmd 的路径推数据目录 —— 那条我错过一次：brew 的
+      // /opt/homebrew/bin/steamcmd 只是包装脚本（真二进制在 Caskroom/…/MacOS/），
+      // 而数据实际落在 ~/Library/Application Support/Steam（steamcmd 自己的启动
+      // 输出里写着）。所以逐个候选去找，找到哪个算哪个。
+      const dir = Workshop.findDownloaded(workshopId, (p) => fs.existsSync(p));
 
-      if (landed) {
+      if (dir) {
         logEvent('workshop', `下载成功：${dir}`);
         const out = setWEWallpaper(dir);
         config.we.dir = dir;
@@ -1432,11 +1432,14 @@ ipcMain.handle('workshop-download', async (_event, input) => {
       const reason = summary && summary.kind !== 'downloaded'
         ? summary.text
         : `steamcmd 退出（code ${code}）但找不到文件`;
-      logEvent('workshop', `失败：${reason}`, { expectedDir: dir });
+      const searched = Workshop.searchedPaths(workshopId);
+      logEvent('workshop', `失败：${reason}`, { searched });
       resolve({
         ok: false,
         error: reason,
-        expectedDir: dir,
+        // ⚠️ 把找过的**所有**路径报出来。这条链最可能的失败就是路径不对，
+        // 而不给路径的话用户和我都不知道往哪查。
+        searched,
         // 最后 30 行原始输出。⚠️ 我的关键字分类可能漏，原文是兜底。
         tail: lines.slice(-30),
       });

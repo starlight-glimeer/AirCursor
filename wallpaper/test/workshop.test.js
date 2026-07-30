@@ -233,4 +233,43 @@ check('候选路径覆盖 Apple Silicon 和 Intel 的 brew 前缀', () => {
   assert.ok(S.STEAMCMD_CANDIDATES.some((p) => p.includes('/usr/local/')));
 });
 
+console.log('\n  下载落地在哪（我猜错过一次）');
+
+// ⚠️ 这一节的由来：我原来按"steamcmd 二进制所在目录的上两级"推数据根目录。
+// 那在 brew 装的情况下推出 /opt/homebrew —— 完全不对。真实位置是
+// ~/Library/Application Support/Steam（steamcmd 自己的启动输出里写着
+// "Logging directory: /Users/moon/Library/Application Support/Steam/logs"）。
+//
+// 而且 /opt/homebrew/bin/steamcmd 只是**包装脚本**，真二进制在
+// Caskroom/steamcmd/<版本>/MacOS/ 下 ⟹ 从二进制路径反推这个思路本身就错。
+// 猜错的后果：下载真成功了但我们去错地方找 ⟹ 报"下载完了但找不到"。
+check('macOS 的标准位置在候选里，且排第一', () => {
+  assert.match(S.STEAM_ROOTS[0], /Library\/Application Support\/Steam$/,
+    `第一候选不是 macOS 标准位置：${S.STEAM_ROOTS[0]}`);
+});
+
+check('逐个候选去找，不靠推断', () => {
+  const target = `${S.STEAM_ROOTS[0]}/steamapps/workshop/content/431960/999/project.json`;
+  const found = S.findDownloaded('999', (p) => p === target);
+  assert.ok(found, '标准位置下的文件没找到');
+  assert.match(found, /Library\/Application Support\/Steam/);
+});
+
+check('第二候选也能命中（手动装 tar 包的情况）', () => {
+  const target = `${S.STEAM_ROOTS[1]}/steamapps/workshop/content/431960/999/project.json`;
+  assert.ok(S.findDownloaded('999', (p) => p === target));
+});
+
+check('都没有时返回 null（不瞎报一个路径当成功）', () => {
+  assert.strictEqual(S.findDownloaded('999', () => false), null);
+});
+
+// ⚠️ 找不到时必须把找过的路径全报出来 —— 这条链最可能的失败就是路径不对，
+// 而不给路径的话完全没法查。这次就是靠用户贴的 steamcmd 输出才发现我猜错了。
+check('找不到时能列出所有找过的路径', () => {
+  const paths = S.searchedPaths('999');
+  assert.ok(paths.length >= 2, `只找了 ${paths.length} 个地方`);
+  for (const p of paths) assert.match(p, /workshop\/content\/431960\/999$/);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
