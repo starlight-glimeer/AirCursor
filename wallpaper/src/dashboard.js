@@ -805,10 +805,14 @@ async function renderWEStatus() {
   if (!node) return;
   // 菜单栏那条缝：盖住了不用说，盖不住要说清"试了几次、还差多少"。
   // ⚠️ 那条缝是"看得见但查不到"的典型 —— 用户只能看到顶上有一条别的东西。
-  const menuBar = status.menuBar && !status.menuBar.ok
-    ? `\n⚠️ 顶部菜单栏那条带子盖不住（试了 ${status.menuBar.attempts} 次，`
-      + `还差 ${status.menuBar.gap.height || status.menuBar.gap.y}px）—— `
-      + 'macOS 把窗口夹进了可见区域。⌃⇧L 换个壁纸层策略可能有效。'
+  // ⚠️ 带上触发原因（lastReason）：那是查因的线索。
+  // "因 blur 被夹"意味着点别的应用触发的，"因 resize"是尺寸变化触发的 ——
+  // 两者指向不同的 macOS 行为。
+  const menuBar = status.menuBar && !status.menuBar.ok && status.menuBar.gap
+    ? `\n⚠️ 顶部菜单栏那条带子盖不住（推了 ${status.menuBar.pushes} 次，`
+      + `还差 ${status.menuBar.gap.height || status.menuBar.gap.y}px，`
+      + `最近因 ${status.menuBar.lastReason}）—— macOS 把窗口夹进了可见区域。`
+      + '⌃⇧L 切到 desktop 层能盖住，代价是鼠标交互失效。'
     : '';
 
   if (!status.dir) {

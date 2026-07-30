@@ -670,50 +670,69 @@ check('WE 壁纸默认策略仍是能收鼠标的那条', () => {
   assert.match(fn, /config\.we\.strategy\s*\|\|\s*'bottom-normal'/);
 });
 
-console.log('\n  菜单栏覆盖（推完要核对，不是开火就不管）');
+console.log('\n  菜单栏覆盖（改过两次，两次根因不同）');
 
-// ⚠️ 这条来自真机反馈：菜单栏那条缝又出现了。
+// ⚠️ 这一节记的是两次真机反馈，而它们指向**不同**的错：
 //
-// 原来的做法是"创建时推三次"（立刻 / ready-to-show / 350ms），也就是开火就不管。
-// 而窗口是**后来**被 macOS 夹回去的 —— macOS 会在窗口加入 Space、切桌面回来、
-// 分辨率变化时重新把 frame 夹进 visibleFrame，那时候那三次早就跑完了。
-check('推完之后核对实际 bounds（不假设 setBounds 生效了）', () => {
+// 第一版：创建时推三次就不管 → 窗口后来被夹，那三次早跑完了。
+// 第二版：定时轮询，盖住之后 clearInterval → 用户实测：
+//   "我切一个桌面，再切回来就是铺满的，但是我点击终端（任何不全屏的应用），
+//    上面就会出现那条缝。"
+//   ⟹ 切桌面回来能铺满（轮询在起作用），点应用之后出缝（定时器已经停了）。
+//   "盖住就停"本身是对的（不停会和 macOS 轮流设 frame，壁纸抖），
+//   但它让"之后再被夹"无人处理。
+//
+// 第三版：事件驱动 —— 夹取的时刻是可监听的。
+check('监听夹取会发生的那些时刻（不是定时轮询）', () => {
   const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
-    mainSrc.indexOf('let menuBarState = null'));
-  assert.match(fn, /win\.getBounds\(\)/,
-    '没核对实际拿到的 bounds —— setBounds 被夹了也不知道');
-  assert.match(fn, /clamped/, '没判断是否被夹');
+    mainSrc.indexOf('// 最近一次覆盖核对的结果'));
+  // resize 是最直接的信号：被夹本身就是一次 resize
+  assert.match(fn, /win\.on\('resize'/, '没监听 resize —— 那是被夹的直接信号');
+  // ⚠️ blur 是用户那个现象的正解：点别的应用 ⟹ 我们失焦 ⟹ macOS 重排层级 ⟹ 夹
+  assert.match(fn, /win\.on\('blur'/,
+    '没监听 blur —— 点别的应用之后那条缝就会回来（用户实测过）');
+  // 不该再有轮询
+  assert.ok(!/setInterval/.test(fn),
+    '还在用 setInterval 轮询 —— 那会和 macOS 打架，而且盖住后停掉就漏了后续夹取');
 });
 
-// ⚠️ 重试必须有上限：不然会和 macOS 的夹取来回打架，
-// 表现是壁纸每 400ms 抖一下 —— 那比一条缝糟得多。
-check('重试有次数上限（否则和 macOS 打架，壁纸会抖）', () => {
-  assert.match(mainSrc, /MENU_BAR_RETRIES/, '重试没有上限常量');
+// ⚠️ 幂等是防打架的第一道，而且它同时让 resize→setBounds→resize 的递归自己断掉：
+// 第二次进来时尺寸已经对了，走幂等分支 return，链就断了。
+check('已经是对的尺寸就不推（幂等，同时断掉 resize 递归）', () => {
   const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
-    mainSrc.indexOf('let menuBarState = null'));
-  assert.match(fn, /attempts >= MENU_BAR_RETRIES/, '没检查上限');
-  assert.match(fn, /clearInterval/, '成功或放弃后没停掉定时器');
+    mainSrc.indexOf('// 最近一次覆盖核对的结果'));
+  const pushFn = fn.slice(fn.indexOf('const push ='));
+  assert.match(pushFn.slice(0, 500), /if \(!before\.clamped\)[\s\S]{0,200}return/,
+    '没有幂等分支 —— 无条件 setBounds 会和 macOS 轮流改 frame，壁纸会抖');
 });
 
-// 成功之后也要停 —— 一直推会让 macOS 和我们轮流设 frame。
-check('盖住之后就停，不继续推', () => {
+// 限次是必须的，但**窗口要能重置** —— 否则开一天之后次数耗尽，
+// 再被夹就没人管了（那正是第二版的病，只是换了个形式）。
+check('限次有时间窗口，会重置（否则用久了就失效）', () => {
+  assert.match(mainSrc, /MENU_BAR_MAX_PUSHES/, '没有次数上限');
+  assert.match(mainSrc, /MENU_BAR_SETTLE_MS/, '没有时间窗口');
   const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
-    mainSrc.indexOf('let menuBarState = null'));
-  const successBranch = fn.slice(fn.indexOf('if (!state.clamped)'));
-  assert.match(successBranch.slice(0, 200), /clearInterval/,
-    '盖住之后没停定时器 —— 会和 macOS 轮流设 frame');
+    mainSrc.indexOf('// 最近一次覆盖核对的结果'));
+  assert.match(fn, /windowStart = now; pushes = 0/,
+    '时间窗口过了没重置计数 —— 用久了限次会永久耗尽');
 });
 
-// ⚠️ 这条缝是"看得见但查不到原因"的典型：用户只能看到顶上有一条别的东西。
-// 所以核对结果必须能被看到。
-check('核对结果进诊断报告和面板', () => {
+// 四个方向都要量：只查 y 和 height 的话，多显示器时 x 被夹会漏掉。
+check('四个方向都核对（不只是 y 和 height）', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function liftOverMenuBar'),
+    mainSrc.indexOf('// 最近一次覆盖核对的结果'));
+  assert.match(fn, /x: got\.x - want\.x/, '没量 x 方向');
+  assert.match(fn, /Object\.values\(gap\)\.some/, '没有统一判定');
+});
+
+// ⚠️ 这条缝是"看得见但查不到原因"的典型 —— 用户只能看到顶上有一条别的东西。
+check('核对结果进诊断报告和面板，并带上触发原因', () => {
   assert.match(mainSrc, /menuBar: menuBarState/, '核对结果没进报告/状态');
+  assert.match(mainSrc, /lastReason/, '没记是哪个事件触发的 —— 那是查因的线索');
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
-  assert.match(dash, /menuBar/, '面板不显示菜单栏覆盖状态');
   assert.match(dash, /盖不住|菜单栏/, '面板没有给人看的说明');
 });
 
-// 三条策略都要盖菜单栏，而且要带上策略名 —— 否则报错时不知道是哪条策略失败的。
 check('三条策略都调 liftOverMenuBar 并带策略名', () => {
   const calls = [...mainSrc.matchAll(/liftOverMenuBar\(win, '([a-z-]+)'\)/g)].map((m) => m[1]);
   assert.deepStrictEqual(calls.sort(), ['bottom-normal', 'desktop', 'floating'],

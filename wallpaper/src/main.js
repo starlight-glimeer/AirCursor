@@ -142,72 +142,97 @@ const WALL_STRATEGIES = [
 // also what runs when the display changes resolution.
 // 推到整块屏幕，菜单栏那条带子也盖上。
 //
-// ⚠️ 这个函数改过一次，原因值得写下来。原来的做法是"创建时推三次"
-//（立刻 / ready-to-show / 350ms 后），也就是**开火就不管了**。
+// ⚠️ 这个函数改过两次，两次的根因都值得写下来，因为它们是不同的错。
 //
-// 实测（用户截图）：菜单栏那条缝又出现了。而那三次早就跑完了 ——
-// 说明窗口是**后来**被 macOS 夹回去的。macOS 会在窗口加入 Space、
-// 切桌面回来、分辨率变化时重新把 frame 夹进 visibleFrame。
+// 第一版：创建时推三次（立刻 / ready-to-show / 350ms）就不管了。
+//   → 窗口后来被 macOS 夹回去，那三次早跑完了。
 //
-// ⟹ 所以改成三件事：
-//   ① 推完**核对**（getBounds vs 屏幕 bounds），而不是假设生效了
-//   ② 被夹回去时再推，有次数上限（不然会变成死循环打架）
-//   ③ 核对结果报出来，进诊断报告 —— 那条缝是"看得见但查不到"的典型
-const MENU_BAR_RETRIES = 8;
-const MENU_BAR_RETRY_MS = 400;
+// 第二版：定时轮询（每 400ms），**盖住之后 clearInterval**。
+//   → 用户实测："切一个桌面再切回来是铺满的，但我点击终端（任何不全屏的应用），
+//     上面就会出现那条缝。"
+//   → 那条反馈精确指出了缺陷：切桌面回来能铺满（轮询在起作用），
+//     而点应用之后出缝（那时候定时器已经停了，没人再推）。
+//   ⚠️ "盖住就停"这个决定本身是对的（不停会和 macOS 轮流设 frame，壁纸每 400ms 抖），
+//     但它让"之后再被夹"变成无人处理。
+//
+// 第三版（现在）：**事件驱动**。macOS 在窗口层级关系变化时夹取，而那些时刻是可监听的：
+//   resize  ← 被夹本身就是一次 resize，这是最直接的信号
+//   blur    ← 别的应用被激活（用户点终端就是这个）
+//   show / ready-to-show
+// ⟹ 不再轮询，所以不会打架；而每个夹取时刻都有人推，所以缝不会留下。
+//
+// 防打架靠两条：① 已经是对的尺寸就不推（幂等）② 同一轮里限次数。
+const MENU_BAR_MAX_PUSHES = 12;
+const MENU_BAR_SETTLE_MS = 3000;
 
 function liftOverMenuBar(win, label) {
-  let attempts = 0;
-  let timer = null;
+  let pushes = 0;
+  let windowStart = 0;
 
-  const check = () => {
+  const measure = () => {
     if (!win || win.isDestroyed()) return null;
     const want = screen.getPrimaryDisplay().bounds;
     const got = win.getBounds();
-    // 差多少。⚠️ 只看 y 和 height 不够 —— 多显示器时 x 也会被夹。
+    // ⚠️ 四个方向都要看：只查 y 和 height 的话，多显示器时 x 被夹会漏掉。
     const gap = {
       x: got.x - want.x, y: got.y - want.y,
       width: want.width - got.width, height: want.height - got.height,
     };
-    const clamped = gap.x !== 0 || gap.y !== 0 || gap.width !== 0 || gap.height !== 0;
-    return { want, got, gap, clamped };
+    return { want, got, gap, clamped: Object.values(gap).some((v) => v !== 0) };
   };
 
-  const push = () => {
-    if (!win || win.isDestroyed()) { if (timer) clearInterval(timer); return; }
+  const push = (reason) => {
+    const before = measure();
+    if (!before) return;
+    // ⚠️ 幂等：已经是对的就不设。这是防打架的第一道 ——
+    // 无条件 setBounds 会和 macOS 轮流改 frame，表现是壁纸抖。
+    if (!before.clamped) {
+      menuBarState = { ok: true, pushes, label, lastReason: reason };
+      return;
+    }
+
+    // 同一轮限次。⚠️ 窗口过了就重新计数 —— 否则用户开一天之后
+    // 次数早就耗尽，再被夹就没人管了（那正是第二版的病）。
+    const now = Date.now();
+    if (now - windowStart > MENU_BAR_SETTLE_MS) { windowStart = now; pushes = 0; }
+    if (pushes >= MENU_BAR_MAX_PUSHES) {
+      menuBarState = {
+        ok: false, pushes, label, lastReason: reason, gap: before.gap,
+      };
+      return;
+    }
+
     try {
       win.setBounds(screen.getPrimaryDisplay().bounds);
+      pushes += 1;
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
       return;
     }
-    attempts += 1;
-    const state = check();
-    if (!state) return;
-    if (!state.clamped) {
-      // 成功了就停。⚠️ 不停的话会和 macOS 的夹取来回打架，
-      // 表现是壁纸每 400ms 抖一下。
-      if (timer) { clearInterval(timer); timer = null; }
-      menuBarState = { ok: true, attempts, label };
-      return;
-    }
-    if (attempts >= MENU_BAR_RETRIES) {
-      if (timer) { clearInterval(timer); timer = null; }
-      // ⚠️ 放弃时**说出来**。这条缝用户看得见但查不到原因 ——
-      // 而"我们试了 8 次仍然被夹住 25px"是一句能行动的话。
-      menuBarState = { ok: false, attempts, gap: state.gap, label };
-      console.warn(`[wall] 菜单栏那条缝盖不住：试了 ${attempts} 次，`
-        + `仍差 y=${state.gap.y} height=${state.gap.height}（策略 ${label || '?'}）`);
+
+    const after = measure();
+    if (!after) return;
+    menuBarState = {
+      ok: !after.clamped, pushes, label, lastReason: reason,
+      gap: after.clamped ? after.gap : null,
+    };
+    if (after.clamped && pushes >= MENU_BAR_MAX_PUSHES) {
+      // ⚠️ 放弃时说出来。这条缝用户看得见但查不到原因，
+      // 而"推了 12 次仍差 25px"是一句能行动的话。
+      console.warn(`[wall] 菜单栏那条缝盖不住：推了 ${pushes} 次，`
+        + `仍差 y=${after.gap.y} height=${after.gap.height}（${label || '?'}，因 ${reason}）`);
     }
   };
 
-  if (timer) clearInterval(timer);
-  push();
-  win.once('ready-to-show', push);
-  // 持续核对而不是打一枪：macOS 夹回去的时机不确定（加入 Space、切桌面回来）。
-  timer = setInterval(push, MENU_BAR_RETRY_MS);
-  win.once('closed', () => { if (timer) clearInterval(timer); });
-  return check;
+  push('create');
+  win.once('ready-to-show', () => push('ready-to-show'));
+  win.on('show', () => push('show'));
+  // ⚠️ resize 是最直接的信号 —— 被夹本身就是一次 resize。
+  win.on('resize', () => push('resize'));
+  // ⚠️ 这条是用户那个现象的正解：点别的应用 ⟹ 我们失焦 ⟹ macOS 重排层级 ⟹ 夹。
+  win.on('blur', () => push('blur'));
+  win.on('focus', () => push('focus'));
+  return measure;
 }
 
 // 最近一次覆盖核对的结果，进诊断报告。
