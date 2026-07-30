@@ -961,9 +961,20 @@ function renderPeek(item) {
 
   const meta = document.createElement('div');
   meta.className = 'meta';
-  const typeText = item.type
-    ? `${item.type}${item.supported ? ' · 能跑' : ' · 暂不支持'}`
-    : '类型未标注';
+  // ⚠️ 三种情况要分开说，因为用户据此做的决定不同：
+  //   作者标了 tag      → 确定的，可以直接判断
+  //   我们从文件名推的  → 大概，要说明是推断
+  //   什么线索都没有    → 说清"下了才知道"，而不是干巴巴一句"未标注"
+  //（"未标注"是用户实测看到的原话 —— 那时候他只能靠猜要不要下。）
+  let typeText;
+  if (item.type && item.typeSource === 'tag') {
+    typeText = `${item.type}${item.supported ? ' · 能跑' : ' · 暂不支持'}`;
+  } else if (item.type) {
+    typeText = `看起来是 ${item.type}（从文件名 ${item.filename} 推的）`
+      + `${item.supported ? ' · 应该能跑' : ' · 大概不支持'}`;
+  } else {
+    typeText = '作者没标类型 —— 下载后才知道是哪种（我们会自动认格式）';
+  }
   meta.innerHTML = `<b>${item.title}</b>`
     + `<span class="sub">${typeText} · ${W_FORMAT(item.sizeBytes)} · ${item.subscriptions} 人订阅</span>`;
   if (!item.supported && item.type) {

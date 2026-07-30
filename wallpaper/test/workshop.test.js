@@ -421,4 +421,48 @@ check('区分"目录不在"和"目录在但没 project.json"', () => {
   assert.strictEqual(S.findDownloadedDir('1', (p) => p === dirOnly), dirOnly);
 });
 
+console.log('\n  类型推断（实测撞上"类型未标注"）');
+
+// ⚠️ 用户实测：查 3339949060，预览图和标题都出来了，**类型显示"未标注"**。
+// 原因是那个物品的 tags 里没有 Scene/Video/Web —— 老物品或作者没选分类的都这样。
+//
+// 而"未标注"这三个字让用户只能靠猜要不要下。类型其实还能从 filename 推：
+// legacy 单文件物品的 filename 就是原始上传的文件名，带扩展名。
+check('tag 没标类型时从 filename 推', () => {
+  assert.strictEqual(S.typeFromFilename('wallpaper.mp4'), 'video');
+  assert.strictEqual(S.typeFromFilename('anim.gif'), 'image');
+  assert.strictEqual(S.typeFromFilename('scene.pkg'), 'scene');
+  // zip 里可能是任何一种，推不出来就别瞎猜
+  assert.strictEqual(S.typeFromFilename('stuff.zip'), null);
+  assert.strictEqual(S.typeFromFilename(null), null);
+});
+
+// ⚠️ 两个来源必须分开记：把推断显示成确定，用户会按错的信息做决定。
+check('typeSource 区分"作者标的"和"我们推的"', () => {
+  const tagged = S.parseDetail({
+    publishedfileid: '1', result: 1, title: 'x',
+    tags: [{ tag: 'Web' }], filename: 'whatever.mp4',
+  });
+  assert.strictEqual(tagged.type, 'web');
+  assert.strictEqual(tagged.typeSource, 'tag', 'tag 存在时不该用文件名');
+
+  const inferred = S.parseDetail({
+    publishedfileid: '2', result: 1, title: 'x',
+    tags: [{ tag: 'Anime' }], filename: 'clip.mp4',
+  });
+  assert.strictEqual(inferred.type, 'video');
+  assert.strictEqual(inferred.typeSource, 'filename');
+
+  const unknown = S.parseDetail({ publishedfileid: '3', result: 1, title: 'x' });
+  assert.strictEqual(unknown.type, null);
+  assert.strictEqual(unknown.typeSource, null);
+});
+
+check('推断出的类型也参与"能不能跑"的判断', () => {
+  const item = S.parseDetail({
+    publishedfileid: '1', result: 1, title: 'x', filename: 'a.mp4',
+  });
+  assert.strictEqual(item.supported, true, '从文件名推出 video 也该判成能跑');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

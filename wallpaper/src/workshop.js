@@ -330,6 +330,24 @@ function typeFromTags(tags) {
   return null;
 }
 
+// ⚠️ 不是每个工坊物品都标了类型 tag。实测（用户查 3339949060）：预览图和标题都拿到了，
+// 类型是"未标注" —— 老的物品、或者作者没选分类的，tags 里就是没有 Scene/Video/Web。
+//
+// 但类型还能从别处推：`filename` 字段。legacy 单文件物品的 filename 就是**原始上传的
+// 文件名**（带扩展名），而那直接说明了它是什么。
+//
+// ⟹ 这条比"类型未标注"有用得多：用户看到"未标注"只能靠猜要不要下，
+// 而看到"看起来是 mp4"就能决定了。
+function typeFromFilename(filename) {
+  const name = String(filename || '').toLowerCase();
+  if (!name) return null;
+  if (/\.(mp4|webm|m4v|mov|avi|mkv)$/.test(name)) return 'video';
+  if (/\.(gif|png|jpe?g|webp)$/.test(name)) return 'image';
+  // .zip / .rar 里可能是任何一种，说不了；WE 场景包常是 .pkg
+  if (/\.pkg$/.test(name)) return 'scene';
+  return null;
+}
+
 // 把 API 的一项翻译成我们要显示的样子。
 //
 // ⚠️ 字段全部防御性读取：这个 API 对已删除/私有的物品返回 result != 1 且大部分字段缺失，
@@ -344,13 +362,21 @@ function parseDetail(raw) {
   if (!ok) {
     return { id, ok: false, reason: '这个工坊物品拿不到 —— 已删除、设为私有，或者 ID 不对' };
   }
-  const type = typeFromTags(raw.tags);
+  // 先看 tag（作者标的最准），tag 没有就从文件名推。
+  // ⚠️ 两个来源分开记：typeSource 让界面能说"这是推断的"而不是当成确定的。
+  const tagType = typeFromTags(raw.tags);
+  const nameType = tagType ? null : typeFromFilename(raw.filename);
+  const type = tagType || nameType;
   return {
     id,
     ok: true,
     title: raw.title || '(无标题)',
     preview: raw.preview_url || null,
     type,
+    // 'tag' = 作者标的（可信）、'filename' = 我们从文件名推的（大概）、null = 没线索。
+    // ⚠️ 界面必须区分这两种，否则把推断显示成确定，用户会按错的信息做决定。
+    typeSource: tagType ? 'tag' : (nameType ? 'filename' : null),
+    filename: raw.filename || null,
     // 大小和订阅数都是给人做决定用的：几百 MB 的壁纸值不值得等，
     // 订阅数说明它是不是靠谱的作品。
     sizeBytes: Number(raw.file_size) || 0,
@@ -382,6 +408,7 @@ root.GestureWallWorkshop = {
   QUERY_ENDPOINT,
   detailsBody,
   typeFromTags,
+  typeFromFilename,
   parseDetail,
   parseDetailsResponse,
   formatSize,
