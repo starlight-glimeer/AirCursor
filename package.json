@@ -11,7 +11,10 @@
     "dist:mac": "electron-builder --mac dmg",
     "test": "node wallpaper/test/run.js",
     "vendor": "bash wallpaper/scripts/fetch-vendor.sh",
-    "postinstall": "bash wallpaper/scripts/fetch-vendor.sh"
+    "postinstall": "bash wallpaper/scripts/fetch-vendor.sh",
+    "sync": "git pull --ff-only && npm install --silent && bash wallpaper/scripts/fingerprint.sh",
+    "fingerprint": "bash wallpaper/scripts/fingerprint.sh",
+    "whatswrong": "bash wallpaper/scripts/whatswrong.sh"
   },
   "build": {
     "appId": "com.starlightglimeer.aircursor",
