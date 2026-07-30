@@ -43,6 +43,16 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
   let voiceBuffer = '';
   let voiceStatus = '等待';
   let systemCursorHidden = false;
+  // ⚠️ 这一行曾经**不在这里** —— 这个文件是从 AirCursor 的 electron/main.js 原样抽出来的,
+  // 而 `quitting` 是留在那边的模块级变量 ⟹ `pointerHelper.on('exit')` 里读它抛
+  // ReferenceError。
+  //
+  // 它为什么躲得过所有测试和 `npm start`:那一行**只在 helper 真的退出时**才执行,而
+  // helper 退出基本只发生在打包版退出的那一刻。用户真机上看到的就是退出时弹
+  // 「Uncaught Exception: ReferenceError: quitting is not defined」。
+  //
+  // ⚠️ 这个修复做过一次(`55abb70`),又跟着打包配置一起被 revert 掉了 —— 所以这是第二遍。
+  let quitting = false;
   let pointerHealth = {
     state: 'starting',
     detail: '尚未启动',
@@ -315,6 +325,9 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
       return { ok: true };
     },
     stop() {
+      // ⚠️ 先置位,再 kill。顺序反了 `quitting` 就白设了 —— `kill()` 之后 `exit`
+      // 事件随时可能到,而它读的就是这个标志。
+      quitting = true;
       if (pointerHelper && !pointerHelper.killed) pointerHelper.kill();
       if (voiceHelper && !voiceHelper.killed) voiceHelper.kill();
     },

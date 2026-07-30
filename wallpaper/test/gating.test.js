@@ -751,6 +751,51 @@ check('渲染脚本里调用的本地函数都有定义（拼错的函数名 nod
   }
 });
 
+// 同一类的第三半:**裸变量读取**,而且在主进程的非 main.js 模块里。
+//
+// `system-bridge.js` 是从 AirCursor 的 electron/main.js 原样抽出来的,而 `quitting` 是
+// **留在那边**的模块级变量 ⟹ `pointerHelper.on('exit')` 里 `if (quitting) return` 抛
+// ReferenceError。用户真机上看到的是**退出打包版时弹报错窗**。
+//
+// ⚠️ 为什么上面两条都逮不到它:
+//   · 「已删窗口的残留」只查 `main.js`,而且只查 `x.webContents.send(` 这个形状
+//   · 「本地函数有定义」只查渲染层四个文件,而且只查**调用**(`foo(`),而这是**读变量**
+//
+// ⚠️ 而它躲过 `node --check` 和 `npm start` 的原因是同一个:那一行只在 **helper 真的
+// 退出**时执行,而那基本只发生在打包版退出的那一刻。这个修复做过一次(`55abb70`),
+// 又跟着打包配置被 revert ⟹ **修过的东西没有守卫就会回来**,这条守卫就是为了它不再回来。
+check('主进程模块里 if(裸变量) 的那个变量都有声明（只在特定时刻才炸的那一类）', () => {
+  for (const name of ['main.js', 'system-bridge.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+    const code = src.split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n');
+    const declared = new Set([
+      ...[...code.matchAll(/(?:const|let|var)\s+(\w+)/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(':').pop().trim())),
+      ...[...code.matchAll(/function\s+(\w+)/g)].map((m) => m[1]),
+      // 函数参数。`quitting` 那一类如果是参数传进来的也是合法的。
+      ...[...code.matchAll(/function[^(]*\(([^)]*)\)/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(/[:=]/)[0].replace(/[{}.\s]/g, ''))),
+      ...[...code.matchAll(/\(([\w\s,]*)\)\s*=>/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.trim())),
+      ...[...code.matchAll(/(\w+)\s*=>/g)].map((m) => m[1]),
+      ...[...code.matchAll(/catch\s*\((\w+)\)/g)].map((m) => m[1]),
+    ].filter(Boolean));
+    // 只查 `if (foo)` / `if (!foo)` 这个形状:小写开头、单个标识符、不带点不带括号。
+    // 带点的(`config.x`)和带括号的(`foo()`)由别的守卫管。
+    const read = [...code.matchAll(/if\s*\(\s*!?\s*([a-z][a-zA-Z0-9_]*)\s*\)/g)]
+      .map((m) => m[1]);
+    const builtin = new Set(['process', 'module', 'require', 'global', 'app', 'e', 'err',
+      'error', 'ok', 'v', 'x', 'y', 'i', 'n', 'id', 'val', 'value']);
+    const missing = read.filter((k) => !declared.has(k) && !builtin.has(k));
+    assert.deepStrictEqual([...new Set(missing)], [],
+      `${name} 里 if() 读了没声明的变量（跑到那一行才抛 ReferenceError）：`
+      + `${[...new Set(missing)].join(', ')}`);
+  }
+});
+
 // ── vendor 副本不能和源头分叉 ────────────────────────────────────────────
 //
 // pose.js / motion.js / tracking.js 的源头在 ../../public/，`npm run vendor` 拷到
