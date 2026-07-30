@@ -180,14 +180,47 @@ function heartbeat(now) {
   });
 }
 
+// 手重新出现后要丢掉几帧才算可信。
+//
+// ⚠️ 真机实测(6 份 capture,每一段"手重新出现"之后的掌宽偏离稳定值):
+//
+//   第 1 帧 27%   第 2 帧 20%   第 3 帧 11%   第 4 帧 3%   第 5 帧 3%
+//
+// 也就是**头两帧严重不准,第 4 帧才收敛**。这是 MediaPipe 检测器刚捕获到手、还没进入
+// 跟踪模式时的固有行为 —— 不是我们的处理错了。
+//
+// 用户的观察:「我发现我动作的一开始屏幕上的骨架显示的不到位,如果我一开始不做动作
+// 等一下,骨架就显示的很好,感觉很像是初次的延迟」。**完全对上**,而且不只是录制开头 ——
+// 每次丢跟踪之后都会重来一遍(而真机丢跟踪很频繁)。
+//
+// 代价:手举起来之后要多等 ~100ms(3 帧 @30fps)。而不丢的代价是:录制的保持阶段第一帧
+// 就被 27% 偏差的坏帧当成基准,匹配也会拿坏帧去算距离。
+const HAND_WARMUP_FRAMES = 3;
+let warmupLeft = HAND_WARMUP_FRAMES;
+
 function onResultsInner(results) {
   const now = performance.now();
   heartbeat(now);
   const list = results.multiHandLandmarks || [];
 
+
   // 关键点录制在最前面,而且**在录制守卫之前** —— 它记的是原始输入,和手势判定无关,
   // 所以做录制动作那段时间的数据同样有价值(那正是真手在做动作的样子)。
   captureFrame(list, now);
+
+  // 预热闸门:手不在就重置计数,手回来之后头几帧只画骨架、不进判定和录制。
+  //
+  // **骨架照画** —— 那是"手在哪"的反馈,偏一点也比没有好,而且用户能看到它在收敛。
+  // 但判定和录制拿不到这些帧:它们的基准/模板会被 27% 的偏差污染。
+  if (!list.length) {
+    warmupLeft = HAND_WARMUP_FRAMES;
+  } else if (warmupLeft > 0) {
+    warmupLeft -= 1;
+    if (now - lastSend >= sendIntervalMs()) { lastSend = now; sendHands(list); }
+    status(`手刚进画面,关键点还在收敛(${HAND_WARMUP_FRAMES - warmupLeft}/${HAND_WARMUP_FRAMES})`,
+      { warmup: true });
+    return;
+  }
 
   // 录制中：整帧交给 recorder，不发任何手势事件 —— 否则做录制动作时会顺带触发
   // 已绑的动作，那正是 AirCursor 真机踩过的"录制被已有手势打断"。

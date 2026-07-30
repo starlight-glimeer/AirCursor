@@ -764,4 +764,44 @@ check('骨架层的整层停摆能被观测到', () => {
   assert.match(frame, /catch \(error\)/, 'hands.send 的异常被吞掉了');
 });
 
+// ── 手刚进画面的头几帧不可信 ──────────────────────────────────────────────
+//
+// 用户:「我发现我动作的一开始屏幕上的骨架显示的不到位,如果我一开始不做动作等一下,
+// 骨架就显示的很好,感觉很像是初次的延迟」。
+//
+// 真机实测(6 份 capture,每一段"手重新出现"之后的掌宽偏离稳定值):
+//
+//   第 1 帧 27%   第 2 帧 20%   第 3 帧 11%   第 4 帧 3%   第 5 帧 3%
+//
+// 头两帧严重不准,**第 4 帧才收敛**。这是 MediaPipe 检测器刚捕获到手、还没进跟踪模式时的
+// 固有行为。而它不只发生在录制开头 —— **每次丢跟踪之后都重来一遍**,而真机丢跟踪很频繁。
+//
+// 收益是量出来的:丢掉前 3 帧让录出来的模板准 **19%**(用同一段后半的帧回测)。
+check('手重新出现后的头几帧不进判定和录制', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /HAND_WARMUP_FRAMES/, '没有预热闸门 —— 27% 偏差的坏帧会直接当录制基准');
+  assert.match(sensor, /warmupLeft = HAND_WARMUP_FRAMES/, '手离开时没有重置预热计数');
+
+  // ⚠️ 骨架必须照画。那是"手在哪"的反馈，偏一点也比没有好，而且用户能看到它在收敛。
+  // 只有判定和录制拿不到这些帧。
+  const block = sensor.slice(sensor.indexOf('} else if (warmupLeft > 0) {'));
+  assert.match(block.slice(0, 400), /sendHands\(list\)/,
+    '预热期间连骨架都不画 —— 那会变成"手举起来一片空白"，比画得偏一点更糟');
+  assert.match(block.slice(0, 400), /return;/, '预热期间没有提前返回，判定还是会吃到坏帧');
+
+  // 闸门的位置：必须在 captureFrame 之后（关键点录制要记原始输入，包括坏帧 ——
+  // 那正是用来发现这个问题的数据），在 input.update 之前。
+  const warmupAt = sensor.indexOf('warmupLeft > 0');
+  // ⚠️ 找**调用点**而不是函数定义 —— `captureFrame(list, now)` 在定义处也匹配，
+  // 而定义在文件靠前，会让下面那个顺序比较永远失败（我第一版就是这么错的）。
+  const captureAt = sensor.indexOf('captureFrame(list, now);');
+  const updateAt = sensor.indexOf('input.update(list');
+  assert.ok(warmupAt < updateAt, '预热闸门在 input.update 之后 —— 那就不起作用');
+  // ⚠️ 方向：capture 在**前**，闸门在**后**。第一版我把不等号写反了，
+  // 于是守卫在正确的代码上报红、在错误的代码上通过 —— 一个方向写反的断言比没有更糟。
+  assert.ok(captureAt > 0 && captureAt < warmupAt,
+    '预热闸门挡住了 captureFrame —— 关键点录制要记原始输入，'
+    + '包括这些坏帧，那正是用来发现这个问题的数据');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
