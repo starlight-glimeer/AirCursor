@@ -1092,7 +1092,7 @@ function createWEWindow() {
     webPreferences: {
       // ⚠️ 两种 preload：video 是我们自己的页面（要 gw 那套），
       // web 是第三方壁纸（只给 WE 的 5 个全局函数，见 we-preload.js 的注释）。
-      preload: weProject.type === 'video'
+      preload: WE.isMediaType(weProject.type)
         ? path.join(__dirname, 'preload.js')
         : path.join(__dirname, 'we-preload.js'),
       // ⚠️ 这里曾经是 contextIsolation: false，因为属性接口是反向的（壁纸自己挂
@@ -1117,7 +1117,7 @@ function createWEWindow() {
 
   // ⚠️ web 和 video 的装载路径必须分开：video 的 project.file 是视频文件名不是 html，
   // 拿它去 loadURL 会让 Chromium 直接下载或黑屏（不报错）。
-  if (weProject.type === 'video') {
+  if (WE.isMediaType(weProject.type)) {
     // 页面是我们自己的 video.html，视频文件通过 IPC 把 wall:// 的 URL 送进去。
     win.loadFile(path.join(__dirname, 'video.html'));
     win.webContents.once('did-finish-load', () => {
@@ -1414,7 +1414,36 @@ ipcMain.handle('workshop-download', async (_event, input) => {
       // /opt/homebrew/bin/steamcmd 只是包装脚本（真二进制在 Caskroom/…/MacOS/），
       // 而数据实际落在 ~/Library/Application Support/Steam（steamcmd 自己的启动
       // 输出里写着）。所以逐个候选去找，找到哪个算哪个。
-      const dir = Workshop.findDownloaded(workshopId, (p) => fs.existsSync(p));
+      let dir = Workshop.findDownloaded(workshopId, (p) => fs.existsSync(p));
+
+      // ⚠️ legacy 工坊物品：Steam 对老的单文件上传**不解包**，原样存成
+      // <工坊ID>/<数字>_legacy.bin。实测（用户的 3339949060）：
+      //   Success. Downloaded item ... to ".../3339949060/…_legacy.bin" (966026 bytes)
+      // 也就是下载真的成功了，只是形状不是我们期待的 project.json + 资产。
+      //
+      // 原来的判据（目录里有 project.json）会把它判成失败 ⟹ 报"下载完了但找不到文件"，
+      // 而那会让人去查网络和账号，方向完全错。
+      if (!dir) {
+        const rawDir = Workshop.findDownloadedDir(workshopId, (p) => fs.existsSync(p));
+        if (rawDir) {
+          const legacy = Workshop.findLegacyBin(rawDir, (d) => fs.readdirSync(d));
+          if (legacy) {
+            const unpacked = unpackLegacy(legacy, rawDir);
+            logEvent('workshop', `legacy 物品：${unpacked.label}`, { legacy, ok: unpacked.ok });
+            if (unpacked.ok) {
+              dir = rawDir;
+            } else {
+              resolve({
+                ok: false,
+                error: unpacked.error,
+                legacy: { file: legacy, ...unpacked },
+                hint: unpacked.hint,
+              });
+              return;
+            }
+          }
+        }
+      }
 
       if (dir) {
         logEvent('workshop', `下载成功：${dir}`);
@@ -1543,6 +1572,90 @@ ipcMain.handle('workshop-load-local', (_event, dir) => {
   }
   return out;
 });
+
+// 解 legacy.bin。
+//
+// ⚠️ 里面是什么只能靠魔数判，不能猜 —— 可能是 zip、WE 的 PKGV 私有归档、
+// 或者裸的一个视频文件。三种处置完全不同，判错就是又一轮来回。
+function unpackLegacy(binPath, targetDir) {
+  let head;
+  try {
+    const fd = fs.openSync(binPath, 'r');
+    head = Buffer.alloc(16);
+    fs.readSync(fd, head, 0, 16, 0);
+    fs.closeSync(fd);
+  } catch (error) {
+    return { ok: false, error: `读不了 legacy 文件：${error.message}` };
+  }
+
+  const sniff = Workshop.sniffLegacy(head);
+
+  if (sniff.kind === 'zip') {
+    // macOS 自带 ditto，比 unzip 更能处理奇怪的归档，而且不需要额外依赖。
+    const result = spawnSync('/usr/bin/ditto', ['-x', '-k', binPath, targetDir],
+      { encoding: 'utf8', timeout: 120000 });
+    if (result.status !== 0) {
+      return {
+        ok: false, label: sniff.label,
+        error: `解压失败：${(result.stderr || '').slice(0, 200)}`,
+      };
+    }
+    // ⚠️ 解出来必须真的有 project.json，否则只是换了个地方失败。
+    // 而且 zip 里可能多一层同名目录，所以往下找一层。
+    if (fs.existsSync(path.join(targetDir, 'project.json'))) {
+      return { ok: true, label: `${sniff.label} → 已解包` };
+    }
+    for (const entry of fs.readdirSync(targetDir, { withFileTypes: true })) {
+      if (entry.isDirectory()
+        && fs.existsSync(path.join(targetDir, entry.name, 'project.json'))) {
+        return { ok: true, label: `${sniff.label} → 已解包（在子目录 ${entry.name}）`,
+          nested: path.join(targetDir, entry.name) };
+      }
+    }
+    return {
+      ok: false, label: sniff.label,
+      error: '解压成功但里面没有 project.json —— 这个归档可能不是 WE 壁纸',
+    };
+  }
+
+  // 视频/图片：legacy 时代的单文件壁纸就是一个媒体文件，没有 project.json。
+  // ⟹ 我们可以给它造一个，让它走 video 那条已经做好的路。
+  if (['mp4', 'webm', 'gif', 'png', 'jpg'].includes(sniff.kind)) {
+    const ext = sniff.kind === 'mp4' ? 'mp4' : sniff.kind;
+    const media = path.join(targetDir, `wallpaper.${ext}`);
+    try {
+      fs.copyFileSync(binPath, media);
+      // ⚠️ 造 project.json 而不是特殊分支：那样它复用已有的 video 装载路径，
+      // 不用再写一套。gif/png/jpg 暂时也标 video —— 那条路能不能放 gif 要真机验。
+      fs.writeFileSync(path.join(targetDir, 'project.json'), JSON.stringify({
+        type: ['gif', 'png', 'jpg'].includes(sniff.kind) ? 'image' : 'video',
+        file: `wallpaper.${ext}`,
+        title: `工坊物品（${sniff.label}）`,
+        _generatedBy: 'GestureWall：legacy 单文件壁纸没有 project.json，这个是我们造的',
+      }, null, 2));
+      return { ok: true, label: `${sniff.label} → 已转成 video 类` };
+    } catch (error) {
+      return { ok: false, label: sniff.label, error: `转换失败：${error.message}` };
+    }
+  }
+
+  if (sniff.kind === 'pkgv') {
+    return {
+      ok: false, label: sniff.label,
+      error: '这是 WE 的私有 PKGV 归档 —— 需要 scene 渲染，暂不支持',
+      hint: 'scene 类是 WE 编辑器的私有格式。详见 scene-wallpaper-feasibility.md',
+    };
+  }
+
+  // ⚠️ 判不出来时把头几个字节给出来，别只说"不支持"。
+  // 那串十六进制能让我直接查出是什么格式，不用来回猜。
+  return {
+    ok: false, label: sniff.label,
+    error: `legacy 文件的格式认不出来：${sniff.label}`,
+    hex: sniff.hex,
+    hint: `文件在 ${binPath} —— 把上面那串开头字节发给我，我查是什么格式`,
+  };
+}
 
 ipcMain.handle('workshop-set-steam', (_event, patch) => {
   config.we.steam = { ...(config.we.steam || {}), ...(patch || {}) };

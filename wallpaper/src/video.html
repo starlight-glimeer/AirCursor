@@ -7,7 +7,10 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
   /* object-fit: cover —— 视频比例和屏幕不一样时铺满而不是留黑边。
      壁纸宁可裁掉边缘也不该露出黑框。 */
-  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  video, img { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* 默认都藏起来，由 JS 按类型显示一个 —— 免得两个都占位。 */
+  video, img { display: none; }
+  video.on, img.on { display: block; }
 
   /* 出错时的兜底显示。⚠️ 存在的理由：黑屏有五种原因（文件找不到、编解码不支持、
      protocol 没通、在放但看不见、真的是黑色画面），而它们长得一模一样。
@@ -27,6 +30,9 @@
 </head>
 <body>
   <video id="v" autoplay loop muted playsinline></video>
+  <!-- 图片/GIF 用同一个容器逻辑（铺满、cover）。两个标签共存、按类型显示哪个 ——
+       比两套页面少一份要同步的代码。⚠️ GIF 的循环由浏览器自己管，不需要 loop 属性。 -->
+  <img id="i" alt="">
   <div id="err">
     <b id="err-title">放不出来</b>
     <div class="detail" id="err-detail"></div>

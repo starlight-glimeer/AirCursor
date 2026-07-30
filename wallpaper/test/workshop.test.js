@@ -360,4 +360,65 @@ check('大小格式化成人能读的', () => {
   assert.strictEqual(S.formatSize(null), '大小未知');
 });
 
+console.log('\n  legacy 单文件工坊物品（实测撞上的）');
+
+// ⚠️ 这一节完全来自一次真实失败。用户下 3339949060，steamcmd 说：
+//   Success. Downloaded item ... to ".../3339949060/…_legacy.bin" (966026 bytes)
+//
+// 也就是**下载真的成功了**，但落地的是一个 .bin 归档而不是 project.json + 资产。
+// Steam 对老的单文件上传不解包，原样存。
+//
+// 我原来的成功判据（目录里有 project.json）把它判成失败 ⟹ 报"下载完了但找不到文件"，
+// 而那会让人去查网络和账号 —— 方向完全错，因为下载压根没问题。
+check('按后缀找 legacy.bin（文件名前缀是 Steam 生成的随机数字）', () => {
+  const found = S.findLegacyBin('/x/1', () => ['2479884489559000807_legacy.bin']);
+  assert.strictEqual(found, '/x/1/2479884489559000807_legacy.bin');
+});
+
+check('没有 legacy.bin 时返回 null', () => {
+  assert.strictEqual(S.findLegacyBin('/x/1', () => ['project.json']), null);
+  // 目录读不了也不能抛
+  assert.strictEqual(S.findLegacyBin('/x/1', () => { throw new Error('ENOENT'); }), null);
+});
+
+// 里面是什么只能靠魔数判，**不能猜** —— zip / WE 私有归档 / 裸视频，
+// 三种处置完全不同，判错就是又一轮来回。
+check('魔数认出 zip / 视频 / 图片', () => {
+  assert.strictEqual(S.sniffLegacy([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]).kind, 'zip');
+  assert.strictEqual(S.sniffLegacy([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70]).kind, 'mp4');
+  assert.strictEqual(S.sniffLegacy([0x47, 0x49, 0x46, 0x38, 0, 0, 0, 0]).kind, 'gif');
+  assert.strictEqual(S.sniffLegacy([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]).kind, 'png');
+  assert.strictEqual(S.sniffLegacy([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0]).kind, 'webm');
+});
+
+// WE 的私有归档要 scene 渲染 —— 认出来才能明确说"不支持"而不是瞎解压。
+check('认出 WE 的 PKGV 私有归档', () => {
+  const head = [13, 0, 0, 0, 0x50, 0x4b, 0x47, 0x56, 0x30, 0x30, 0x31, 0x33];
+  assert.strictEqual(S.sniffLegacy(head).kind, 'pkgv');
+});
+
+// ⚠️ 判不出来时必须给出头几个字节。那串十六进制能让我直接查是什么格式，
+// 而"不支持的格式"这五个字什么信息都没有。
+check('认不出的格式给出开头字节（那是唯一能往下查的线索）', () => {
+  const out = S.sniffLegacy([0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4]);
+  assert.strictEqual(out.kind, 'unknown');
+  assert.ok(out.hex, '没给十六进制');
+  assert.match(out.hex, /de ad be ef/);
+});
+
+check('空文件或太小的单独报', () => {
+  assert.strictEqual(S.sniffLegacy([]).kind, 'empty');
+  assert.strictEqual(S.sniffLegacy(null).kind, 'empty');
+  assert.strictEqual(S.sniffLegacy([1, 2]).kind, 'empty');
+});
+
+// 目录在但 project.json 不在，和"下载失败"是两件完全不同的事 ——
+// steamcmd 说了 Success，混在一起报会让人去查网络。
+check('区分"目录不在"和"目录在但没 project.json"', () => {
+  const dirOnly = `${S.STEAM_ROOTS[0]}/steamapps/workshop/content/431960/1`;
+  // findDownloaded 要 project.json，findDownloadedDir 只要目录
+  assert.strictEqual(S.findDownloaded('1', (p) => p === dirOnly), null);
+  assert.strictEqual(S.findDownloadedDir('1', (p) => p === dirOnly), dirOnly);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

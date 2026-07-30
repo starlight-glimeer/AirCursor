@@ -189,11 +189,14 @@ check('web 类走自定义 protocol，video 类走自己的页面', () => {
     mainSrc.indexOf('function sendWEProperties'));
   assert.ok(/loadURL\(`\$\{WE_SCHEME\}/.test(create),
     'web 类没走 wall:// protocol —— ES module 会加载失败');
-  // video 那条分支要存在，而且它送进去的视频 URL 也得走 protocol
-  assert.match(create, /type === 'video'/, 'video 和 web 的装载路径没分开');
+  // 媒体那条分支要存在，而且它送进去的 URL 也得走 protocol。
+  // ⚠️ 判据是 isMediaType（video + image 两种）而不是字面量 'video' ——
+  // image 是我们为 legacy 单文件壁纸造的类型，见 we-host.js 的 TYPES 注释。
+  assert.match(create, /WE\.isMediaType\(weProject\.type\)/,
+    '媒体类和 web 的装载路径没分开');
   assert.match(create, /video-source/, 'video 页面没收到视频 URL');
   // ⚠️ 关键：loadFile 只能出现在 video 分支里
-  const videoBranch = create.slice(create.indexOf("type === 'video'"),
+  const videoBranch = create.slice(create.indexOf('WE.isMediaType(weProject.type)'),
     create.indexOf('} else {'));
   const webBranch = create.slice(create.indexOf('} else {'));
   assert.ok(/loadFile/.test(videoBranch), 'video 分支没用 loadFile 装自己的页面');
@@ -204,11 +207,13 @@ check('web 类走自定义 protocol，video 类走自己的页面', () => {
 // 两种 preload 不能混：video 是我们自己的页面（要 gw 那套），
 // web 是第三方壁纸（只给 WE 的 5 个全局函数，不给主进程通道）。
 // ⚠️ 混了的后果：第三方壁纸拿到 gw.* ⟹ 能调我们所有 IPC。
-check('video 和 web 用不同的 preload（第三方壁纸不该拿到 gw）', () => {
+check('媒体类和 web 用不同的 preload（第三方壁纸不该拿到 gw）', () => {
   const create = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
     mainSrc.indexOf('function sendWEProperties'));
-  assert.match(create, /type === 'video'\s*\n?\s*\?\s*path\.join\(__dirname, 'preload\.js'\)/,
-    'video 没用普通 preload');
+  // 媒体页是我们自己的（要 gw 那套），web 是第三方壁纸（只给 WE 的 5 个全局函数）。
+  // ⚠️ 混了的后果：第三方壁纸拿到 gw.* ⟹ 能调我们所有 IPC。
+  assert.match(create, /isMediaType[\s\S]{0,120}'preload\.js'/,
+    '媒体类没用普通 preload');
   assert.match(create, /'we-preload\.js'/, 'web 没用受限的 we-preload');
 });
 

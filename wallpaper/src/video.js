@@ -11,6 +11,7 @@
 // 有那个数就能一眼分开"放不了"和"放了但看不见"，而那是两种完全不同的修法。
 
 const video = document.getElementById('v');
+const image = document.getElementById('i');
 const errBox = document.getElementById('err');
 const errTitle = document.getElementById('err-title');
 const errDetail = document.getElementById('err-detail');
@@ -92,15 +93,40 @@ video.addEventListener('loadeddata', () => {
   });
 });
 
+// 按扩展名决定用 <video> 还是 <img>。
+//
+// ⚠️ 用扩展名而不是 project.json 的 type，理由是 legacy 单文件壁纸的 type 是
+// 我们自己造的，而扩展名来自魔数嗅探 —— 后者更可信。
+const IMAGE_EXT = /\.(gif|png|jpe?g|webp)(\?|$)/i;
+
 window.gw.onVideoSource((payload) => {
   if (!payload || !payload.url) {
-    fail('没有视频源', '主进程没给 url', '');
+    fail('没有媒体源', '主进程没给 url', '');
     return;
   }
   errBox.classList.remove('on');
+
+  if (IMAGE_EXT.test(payload.url)) {
+    video.classList.remove('on');
+    image.classList.add('on');
+    // GIF 的循环由浏览器管，不用我们做。
+    image.onload = () => report({
+      ok: true, kindLoaded: 'image',
+      width: image.naturalWidth, height: image.naturalHeight,
+    });
+    // ⚠️ 图片加载失败也要报 —— 否则黑屏又变成"五种原因长得一样"。
+    image.onerror = () => fail('图片放不出来', payload.url,
+      '文件坏了，或者 protocol 没通。诊断报告里有实际请求的 URL。');
+    image.src = payload.url;
+    report({ ok: true, loading: true, url: payload.url, kind: 'image' });
+    return;
+  }
+
+  image.classList.remove('on');
+  video.classList.add('on');
   video.src = payload.url;
   // ⚠️ 必须显式 load()：换源时如果不调，旧的那段可能继续放 ——
   // 表现是"换了壁纸但画面没变"，看起来像装载失败。
   video.load();
-  report({ ok: true, loading: true, url: payload.url });
+  report({ ok: true, loading: true, url: payload.url, kind: 'video' });
 });

@@ -53,6 +53,57 @@ function contentPath(steamRoot, workshopId) {
   return `${steamRoot}/steamapps/workshop/content/${WE_APP_ID}/${workshopId}`;
 }
 
+// ⚠️ legacy 工坊物品：Steam 对老的单文件上传不解包，原样存成
+//   <工坊ID>/<某串数字>_legacy.bin
+// 而不是我们期待的目录结构（project.json + 资产）。实测：
+//   Success. Downloaded item 3339949060 to ".../3339949060/2479884489559000807_legacy.bin"
+//
+// 所以"目录里有 project.json"这个成功判据会把它判成失败 —— 而下载其实成功了。
+//
+// 里面是什么只能靠魔数判，不能猜：可能是 zip、可能是 WE 的 PKGV 私有归档、
+// 也可能就是裸的一个 mp4。三种的处置完全不同。
+const MAGICS = [
+  { bytes: [0x50, 0x4b, 0x03, 0x04], kind: 'zip', label: 'ZIP 归档（能解）' },
+  { bytes: [0x50, 0x4b, 0x05, 0x06], kind: 'zip', label: 'ZIP 归档（空）' },
+  { bytes: [0x52, 0x41, 0x52, 0x21], kind: 'rar', label: 'RAR 归档（解不了）' },
+  { bytes: [0x37, 0x7a, 0xbc, 0xaf], kind: '7z', label: '7z 归档（解不了）' },
+  { bytes: [0x89, 0x50, 0x4e, 0x47], kind: 'png', label: 'PNG 图片' },
+  { bytes: [0x47, 0x49, 0x46, 0x38], kind: 'gif', label: 'GIF 动图' },
+  { bytes: [0xff, 0xd8, 0xff], kind: 'jpg', label: 'JPEG 图片' },
+  { bytes: [0x1a, 0x45, 0xdf, 0xa3], kind: 'webm', label: 'WebM 视频' },
+];
+
+// 识别 legacy.bin 里装的是什么。head 是文件开头的字节（至少 16 个）。
+//
+// ⚠️ 返回 kind 让代码分派、label 给人看。判不出来时**明确说判不出来**并给出头几个
+// 字节的十六进制 —— 那样用户贴给我，我能直接查是什么格式，不用来回猜。
+function sniffLegacy(head) {
+  const bytes = Array.from(head || []);
+  if (bytes.length < 4) return { kind: 'empty', label: '文件是空的或太小' };
+
+  for (const magic of MAGICS) {
+    if (magic.bytes.every((b, i) => bytes[i] === b)) return { kind: magic.kind, label: magic.label };
+  }
+  // mp4/mov 的魔数在偏移 4：'ftyp'
+  if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return { kind: 'mp4', label: 'MP4/MOV 视频' };
+  }
+  // WE 的私有归档，开头是长度前缀 + "PKGV"
+  const text = bytes.slice(0, 12).map((b) => String.fromCharCode(b)).join('');
+  if (text.includes('PKGV')) return { kind: 'pkgv', label: 'WE 私有 PKGV 归档' };
+
+  const hex = bytes.slice(0, 16).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+  return { kind: 'unknown', label: `认不出的格式（开头字节：${hex}）`, hex };
+}
+
+// 找 legacy.bin。⚠️ 文件名前缀是 Steam 生成的一串数字，不固定，所以按后缀找。
+function findLegacyBin(dir, listFiles) {
+  let names = [];
+  try { names = listFiles(dir) || []; } catch { return null; }
+  const hit = names.find((n) => /_legacy\.bin$/i.test(n));
+  return hit ? `${dir}/${hit}` : null;
+}
+
 // 在所有可能的根目录下找那个工坊物品。
 //
 // ⚠️ 逐个试而不是推断，理由见上：路径推断这条路已经错过一次。exists 由调用方注入，
@@ -61,6 +112,17 @@ function findDownloaded(workshopId, exists, roots) {
   for (const root of roots || STEAM_ROOTS) {
     const dir = contentPath(root, workshopId);
     if (dir && exists(`${dir}/project.json`)) return dir;
+  }
+  return null;
+}
+
+// 下载落地了但不是我们期待的形状 —— 目录在、project.json 不在。
+// ⚠️ 分开报这种情况很重要：它和"下载失败"完全不同（steamcmd 说了 Success），
+// 而混在一起报的话，用户会去查网络/账号，而真正的问题是格式。
+function findDownloadedDir(workshopId, exists, roots) {
+  for (const root of roots || STEAM_ROOTS) {
+    const dir = contentPath(root, workshopId);
+    if (dir && exists(dir)) return dir;
   }
   return null;
 }
@@ -327,6 +389,9 @@ root.GestureWallWorkshop = {
   STEAMCMD_CANDIDATES,
   STEAM_ROOTS,
   findDownloaded,
+  findDownloadedDir,
+  findLegacyBin,
+  sniffLegacy,
   searchedPaths,
   parseWorkshopId,
   contentPath,

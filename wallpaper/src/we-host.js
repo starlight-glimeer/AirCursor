@@ -46,6 +46,15 @@ const TYPES = {
   scene: { support: 'none', label: '场景（WE 编辑器格式）' },
   // 别人编译的 Windows .exe。跑不了也不该跑（用户已明确不做）。
   application: { support: 'none', label: 'Windows 程序' },
+  // ⚠️ image **不是 WE 的类型** —— WE 只有上面四种。
+  //
+  // 这一项是**我们自己造的**：legacy 时代的工坊物品是单文件上传（Steam 存成
+  // _legacy.bin 不解包），里面可能就是一个 gif/png/jpg，没有 project.json。
+  // 那种我们给它造一个 project.json 并标成 image，从而复用一条渲染路径。
+  //
+  // 用户明确要求支持 GIF，而 GIF 在 WE 自己那边是包成 scene（gifscene.json）——
+  // 那条要 scene 渲染。但 legacy 的裸 GIF 不需要，一个 <img> 就够。
+  image: { support: 'full', label: '图片 / GIF' },
 };
 
 // GIF 壁纸不是独立类型 —— WE 把它包成 scene，入口文件叫 gifscene.json。
@@ -269,6 +278,13 @@ function refusalReason(project) {
 // video 类的入口文件。⚠️ project.json 的 file 字段就是视频文件名（不是 html），
 // 所以 video 和 web 的装载路径必须分开 —— 拿 <video> 去加载 index.html 会静默黑屏。
 const VIDEO_EXT = /\.(mp4|webm|m4v|mov)$/i;
+const IMAGE_EXT = /\.(gif|png|jpe?g|webp)$/i;
+
+// 媒体类（video / image）走同一个渲染页，因为 <video> 和 <img> 的容器逻辑一样
+// （铺满、cover、居中）。区别只是标签，所以让页面自己按扩展名选。
+function isMediaType(type) {
+  return type === 'video' || type === 'image';
+}
 
 // Chromium 能不能解这个视频，只从扩展名看不出来（HEVC 也装在 .mp4 里）。
 // 所以这里只做**明显不行**的判断，剩下的交给 <video> 的 error 事件 ——
@@ -282,6 +298,8 @@ function videoHint(file) {
 
 root.GestureWallWE = {
   TYPES,
+  IMAGE_EXT,
+  isMediaType,
   isGifScene,
   refusalReason,
   videoHint,

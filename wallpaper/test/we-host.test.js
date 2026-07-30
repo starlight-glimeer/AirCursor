@@ -344,10 +344,18 @@ check('没有目录时返回 null', () => {
 
 console.log('\n  四种类型的分派（不支持要说清，不能假装成功）');
 
-// WE 一共四种类型，实测 project.json 的取值。
-check('四种类型都认识，两种支持', () => {
+// WE 自己只有四种类型（实测 project.json 的取值）。
+// ⚠️ 我们的 TYPES 里多一个 image —— 那是**我们造的**，给 legacy 单文件壁纸用
+//（Steam 存成 _legacy.bin 不解包，里面可能就是一个 gif）。
+// 这条断言把"WE 的四种"和"我们扩的那一种"分开写，免得以后有人以为 image 是 WE 的。
+check('WE 的四种类型都认识，加上我们扩的 image', () => {
+  const WE_OFFICIAL = ['application', 'scene', 'video', 'web'];
+  for (const t of WE_OFFICIAL) {
+    assert.ok(WE.TYPES[t], `WE 官方类型 ${t} 不认识`);
+  }
+  assert.ok(WE.TYPES.image, 'image（我们为 legacy 单文件造的）不在 TYPES 里');
   assert.deepStrictEqual(Object.keys(WE.TYPES).sort(),
-    ['application', 'scene', 'video', 'web']);
+    [...WE_OFFICIAL, 'image'].sort());
   assert.strictEqual(WE.parseProject({ type: 'web' }).supported, true);
   assert.strictEqual(WE.parseProject({ type: 'video', file: 'a.mp4' }).supported, true);
   assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, false);
@@ -406,6 +414,39 @@ check('常见容器都认（mp4/webm/m4v/mov）', () => {
   for (const f of ['a.mp4', 'a.webm', 'a.m4v', 'a.MOV']) {
     assert.strictEqual(WE.videoHint(f), null, `${f} 被误判成不是视频`);
   }
+});
+
+console.log('\n  image 类（我们为 legacy 单文件壁纸造的）');
+
+// ⚠️ image **不是 WE 的类型** —— WE 只有 web/video/scene/application 四种。
+//
+// 这一项是我们自己加的：legacy 工坊物品是单文件上传（Steam 存成 _legacy.bin 不解包），
+// 里面可能就是一个 gif/png/jpg，没有 project.json。那种我们给它造一个并标成 image。
+//
+// 我第一版直接写了 type:'image' 而没有加进 TYPES ⟹ 自己的分派器把它判成
+// "不认识的类型" —— 造出来的东西自己不认，而且症状是装载被拒。
+check('image 类被认识且支持（否则我们造的 project.json 自己不认）', () => {
+  const p = WE.parseProject({ type: 'image', file: 'wallpaper.gif' });
+  assert.strictEqual(p.known, true, 'image 没加进 TYPES');
+  assert.strictEqual(p.supported, true);
+});
+
+// 用户明确要求支持 GIF。而 GIF 在 WE 自己那边是包成 scene（gifscene.json），
+// 那条要 scene 渲染；但 legacy 的裸 GIF 不需要 —— 一个 <img> 就够。
+check('两条 GIF 路径不混：gifscene 归 scene，裸 GIF 归 image', () => {
+  const gifScene = WE.parseProject({ type: 'scene', file: 'gifscene.json' });
+  assert.strictEqual(gifScene.supported, false, 'gifscene 要 scene 渲染，不该判成支持');
+  const bareGif = WE.parseProject({ type: 'image', file: 'wallpaper.gif' });
+  assert.strictEqual(bareGif.supported, true, '裸 GIF 一个 <img> 就够，该支持');
+});
+
+// video 和 image 走同一个渲染页（容器逻辑一样：铺满、cover、居中），
+// 只有标签不同。所以装载路径的判据必须覆盖两者。
+check('isMediaType 覆盖 video 和 image，不覆盖 web/scene', () => {
+  assert.strictEqual(WE.isMediaType('video'), true);
+  assert.strictEqual(WE.isMediaType('image'), true);
+  assert.strictEqual(WE.isMediaType('web'), false);
+  assert.strictEqual(WE.isMediaType('scene'), false);
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
