@@ -3,6 +3,61 @@
 `wallpaper/` 由两个 agent 分工维护。这份文件定的是**谁改哪些文件**和**中间的契约**，
 让双方能各自改、各自验，不用读对方的代码。
 
+## 🔴 要测这个分支：用 worktree，别往共享工作区 checkout
+
+**给用户的命令绝不能污染 `~/workspace/AirCursor` 的工作区。** 正确做法：
+
+```bash
+git fetch origin
+git worktree add /tmp/we-test origin/feat/we-wallpaper
+cd /tmp/we-test/wallpaper          # ⚠️ 进 wallpaper/，不是 /tmp/we-test
+npm install && npm start
+# 测完（一条命令全清掉，不留痕迹）
+git -C ~/workspace/AirCursor worktree remove /tmp/we-test --force
+```
+
+⚠️ **必须 `cd` 到 `wallpaper/` 子目录。** 这个分支的基点老，根目录 `package.json`
+的 `"main"` 还指向 `electron/main.js`（AirCursor 0.4.2 的入口）——
+在 `/tmp/we-test` 根目录跑 `npm start` 会启动**错的应用**，而它看起来"能跑"。
+（这条是我写完这份文档之后实测发现的，验证过：worktree 里主工作区
+`git status` 保持干净、`fetch-vendor.sh` 能正常拉到 24MB vendor。）
+
+### 为什么：我用错误的做法烧掉了用户和另一个 agent 大半天
+
+我曾让用户跑 `git checkout origin/feat/we-wallpaper -- wallpaper/`。那条命令把
+25 个文件**写进工作区但不提交**，而 `wallpaper/` 里有一半是手势模块的文件：
+
+| 被覆盖的文件 | 用户看到的症状 |
+|---|---|
+| `overlay.js`（我的版本在"骨架偏右"修好之前） | **很早修过的 bug 重现** |
+| `sensor.js` / `input.js` | 手势变慢、不跟手 |
+| `dashboard.html` | 早就删掉的「连续控制」又回来了 |
+
+⟹ **git 里是对的版本，`npm start` 跑的是磁盘上的文件。**
+而 `git diff <commit>` 比的是 HEAD、**不含未提交的改动** ——
+所以基于 git 的验证会连续四轮说"代码一致"，而问题从一开始就不在它覆盖的范围里。
+
+⚠️ **三个我当时就该知道的事实，我都忘了：**
+
+1. **边界穿过 `wallpaper/` 内部** —— 这句话是我自己写在下面那张表里的。
+   "壁纸自包含、只取那个目录"这个念头是错的，那个目录里有对方七个文件。
+2. **我给的回滚办法不够。** 我写了「测完 `git checkout main -- wallpaper/`」，
+   但那只覆盖已跟踪文件，`we-host.js` 那些新增的会留下。而且我把它写成了
+   轻描淡写的附注，没说"不做这步手势会坏"。
+3. **用户提示符里一直显示 `main +25 !1`** —— 那 25 个就是我造成的，
+   它出现在用户贴给我的每一屏输出里，我看了好几次没注意。
+   ⟹ **用户贴的终端输出里，提示符本身是数据。**
+
+### 派生的两条规则
+
+- **任何 checkout / 写文件的命令，必须同时给"怎么完全退出"和"不退出会坏什么"**，
+  而且后者要写在显眼处，不是附注。
+- **`git fetch` 不能省。** 我还犯过另一个：给 checkout 命令时漏了 fetch，
+  于是用户编译的是旧代码，报出和修复前**一模一样的警告和行号** ——
+  看起来像"修复没用"，实际是"修复没到"。所以给命令时要附一个
+  **能一眼确认拿到新版**的检查（例如 `grep -c <新加的标识>`），
+  别让编译/运行结果去背这个责任。
+
 ## 分工
 
 | | 壁纸模块 | 手势模块 |
