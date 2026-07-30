@@ -674,6 +674,16 @@ check('渲染进程的报错会转出来（否则这类错误只能靠猜）', (
   // "某个功能不工作"，而那和真正的原因可能毫无关系。
   assert.match(main, /console-message/, '骨架层的 console 没有转发');
   assert.match(main, /render-process-gone/, '崩溃没有上报');
+  // ⚠️ 这两条覆盖的是 console-message **到不了**的两种失败,而它们都表现为
+  // "摄像头不启动且什么都不说" —— 这个项目为它们各烧过一轮。
+  // ⚠️ 只看**非注释**行。上一版匹配整个文件,而注释里也写着 `preload-error` ——
+  // 把那个事件名改坏之后守卫依然通过。这是同一轮里第二次锚在注释上。
+  const mainCode = main.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(mainCode, /on\('preload-error'/,
+    'preload 加载失败没上报 —— 那意味着 window.gw 整个不存在,骨架层第一行就抛');
+  assert.match(mainCode, /onErrorOccurred\(/,
+    '脚本/wasm 的 404 没上报 —— `<script>` 的加载失败不进 console-message,'
+    + '而骨架层要加载 11 个脚本,缺任何一个都是"摄像头不启动"');
   assert.match(dash, /onHelperLog/, '面板没有订阅日志');
   assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
 });

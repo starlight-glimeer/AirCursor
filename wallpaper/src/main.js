@@ -203,7 +203,18 @@ function liftOverMenuBar(win, label) {
       return;
     }
     try {
-      win.setBounds(want ? want : screen.getPrimaryDisplay().bounds);
+      // ⚠️ `before.want` 而不是裸 `want`。
+      //
+      // `want` 只存在于 `measure()` 的作用域里,这一行引用的是一个**不存在的标识符**
+      // ⟹ 每次都抛 ReferenceError,而它在 try 里 ⟹ 被 catch、只打一句 warn。
+      //
+      // 后果:这个函数的**第一件事从来没执行过**(见上面的注释:"把 frame 设成整屏")。
+      // 而它不崩、不报错,只在分辨率变化时表现为"窗口没跟着变" —— 而那种情况少见,
+      // 所以躲了很久。
+      //
+      // ⚠️ 而这条**不是**摄像头打不开的原因(云端 agent 一开始那么判断,后来自己更正了)。
+      // 被 catch 住的异常带不走 ensureOverlay。两件事无关。
+      win.setBounds(before.want);
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
       return;
@@ -712,6 +723,32 @@ function ensureOverlay() {
   });
   // 未捕获异常单独报:它比 console.error 更致命(整个脚本停在那里),而 console-message
   // 在某些 Electron 版本上拿不到它。
+  // ⚠️ preload 挂了 = `window.gw` 整个不存在 ⟹ 骨架层的第一行就抛,而 console-message
+  // 那条转发本身也可能来不及接上。这是"摄像头不启动"里最沉默的一种。
+  overlayWindow.webContents.on('preload-error', (_e, preloadPath, error) => {
+    broadcast('helper-log', {
+      source: 'overlay',
+      message: `⚠️ preload 加载失败:${error && error.message} (${preloadPath}) —— `
+        + 'window.gw 不存在,骨架层什么都干不了',
+    });
+  });
+
+  // ⚠️ 脚本 404。骨架层加载 11 个脚本(MediaPipe 3 个 + 判定 3 个 + 自己 5 个),
+  // 缺任何一个都表现为"摄像头不启动",而 `<script>` 的 404 **不进 console-message**。
+  //
+  // 这个项目为它烧过两轮:一次是 postinstall 掉了(vendor 空 → 404),一次是打包后
+  // asar 读不到 wasm。两次的症状都是"摄像头不开且什么都不说"。
+  overlayWindow.webContents.session.webRequest.onErrorOccurred(
+    { urls: ['file:///*'] },
+    (details) => {
+      if (!/\.(js|wasm|tflite|data|binarypb)$/.test(details.url)) return;
+      broadcast('helper-log', {
+        source: 'overlay',
+        message: `⚠️ 加载失败:${details.url.split('/').slice(-2).join('/')} (${details.error})`,
+      });
+    },
+  );
+
   overlayWindow.webContents.on('render-process-gone', (_e, details) => {
     broadcast('helper-log', { source: 'overlay', message: `骨架层崩了:${details.reason}` });
   });
