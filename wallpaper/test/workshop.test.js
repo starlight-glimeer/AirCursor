@@ -307,7 +307,7 @@ check('从 tag 认出四种类型', () => {
   assert.strictEqual(S.typeFromTags(null), null);
 });
 
-check('详情解析出预览图、标题、类型、能不能跑', () => {
+check('详情解析出预览图、标题、类型', () => {
   const item = S.parseDetail({
     publishedfileid: '3747222633', result: 1, title: '音域回响',
     preview_url: 'https://images.steamusercontent.com/x.jpg',
@@ -316,17 +316,21 @@ check('详情解析出预览图、标题、类型、能不能跑', () => {
   assert.strictEqual(item.ok, true);
   assert.strictEqual(item.title, '音域回响');
   assert.strictEqual(item.type, 'web');
-  assert.strictEqual(item.supported, true, 'web 类应该判为能跑');
   assert.ok(item.preview);
 });
 
-check('scene / application 判为不能跑', () => {
-  for (const tag of ['Scene', 'Application']) {
-    const item = S.parseDetail({
-      publishedfileid: '1', result: 1, title: 'x', tags: [{ tag }],
-    });
-    assert.strictEqual(item.supported, false, `${tag} 被误判成能跑`);
-  }
+// ⚠️ 这条断言是反向的：parseDetail **不该**判断支持性。
+//
+// 它曾经判过（硬编码 `type === 'web' || type === 'video'`），然后加 image 类型时
+// 这边没跟着改 ⟹ 用户看到"看起来是 image · 大概不支持"，而它其实支持、
+// 甚至真的放出来了。同一个事实有两个来源就一定会漂。
+// ⟹ 支持性只有 we-host.js 的 TYPES 一个来源，主进程在转发详情时加上。
+check('parseDetail 不判断支持性（那是 we-host 的唯一职责）', () => {
+  const item = S.parseDetail({
+    publishedfileid: '1', result: 1, title: 'x', tags: [{ tag: 'Web' }],
+  });
+  assert.strictEqual(item.supported, undefined,
+    'parseDetail 又开始判支持性了 —— 那份判断会和 TYPES 漂开');
 });
 
 // ⚠️ 已删除/私有的物品：API 返回 result != 1 且大部分字段缺失。
@@ -458,11 +462,16 @@ check('typeSource 区分"作者标的"和"我们推的"', () => {
   assert.strictEqual(unknown.typeSource, null);
 });
 
-check('推断出的类型也参与"能不能跑"的判断', () => {
+// 推断出的类型要能被支持性判定用上 —— 但那个判定在 we-host，
+// 所以这里只验"类型推出来了且带了来源标记"。
+check('推断出的类型带 typeSource，供上层判支持性', () => {
   const item = S.parseDetail({
     publishedfileid: '1', result: 1, title: 'x', filename: 'a.mp4',
   });
-  assert.strictEqual(item.supported, true, '从文件名推出 video 也该判成能跑');
+  assert.strictEqual(item.type, 'video');
+  assert.strictEqual(item.typeSource, 'filename');
+  // 支持性由主进程用 WE.isSupportedType(item.type) 补上，这里不该有
+  assert.strictEqual(item.supported, undefined);
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

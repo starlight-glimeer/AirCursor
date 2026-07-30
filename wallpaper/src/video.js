@@ -110,10 +110,24 @@ window.gw.onVideoSource((payload) => {
     video.classList.remove('on');
     image.classList.add('on');
     // GIF 的循环由浏览器管，不用我们做。
-    image.onload = () => report({
-      ok: true, kindLoaded: 'image',
-      width: image.naturalWidth, height: image.naturalHeight,
-    });
+    image.onload = () => {
+      // ⚠️ 小图铺满大屏必然糊，而这时候 cover（裁掉边缘换铺满）是错的选择：
+      // 它把本来就不够的像素再放大。低分辨率的源用 contain 更好 —— 保持原尺寸
+      // 比例、留黑边，至少画面是清楚的。
+      //
+      // 阈值按屏幕宽度的一半：源图宽度不到屏幕一半，放大 2 倍以上就明显糊了。
+      const tooSmall = image.naturalWidth > 0
+        && image.naturalWidth < window.innerWidth * 0.5;
+      image.style.objectFit = tooSmall ? 'contain' : 'cover';
+      report({
+        ok: true, kindLoaded: 'image',
+        width: image.naturalWidth, height: image.naturalHeight,
+        // 报出来让面板能解释"为什么糊" —— 那和"渲染差"是两件事。
+        screenWidth: window.innerWidth,
+        upscale: image.naturalWidth ? +(window.innerWidth / image.naturalWidth).toFixed(1) : null,
+        fit: image.style.objectFit,
+      });
+    };
     // ⚠️ 图片加载失败也要报 —— 否则黑屏又变成"五种原因长得一样"。
     image.onerror = () => fail('图片放不出来', payload.url,
       '文件坏了，或者 protocol 没通。诊断报告里有实际请求的 URL。');

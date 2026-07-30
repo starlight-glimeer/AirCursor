@@ -1432,6 +1432,12 @@ ipcMain.handle('workshop-download', async (_event, input) => {
             logEvent('workshop', `legacy 物品：${unpacked.label}`, { legacy, ok: unpacked.ok });
             if (unpacked.ok) {
               dir = rawDir;
+              // 成功但有警告（比如拿到的是缩略图）也要说出来 ——
+              // 否则用户看到糊的画面会以为是我们渲染差。
+              if (unpacked.warning) {
+                logEvent('workshop', unpacked.warning);
+                broadcast('workshop-progress', { kind: 'warning', text: unpacked.warning });
+              }
             } else {
               resolve({
                 ok: false,
@@ -1506,7 +1512,13 @@ ipcMain.handle('workshop-details', async (_event, input) => {
       logEvent('workshop', `详情请求失败 HTTP ${response.status}`);
       return { ok: false, error: `Steam 接口返回 ${response.status}` };
     }
-    const items = Workshop.parseDetailsResponse(await response.json());
+    // ⚠️ 支持性判断在这里加上，来源是 we-host 的 TYPES（唯一来源）。
+    // workshop.js 故意不判 —— 它曾经自己维护一份列表然后漂了。
+    const items = Workshop.parseDetailsResponse(await response.json()).map((item) => ({
+      ...item,
+      supported: item.type ? WE.isSupportedType(item.type) : false,
+      refusal: item.type ? WE.typeRefusal(item.type) : null,
+    }));
     logEvent('workshop', `取到 ${items.length} 个物品的详情`);
     return { ok: true, items };
   } catch (error) {
@@ -1625,15 +1637,35 @@ function unpackLegacy(binPath, targetDir) {
     const media = path.join(targetDir, `wallpaper.${ext}`);
     try {
       fs.copyFileSync(binPath, media);
-      // ⚠️ 造 project.json 而不是特殊分支：那样它复用已有的 video 装载路径，
-      // 不用再写一套。gif/png/jpg 暂时也标 video —— 那条路能不能放 gif 要真机验。
+      // ⚠️ 造 project.json 而不是特殊分支：那样它复用已有的媒体装载路径，不用再写一套。
+      const isImage = ['gif', 'png', 'jpg'].includes(sniff.kind);
       fs.writeFileSync(path.join(targetDir, 'project.json'), JSON.stringify({
-        type: ['gif', 'png', 'jpg'].includes(sniff.kind) ? 'image' : 'video',
+        type: isImage ? 'image' : 'video',
         file: `wallpaper.${ext}`,
         title: `工坊物品（${sniff.label}）`,
         _generatedBy: 'GestureWall：legacy 单文件壁纸没有 project.json，这个是我们造的',
+        _sourceFile: path.basename(binPath),
       }, null, 2));
-      return { ok: true, label: `${sniff.label} → 已转成 video 类` };
+
+      // ⚠️ 文件名里带 preview 的是**缩略图**，不是壁纸本体。
+      //
+      // 实测：用户下了一个 943KB 的物品，落地文件叫
+      //   1727611897_new_preview_preview.gif
+      // 画面能动但很糊 —— 因为那是工坊列表用的小图（几百像素宽），
+      // 拉到 2940px 屏幕上必然糊。
+      //
+      // 这件事必须说出来，否则用户会以为是我们的渲染差。而且它指向一个真问题：
+      // 那个物品的壁纸本体可能压根不在 legacy.bin 里（作者只上传了预览图，
+      // 或者本体在别的地方）。
+      const looksLikePreview = /preview/i.test(path.basename(binPath));
+      return {
+        ok: true,
+        label: `${sniff.label} → 已转成${isImage ? '图片' : '视频'}类`,
+        warning: looksLikePreview
+          ? `⚠️ 这个文件名里带 preview（${path.basename(binPath)}）—— 那通常是工坊的`
+            + '**缩略图**而不是壁纸本体，所以放大后会糊。这个物品可能没把本体传上来。'
+          : null,
+      };
     } catch (error) {
       return { ok: false, label: sniff.label, error: `转换失败：${error.message}` };
     }

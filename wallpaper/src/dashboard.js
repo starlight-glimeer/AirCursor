@@ -977,11 +977,13 @@ function renderPeek(item) {
   }
   meta.innerHTML = `<b>${item.title}</b>`
     + `<span class="sub">${typeText} · ${W_FORMAT(item.sizeBytes)} · ${item.subscriptions} 人订阅</span>`;
-  if (!item.supported && item.type) {
-    // 在下载之前就说清后果。⚠️ 让用户下完 200MB 才发现装不了，比一开始说清糟得多。
-    meta.innerHTML += `<span class="warn">${item.type === 'scene'
-      ? 'scene 类是 WE 编辑器的私有格式（含它自己方言的 shader 和粒子），装了也只能看静态图'
-      : 'application 类是 Windows 程序，macOS 上跑不了'}</span>`;
+  // 在下载之前就说清后果。⚠️ 让用户下完几百 MB 才发现装不了，比一开始说清糟得多。
+  //
+  // ⚠️ 这里原来是个两分支三元表达式（不是 scene 就说 application），于是 image
+  // 被报成"Windows 程序" —— 少一个分支的后果不是少说一句，是**说错**。
+  // 现在理由由主进程按类型查表给出（we-host 的 TYPE_REFUSALS），加类型不会漏。
+  if (item.refusal) {
+    meta.innerHTML += `<span class="warn">${item.refusal}</span>`;
   }
   peekCard.appendChild(meta);
 
@@ -1122,6 +1124,17 @@ window.gw.onVideoStatus((status) => {
     return;
   }
   if (status.loading) return;
+  // 图片/GIF 的状态：报出放大倍数，因为"糊"最常见的原因是源图太小。
+  // ⚠️ 那和"我们渲染差"是两件事，不说清用户会归错因。
+  if (status.kindLoaded === 'image') {
+    const up = status.upscale;
+    node.innerHTML = `🖼 图片已显示 ${status.width}×${status.height}`
+      + (up && up > 1.8
+        ? `\n⚠️ 被放大了 ${up} 倍（屏幕 ${status.screenWidth}px）—— 糊是因为源图小，`
+          + `不是渲染问题。已改用 contain 保清晰度。`
+        : '');
+    return;
+  }
   if (status.width) {
     node.innerHTML = `▶ 视频在放 ${status.currentTime}s`
       + `${status.duration ? ' / ' + status.duration + 's' : ''}`

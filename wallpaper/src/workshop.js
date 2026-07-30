@@ -382,9 +382,14 @@ function parseDetail(raw) {
     sizeBytes: Number(raw.file_size) || 0,
     subscriptions: Number(raw.subscriptions) || 0,
     description: (raw.description || '').slice(0, 400),
-    // ⚠️ 直接告诉用户"装了会怎样"，而不是等他下完才知道。
-    // 这是把「四种类型明确分派」那个决定往前挪到下载之前。
-    supported: type === 'web' || type === 'video',
+    // ⚠️ 这里**不判断支不支持**。
+    //
+    // 我原来写了 `type === 'web' || type === 'video'` —— 一份硬编码的支持列表。
+    // 然后加 image 类型时只改了 we-host.js 的 TYPES，这里没跟着改 ⟹ 用户看到
+    // "看起来是 image · 大概不支持"，而它其实支持，甚至真的放出来了。
+    //
+    // 同一个事实有两个来源就一定会漂。⟹ 支持性判断只有 we-host.js 的 TYPES
+    // 一个来源，这里只报类型，由调用方去问。
   };
 }
 

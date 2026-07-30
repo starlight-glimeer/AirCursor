@@ -251,6 +251,32 @@ function resolveAsset(pathname, dir, entryFile) {
   return target;
 }
 
+// 某个类型支不支持。⚠️ 这是**唯一**的判定来源。
+//
+// workshop.js 曾经自己维护过一份 `type === 'web' || type === 'video'`，
+// 然后加 image 时没跟着改 ⟹ 支持的类型被报成"大概不支持"。
+// 同一个事实有两个来源就一定会漂。
+function isSupportedType(type) {
+  const spec = TYPES[String(type || '').toLowerCase()];
+  return !!spec && spec.support === 'full';
+}
+
+// 某个类型为什么不支持 —— 给下载**之前**用（那时还没有 project.json）。
+//
+// ⚠️ 原来面板里写的是个两分支三元表达式：不是 scene 就说"application 类是
+// Windows 程序" —— 于是 image 被报成 Windows 程序。少一个分支的后果不是
+// "少说一句"，是**说错**，而说错比不说糟。所以做成查表，加类型时不会漏。
+const TYPE_REFUSALS = {
+  scene: 'scene 类是 WE 编辑器的私有格式（含它自己方言的 shader 和粒子），装了也只能看静态图',
+  application: 'application 类是 Windows 程序，macOS 上跑不了',
+};
+
+function typeRefusal(type) {
+  const key = String(type || '').toLowerCase();
+  if (isSupportedType(key)) return null;
+  return TYPE_REFUSALS[key] || `暂不支持「${type}」类型`;
+}
+
 // 装载被拒时给一句人话 + 一个可行的下一步。
 //
 // ⚠️ "不支持"三个字对用户没有价值。他需要知道的是：为什么、以及能不能换一个。
@@ -298,6 +324,8 @@ function videoHint(file) {
 
 root.GestureWallWE = {
   TYPES,
+  isSupportedType,
+  typeRefusal,
   IMAGE_EXT,
   isMediaType,
   isGifScene,

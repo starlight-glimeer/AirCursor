@@ -449,4 +449,51 @@ check('isMediaType 覆盖 video 和 image，不覆盖 web/scene', () => {
   assert.strictEqual(WE.isMediaType('scene'), false);
 });
 
+console.log('\n  支持性判定只能有一个来源');
+
+// ⚠️ 这一节来自一次真实的错报。用户查一个 GIF 壁纸，界面说：
+//   "看起来是 image（从文件名 …preview.gif 推的）· 大概不支持 ·
+//    application 类是 Windows 程序，macOS 上跑不了"
+//
+// 两处都错：image 是支持的（它后来真的放出来了），而理由是 application。
+//
+// 根因是同一个：**同一个事实有两个来源**。
+//   ① workshop.js 自己维护了 `type === 'web' || type === 'video'`，
+//      加 image 时只改了 we-host 的 TYPES，那边没跟着改
+//   ② 面板里写了两分支三元（不是 scene 就说 application），image 落到 else
+check('isSupportedType 覆盖所有 TYPES 里 support:full 的项', () => {
+  for (const [type, spec] of Object.entries(WE.TYPES)) {
+    assert.strictEqual(WE.isSupportedType(type), spec.support === 'full',
+      `${type} 的支持性判定和 TYPES 里的声明不一致`);
+  }
+});
+
+// ⚠️ 这条是防漂的关键：workshop.js **不许**自己判断支持性。
+check('workshop.js 里没有硬编码的支持列表', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'workshop.js'), 'utf8');
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/supported:\s*type ===/.test(code),
+    'workshop.js 又自己判支持性了 —— 那份列表一定会和 TYPES 漂开');
+});
+
+// 少一个分支的后果不是"少说一句"，是**说错**，而说错比不说糟。
+check('每个不支持的类型都有自己的理由，不会串台', () => {
+  const scene = WE.typeRefusal('scene');
+  const app = WE.typeRefusal('application');
+  assert.match(scene, /私有格式|shader/);
+  assert.match(app, /Windows/);
+  assert.notStrictEqual(scene, app, '两种不支持给了同一句话');
+  // 支持的类型不该有拒绝理由
+  for (const t of ['web', 'video', 'image']) {
+    assert.strictEqual(WE.typeRefusal(t), null, `${t} 被给了拒绝理由`);
+  }
+});
+
+// 没见过的类型也要给一句话（而不是 undefined 或者错误地套用别的理由）。
+check('没见过的类型给通用理由，不套用别人的', () => {
+  const out = WE.typeRefusal('zzz');
+  assert.match(out, /zzz/, '没点名是哪个类型');
+  assert.ok(!/Windows/.test(out), '把未知类型说成了 Windows 程序');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
