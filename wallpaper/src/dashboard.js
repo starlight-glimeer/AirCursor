@@ -1227,6 +1227,8 @@ document.getElementById('ws-peek').onclick = async () => {
 // ⚠️ 不支持的类型（scene / application）**不隐藏** —— 用户明确说过
 // "虽然有些类型无法支持现在，但是预览图是可以看到的吧"。
 // 隐藏它们会让人以为工坊里没东西；标出来才是诚实的。
+// ⚠️ tags 初值由 meta.defaultTags 填（只勾「全年龄」）—— 不在这里写死，
+// 因为默认值的依据在 workshop.js（唯一来源）。
 const browse = { sort: 'trending', tags: [], page: 1, total: 0, perPage: 30 };
 
 function renderBrowseControls(meta) {
@@ -1242,24 +1244,41 @@ function renderBrowseControls(meta) {
     sortHost.appendChild(b);
   }
 
-  const tagHost = document.getElementById('br-tags');
-  tagHost.className = 'we-src';
-  tagHost.innerHTML = '';
-  for (const t of meta.typeTags) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = browse.tags.includes(t.id) ? 'on' : '';
-    // ⚠️ 在筛选按钮上就标出能不能跑 —— 那样用户点进去之前就知道，
-    // 而不是筛出一屏全是"暂不支持"。
-    b.textContent = t.supported ? t.label : `${t.label}（放不了）`;
-    b.onclick = () => {
-      browse.tags = browse.tags.includes(t.id)
-        ? browse.tags.filter((x) => x !== t.id) : [...browse.tags, t.id];
-      browse.page = 1;
-      renderBrowseControls(meta);
-      runBrowse();
-    };
-    tagHost.appendChild(b);
+  // 四组筛选，按 meta.filterGroups 渲染 —— 加一组不用改这里。
+  const host = document.getElementById('br-filters');
+  host.innerHTML = '';
+  for (const group of meta.filterGroups || []) {
+    const row = document.createElement('div');
+    row.className = 'br-group';
+
+    const label = document.createElement('span');
+    label.className = 'br-group-label';
+    label.textContent = group.label;
+    row.appendChild(label);
+
+    const btns = document.createElement('div');
+    btns.className = 'we-src';
+    for (const t of group.tags) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = browse.tags.includes(t.id) ? 'on' : '';
+      // ⚠️ 类型那组标出能不能跑 —— 那样点进去之前就知道，
+      // 而不是筛出一屏全是"放不了"。
+      b.textContent = t.supported === false && group.id === 'type'
+        ? `${t.label}（放不了）` : t.label;
+      // 成人内容那两项给个提示，免得误点
+      if (group.id === 'age' && !t.defaultOn) b.title = '默认不勾';
+      b.onclick = () => {
+        browse.tags = browse.tags.includes(t.id)
+          ? browse.tags.filter((x) => x !== t.id) : [...browse.tags, t.id];
+        browse.page = 1;
+        renderBrowseControls(meta);
+        runBrowse();
+      };
+      btns.appendChild(b);
+    }
+    row.appendChild(btns);
+    host.appendChild(row);
   }
 }
 
@@ -1352,6 +1371,9 @@ document.getElementById('br-key-save').onclick = async () => {
 
 window.gw.workshopBrowseMeta().then((meta) => {
   if (!meta) return;
+  // 默认只勾「全年龄」。⚠️ 浏览工坊时默认不该出现成人内容，
+  // 而"默认全开让用户自己关"在这件事上是错的默认值。
+  if (!browse.tags.length) browse.tags = meta.defaultTags || [];
   renderBrowseControls(meta);
   document.getElementById('br-key-hint').textContent = meta.keyHint;
   if (!meta.hasKey) {

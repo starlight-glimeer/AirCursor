@@ -630,4 +630,68 @@ check('root 不存在时安静跳过', () => {
   assert.deepStrictEqual(out.dirs, []);
 });
 
+console.log('\n  筛选分组（年龄分级那一套）');
+
+// ⚠️ 工坊的筛选**全部走 requiredtags**，没有独立参数 —— 类型、年龄、分辨率、主题
+// 都是标签。不知道这点的话会去找 `maturity=` 那种参数，而那不存在。
+check('四组筛选都在，且都用 requiredtags 机制', () => {
+  const ids = S.FILTER_GROUPS.map((g) => g.id);
+  assert.deepStrictEqual(ids, ['type', 'age', 'resolution', 'genre']);
+  for (const g of S.FILTER_GROUPS) {
+    assert.ok(g.tags.length > 0, `${g.id} 组是空的`);
+    assert.ok(g.label, `${g.id} 组没有中文标签`);
+  }
+});
+
+// ⚠️ 这三个字符串我核过两遍，因为 Open Wallpaper Engine 里有**两套不一样的命名**：
+//   WorkshopViewModel        ["Everyone","Questionable","Mature"]     ← 发给 API
+//   FilterResultsViewModel   ["Everyone","Partial Nudity","Mature"]   ← 筛本地已下载
+// 用错的那套会让筛选**返回空结果且不报错** —— 看起来像"这个分级下没东西"。
+check('年龄分级用 Steam API 认的那套命名', () => {
+  const ids = S.AGE_TAGS_QUERY.map((t) => t.id);
+  assert.deepStrictEqual(ids, ['Everyone', 'Questionable', 'Mature']);
+  // 真样本印证：那个壁纸的 project.json 里是 "contentrating": "Everyone"
+  assert.ok(ids.includes('Everyone'));
+  // 而 'Partial Nudity' 是筛本地用的，不该出现在这里
+  assert.ok(!ids.includes('Partial Nudity'),
+    '用了筛本地那套命名 —— API 会返回空结果且不报错');
+});
+
+// ⚠️ "默认全开然后让用户自己关"在这件事上是错的默认值。
+check('默认只勾全年龄（浏览时不该出现成人内容）', () => {
+  const defaults = S.defaultTags();
+  assert.deepStrictEqual(defaults, ['Everyone']);
+  assert.ok(!defaults.includes('Mature'), '默认勾上了成人内容');
+});
+
+// requiredtags 区分大小写，而这几组的原文都不是简单的首字母大写
+//（'Sci-Fi' 带连字符、'Pixel art' 只有首词大写、'1920 x 1080' 带空格）
+// ⟹ 逐个核对比"写个正则"可靠。
+check('标签用 Steam 的原文（大小写和空格都不能改）', () => {
+  const genres = S.GENRE_TAGS_QUERY.map((t) => t.id);
+  assert.ok(genres.includes('Sci-Fi'), 'Sci-Fi 的连字符写法不对');
+  assert.ok(genres.includes('Pixel art'), 'Pixel art 只有首词大写');
+  const res = S.RESOLUTION_TAGS_QUERY.map((t) => t.id);
+  assert.ok(res.includes('1920 x 1080'), '分辨率标签的空格写法不对');
+  assert.ok(res.includes('Ultrawide Standard'));
+});
+
+// 四组的标签混在一个 requiredtags 数组里传 —— 那是 Steam 的机制。
+check('多组标签能一起传（类型+年龄+主题同时筛）', () => {
+  const p = S.browseParams({
+    key: 'K', tags: ['Video', 'Everyone', 'Anime'],
+  });
+  assert.strictEqual(p.get('requiredtags[0]'), 'Video');
+  assert.strictEqual(p.get('requiredtags[1]'), 'Everyone');
+  assert.strictEqual(p.get('requiredtags[2]'), 'Anime');
+});
+
+// 标签 id 不能重复 —— 重复的话 UI 上会出现两个一样的按钮，
+// 而点其中一个会让另一个的状态显示错。
+check('所有组的标签 id 全局唯一', () => {
+  const all = S.FILTER_GROUPS.flatMap((g) => g.tags.map((t) => t.id));
+  const dup = all.filter((x, i) => all.indexOf(x) !== i);
+  assert.deepStrictEqual(dup, [], `重复的标签 id：${dup.join(', ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

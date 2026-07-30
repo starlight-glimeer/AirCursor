@@ -1931,6 +1931,10 @@ ipcMain.handle('workshop-set-key', (_event, apiKey) => {
 
 ipcMain.handle('workshop-browse-meta', () => ({
   sorts: Workshop.SORT_ORDERS,
+  // 四组筛选（类型/年龄分级/分辨率/主题）—— 面板照这个渲染，
+  // 加一组不用改 UI 代码。
+  filterGroups: Workshop.FILTER_GROUPS,
+  defaultTags: Workshop.defaultTags(),
   typeTags: Workshop.TYPE_TAGS_QUERY,
   hasKey: !!(config.we.steam && config.we.steam.apiKey),
   keyHint: Workshop.apiKeyHint(),

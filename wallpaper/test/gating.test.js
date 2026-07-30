@@ -1090,6 +1090,25 @@ check('三个页签都在（创意工坊 / 我的壁纸 / 手势录制）', () =
   }
 });
 
+// ⚠️ 默认值只能有一个来源。面板如果自己写死 ['Everyone']，
+// 那 workshop.js 里改了默认值就不生效 —— 而这类"两份默认值"我们已经漂过一次
+//（supported 那个判断）。
+check('筛选默认值来自 workshop.js，面板不写死', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /meta\.defaultTags/, '面板没用 meta 里的默认值');
+  const init = dash.slice(dash.indexOf('const browse = {'),
+    dash.indexOf('const browse = {') + 200);
+  assert.ok(!/Everyone/.test(init), '面板把默认标签写死了 —— 和 workshop.js 会漂');
+});
+
+// 面板按 filterGroups 渲染 ⟹ 加一组筛选不用改 UI 代码。
+check('筛选面板按分组渲染（加一组不用改 UI）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /meta\.filterGroups/, '没按分组渲染');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /filterGroups: Workshop\.FILTER_GROUPS/, 'meta 没带分组');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
 // ⚠️ 关键点录制的载荷必须带当时生效的 tuning。
 //

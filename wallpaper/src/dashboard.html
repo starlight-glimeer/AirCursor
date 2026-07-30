@@ -221,6 +221,13 @@
                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ws-card .meta .sub { color: var(--dim); font-size: 11px; }
   .ws-card .acts { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  /* 筛选分组：标签在左、按钮在右，一组一行。仿 Steam 创意工坊的侧栏排版。 */
+  .br-group { display: grid; grid-template-columns: 68px 1fr; gap: 8px;
+              align-items: start; margin-bottom: 6px; }
+  .br-group-label { font-size: 11px; color: var(--dim); padding-top: 6px; }
+  .br-group .we-src { margin-bottom: 0; }
+  .br-group button { font-size: 11px; padding: 3px 10px; }
+
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
              background: #15151b; cursor: pointer; }
@@ -355,7 +362,10 @@
         <button class="act primary" id="br-go" type="button">搜索</button>
       </div>
       <div id="br-sorts" class="we-src"></div>
-      <div id="br-tags" class="we-src"></div>
+      <!-- 四组筛选：类型 / 年龄分级 / 分辨率 / 主题。
+           ⚠️ 全部走 Steam 的 requiredtags，没有独立参数 —— 类型和年龄是同一套机制。
+           ⚠️ 默认只勾「全年龄」：浏览工坊时默认不该出现成人内容。 -->
+      <div id="br-filters"></div>
       <div id="br-state" class="hint">—</div>
       <div id="br-grid" class="ws-grid"></div>
       <div class="bar-row" id="br-pager" style="display:none">

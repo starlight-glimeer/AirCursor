@@ -508,14 +508,90 @@ function queryTypeFor(sortId, hasText) {
   return hit ? hit.queryType : 3;
 }
 
-// 工坊的类型标签。⚠️ 首字母大写 —— Steam 的 requiredtags 是区分大小写的，
-// 传 'scene' 会返回空结果而不报错（那看起来像"这个筛选没东西"）。
+// ⚠️ 工坊的筛选**全部走 requiredtags**，没有独立的参数 —— 类型、年龄分级、
+// 分辨率、主题，Steam 都当成标签。这一点不知道的话会去找 `maturity=` 那种参数，
+// 而那不存在。
+//
+// ⚠️⚠️ 而 requiredtags 是**区分大小写**的，写错会**返回空结果且不报错** ——
+// 那看起来像"这个筛选下没东西"，而不像"我拼错了"。所以下面每组都用 Steam 认的原文。
+
+// 类型。
 const TYPE_TAGS_QUERY = [
   { id: 'Scene', label: '场景', supported: false },
   { id: 'Video', label: '视频', supported: true },
   { id: 'Web', label: '网页', supported: true },
   { id: 'Application', label: '程序', supported: false },
 ];
+
+// 年龄分级。
+//
+// ⚠️ 这三个字符串我核过两遍，因为 Open Wallpaper Engine 里有**两套不一样的命名**：
+//   WorkshopViewModel        ["Everyone", "Questionable", "Mature"]   ← 发给 API 的
+//   FilterResultsViewModel   ["Everyone", "Partial Nudity", "Mature"] ← 筛本地已下载的
+// 我用前者。真样本印证：那个壁纸的 project.json 里是 `"contentrating": "Everyone"`。
+//
+// ⚠️ 默认只勾 Everyone（OWE 也这么做）—— 浏览工坊时默认不该出现成人内容，
+// 而"默认全开然后让用户自己关"在这件事上是错的默认值。
+const AGE_TAGS_QUERY = [
+  { id: 'Everyone', label: '全年龄', defaultOn: true },
+  { id: 'Questionable', label: '轻度不适宜', defaultOn: false },
+  { id: 'Mature', label: '成人内容', defaultOn: false },
+];
+
+// 分辨率。⚠️ 这些是 Steam 的原文，不是我起的名。
+const RESOLUTION_TAGS_QUERY = [
+  { id: 'Standard Definition', label: '标准清晰度' },
+  { id: '1280 x 720', label: '720p' },
+  { id: '1920 x 1080', label: '1080p' },
+  { id: '2560 x 1440', label: '1440p' },
+  { id: '3840 x 2160', label: '4K' },
+  { id: 'Ultrawide Standard', label: '带鱼屏' },
+  { id: 'Dual Monitor', label: '双屏' },
+  { id: 'Triple Monitor', label: '三屏' },
+  { id: 'Portrait', label: '竖屏' },
+];
+
+// 主题。真样本用的就是这一套（那个壁纸的 tags 是 ["Sci-Fi"]）。
+const GENRE_TAGS_QUERY = [
+  { id: 'Abstract', label: '抽象' },
+  { id: 'Animal', label: '动物' },
+  { id: 'Anime', label: '动漫' },
+  { id: 'Cartoon', label: '卡通' },
+  { id: 'CGI', label: 'CGI' },
+  { id: 'Cyberpunk', label: '赛博朋克' },
+  { id: 'Fantasy', label: '幻想' },
+  { id: 'Game', label: '游戏' },
+  { id: 'Girls', label: '女性角色' },
+  { id: 'Guys', label: '男性角色' },
+  { id: 'Landscape', label: '风景' },
+  { id: 'Medieval', label: '中世纪' },
+  { id: 'Memes', label: '梗图' },
+  { id: 'Music', label: '音乐' },
+  { id: 'Nature', label: '自然' },
+  { id: 'Pixel art', label: '像素画' },
+  { id: 'Relaxing', label: '放松' },
+  { id: 'Retro', label: '复古' },
+  { id: 'Sci-Fi', label: '科幻' },
+  { id: 'Sports', label: '运动' },
+  { id: 'Technology', label: '科技' },
+  { id: 'Television', label: '影视' },
+  { id: 'Vehicle', label: '载具' },
+  { id: 'Unspecified', label: '未分类' },
+];
+
+// 筛选分组 —— 面板照这个渲染，加一组不用改 UI 代码。
+const FILTER_GROUPS = [
+  { id: 'type', label: '类型', tags: TYPE_TAGS_QUERY },
+  { id: 'age', label: '年龄分级', tags: AGE_TAGS_QUERY },
+  { id: 'resolution', label: '分辨率', tags: RESOLUTION_TAGS_QUERY },
+  { id: 'genre', label: '主题', tags: GENRE_TAGS_QUERY },
+];
+
+// 默认勾上的标签。⚠️ 只有年龄分级有默认值，别的组默认不筛
+//（筛了反而看不到"海量资源"）。
+function defaultTags() {
+  return AGE_TAGS_QUERY.filter((t) => t.defaultOn).map((t) => t.id);
+}
 
 // 组装浏览请求的查询参数。
 //
@@ -567,6 +643,11 @@ function apiKeyHint() {
 root.GestureWallWorkshop = {
   SORT_ORDERS,
   TYPE_TAGS_QUERY,
+  AGE_TAGS_QUERY,
+  RESOLUTION_TAGS_QUERY,
+  GENRE_TAGS_QUERY,
+  FILTER_GROUPS,
+  defaultTags,
   queryTypeFor,
   browseParams,
   parseBrowseResponse,
