@@ -13,8 +13,14 @@
 // ⟹ 正解是 Open Wallpaper Engine 那套：窗口留在壁纸层，鼠标事件用全局监听抓下来
 // 再手动转发进去。我们这边用 Swift helper（NSEvent）+ sendInputEvent 实现同一件事。
 //
-// ⚠️ 关键前提：监听**鼠标**事件不需要辅助功能权限（键盘才需要）。
-// 所以这条链 npm start 就能验，和 pointer helper 那条（CGEvent.post 要授权）不同。
+// ⚠️⚠️ 权限：**需要辅助功能授权**，而开发模式（npm start）下拿不到。
+//
+// 我原来断言"监听鼠标不需要那个权限"，说了三次而从没验证。实测证伪：
+// helper 报了 running（addGlobalMonitorForEvents 返回非 nil），而动鼠标零事件。
+// ⟹ 这是最坏的一种失败：不报错，只是静默不工作。
+//
+// 而 aircursor-notes/pitfalls.md 第 281 行早就写着这条：`packaged: false` 时
+// 辅助功能列表里根本没有本应用 ⟹ 权限类问题"到此为止，先打包再验"。
 //
 // 解析和坐标换算放在这里且是纯函数 —— 那是这条链里唯一能在云端验的部分。
 const { spawn, spawnSync } = require('node:child_process');
@@ -124,10 +130,15 @@ function describeStatus(msg) {
   if (msg.state === 'running') {
     return {
       ok: true,
-      text: msg.gateOnFinder
-        ? '鼠标转发已开（只在桌面被聚焦时生效）'
-        : '鼠标转发已开',
+      // ⚠️ 措辞不能说成"已开/能用" —— 实测过 running 之后照样零事件（没授权）。
+      // 说"已启动"而不是"已开"，真的收到事件由上层的 injected 计数来证。
+      text: msg.trusted === false
+        ? '监听已启动，但没有辅助功能授权 —— 大概收不到事件（要打包成 .app）'
+        : (msg.gateOnFinder
+          ? '监听已启动（只在桌面被聚焦时转发）'
+          : '监听已启动'),
       gateOnFinder: !!msg.gateOnFinder,
+      trusted: msg.trusted,
     };
   }
   // ⚠️ 被门挡掉要单独报。上一版就是因为没有这条，
@@ -140,10 +151,20 @@ function describeStatus(msg) {
       gated: true, blocked: msg.blocked,
     };
   }
+  // ⚠️ 这条是实测逼出来的：监听"建立成功"和"真的在工作"是两件事。
+  // helper 报 running（返回非 nil）而回调一次不触发 —— 那时候没有任何错误信号。
+  if (msg.state === 'silent') {
+    return {
+      ok: false, silent: true, trusted: !!msg.trusted,
+      text: msg.message || '监听建立了但收不到事件',
+      // 没授权的话给出确切的下一步，而不是让用户去猜。
+      hint: msg.trusted ? null
+        : '开发模式拿不到辅助功能授权（列表里只有 Electron/终端，没有本应用）。'
+          + '这一项要打包成 .app 才能验：npm run dist:mac',
+    };
+  }
   if (msg.state === 'failed') {
-    // ⚠️ 这条要说清"不是权限问题"，否则用户会去翻辅助功能设置浪费时间 ——
-    // 而鼠标监听本来就不需要那个权限。
-    return { ok: false, text: msg.message || '全局鼠标监听建不起来（不是权限问题）' };
+    return { ok: false, text: msg.message || '全局鼠标监听建不起来' };
   }
   return { ok: false, text: `未知状态 ${msg.state}` };
 }

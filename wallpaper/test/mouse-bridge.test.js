@@ -132,13 +132,53 @@ check('一次多行都解析出来', () => {
   assert.strictEqual(messages.length, 2);
 });
 
-// ⚠️ 这条要说清"不是权限问题"，否则用户会去翻辅助功能设置浪费时间 ——
-// 监听鼠标本来就不需要那个权限（键盘才需要）。
-check('监听建不起来时说清不是权限问题', () => {
+// ⚠️ 这条断言翻过来了，而这是本轮最重要的更正。
+//
+// 它原来断言"要说清**不是**权限问题"，理由是"监听鼠标不需要辅助功能权限"。
+// 那句话我说了三次、**从没验证过**，而 2026-07-30 实测证伪：
+//
+//   $ swiftc GestureWallMouse.swift -o /tmp/gm && /tmp/gm
+//   {"gateOnFinder":false,"state":"running","type":"status"}
+//   （动鼠标、点击 —— 零事件）
+//
+// ⟹ addGlobalMonitorForEvents **返回非 nil**（所以报了 running），
+// 而回调一次都不触发。**监听鼠标也要辅助功能授权。**
+//
+// 教训：这条断言本身把一个未验证的推断**锁进了测试**，
+// 于是它从"待验证的假设"变成了"看起来已确认的事实"。
+// ⟹ 没验过的前提不该写成断言，该写成注释里的问号。
+check('"建立成功"不能当成"能用"（实测：running 之后照样零事件）', () => {
+  // 监听建立了但收不到事件 —— 这是最坏的失败：没有任何错误信号。
+  const silent = M.describeStatus({
+    type: 'status', state: 'silent', trusted: false,
+    message: '监听建立了但收不到事件',
+  });
+  assert.strictEqual(silent.ok, false, 'silent 报成了 ok');
+  assert.strictEqual(silent.silent, true);
+  // ⚠️ 没授权时必须给出确切的下一步，而不是让用户猜
+  assert.match(silent.hint, /打包|\.app/, '没告诉用户要打包才能拿到授权');
+});
+
+check('已授权但仍无事件时，不误导成权限问题', () => {
+  const out = M.describeStatus({
+    type: 'status', state: 'silent', trusted: true, message: '已授权，所以是别的问题',
+  });
+  assert.strictEqual(out.ok, false);
+  // 授权正常时不该再叫用户去打包 —— 那会让他白折腾
+  assert.strictEqual(out.hint, null, '已授权还在说打包的事');
+});
+
+// ⚠️ running 的措辞不能说"已开/能用"：实测过 running 之后照样零事件。
+check('running 时若未授权，措辞要提示大概收不到事件', () => {
+  const out = M.describeStatus({
+    type: 'status', state: 'running', gateOnFinder: false, trusted: false,
+  });
+  assert.match(out.text, /授权|收不到/, 'running + 未授权时说得像一切正常');
+});
+
+check('监听建不起来时报出来', () => {
   const out = M.describeStatus({ type: 'status', state: 'failed', message: 'x' });
   assert.strictEqual(out.ok, false);
-  const generic = M.describeStatus({ type: 'status', state: 'failed' });
-  assert.match(generic.text, /不是权限/, '没说明这不是权限问题');
 });
 
 // "只在桌面被聚焦时转发"和"一直转发"是不同的行为，用户要知道自己在哪个。

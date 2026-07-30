@@ -852,8 +852,18 @@ function renderMouseDiag(mouse) {
   const injected = mouse.injected || 0;
   const saw = mouse.pageSaw;
   if (!injected) {
-    return '\n⚠️ 一个鼠标事件都没转发进去 —— 转发没起来，'
-      + '或者「只在桌面被聚焦时」那个门挡住了（试试勾上"任何时候都转发"）';
+    // ⚠️ 按可能性排序，而且第一条是实测确认过的原因（没授权）。
+    // 原来这条写的是"转发没起来或者门挡住了"，而真因是第三种：
+    // 监听建立了、门也开着、但没有辅助功能授权 ⟹ 回调一次都不触发。
+    const trusted = mouse.status && mouse.status.trusted;
+    if (trusted === false) {
+      return '\n⚠️ 没有辅助功能授权 —— 监听建立了但收不到任何事件。'
+        + '\n开发模式（npm start）拿不到那个授权，要打包成 .app：npm run dist:mac';
+    }
+    return '\n⚠️ 一个鼠标事件都没转发进去。三种可能：'
+      + '\n① 没有辅助功能授权（最常见，开发模式下必然如此）'
+      + '\n② 「只在桌面被聚焦时」那个开关开着'
+      + '\n③ helper 没起来 —— 看上面那行状态';
   }
   if (!saw) {
     return `\n⚠️ 已转发 ${injected} 个事件，但页面一个都没收到 —— `

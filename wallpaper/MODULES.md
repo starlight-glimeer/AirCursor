@@ -94,9 +94,26 @@ git -C ~/workspace/AirCursor worktree remove /tmp/we-test --force
 | 之前的 `bottom-normal` | ❌ | ✅ |
 | **现在（desktop + 转发）** | ✅ | ✅ |
 
-⚠️ 可行的关键前提：`NSEvent.addGlobalMonitorForEvents` 监听**鼠标**
-**不需要辅助功能权限**（键盘才需要）⟹ `npm start` 就能用，不必打包。
-这和 pointer helper 那条链（`CGEvent.post` 要授权）完全不同。
+⚠️⚠️ **那条链需要辅助功能授权，而开发模式拿不到** —— 我一开始断言"监听鼠标
+不需要授权"，说了三次而从没验证。2026-07-30 实测证伪：
+
+```
+$ swiftc GestureWallMouse.swift -o /tmp/gm && /tmp/gm
+{"gateOnFinder":false,"state":"running","type":"status"}
+（动鼠标、点击 —— 零事件）
+```
+
+`addGlobalMonitorForEvents` 返回非 nil、我们报了 running，而回调一次不触发。
+⟹ **最坏的一种失败：不报错，只是静默不工作。**
+
+⚠️ 而 `aircursor-notes/pitfalls.md` 第 281 行早就写着这条教训：
+`packaged: false` 下辅助功能列表里根本没有本应用 ⟹ 权限类问题"先打包再验"。
+**我在自己的新功能上重演了那个错，而且把那个未验证的推断写进了测试断言** ——
+于是它从"待验的假设"变成了"看起来已确认的事实"。
+
+⟹ **教训：没验过的前提不该写成断言，该写成注释里的问号。**
+现在 helper 有探活（3 秒零事件就报 + `AXIsProcessTrusted()` 直接问系统），
+所以这种"看起来成功"不会再静默。
 
 实现在 `native/GestureWallMouse.swift` + `src/mouse-bridge.js`。
 ⚠️ 两处"错了不报错"的地方有守卫盯着：坐标不减窗口偏移（单屏测不出来，

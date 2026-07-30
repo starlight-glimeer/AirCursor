@@ -12,9 +12,25 @@
 // ⟹ 解法是 Open Wallpaper Engine 用的那套：窗口留在壁纸层（所以能覆盖），
 // 鼠标事件用**全局监听**抓下来，再手动转发进那个窗口。
 //
-// ⚠️ 关键前提（决定了这条路可行）：`NSEvent.addGlobalMonitorForEvents` 监听
-// **鼠标**事件**不需要辅助功能权限**（键盘才需要）。所以 npm start 下就能用，
-// 不必打包 —— 这和 pointer helper 那条链（CGEvent.post 要授权）完全不同。
+// ⚠️⚠️ 权限：**需要辅助功能授权**。
+//
+// 我原来断言"监听鼠标不需要辅助功能权限（键盘才需要）"，说了三次，
+// 而那**只是推断、从没验证**。2026-07-30 实测证伪：
+//
+//   $ swiftc GestureWallMouse.swift -o /tmp/gm && /tmp/gm
+//   {"gateOnFinder":false,"state":"running","type":"status"}
+//   （动鼠标、点击 —— 零事件）
+//
+// 也就是 addGlobalMonitorForEvents **返回了非 nil**（所以我们报 running），
+// 但回调一次都不触发。⟹ 这是最坏的一种失败：**它不报错，只是静默不工作**。
+//
+// ⚠️ 而这正是 aircursor-notes/pitfalls.md 第 281 行那条教训：
+// `packaged: false`（npm start）下辅助功能列表里根本没有本应用（只有 Electron/终端），
+// "没授权"是默认状态 ⟹ **权限类问题到此为止，先打包再验**。
+// 我在自己的新功能上重演了那个错。
+//
+// ⟹ 所以：① 这条链必须打包成 .app 才能验
+//         ② monitor != nil **不能**当成"能用"的证据（见下面的探活）
 //
 // 输出：一行一个 JSON 到 stdout，坐标是屏幕坐标（左上原点，已经翻好 y 轴）。
 //   {"type":"mouse","kind":"move","x":100,"y":200,"at":123456}
@@ -107,6 +123,9 @@ func handle(_ event: NSEvent) {
 // 代价是在别的应用里滑滚轮壁纸也会动 —— 那是个可接受的副作用，
 // 而"点壁纸完全没反应"不是。
 var gateOnFinder = false
+// ⚠️ 声明必须在 monitor 回调之前 —— Swift 顶层代码是顺序执行的。
+// 探活用：monitor 非 nil 不等于能收到事件（实测过），所以数一下真收到几个。
+var eventsSeen = 0
 // 被门挡掉的计数。⚠️ 必须报出来：否则"没反应"和"被挡了"分不清，
 // 而那正是我上一版让用户白测一轮的原因。
 var blockedByGate = 0
@@ -131,18 +150,39 @@ let monitor = NSEvent.addGlobalMonitorForEvents(matching: WATCHED) { event in
             return
         }
     }
+    eventsSeen += 1
     handle(event)
 }
 
 if monitor == nil {
-    // ⚠️ 这种情况**必须报出来**：addGlobalMonitorForEvents 返回 nil 意味着
-    // 监听压根没建立，而症状是"鼠标完全没反应" —— 和"壁纸不支持鼠标"一模一样。
     emit(["type": "status", "state": "failed",
-          "message": "全局鼠标监听建不起来。鼠标事件本不需要辅助功能权限，"
-            + "所以这大概是别的问题 —— 把这条报给开发者"])
+          "message": "全局鼠标监听建不起来（addGlobalMonitorForEvents 返回 nil）"])
     exit(2)
 }
 
-emit(["type": "status", "state": "running", "gateOnFinder": gateOnFinder])
+// ⚠️ 探活：monitor 非 nil **不等于**能收到事件。
+//
+// 实测就是这样：返回了非 nil、我们报了 running，而回调一次都不触发（没授权）。
+// ⟹ "建立成功"和"真的在工作"是两件事，而只报前者会让功能看起来是好的。
+//
+// 所以启动 3 秒后自查：一个事件都没有就报出来，并说清最可能的原因。
+// 3 秒是因为用户装载壁纸后总会动一下鼠标 —— 真有授权的话那几秒必有事件。
+let trusted = AXIsProcessTrusted()
+
+emit(["type": "status", "state": "running",
+      "gateOnFinder": gateOnFinder,
+      // AXIsProcessTrusted 直接问系统"我被授权了吗"，不用等超时。
+      "trusted": trusted])
+
+DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+    if eventsSeen == 0 {
+        emit(["type": "status", "state": "silent",
+              "trusted": AXIsProcessTrusted(),
+              "message": AXIsProcessTrusted()
+                ? "监听建立了但 3 秒内零事件 —— 已授权，所以是别的问题"
+                : "监听建立了但收不到事件：**没有辅助功能授权**。"
+                  + "而开发模式（npm start）下拿不到那个授权 —— 必须打包成 .app"])
+    }
+}
 // RunLoop 必须跑起来，否则监听回调一次都不会触发（进程会直接退出）。
 RunLoop.main.run()
