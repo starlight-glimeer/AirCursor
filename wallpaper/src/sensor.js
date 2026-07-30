@@ -431,13 +431,31 @@ async function start() {
   });
 
   hands = new Hands({ locateFile: (file) => `vendor/mediapipe/hands/${file}` });
+  // ⚠️ `modelComplexity` 从 0 改成可调，默认 1。
+  //
+  // 原来写死 0，注释的理由是"这里只要掌心位置、掌宽和一个捏合判定，不需要精确指尖"——
+  // **那个前提早就不成立了**：现在做的是逐点姿势匹配（63 维向量算距离），每个关键点的
+  // 精度都直接进判据。
+  //
+  // 而检出率实测很差：用户五份 capture 里，**手在画面里的时候骨架平均只能连续显示 3 帧
+  // （105ms）就断一次**，手在场期间的丢跟踪间隔 284–872ms。而 FADE_MS=420 ⟹ 骨架淡出到
+  // 一半又亮起来 = 用户报的「骨架显示不稳定」。
+  //
+  // 时间预算够：3.x 真机报告 complexity 0 推理 12ms，full 模型约翻倍到 ~24ms，仍低于
+  // 33ms 的帧间隔（而 inferenceIntervalMs 是 20ms）。
+  //
+  // 做成可调而不是写死：如果真机上帧率掉了，把它调回 0 就行 —— 而那个判断只能来自真机。
+  const tuning = tuningOf();
   hands.setOptions({
     maxNumHands: 2,
-    // 0 而不是 1：这里只要掌心位置、掌宽和一个捏合判定，不需要精确指尖，而 0 大约
-    // 省一半每帧开销。
-    modelComplexity: 0,
-    minDetectionConfidence: 0.5,
-    minTrackingConfidence: 0.5,
+    modelComplexity: tuning.modelComplexity ?? 1,
+    // 检出门槛比跟踪门槛高一点：进入跟踪要有信心，维持跟踪可以宽松 ——
+    // 否则一次遮挡就整段丢掉，而重新检出要付预热那 3 帧的代价。
+    minDetectionConfidence: tuning.minDetectionConfidence ?? 0.5,
+    // 0.3 而不是 0.5：**维持**跟踪比重新检出便宜得多。丢一次跟踪的代价是
+    // 骨架闪烁 + 预热 3 帧不可信 + 序列可能作废，而多认几帧低置信度的手代价很小
+    // （判定那边有自己的门）。
+    minTrackingConfidence: tuning.minTrackingConfidence ?? 0.3,
   });
   hands.onResults(onResults);
 

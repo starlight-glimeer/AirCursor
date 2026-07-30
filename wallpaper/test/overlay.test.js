@@ -167,20 +167,24 @@ check('手消失后姿势保留并渐变淡出（不是瞬间消失）', () => {
   overlay.update({ hands: [hand()] }, 1000);
   overlay.update({ hands: [] }, 1000 + 50);   // 手丢了
   assert.ok(overlay.hands.length > 0, '手一丢就把姿势清空了 —— 淡出成了死代码');
-  const half = overlay.opacityAt(1000 + O.FADE_MS * 0.5);
+  // 时间轴多了一段 HOLD_MS：那段内**完全不变暗**，覆盖真机上手在画面里时的丢跟踪
+  // 间隔（实测中位 284ms）。所以"渐变"要从 HOLD_MS 之后开始量。
+  assert.strictEqual(overlay.opacityAt(1000 + O.HOLD_MS * 0.5), 1,
+    '宽限期内就开始变暗了 —— 那些 284ms 的丢跟踪会让骨架明暗闪烁');
+  const half = overlay.opacityAt(1000 + O.HOLD_MS + O.FADE_MS * 0.5);
   assert.ok(half > 0.3 && half < 1, `半个周期时不透明度是 ${half.toFixed(2)}，不是渐变`);
 });
 
 check('淡出周期结束后完全透明', () => {
   const overlay = new O.HandOverlay(fakeCanvas());
   overlay.update({ hands: [hand()] }, 1000);
-  assert.strictEqual(overlay.opacityAt(1000 + O.FADE_MS + 1), 0);
+  assert.strictEqual(overlay.opacityAt(1000 + O.HOLD_MS + O.FADE_MS + 1), 0);
 });
 
 check('淡出结束后姿势被真的清掉（不留内存）', () => {
   const overlay = new O.HandOverlay(fakeCanvas());
   overlay.update({ hands: [hand()] }, 1000);
-  overlay.update({ hands: [] }, 1000 + O.FADE_MS + 100);
+  overlay.update({ hands: [] }, 1000 + O.HOLD_MS + O.FADE_MS + 100);
   assert.strictEqual(overlay.hands.length, 0, '过了淡出期还留着旧姿势');
 });
 
@@ -322,9 +326,29 @@ check('手离开时清掉滤波器状态', () => {
   // 留着的话下次举手骨架会从上次的位置"飞"过来 —— One Euro 的状态是"上一个位置"，
   // 跨越一次手不在的间隔没有意义，而那比抖动更奇怪。
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
-  const block = src.slice(src.indexOf('if (this.lastAt && now - this.lastAt > FADE_MS)'));
+  // ⚠️ 锚点不写死时长表达式 —— 那个条件从 `> FADE_MS` 变成 `> HOLD_MS + FADE_MS` 之后
+  // 守卫就找不到了，而它报的是"没清滤波器"（代码其实清了）。**锚在不会变的那部分上。**
+  const block = src.slice(src.indexOf('this.hands = [];\n      //'));
   assert.match(block.slice(0, 400), /this\.filters = \[\]/,
     '手离开后没清滤波器 —— 下次举手骨架会从旧位置插值过来');
+});
+
+// ── 宽限期不变暗:这是"骨架显示不稳定"的另一半 ──────────────────────────────
+//
+// 用户报「有一些漂移,骨架显示不稳定等现象」。滤波解决了抖动,而**闪烁是另一回事**。
+//
+// 真机实测(5 份 capture):手**在画面里**的时候,骨架平均只能连续显示 **3 帧(105ms)**
+// 就断一次,而手在场期间的丢跟踪间隔是 35/102/284/284/319/319/872 ms(中位 284ms)。
+//
+// 旧的单段 FADE_MS=420 ⟹ 那些 284–319ms 的间隔里骨架已经淡到 25-30%,下一帧又跳回全亮
+// ⟹ **明暗闪烁**。分两段之后宽限期内完全不变暗。
+check('宽限期覆盖真机上常见的丢跟踪间隔', () => {
+  // 实测中位 284ms。宽限必须大于它,否则最常见的那种丢帧就会让骨架变暗。
+  assert.ok(O.HOLD_MS >= 284,
+    `宽限 ${O.HOLD_MS}ms 小于实测的丢跟踪中位 284ms —— 最常见的丢帧还是会闪`);
+  // 但不能太长：手真的放下之后骨架该消失，而 HOLD+FADE 是总时长。
+  assert.ok(O.HOLD_MS + O.FADE_MS < 1500,
+    `总时长 ${O.HOLD_MS + O.FADE_MS}ms 太长 —— 手放下之后骨架会赖着不走`);
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -45,8 +45,21 @@ const HAND_LINES = [
   [5, 9, 13, 17],
 ];
 
-// 手离开画面后多久淡完。不立刻清掉：丢一两帧跟踪很常见，立刻消失会让骨架频闪，
-// 那比没有骨架更让人以为出问题了。
+// 手离开画面后的两段处理:先**保持不变暗**,超过宽限才开始淡出。
+//
+// ⚠️ 单一个淡出时长不够,而这是真机数据逼出来的。实测(5 份 capture)手**在画面里**的时候
+// 丢跟踪间隔是 35 / 102 / 284 / 284 / 319 / 319 / 872 ms —— 中位 284ms。而骨架平均只能
+// 连续显示 **3 帧(105ms)**就断一次。
+//
+// 旧的 FADE_MS=420 单段淡出的后果:那些 284–319ms 的间隔里骨架已经淡到 25-30%,
+// 下一帧又跳回全亮 ⟹ **明暗闪烁**,也就是用户报的「骨架显示不稳定」。
+//
+// 分两段:
+//   HOLD_MS   这段时间内**完全不变暗** —— 覆盖常见的丢跟踪间隔(中位 284ms)
+//   FADE_MS   之后才淡出 —— 手真的放下了就该消失
+//
+// 400ms 的宽限覆盖 6/7 次实测间隔(那个 872ms 的会淡出,但它更像"手真的移开了")。
+const HOLD_MS = 400;
 const FADE_MS = 420;
 
 // 两只手不同色调，这样"哪只手在动"一眼看出来。录制时整体转暖色 —— 状态变化要有一个
@@ -208,7 +221,7 @@ class HandOverlay {
     // 第一版直接 `this.hands = []`，于是 opacityAt 立刻返回 0，淡出代码一行都跑不到 ——
     // 骨架瞬间消失。而丢一两帧跟踪很常见，瞬间消失会让骨架频闪，那比没有骨架更让人
     // 以为出问题了。淡出的全部意义就在这里，而我把它写成了死代码。
-    if (this.lastAt && now - this.lastAt > FADE_MS) {
+    if (this.lastAt && now - this.lastAt > HOLD_MS + FADE_MS) {
       this.hands = [];
       // 滤波器一起清掉：留着的话下次举手时骨架会从上次的位置"飞"过来，
       // 而那比抖动更奇怪 —— One Euro 的状态是"上一个位置"，跨越一次手不在的间隔没有意义。
@@ -216,12 +229,15 @@ class HandOverlay {
     }
   }
 
-  // 返回 0..1 的不透明度。手在场是 1，离开后按 FADE_MS 淡出。
+  // 返回 0..1 的不透明度。手在场是 1，离开后先保持 HOLD_MS 再按 FADE_MS 淡出。
+  //
+  // 两段的理由见 HOLD_MS：真机上手在画面里的时候丢跟踪间隔中位 284ms，单段淡出会让
+  // 骨架在那些间隔里淡到 30% 又跳回全亮 —— 那个明暗闪烁比抖动更显眼。
   opacityAt(now) {
     if (!this.hands.length || !this.lastAt) return 0;
     const age = now - this.lastAt;
-    if (age <= 0) return 1;
-    return Math.max(0, 1 - age / FADE_MS);
+    if (age <= HOLD_MS) return 1;
+    return Math.max(0, 1 - (age - HOLD_MS) / FADE_MS);
   }
 
   draw(now) {
@@ -307,6 +323,7 @@ class HandOverlay {
 
 root.GestureWallOverlay = {
   HAND_LINES,
+  HOLD_MS,
   FADE_MS,
   INDEX_TIP,
   SKELETON_WIDTH_PX,
