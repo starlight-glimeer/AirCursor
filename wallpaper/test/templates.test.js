@@ -63,12 +63,16 @@ check('默认档位下有可录制动作（录制栏不能打开就是空的）'
   }
 });
 
-// 用户要"功能一致"：每个可录制动作都该有同样的选项，包括有律的那些。
-check('所有可录制动作都能选静态/动态（不因为有律就锁死）', () => {
+// 用户要"功能一致"：每个可录制动作都该有同样的选项，包括有律的、以及连续的那些。
+check('所有可录制动作都能选静态/动态（不因为有律或连续就锁死）', () => {
   const actions = T.recordableActionsOf('depthStage', true);
   assert.ok(actions.length >= 6, `可录制动作只有 ${actions.length} 个`);
+  // 契约变了：`kind` 只说明"输出是连续量还是触发一次"，不决定能不能录。
+  // 静态/动态（手势是姿势还是动作）和离散/连续（触发一次还是每帧给值）是两个**正交**
+  // 的维度。原来这条用例断言"可录制 ⟹ discrete"，那正是把两者绑在一起的地方。
   for (const action of actions) {
-    assert.strictEqual(action.kind, 'discrete', `${action.id} 不是离散动作却可录制`);
+    assert.ok(['discrete', 'continuous'].includes(action.kind),
+      `${action.id} 的 kind 是 ${action.kind}`);
   }
 });
 
@@ -87,17 +91,20 @@ check('每个动作 id 都在 ACTIONS 里有定义', () => {
   }
 });
 
-// continuous 类动作由手的连续状态直接驱动，录一个静态姿势没有意义 —— 给它们做录制
-// 入口只会让用户以为录了才能用。
-check('continuous 动作不可录制，discrete 才可以', () => {
-  for (const action of Object.values(T.ACTIONS)) {
-    if (action.kind === 'continuous') {
-      assert.strictEqual(action.recordable, false, `${action.id} 是连续量却标了可录制`);
-    }
-  }
+// 连续动作也可录制，而**录制对它们是加一道门，不是换驱动方式**。
+//
+// 原来这条断言 `continuous ⟹ recordable: false`，理由是"录一个静态姿势没有意义"。
+// 那个理由不成立：一个静态手型完全可以驱动连续推进 —— 摆出它就一直推进，手型变了就停。
+// 用户原话：「一个特定的静态手势画面连续推进放大，这也是可以实现的啊，手势变了不就停了」。
+check('连续动作可录制，而且没录时照旧可用（不能改成必须先配置）', () => {
+  const zoom = T.ACTIONS.zoom;
+  assert.strictEqual(zoom.kind, 'continuous', 'zoom 应该仍然是连续量');
+  assert.strictEqual(zoom.recordable, true, 'zoom 应该可录制');
   const recordable = T.recordableActionsOf('depthStage', true);
-  assert.ok(recordable.length > 0, '一个可录制动作都没有');
-  assert.ok(recordable.every((a) => a.kind === 'discrete'), '可录制列表里混进了连续量');
+  assert.ok(recordable.some((a) => a.id === 'zoom'), '可录制列表里没有 zoom');
+
+  // ⚠️ 「没录过必须照旧可用」这条在 input.test.js 里从**行为**上验，不在这里 grep 源码。
+  // 源码匹配只能证明"那行字还在"，证不了默认值真的放行。
 });
 
 check('可录制列表随 pro 档变化', () => {

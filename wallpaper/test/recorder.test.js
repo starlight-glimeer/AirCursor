@@ -18,6 +18,7 @@ require(path.join(vendor, 'motion.js'));
 require('../src/recorder.js');
 const R = globalThis.GestureWallRecorder;
 const P = globalThis.AirCursorPose;
+const Motion = globalThis.AirCursorMotion;
 
 let passed = 0;
 function check(name, fn) {
@@ -235,6 +236,529 @@ check('明显不同的两个手势不算冲突', () => {
 check('不和自己比冲突', () => {
   const a = poseOf({ spread: 120 });
   assert.strictEqual(R.conflictingAction('spin', a, { spin: { template: a } }, 0.28, 0), null);
+});
+
+// ── 保持不动:用真机噪声,而不是合成手 ──────────────────────────────────────
+//
+// 上面所有用例喂的是合成手,而合成手造不出决定这件事成败的那个东西:**尖峰**。
+// 真机 capture 实测(只取手腕帧间移动<0.05掌宽、即手确实没动的 21 个帧对):
+// 形状距离中位 0.058,看着离门很远 —— 但 90 分位 0.180、最大 0.222。丢跟踪后重新
+// 检出会跳,而"1200ms 内每一帧都不越线"= ~28 帧连续,单帧越线率 47% ⟹ 全过概率 0%。
+//
+// 用户症状:「录制的时候卡在请保持不动,我都没有动」。0 次成功,不是"偶尔失败"。
+//
+// 夹具是真机 landmark 提炼的:基准姿势 + 帧间噪声序列 + 丢帧模式,回放时把噪声叠到
+// 一个**完全静止**的基准姿势上。这样"用户确实没动"是构造出来的事实,而噪声的时间
+// 相关结构(自相关 0.303)和尖峰来自真手。
+const NOISE = JSON.parse(fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'real-landmark-noise.json'), 'utf8'));
+
+const S = 1000;
+const px = (hand) => hand.map(([x, y, z]) => ({ x: x * S, y: y * S, z: z * S }));
+
+// ⚠️ 夹具 v2:直接回放**真机绝对帧**，不再"基准姿势 + 帧间增量"。
+//
+// v1 把真机的逐帧增量累加到一个静止基准上，理由是"这样'用户确实没动'是构造出来的事实"。
+// 那个理由是对的，做法是错的：**增量累加会随机游走式堆积** ⟹ 实测抖动被夸大 **5.7 倍**
+// （相邻帧距离中位 0.275，而真机静止手是 0.048）。
+//
+// 而这几轮所有阈值都是按那个夸大的噪声标的。最贵的一次：得出"双手命中率只有 51%"，
+// 据此把双手的门放宽一倍，而那个门同时是"离开姿势"的判据 ⟹ 引出「第一次好触发，
+// 后面又很难」。真值是单手双手在 0.28 下都 **100%** 命中。
+//
+// 现在"手没动"用真机里手腕位移最小的那 12 帧（`stillWindow`，位移 0.14 掌宽）——
+// 它不是完美静止，但那正是真手的样子。
+const STILL = NOISE.frames.slice(NOISE.stillWindow.from,
+  NOISE.stillWindow.from + NOISE.stillWindow.count).map(px);
+
+// 第 seed 次试验的第 i 帧。shape 可选:改变手形(用来构造"手真的动了")。
+function noisyFrame(i, seed, shape) {
+  const src = STILL[(i + seed) % STILL.length];
+  return shape ? shape(src, i) : src;
+}
+
+// 跑一次完整的"保持不动",返回是否录成。dt/丢帧模式都来自真机。
+function runHold(seed, { frames = 200, shape = null } = {}) {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('click', { hands: 1, dynamic: false, law: null, now: 0 });
+  for (let i = 0; i < frames; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;   // +2000 跳过倒计时
+    // 丢帧照真机的模式来 —— 这是最常见的尖峰来源,101/118 帧有手,最长丢 726ms。
+    if (!NOISE.handPresent[(i + seed) % NOISE.handPresent.length]) {
+      const out = rec.update(null, 0, now);
+      if (out && out.done) return { ok: true, at: now - 2000 };
+      if (out && out.error) return { ok: false, error: out.error };
+      continue;
+    }
+    const out = rec.update(P.buildPoseTemplate([noisyFrame(i, seed, shape)]), 1, now);
+    if (out && out.done) return { ok: true, at: now - 2000 };
+    if (out && out.error) return { ok: false, error: out.error };
+  }
+  return { ok: false, error: '没收尾' };
+}
+
+check('真机噪声下"保持不动"能录成(修复前是 0/40)', () => {
+  let ok = 0;
+  const times = [];
+  for (let seed = 0; seed < 40; seed += 1) { const r = runHold(seed); if (r.ok) { ok += 1; times.push(r.at); } }
+  times.sort((a, b) => a - b);
+  if (process.env.VERBOSE) console.log(`      成功 ${ok}/40, 耗时中位 ${times[times.length >> 1]}ms 最长 ${times[times.length - 1]}ms`);
+  // 门槛定在 90%:低于这个用户就会遇到"要试好几次",而那和"不能用"体感上没差别。
+  assert.ok(ok >= 36, `40 次里只成功 ${ok} 次 —— 真机上就是"一直说请保持不动"`);
+});
+
+check('手形持续变化时不能录成(否则门就是假的)', () => {
+  // ⚠️ 反向夹具踩过三次,每次都是"看着在动其实没在动":
+  //   ① 纯平移 —— 模板按手腕归一化,平移 2000px 距离仍是 0.0000
+  //   ② curl=min(1,i/25) —— 第 25 帧到底,之后 175 帧是完全静止的手
+  //   ③ 只改一个点 —— 63 维 RMS 会摊平
+  // 有效的反向夹具必须**全程**改变手形,所以用往复。
+  const curl = (base, i) => {
+    const c = (1 - Math.cos((i / 25) * Math.PI)) / 2;
+    return base.map((p, k) => {
+      if (k < 5) return p;
+      const w = [8, 12, 16, 20].includes(k) ? 1
+        : [7, 11, 15, 19].includes(k) ? 0.6 : 0.25;
+      return { x: p.x + (base[0].x - p.x) * c * w * 0.9,
+               y: p.y + (base[0].y - p.y) * c * w * 0.9, z: p.z };
+    });
+  };
+  for (let seed = 0; seed < 6; seed += 1) {
+    const r = runHold(seed, { shape: curl });
+    assert.ok(!r.ok, `手形一直在变却录成了(seed ${seed}) —— 门太松,任何动作都会被当成静止`);
+  }
+});
+
+check('短暂丢帧不清空进度,长时间丢手才重来', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: 0 });
+  rec.start('click', { hands: 1, dynamic: false, law: null, now: 0 });
+  // 先攒够一点进度
+  let out = null;
+  for (let i = 0; i < 10; i += 1) out = rec.update(P.buildPoseTemplate([STILL[i % STILL.length]]), 1, 2000 + i * 43);
+  const before = out.progress;
+  assert.ok(before > 0, '没有攒到进度,后面的比较没意义');
+  // 丢 3 帧(~129ms,宽限内):进度必须继续涨,不能归零
+  for (let i = 0; i < 3; i += 1) out = rec.update(null, 0, 2500 + i * 43);
+  assert.ok(out.progress >= before, `丢 3 帧就把进度清了(${before} → ${out.progress})`);
+  // 丢够 400ms(超宽限):这才是真的把手拿走了
+  for (let i = 0; i < 12; i += 1) out = rec.update(null, 0, 2700 + i * 43);
+  assert.strictEqual(out.progress, 0, '手拿走 400ms 之后仍然在计时 —— 那门就没意义了');
+});
+
+check('保持判定和匹配用同一个旋转容忍', () => {
+  // 不传第三个参数等于 rotationTolerance=0,即"手腕角度一点都不许变",而匹配时容忍
+  // 20° ⟹ 两个判据对同一只手给出不同答案。源码里查,因为这是一个**漏参数**的错,
+  // 行为上只表现为"更严格一点",测不出来。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'recorder.js'), 'utf8');
+  const line = src.split('\n').find((l) => l.includes('Pose.templateDistance(pose, s.reference'));
+  assert.ok(line, '找不到漂移判定那一行 —— 被改写了');
+  assert.match(line, /this\.rotationTolerance/,
+    '漂移判定没传 rotationTolerance ⟹ 保持时容忍 0°、匹配时容忍 20°,两个判据不一致');
+});
+
+// ── 动作幅度：单帧最大值毫无区分度 ────────────────────────────────────────
+//
+// `peak` 原来取**单帧最大值**，而单帧最大值完全由噪声尖峰决定。实测（静止的手 100 帧对
+// restTemplate）：中位 0.210、90 分位 0.768、**最大 1.794**，门限 0.448 —— 100 帧里 18 帧
+// 单独就超门限 ⟹ **完全不做动作也能"录成"一个动态手势**（实测量到 1.498）。
+//
+// 这和「保持不动」那个 bug 是同一族：那次是"每一帧都不许越线"（尖峰让人永远过不去），
+// 这次是"任一帧越线就算"（尖峰让人永远能过）。**都是拿单帧极值当判据。**
+//
+// 用户报「动作做完了，结果直接退出了，看着像是意外中断」。这一族 bug 的另一半在 UI：
+// 失败原因写进 `#live`，而那个元素每帧被 sensor 状态覆盖（~30/s）⟹ 唯一说明原因的那行
+// 字活不过 33ms，所以"有错误信息"和"没有错误信息"在用户眼里一样。
+
+// 走完整流程：保持不动 → 做动作。`amp` 控制动作幅度，0 = 完全不动（只有噪声）。
+function runDynamic(seed, amp, duration = 900) {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  let out = null;
+  let phase = '';
+  let moveStart = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let lm;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      lm = stroked(noisyFrame(i + 50, seed + 3), Math.min(1, (now - moveStart) / duration), amp);
+    } else {
+      lm = noisyFrame(i, seed);
+    }
+    if (!NOISE.handPresent[(i + seed) % NOISE.handPresent.length]) out = rec.update(null, 0, now);
+    else out = rec.update(P.buildPoseTemplate([lm]), 1, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) return out;
+  }
+  return out || { error: '没收尾' };
+}
+
+// 一段动作：手向一侧移动，同时手形改变。
+// ⚠️ 手形必须变 —— 纯平移会被模板归一化消掉（这个项目里踩过五次）。
+function stroked(lm, t, amp) {
+  const wrist = lm[0];
+  return lm.map((p, k) => {
+    if (k < 5) return { x: p.x + t * amp * 0.25, y: p.y, z: p.z };
+    const f = [8, 12, 16, 20].includes(k) ? 1 : 0.4;
+    return {
+      x: p.x + t * amp * 0.25 + (wrist.x - p.x) * t * amp * 1.4 * f,
+      y: p.y + (wrist.y - p.y) * t * amp * 0.8 * f,
+      z: p.z,
+    };
+  });
+}
+
+check('完全不做动作时录不成动态手势（单帧尖峰不算幅度）', () => {
+  for (let seed = 0; seed < 5; seed += 1) {
+    const out = runDynamic(seed, 0);
+    assert.ok(!out.done,
+      `手一直不动却录成了动态手势(seed ${seed}) —— 幅度判据被噪声尖峰顶过去了`);
+  }
+});
+
+check('做了动作就能录成（快慢都要认）', () => {
+  // ⚠️ 第一版这里写的是 `1.0 * (900 / speed > 1 ? 1 : 1)` —— 一个恒等于 1 的表达式，
+  // 三档 speed 跑的是完全一样的输入。用例全绿而什么都没测，和"忘了写"没区别。
+  // 时长要真的传进 runDynamic 才算测了时长。
+  for (const duration of [400, 900, 2000]) {
+    let ok = 0;
+    for (let seed = 0; seed < 5; seed += 1) if (runDynamic(seed, 1.0, duration).done) ok += 1;
+    assert.ok(ok >= 4, `${duration}ms 的动作只成功 ${ok}/5 —— 这个时长录不进去`);
+  }
+});
+
+check('幅度不够时报出实测值和门限两个数', () => {
+  // 「幅度太小，再做大一点」这句话在用户已经觉得自己做完动作时读起来就是"莫名失败"。
+  // 差 5% 和差 10 倍指向完全不同的处理（再夸张一点 vs 这个动作压根测不到）。
+  const out = runDynamic(0, 0);
+  assert.ok(out.error, '不做动作应该失败');
+  assert.match(out.error, /量到 [\d.]+/, `错误里没有实测幅度：${out.error}`);
+  assert.match(out.error, /需要 [\d.]+/, `错误里没有门限：${out.error}`);
+  assert.match(out.error, /\d+ 帧/, `错误里没有帧数 —— 分不清"做太快"和"幅度不足"：${out.error}`);
+  assert.strictEqual(typeof out.peak, 'number', '没有结构化的 peak 字段');
+});
+
+check('做动作过程中就能看到幅度够没够', () => {
+  // 之前只有一句"做动作，做完停住"，于是用户做完了、判定幅度不足、录制退出 ——
+  // 而全程没有任何东西告诉他幅度不够。这是"看着像意外中断"的直接来源。
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: 0 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  let sawExtent = false;
+  let out = null;
+  for (let i = 0; i < 300; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    out = rec.update(P.buildPoseTemplate([noisyFrame(i, 0)]), 1, now);
+    if (out && out.phase === 'move' && out.extent !== undefined) {
+      sawExtent = true;
+      assert.strictEqual(typeof out.extentNeeded, 'number', '报了幅度却没报门限');
+      assert.ok(out.hint.includes('幅度'), `提示里没提幅度：${out.hint}`);
+      break;
+    }
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(sawExtent, '做动作阶段一次都没报过幅度');
+});
+
+check('sensor 透传 recorder 的全部字段（白名单会静默丢掉新字段）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const call = sensor.slice(sensor.indexOf('sendRecordingProgress('));
+  // ⚠️ 原来是白名单，于是 recorder 新加的 extent/extentNeeded 被静默丢掉 —— 加一个诊断
+  // 字段要改两个文件，而漏掉这一处不报错，只会让面板永远显示不出那个数字。
+  assert.match(call.slice(0, 200), /\.\.\.result/,
+    'sendRecordingProgress 又变回白名单了 —— recorder 新加的字段会被静默丢掉');
+});
+
+check('录制失败写进日志窗格，不只写会被覆盖的那一行', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // `#live` 每帧被 sensor 状态覆盖（~30/s）⟹ 写在那里的失败原因活不过 33ms。
+  // 这就是「看着像是意外中断」的成因：错误信息其实一直都有。
+  const block = dash.slice(dash.indexOf('onRecordingResult'), dash.indexOf('onTrack'));
+  assert.match(block, /logLine\(/,
+    '录制结果没进日志窗格 —— #live 每帧被覆盖，用户看不到失败原因');
+});
+
+// 冲突检查发生在**两个手势真正同时生效的那一刻**，而不是更早。
+//
+// 上一版录制时也拿关掉的手势去比，理由是"防止之后重新打开时互抢"。那个风险是真的，但
+// 成本放错了时候：用户把 A 关掉正是为了腾出那个手型，而此刻拦住他的是一个他已经声明
+// 不用的动作。实测撞到过（「我关闭了主体左转，但是还是说太像了」）。
+//
+// 所以：录制时跳过关掉的，**启用时**才检查（主进程的 toggle-recording 里）。
+check('录制时跳过关掉的手势（用户关掉它正是为了腾出那个手型）', () => {
+  const a = poseOf({ spread: 120 });
+  const hit = R.conflictingAction('spin', a, { yawLeft: { template: a, enabled: false } }, 0.28, 0);
+  assert.strictEqual(hit, null, '关掉的手势还在拦录制 —— 那"关闭"就没有意义了');
+});
+
+check('显式要求时才把关掉的算进来（启用那一刻用）', () => {
+  const a = poseOf({ spread: 120 });
+  const hit = R.conflictingAction('spin', a, { yawLeft: { template: a, enabled: false } }, 0.28, 0,
+    { againstDisabled: true });
+  assert.ok(hit, 'againstDisabled 没起作用');
+  assert.strictEqual(hit.otherDisabled, true, '没说清对方是关着的');
+});
+
+check('在用的手势照旧拦住录制', () => {
+  // 这条是上面那条的另一半：跳过的只能是关掉的，开着的必须拦。
+  const a = poseOf({ spread: 120 });
+  for (const entry of [{ template: a }, { template: a, enabled: true }]) {
+    const hit = R.conflictingAction('spin', a, { yawLeft: entry }, 0.28, 0);
+    assert.ok(hit, `和在用的手势撞了却放过：${JSON.stringify(Object.keys(entry))}`);
+  }
+});
+
+// 启用那一刻的检查在主进程里，而它必须**只和在用的手势比** —— 另一个关着的手势不构成
+// 障碍，它自己被打开时也会走同一道检查。
+check('启用时的冲突检查在主进程里，且只和在用的比', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const handler = main.slice(main.indexOf("ipcMain.handle('toggle-recording'"));
+  const block = handler.slice(0, handler.indexOf('writeConfig()'));
+  assert.match(block, /conflictingAction/, '启用时没做冲突检查 —— 打开的瞬间两个手势会互抢');
+  assert.match(block, /if \(enabled/, '关闭时也在检查冲突 —— 关掉一个东西不该被拦');
+  assert.match(block, /againstDisabled: false/, '启用检查把关掉的也算进来了');
+  // 重实现一份判据会导致"录的时候说没冲突、启用时说有冲突"这种自相矛盾。
+  assert.match(main, /require\('\.\/recorder\.js'\)/, '主进程没复用 recorder 的冲突判据');
+});
+
+check('冲突报出"至少要多远"，不只是"太像了"', () => {
+  // "太像了"读不出该改多少。距离 0.109 对门限 0.28 是差一倍多，而 0.27 只差 4% ——
+  // 前者要换个完全不同的手型，后者稍微夸张一点就行。
+  const a = poseOf({ spread: 120 });
+  const hit = R.conflictingAction('spin', a, { yawLeft: { template: a } }, 0.28, 0);
+  assert.strictEqual(typeof hit.need, 'number', '没报门限');
+  assert.ok(hit.need > hit.distance, '门限应该大于实测距离');
+});
+
+// ── "手停住了"不能用逐帧变化判 ───────────────────────────────────────────
+//
+// 实测静止的手，extent 的**逐帧变化**中位 0.173、90 分位 0.975。而原判据是
+// "连续 320ms(~7 帧)变化都 < threshold*0.06 = 0.017" ⟹ 概率 **0.0000%**。
+//
+// 后果是三个 bug 串成一条：
+//   ① "手停住了"永不成立 ⟹ 每次都录到 4 秒超时
+//   ② 超时那几秒手早就停了 ⟹ 那段的"关键帧"全是噪声跳变
+//   ③ 关键帧间距变成噪声距离(~0.5) > 命中半径 ⟹ **序列谁都走不完**
+//
+// 这是"拿单帧值当判据"在这个项目里的第三次（保持不动、动作幅度、这里）。
+check('动作停住后能及时收尾，不拖到超时', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  // 做一个 900ms 的动作，然后**停住**。收尾时间应该接近 900ms + SETTLE_MS，
+  // 而不是 MOVE_TIMEOUT_MS(4000)。
+  let out = null;
+  let phase = '';
+  let moveStart = null;
+  let finishedAt = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let lm;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      lm = stroked(noisyFrame(i + 50, 3), Math.min(1, (now - moveStart) / 900), 1.0);
+    } else {
+      lm = noisyFrame(i, 0);
+    }
+    out = NOISE.handPresent[i % NOISE.handPresent.length]
+      ? rec.update(P.buildPoseTemplate([lm]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) { finishedAt = now - moveStart; break; }
+  }
+  assert.ok(out && out.done, `录制失败：${out && out.error}`);
+  // 4000ms 是超时值。收在 2500 以内说明"停住"被认出来了而不是靠超时兜底。
+  assert.ok(finishedAt < 2500,
+    `动作 900ms 就停了，却录了 ${finishedAt}ms —— "手停住了"的判据没成立，靠超时收尾`);
+});
+
+check('关键帧不覆盖动作结束后的静止段', () => {
+  // 静止段的"关键帧"是噪声跳变，它们之间的距离就是噪声距离(~0.5)，而那会让整个序列
+  // 的间距超出命中半径。所以关键帧的时间跨度必须贴近真实动作，不能一路铺到超时。
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  let out = null;
+  let phase = '';
+  let moveStart = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let lm;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      lm = stroked(noisyFrame(i + 50, 3), Math.min(1, (now - moveStart) / 900), 1.0);
+    } else {
+      lm = noisyFrame(i, 0);
+    }
+    out = NOISE.handPresent[i % NOISE.handPresent.length]
+      ? rec.update(P.buildPoseTemplate([lm]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(out.result && out.result.keyframes, '没有关键帧');
+  const span = out.result.keyframes[out.result.keyframes.length - 1].offsetMs;
+  assert.ok(span < 2500,
+    `动作只有 900ms，关键帧却铺到 ${span}ms —— 后面那些是静止的手 + 噪声，`
+    + '它们之间的距离是噪声距离，会让序列走不完');
+});
+
+// ── 序列的第一个关键帧必须是"保持"的那个姿势 ──────────────────────────────
+//
+// **这是「基本都是 0/6，距离 2.3 几 / 门 0.54 几，等起始姿势」的根因。**
+//
+// `s.frames` 从 MOVE 阶段才开始收，而 READY 那一拍（手从保持姿势移到动作起点）不进
+// frames ⟹ `kf[0]` 是"手已经开始动之后"的某一帧。而实时匹配时用户必须从**保持的那个
+// 静止姿势**进入 —— 那个姿势压根不在序列里。
+//
+// 实测：静止姿势离 kf[0] 的距离 **1.96–2.06**，入口门 0.54 ⟹ 差近 4 倍，永远进不去。
+// 修完之后是 **0.02**。端到端"摆姿势→做动作"从"偶尔一次"变成 **10/10**。
+//
+// 而这条链的其余部分一直是对的：用录制时喂进去的同一批帧匹配 kf[0]，最小距离 0.0000。
+// 也就是**录制和匹配两条路一致，错的是"序列从哪里开始"** —— 那个区别我查了三轮才看到，
+// 因为两条路的坐标换算完全一样，看代码看不出问题。
+check('动态录制把保持的姿势当第一个关键帧', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  // 先保持（用真机静止帧），再做动作（用真机移动帧）
+  const moving = NOISE.frames.slice(30, 55).map((h) => h.map(([x, y, z]) => ({ x, y, z })));
+  const px2 = (h) => h.map((p) => ({ x: p.x * 1000, y: p.y * 1000, z: (p.z || 0) * 1000 }));
+  let out = null;
+  let phase = '';
+  let mi = 0;
+  for (let i = 0; i < 500; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    const hand = (phase === 'move' || phase === 'ready')
+      ? px2(moving[Math.min(mi++, moving.length - 1)])
+      : STILL[i % STILL.length];
+    out = rec.update(P.buildPoseTemplate([hand]), 1, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(out.result && out.result.keyframes, `录制失败：${out.error}`);
+
+  // kf[0] 必须离"保持的那个姿势"很近 —— 那是用户实时进入序列的唯一入口。
+  const rest = P.medianTemplate(STILL.map((h) => P.buildPoseTemplate([h])));
+  const d = P.templateDistance(out.result.keyframes[0].template, rest, (20 * Math.PI) / 180);
+  assert.ok(d < 0.3,
+    `第一个关键帧离保持姿势 ${d.toFixed(3)} —— 用户从保持姿势进不去，会一直卡在 0/N 步`);
+});
+
+// ── 序列长度的代价是乘法 ─────────────────────────────────────────────────
+//
+// 用户报「4/10 这种多一些了，之前基本都是 0/10，还能优化吗」。
+//
+// **每个关键帧都要被命中一次，所以走完 N 个的概率是 p^N。**真机实测单帧命中率 79%
+// （门 0.55），于是 N=3 是 49%、N=6 是 24%、N=10 只有 **9%**。而 0.79^4 ≈ 39% ——
+// 正好是用户报的 4/10 那个量级，也就是**他的动作没问题，是序列太长**。
+//
+// 这是算术，不依赖夹具 —— 而那一点很重要，因为我造不出"同一个人重做一次"的夹具：
+// 用录制时的同一批帧回放是 100%（太理想），用另一段真机帧是 0%（那是动作的不同阶段，
+// 不是重做）。两个极端都不代表真实。
+check('关键帧数量有上限，而且余量够（抽稀不能掉到 MIN 以下）', () => {
+  assert.ok(Motion.MAX_KEYFRAMES <= 5,
+    `上限 ${Motion.MAX_KEYFRAMES} 太大 —— 单帧命中 79% 时走完 10 个的概率只有 9%`);
+  assert.ok(Motion.MAX_KEYFRAMES > Motion.MIN_KEYFRAMES,
+    `上限 ${Motion.MAX_KEYFRAMES} 不大于下限 ${Motion.MIN_KEYFRAMES} —— 抽稀会直接报错`);
+
+  // 各种长度的动作都要能抽出够用的关键帧。40 帧那档是"动作做得很慢"的情形。
+  const px2 = (h) => h.map(([x, y, z]) => ({ x: x * 1000, y: y * 1000, z: (z || 0) * 1000 }));
+  for (const len of [8, 15, 25, 40]) {
+    const samples = [];
+    for (let i = 0; i < len; i += 1) {
+      samples.push({ template: P.buildPoseTemplate([px2(NOISE.frames[(30 + i) % NOISE.frames.length])]),
+        at: i * 43 });
+    }
+    const kf = Motion.buildKeyframes(samples, 0.28, P.templateDistance);
+    assert.ok(kf.length >= Motion.MIN_KEYFRAMES,
+      `${len} 帧的动作只抽出 ${kf.length} 个关键帧，少于 MIN=${Motion.MIN_KEYFRAMES} 会报"关键帧不够"`);
+    assert.ok(kf.length <= Motion.MAX_KEYFRAMES,
+      `${len} 帧的动作抽出 ${kf.length} 个，超过上限 ${Motion.MAX_KEYFRAMES}`);
+  }
+});
+
+// ── 手放下 = 动作做完了 ──────────────────────────────────────────────────
+//
+// 用户：「我的动作做完了，所以可能停止的判定有问题吧，有漏洞」。**是的。**
+//
+// `tickMove` 里整段（采样、幅度、结束判定）都在 `if (pose && handCount >= wanted)` 里面，
+// 所以手一离开画面就一帧都不走 —— 既不更新 stillSince 也不检查结束 ⟹ 只能等
+// MOVE_TIMEOUT_MS(4000ms) 超时。而"做完动作把手放下"是最自然的收尾方式。
+//
+// 真机五次录制（landmarks-17853470*）实测：动作本身只有 **201–986ms**，也就是每次录制
+// 都在空转 3 秒以上等超时。
+check('手放下之后及时收尾，不等 4 秒超时', () => {
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  const moving = NOISE.frames.slice(30, 55).map((h) => h.map(([x, y, z]) => ({
+    x: x * 1000, y: y * 1000, z: (z || 0) * 1000 })));
+  let out = null;
+  let phase = '';
+  let mi = 0;
+  let moveStart = null;
+  let finishedAt = null;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let hand;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      // ⚠️ 动作只做 350ms，然后**立刻把手拿走**。
+      //
+      // 第一版用 900ms，而那条录制在 731ms 就靠原有的 stillSince 路径收尾了 ——
+      // 手还在画面里，压根没走到"手放下"那一步。**用例没测到要测的东西**，
+      // 而我是靠"关掉那个分支它依然全绿"发现的。
+      //
+      // 350ms 短到 stillSince 来不及成立（要 SETTLE_MS=320ms 幅度不变），
+      // 所以收尾只能来自手放下那条路径。
+      hand = (now - moveStart < 350) ? moving[Math.min(mi++, moving.length - 1)] : null;
+    } else {
+      hand = STILL[i % STILL.length];
+    }
+    out = hand ? rec.update(P.buildPoseTemplate([hand]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) { finishedAt = now - moveStart; break; }
+  }
+  assert.ok(out && out.done, `手放下之后录制失败了：${out && out.error}`);
+  // 350ms 动作 + 600ms 判定 ≈ 950ms。4000ms 是超时值。
+  assert.ok(finishedAt < 1600,
+    `动作 350ms 就把手放下了，却录了 ${finishedAt}ms —— 还在等超时`);
+});
+
+check('手放下的判定门大于动作过程中的最大丢帧', () => {
+  // ⚠️ 这个数是真机标定的。用户录了同一个动作五次，量动作那一段**内部**的丢帧：
+  // 67ms / 34ms / 35ms / 67ms+67ms / **367ms**。
+  //
+  // 我原本想用 250ms —— 那会把第五次那个 367ms 的中途丢帧当成"做完了"，
+  // 于是动作录一半就收尾。600ms 留了 1.6 倍余量。
+  assert.ok(R.HAND_GONE_SETTLE_MS > 367,
+    `${R.HAND_GONE_SETTLE_MS}ms 小于真机实测的最大中途丢帧 367ms —— 动作会被截断`);
+  assert.ok(R.HAND_GONE_SETTLE_MS < R.MOVE_TIMEOUT_MS,
+    '手放下的判定门不小于超时值 —— 那这条路径就没有意义');
+});
+
+check('动作中途短暂丢帧不算做完', () => {
+  // 上一条的另一半：中途丢 367ms 之后手回来了，动作要继续录而不是收尾。
+  const rec = new R.Recorder({ matchThreshold: 0.28, rotationTolerance: (20 * Math.PI) / 180 });
+  rec.start('spin', { hands: 1, dynamic: true, law: null, now: 0 });
+  const moving = NOISE.frames.slice(30, 55).map((h) => h.map(([x, y, z]) => ({
+    x: x * 1000, y: y * 1000, z: (z || 0) * 1000 })));
+  let out = null;
+  let phase = '';
+  let mi = 0;
+  let moveStart = null;
+  let gapDone = false;
+  for (let i = 0; i < 600; i += 1) {
+    const now = (i + 1) * NOISE.dtMs + 2000;
+    let hand;
+    if (phase === 'move' || phase === 'ready') {
+      if (moveStart === null) moveStart = now;
+      const t = now - moveStart;
+      // 400–767ms 之间丢帧（367ms，真机实测的最大值），之后手回来接着做
+      if (t > 400 && t < 767) { hand = null; }
+      else { if (t >= 767) gapDone = true; hand = moving[Math.min(mi++, moving.length - 1)]; }
+    } else {
+      hand = STILL[i % STILL.length];
+    }
+    out = hand ? rec.update(P.buildPoseTemplate([hand]), 1, now) : rec.update(null, 0, now);
+    if (out && out.phase) phase = out.phase;
+    if (out && (out.done || out.error)) break;
+  }
+  assert.ok(gapDone, '丢帧期间就收尾了 —— 动作被截断，而那 367ms 是真机实测的中途丢帧');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

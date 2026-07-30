@@ -1,4 +1,12 @@
 // 骨架窗口的接线。绘制逻辑在 overlay.js，这里只负责收消息、驱动帧循环、管录制提示条。
+//
+// ⚠️ 包在 IIFE 里,不是风格问题。这个文件和 sensor.js / overlay-window.js 现在跑在
+// **同一个窗口**(摄像头搬进骨架层之后),两边都在顶层 `const T = ...` ⟹
+// "Identifier 'T' has already been declared" ⟹ **整层脚本全部停止执行**,
+// 而症状只是"摄像头不启动",看不出和重名有任何关系。
+//
+// 同窗口的脚本之间没有作用域隔离,所以每个都得自己包。
+(function () {
 const T = window.GestureWallTemplates;
 const overlay = new window.GestureWallOverlay.HandOverlay(document.getElementById('hands'));
 
@@ -17,17 +25,40 @@ const PHASE_LABEL = {
 
 function syncSize() {
   overlay.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
+  // 每次尺寸变化都把自检结果报给主进程,由面板显示。
+  //
+  // 为什么要报出来:骨架位置错了两轮都没定位到,因为我手上只有"手在数据里的位置",没有
+  // "骨架落在屏幕哪个像素"。而后者要跨三层(缓冲/CSS/DPR),缺任何一层都看不出问题在哪。
+  if (window.gw && window.gw.reportOverlayGeometry) {
+    window.gw.reportOverlayGeometry(overlay.selfCheck());
+  }
 }
 window.addEventListener('resize', syncSize);
 syncSize();
 
+// 画不画由 config 决定。
+//
+// 窗口的存在条件是"手势开着"(因为摄像头在这一层),而"显示骨架"这个开关只控制画不画 ——
+// 两件事分开之后,关掉骨架不会连摄像头一起关掉。窗口本来就是全屏透明的,不画就等于不存在。
+let showSkeleton = true;
+window.gw.onConfig((next) => {
+  // 录制时强制显示:那是唯一必须看见手的时刻,而"我关了骨架所以录制时什么都看不到"
+  // 不是用户会预期的后果。
+  showSkeleton = !!(next && (next.showHands || overlay.recording));
+});
+
 // 每帧都画：骨架有淡出和呼吸，只在收到消息时画会一顿一顿。
 function frame(now) {
-  overlay.draw(now);
+  if (showSkeleton || overlay.recording) overlay.draw(now);
+  else overlay.clear();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
+// 同窗口直喂的入口。sensor.js 现在就在这一层,所以它直接调这个而不是走 IPC ——
+// 30/s 的消息绕出进程再绕回来是白付的成本。
+window.__gwOverlay = { ingest: (payload) => overlay.update(payload, performance.now()) };
+// IPC 那条保留:骨架层将来可能有别的进程要喂它(比如回放录好的关键点)。
 window.gw.onHands((payload) => overlay.update(payload, performance.now()));
 
 // ---------------------------------------------------------------------------
@@ -61,3 +92,4 @@ window.gw.onRecordingResult((r) => {
   }
   setTimeout(() => banner.classList.remove('on'), r && r.cancelled ? 0 : 1600);
 });
+})();

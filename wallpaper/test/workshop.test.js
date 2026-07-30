@@ -474,4 +474,160 @@ check('推断出的类型带 typeSource，供上层判支持性', () => {
   assert.strictEqual(item.supported, undefined);
 });
 
+console.log('\n  浏览工坊（仿 Steam 排版）');
+
+// ⚠️ 这条是 Steam 的硬规则：search_text 非空时必须用 query_type=12
+//（RankedByTextSearch）。用别的值搜索词会被**静默忽略** ——
+// 返回的是热门榜，而那看起来像"搜索没用"。
+check('有搜索词时强制用文本搜索的 query_type', () => {
+  assert.strictEqual(S.queryTypeFor('trending', true), 12);
+  assert.strictEqual(S.queryTypeFor('recent', true), 12, '有搜索词时排序不该覆盖它');
+  // 没搜索词时按排序走
+  assert.strictEqual(S.queryTypeFor('trending', false), 3);
+  assert.strictEqual(S.queryTypeFor('recent', false), 1);
+});
+
+check('未知排序回落到热门，不产生非法 query_type', () => {
+  assert.strictEqual(S.queryTypeFor('不存在的排序', false), 3);
+  assert.strictEqual(S.queryTypeFor(null, false), 3);
+});
+
+// ⚠️ return_previews / return_tags 少了的话，返回的项**没有预览图和类型** ——
+// 而那正是"浏览着挑壁纸"的全部依据。用户明确说过"预览图是可以看到的吧"。
+check('请求必须要预览图和类型标签（那是浏览的全部依据）', () => {
+  const p = S.browseParams({ key: 'K', page: 1 });
+  assert.strictEqual(p.get('return_previews'), 'true', '没要预览图');
+  assert.strictEqual(p.get('return_tags'), 'true', '没要类型标签');
+  assert.strictEqual(p.get('appid'), '431960');
+});
+
+check('搜索词和标签正确编码', () => {
+  const p = S.browseParams({ key: 'K', query: '龙猫', tags: ['Video', 'Scene'] });
+  assert.strictEqual(p.get('search_text'), '龙猫');
+  assert.strictEqual(p.get('requiredtags[0]'), 'Video');
+  assert.strictEqual(p.get('requiredtags[1]'), 'Scene');
+});
+
+// 空搜索词不该产生 search_text= 参数 —— 那会让 Steam 当成"搜空字符串"。
+check('空搜索词不带 search_text', () => {
+  const p = S.browseParams({ key: 'K', query: '   ' });
+  assert.strictEqual(p.has('search_text'), false, '空白搜索词被当成搜索了');
+});
+
+// ⚠️ 类型标签首字母必须大写：Steam 的 requiredtags 区分大小写，
+// 传 'scene' 会返回空结果**而不报错** —— 那看起来像"这个筛选没东西"。
+check('类型标签是 Steam 认的大写形式', () => {
+  for (const t of S.TYPE_TAGS_QUERY) {
+    assert.match(t.id, /^[A-Z]/, `${t.id} 首字母没大写 —— Steam 会返回空结果且不报错`);
+  }
+  // 而且要标出哪些我们放不了 —— 筛选按钮上就能看到
+  assert.strictEqual(S.TYPE_TAGS_QUERY.find((t) => t.id === 'Scene').supported, false);
+  assert.strictEqual(S.TYPE_TAGS_QUERY.find((t) => t.id === 'Web').supported, true);
+});
+
+check('每页数量有上下限（Steam 不接受任意值）', () => {
+  assert.strictEqual(S.browseParams({ key: 'K', perPage: 999 }).get('numperpage'), '50');
+  assert.strictEqual(S.browseParams({ key: 'K', perPage: 0 }).get('numperpage'), '1');
+  assert.strictEqual(S.browseParams({ key: 'K', page: -5 }).get('page'), '1');
+});
+
+// ⚠️ total 是分页的唯一依据 —— 没有它就不知道有几页。
+check('响应解析出 total（没它做不了分页）', () => {
+  const out = S.parseBrowseResponse({
+    response: { total: 1234, publishedfiledetails: [
+      { publishedfileid: '1', result: 1, title: 'a', tags: [{ tag: 'Web' }] },
+    ] },
+  });
+  assert.strictEqual(out.total, 1234);
+  assert.strictEqual(out.items.length, 1);
+  assert.strictEqual(out.items[0].type, 'web');
+});
+
+check('响应缺字段时不抛', () => {
+  assert.deepStrictEqual(S.parseBrowseResponse(null), { items: [], total: 0 });
+  assert.deepStrictEqual(S.parseBrowseResponse({ response: {} }), { items: [], total: 0 });
+});
+
+// "需要 API key"这五个字对用户没用 —— 他不知道去哪弄、要不要钱。
+check('没 key 时给出能照做的步骤', () => {
+  const hint = S.apiKeyHint();
+  assert.match(hint, /steamcommunity\.com\/dev\/apikey/, '没给申请地址');
+  assert.match(hint, /免费/, '没说明是免费的');
+  // ⚠️ 还要说清"不配也能用"，否则用户以为整个功能被锁住了
+  assert.match(hint, /不需要它|装载/, '没说明装载壁纸不需要 key');
+});
+
+console.log('\n  我的壁纸（扫目录，不管来源）');
+
+// 用假文件系统测，那样不用造真实目录树。
+function fakeFs(tree, files) {
+  return {
+    listDir: (d) => { if (!tree[d]) throw new Error('ENOENT'); return tree[d]; },
+    isDir: (d) => !!tree[d],
+    exists: (f) => files.has(f),
+  };
+}
+
+check('找出所有含 project.json 的目录', () => {
+  const tree = { '/a': ['w1', 'w2'], '/a/w1': ['project.json'], '/a/w2': ['project.json'] };
+  const files = new Set(['/a/w1/project.json', '/a/w2/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs.sort(), ['/a/w1', '/a/w2']);
+});
+
+// 用户可能建了分类文件夹，所以要往下找一层。
+check('嵌套一层也能找到（用户会建分类目录）', () => {
+  const tree = { '/a': ['分类'], '/a/分类': ['w3'], '/a/分类/w3': ['project.json'] };
+  const files = new Set(['/a/分类/w3/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/分类/w3']);
+});
+
+// ⚠️ 深度必须有上限：无限递归会扫穷整个盘（用户可能把 root 设成家目录）。
+check('深度有上限（否则会扫穷整个盘）', () => {
+  const tree = { '/a': ['b'], '/a/b': ['c'], '/a/b/c': ['d'], '/a/b/c/d': ['project.json'] };
+  const files = new Set(['/a/b/c/d/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.strictEqual(out.dirs.length, 0, '超过 2 层还在扫 —— 深目录会拖死扫描');
+});
+
+// ⚠️ 找到 project.json 就停，不往里钻 —— 壁纸目录里可能有几百个资产文件。
+check('找到 project.json 就停，不进壁纸内部', () => {
+  const tree = {
+    '/a': ['w1'], '/a/w1': ['project.json', 'assets'],
+    '/a/w1/assets': ['nested'], '/a/w1/assets/nested': ['project.json'],
+  };
+  const files = new Set(['/a/w1/project.json', '/a/w1/assets/nested/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/w1'], '钻进壁纸内部了');
+});
+
+// 权限不足、目录不存在 —— 都不该让整个扫描失败。
+check('读不了的目录被跳过，不中断扫描', () => {
+  const tree = { '/a': ['bad', 'good'], '/a/good': ['project.json'] };
+  const files = new Set(['/a/good/project.json']);
+  // '/a/bad' 不在 tree 里 ⟹ isDir 返回 false，直接跳过
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/good']);
+});
+
+check('隐藏目录被跳过（.DS_Store 那类）', () => {
+  const tree = { '/a': ['.hidden', 'w1'], '/a/.hidden': ['project.json'], '/a/w1': ['project.json'] };
+  const files = new Set(['/a/.hidden/project.json', '/a/w1/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/w1']);
+});
+
+check('多个 root 里重复的目录只算一次', () => {
+  const tree = { '/a': ['w1'], '/a/w1': ['project.json'] };
+  const files = new Set(['/a/w1/project.json']);
+  const out = S.findWallpaperDirs(['/a', '/a'], fakeFs(tree, files));
+  assert.strictEqual(out.dirs.length, 1, '同一个目录被算了两次');
+});
+
+check('root 不存在时安静跳过', () => {
+  const out = S.findWallpaperDirs(['/不存在'], fakeFs({}, new Set()));
+  assert.deepStrictEqual(out.dirs, []);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -16,23 +16,23 @@ contextBridge.exposeInMainWorld('gw', {
   setConfig: (patch) => ipcRenderer.invoke('set-config', patch),
 
   // 三层图片
-  pickImage: (slot) => ipcRenderer.invoke('pick-image', slot),
-  clearImage: (slot) => ipcRenderer.invoke('clear-image', slot),
-  setLayer: (slot, filePath) => ipcRenderer.invoke('set-layer', slot, filePath),
 
   // 图库
-  libraryAdd: () => ipcRenderer.invoke('library-add'),
-  libraryRemove: (id) => ipcRenderer.invoke('library-remove', id),
-  librarySetSlot: (id, slot) => ipcRenderer.invoke('library-set-slot', id, slot),
 
   // 手势录制
   startRecording: (action) => ipcRenderer.invoke('start-recording', action),
   cancelRecording: () => ipcRenderer.invoke('cancel-recording'),
   clearRecording: (action) => ipcRenderer.invoke('clear-recording', action),
   undoRecording: (action) => ipcRenderer.invoke('undo-recording', action),
+  toggleRecording: (action, enabled) => ipcRenderer.invoke('toggle-recording', action, enabled),
 
   // 投递层健康 + 原始关键点录制(从 AirCursor 搬过来的两样)
   pointerHealth: () => ipcRenderer.invoke('pointer-health'),
+  openAccessibility: () => ipcRenderer.invoke('open-accessibility'),
+  openCameraSettings: () => ipcRenderer.invoke('open-camera-settings'),
+  openMicrophoneSettings: () => ipcRenderer.invoke('open-microphone-settings'),
+  openSpeechSettings: () => ipcRenderer.invoke('open-speech-settings'),
+  setVoice: (enabled) => ipcRenderer.invoke('set-voice', enabled),
   startCapture: () => ipcRenderer.invoke('start-capture'),
   revealCaptures: () => ipcRenderer.invoke('reveal-captures'),
   saveCapture: (payload) => ipcRenderer.send('save-capture', payload),
@@ -42,9 +42,6 @@ contextBridge.exposeInMainWorld('gw', {
   onVoiceStatus: (handler) => ipcRenderer.on('voice-status', (_e, p) => handler(p)),
 
   // 预设
-  savePreset: (name) => ipcRenderer.invoke('save-preset', name),
-  loadPreset: (name) => ipcRenderer.invoke('load-preset', name),
-  deletePreset: (name) => ipcRenderer.invoke('delete-preset', name),
 
   // WE 网页壁纸
   wePick: () => ipcRenderer.invoke('we-pick'),
@@ -62,6 +59,11 @@ contextBridge.exposeInMainWorld('gw', {
   workshopProbe: () => ipcRenderer.invoke('workshop-probe'),
   workshopDetails: (input) => ipcRenderer.invoke('workshop-details', input),
   workshopLocal: () => ipcRenderer.invoke('workshop-local'),
+  workshopBrowse: (opts) => ipcRenderer.invoke('workshop-browse', opts),
+  workshopBrowseMeta: () => ipcRenderer.invoke('workshop-browse-meta'),
+  workshopSetKey: (key) => ipcRenderer.invoke('workshop-set-key', key),
+  workshopAddDir: () => ipcRenderer.invoke('workshop-add-dir'),
+  workshopRemoveDir: (dir) => ipcRenderer.invoke('workshop-remove-dir', dir),
   workshopLoadLocal: (dir) => ipcRenderer.invoke('workshop-load-local', dir),
 
   // 诊断报告
@@ -71,7 +73,6 @@ contextBridge.exposeInMainWorld('gw', {
   // video 页面 → 主进程
   sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),
 
-  setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
   testSystemAction: (id) => ipcRenderer.invoke('test-system-action', id),
@@ -81,6 +82,9 @@ contextBridge.exposeInMainWorld('gw', {
   sendGesture: (payload) => ipcRenderer.send('gesture', payload),
   sendHands: (payload) => ipcRenderer.send('hands', payload),
   sendSensorStatus: (payload) => ipcRenderer.send('sensor-status', payload),
+  reportOverlayGeometry: (payload) => ipcRenderer.send('overlay-geometry', payload),
+  onOverlayGeometry: (handler) => ipcRenderer.on('overlay-geometry', (_e, p) => handler(p)),
+  onHelperLog: (handler) => ipcRenderer.on('helper-log', (_e, p) => handler(p)),
   sendRecordingProgress: (payload) => ipcRenderer.send('recording-progress', payload),
   sendRecordingResult: (payload) => ipcRenderer.send('recording-result', payload),
 

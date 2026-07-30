@@ -37,18 +37,31 @@ const ACTIONS = {
   zoom: {
     id: 'zoom',
     label: '推进 / 拉远',
-    hint: '双手拇指+食指捏合，拉开 = 推进放大，合拢 = 拉远',
-    // continuous：每帧给一个 0..1 的值，不是"触发一次"。这类动作不需要录制 ——
-    // 它由手的连续状态直接驱动，录一个静态姿势没有意义。
+    hint: '默认双手捏合拉开推进；也能录一个手型当开关',
+    // continuous：每帧给一个 0..1 的值，不是"触发一次"。
+    //
+    // ⚠️ 但这**不代表不能录**。原来写着 `recordable: false`，理由是"录一个静态姿势
+    // 没有意义" —— 那是把两个正交的维度绑在一起了：
+    //
+    //   静态/动态   手势本身是一个姿势，还是一段动作
+    //   离散/连续   触发一次，还是每帧给一个值
+    //
+    // 一个**静态手型**完全可以驱动连续推进：摆出它就一直推进，手型变了就停。这是
+    // 静态手势的自然语义，而不是需要额外机制的东西。用户原话：「一个特定的静态手势
+    // 画面连续推进放大，这也是可以实现的啊，手势变了不就停了」。
+    //
+    // 所以 `kind: 'continuous'` 只描述"输出是连续量"，录制与否是独立的选择：
+    //   没录 → 用内置的捏合/移动映射（和以前一样）
+    //   录了 → 那个手势在场时才进入这个模式，离场就停
     kind: 'continuous',
-    recordable: false,
+    recordable: true,
   },
   parallax: {
     id: 'parallax',
     label: '视差跟随',
-    hint: '单手移动，三层按景深错开',
+    hint: '默认单手移动；也能录一个手型当开关',
     kind: 'continuous',
-    recordable: false,
+    recordable: true,
   },
   yawLeft: {
     id: 'yawLeft',
@@ -217,8 +230,11 @@ function actionsOf(templateId, includePro) {
   return ids.map((id) => ACTIONS[id]).filter(Boolean);
 }
 
-// 需要录制的那些。continuous 类不在其中 —— 它们由手的连续状态驱动，录一个静态姿势
-// 没有意义，而给它们做录制入口只会让用户以为录了才能用。
+// 需要录制的那些。
+//
+// continuous 类**也在其中**：录制对它们是"加一道门"（摆出这个手势才进入这个模式），
+// 不是"替换驱动方式"。不录仍然能用内置映射 —— 所以 UI 上要说清"录了更准/更可控"，
+// 而不是"必须录"。
 function recordableActionsOf(templateId, includePro) {
   return actionsOf(templateId, includePro).filter((a) => a.recordable);
 }

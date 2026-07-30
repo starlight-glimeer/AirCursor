@@ -71,6 +71,69 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// 动态（关键帧序列）匹配的门相对静态门的倍数。
+//
+// 静态和动态判别的**不是同一件事**：静态问"手是不是摆成了那个样子"（手能停住、能摆准），
+// 动态问"手有没有经过那个中间姿势"（手一直在动，只是路过）。而路过时手一帧就走掉 0.135，
+// 一个 0.28 的球只能停留 89ms。
+//
+// 真机干净帧扫门实测：0.28 只有 55% 命中而误配已经是 1%，0.55 是 79%/5%。也就是原来的门
+// **白丢一半判别力**。1.96 ≈ 0.55/0.28。
+//
+// ⚠️ 只动动态这条。静态的 0.28 在真机上验过是好的，不该跟着动。
+const SEQUENCE_THRESHOLD_SCALE = 1.96;
+
+// 手离开画面多久之后放弃正在进行的序列。
+//
+// 400ms（轨迹类的重置门）对序列来说太短：实测一个动态手势中途丢 516ms 就整个归零，而真机
+// capture 里最长的丢跟踪段是 726ms，做动作时手挥出画面边缘更是常事。
+//
+// 1500ms 的依据：比任何单次丢跟踪都长，又比"用户放弃这个动作去做别的事"短。而在这段时间
+// 里序列只是**暂停**——它的超时预算被 excuse() 还回去了，所以不会因为等待而 tooSlow。
+const SEQUENCE_ABANDON_MS = 1500;
+
+// 重新武装的门，占触发门的比例。手松到触发门的六成就算离开了。
+//
+// 留这段差值是为了滞回：触发和松开用同一个数时，距离在门附近的任何抖动都会重新武装。
+//
+// ⚠️ 这里曾经还有一个 `RE_ARM_MS`（要求"持续离开 250ms"），依据是"手不动时距离在
+// 0.12–1.33 之间抖、24 帧穿越门 5 次，所以位置滞回原理上不成立"。**那个测量是假的**：
+// 它来自一个把真机逐帧增量累加到静止基准上的夹具，而增量累加会随机游走式堆积，抖动被
+// 夸大 **5.7 倍**。用真机绝对帧重测：保持段距离 **0.011–0.155，穿越门 0 次**。
+//
+// 真值下连发压根不会发生 —— 手一直保持姿势 200 帧（8.6 秒）只触发 1 次。扫参也证实
+// ratio 从 0.4 到 1.0、ms 从 0 到 400 **每一档都正好 6 个周期触发 6 次**，也就是那个时间
+// 机制在解决一个不存在的问题。删掉。
+const RE_ARM_RATIO = 0.6;
+
+// 从配置里取一个调参值，顶层和 gestureTuning 两层都查。
+//
+// 存在的理由：这些值住在 `config.gestureTuning` 里，而 `recorded` 住在顶层，所以调用方
+// 必须传整个 config。但纯逻辑用例里直接传 `{ matchThreshold: 0.3 }` 更自然，两种都要认。
+//
+// 写成一个函数而不是每处一条 `||` 链：`matchThreshold` 那两行原本在这个文件里出现
+// **两次**（continuousGate 和 updateRecorded 各一份），而漏改一处的后果是那半边悄悄用
+// 着默认值 —— 症状是"我调了灵敏度，有的手势跟着变有的没变"。
+function tunedValue(config, key, fallback) {
+  if (!config) return fallback;
+  if (config[key] !== undefined) return config[key];
+  const tuning = config.gestureTuning;
+  if (tuning && tuning[key] !== undefined) return tuning[key];
+  return fallback;
+}
+
+// 旋转容忍：配置里存的是**度**，`templateDistance` 要**弧度**。
+//
+// ⚠️ 这里原来直接把配置值当弧度用 ⟹ 默认 20 被当成 20 弧度 = 1146°，也就是**任何角度
+// 的手都匹配**（实测把手转 60°，距离从 0.5327 变成 0.0000）。方向是过于宽松，症状是
+// 手势互相串而不是没反应 —— 所以它和"录了没反应"是两个独立的 bug，只是住在相邻两行。
+//
+// sensor.js 那边一直是对的（`(deg * Math.PI) / 180`），两个文件对同一个配置项的单位理解
+// 不同。单位换算不能散落在读取点，所以收进这个函数。
+function rotationRadians(config) {
+  return (tunedValue(config, 'rotationTolerance', 20) * Math.PI) / 180;
+}
+
 // 食指根到小指根：一只手上唯一几乎不随姿势变化的跨度，所以能当尺度基准。
 // 直接用 pose.js 的实现而不是自己算 —— 那边对退化情形有下限保护。
 function palmWidth(lm) {
@@ -130,6 +193,8 @@ class GestureInput {
     this.sequences = new Map();
     this.statics = new Map();
     this.blocked = null;
+    // 上一帧每个录过的动作离触发有多远。面板拿它显示"我现在摆着手，差多少"。
+    this.probe = [];
     this.lastSeenAt = 0;
   }
 
@@ -173,13 +238,72 @@ class GestureInput {
   }
 
   // hands: MediaPipe 的 multiHandLandmarks（未镜像）。now: 毫秒。
+  //
+  // ⚠️ config 是**整个配置对象**，不是 `config.gestureTuning`。这个函数读的字段跨两层：
+  //   顶层            recorded（用户录的手势）
+  //   gestureTuning   swipeSpeed / tiltTriggerDeg / matchThreshold / rotationTolerance
+  //
+  // 曾经这里被喂了 gestureTuning，结果 `config.recorded` 恒为 undefined ⟹ 录过的手势一个
+  // 都匹配不上，而挥动/倾斜照常工作（那两个字段恰好在 gestureTuning 里）。**半错比全错
+  // 难发现**：全错会立刻被当成"手势坏了"，半错只表现为"我录的那个没反应"。
+  //
   // 返回 { events: [...], status: '...' }。
   update(hands, now, config) {
     const list = Array.isArray(hands) ? hands : [];
     if (!list.length) {
-      // 手离开了就重置，否则下次举手时会拿旧轨迹算出一次假挥动。
-      if (now - this.lastSeenAt > 400) this.reset();
+      const away = now - this.lastSeenAt;
+      // ⚠️ 手不在画面时，正在进行的序列要**把这段时间还给它**，而不是让超时预算白流。
+      //
+      // 用户的观察：「如果录制的动态手势在做动作的时候离开了屏幕，好像这个动作的触发就
+      // 很困难了」。实测一个 3 关键帧的动态手势：中途丢 130ms 仍能触发，丢 **516ms 整个
+      // 序列归零**（回到第 0 步）。而真机 capture 里最长的丢跟踪段是 **726ms**。
+      //
+      // 上一轮给"手数不够"加过同样的宽限（`matcher.excuse`），但**手完全不在画面时走的是
+      // 这条分支**，压根没经过那段代码。同一个修法漏了一半 —— 而漏掉的这半是更常见的
+      // 情形（做动作时手挥出画面边缘）。
+      // 上限传 SEQUENCE_ABANDON_MS 而不是用默认的 250ms：这条分支知道"手离开了多久"，
+      // 而摄像头整段不出帧时（onResults 压根不被调用）恢复后是一次性的大 gap ——
+      // 默认上限会把它整个挡掉，等于这段宽限没生效。
+      for (const matcher of this.sequences.values()) matcher.excuse(now, SEQUENCE_ABANDON_MS);
+
+      // 手离开够久才重置，否则下次举手时会拿旧轨迹算出一次假挥动。
+      //
+      // 这个 400ms 同时决定"序列还能不能接着走"：超过它 reset() 会清掉所有匹配器的进度。
+      // 对指针/挥动来说 400ms 是对的（旧轨迹会算出假挥动），但对序列来说太短 ——
+      // 所以下面分开处理：轨迹类立刻重置，序列给更长的宽限。
+      if (away > 400) {
+        this.pointer.reset();
+        this.path.reset();
+        this.swipe.reset();
+        this.ratchet.reset();
+        for (const state of this.statics.values()) state.armed = true;
+      }
+      // 序列的宽限比轨迹长得多：真机最长丢跟踪 726ms，而一个动作做到一半手挥出画面
+      // 是常事。超过 SEQUENCE_ABANDON_MS 才认为"这次不算了"。
+      if (away > SEQUENCE_ABANDON_MS) {
+        for (const matcher of this.sequences.values()) matcher.reset();
+      }
+      // 诊断也清掉：留着上一帧的距离会让面板显示几秒前的数字，而那比空白更误导。
+      // 但要说清序列还在等 —— "手不在画面里"和"序列已经作废"是两回事。
+      const held = [...this.sequences.values()].filter((m) => m.index > 0).length;
+      this.probe = [{
+        why: held
+          ? `手不在画面里（${held} 个动作还在等，${Math.round(away)}ms/${SEQUENCE_ABANDON_MS}ms）`
+          : '手不在画面里',
+      }];
       return { events: [], status: '未检测到手' };
+    }
+    // ⚠️ 手回来的这一帧也要还时间。
+    //
+    // 摄像头**整段不出帧**时（睡眠、切后台、推理卡住）`update` 压根不被调用，所以上面那条
+    // "手不在画面"的分支一次都走不到 ⟹ 恢复后第一帧直接 `now - startedAt > budget`，
+    // 判成 tooSlow。实测：逐帧丢 1400ms 能触发，而摄像头整段不出帧 1400ms 不能 ——
+    // 同样的时间跨度，两种丢法结果不同，那就是漏了这一处。
+    //
+    // 判据是"距上一次看到手超过一个帧间隔的三倍"：正常帧不触发，真的断了才补。
+    const sinceSeen = this.lastSeenAt ? now - this.lastSeenAt : 0;
+    if (sinceSeen > 130) {
+      for (const matcher of this.sequences.values()) matcher.excuse(now, SEQUENCE_ABANDON_MS);
     }
     this.lastSeenAt = now;
 
@@ -188,8 +312,18 @@ class GestureInput {
     const mirrored = list.map((lm) => toPixels(mirror(lm)));
     const events = [];
 
+    // 连续控制的门：用户为 zoom/parallax 录了手型的话，手型不在场就不给这个动作。
+    //
+    // 静态/动态（手势本身是姿势还是动作）和离散/连续（触发一次还是每帧给值）是两个
+    // **正交**的维度，原来的代码把它们绑在一起了（continuous ⟹ 不可录）。一个静态手型
+    // 完全可以驱动连续推进：摆出它就一直推进，手型变了就停 —— 那正是静态手势的语义。
+    //
+    // 录了 = 加一道门，不是换驱动方式：捏合仍然决定推进多少，只是必须先摆对手型。
+    // 没录 = 和以前一样，内置映射直接可用。
+    const gate = this.continuousGate(mirrored, config);
+
     // 双手捏合优先：它是主控制，而且做这个手势时单手逻辑没有意义。
-    const zoom = twoHandZoom(mirrored);
+    const zoom = gate.zoom ? twoHandZoom(mirrored) : null;
     if (zoom) {
       events.push({ action: 'zoom', value: zoom.value });
       this.path.reset();
@@ -205,11 +339,34 @@ class GestureInput {
 
     // 指针走 One Euro：截止频率随手速自适应，所以静止时不抖、快速移动时不迟钝。
     // 这是替换掉固定平滑的那一步。坐标已在像素空间，滤波完除回归一化交给渲染层。
-    const filtered = this.pointer.update(palm.x, palm.y, now);
+    // ⚠️ 指针跟**食指指尖**,不是掌心。
+    //
+    // 实测同一帧两者差 36-38% 屏宽 —— 也就是指着一个地方,光标出现在大半个屏幕之外。
+    // AirCursor 3.x 用的是 `gesture.index`(指尖),而那一版用户的评价是"很丝滑很到位";
+    // 这里改成掌心之后就成了"不到位"。掌心适合做视差(要的是手整体在哪),指针要的是
+    // "我指着什么",而人指东西用的是指尖。
+    const tip = lm[8];
+    const filtered = this.pointer.update(tip.x, tip.y, now);
     events.push({
       action: 'pointer',
       x: clamp01(filtered.x / FILTER_SPACE),
       y: clamp01(filtered.y / FILTER_SPACE),
+      // 视差要的是"手整体在哪",指针要的是"指着什么" —— 两个信号差 36-38% 屏宽,所以
+      // 一起发,消费方各取所需。渲染层用 palm 做景深偏移,主进程用 x/y 移光标。
+      //
+      palmX: clamp01(palm.x / FILTER_SPACE),
+      palmY: clamp01(palm.y / FILTER_SPACE),
+      // ⚠️ 视差的门是**独立字段**，不是把 palmX 设成 null。
+      //
+      // 第一版用 null 表示"门关着"，而消费方那句 `typeof g.palmX === 'number' ? … : g.x`
+      // 是给"旧版事件没带掌心"准备的兜底 ⟹ 门一关就回落到**指尖**，视差跟着手指头跳。
+      // 「门关着」和「这个字段不存在」撞成了同一个值，而后者已经有含义了。
+      //
+      // 这是哨兵值撞值的第三次（angle:0 既是"指向右"又是"没有轴"、lastFiredAt:0 吃掉
+      // 第一次触发）。门是一个新的语义，就给它一个新的字段。
+      parallax: gate.parallax,
+      // 指针不受这道门影响：它是**鼠标**，不该被壁纸视差的手型开关关掉。两个信号共用
+      // 一个事件但归属不同功能，这里是唯一需要知道这件事的地方。
     });
 
     // 挥动：交给 SwipeDetector。它比我原来的实现多两道门（净位移、直线度）和一条
@@ -218,7 +375,7 @@ class GestureInput {
     const displacement = this.path.displacement();
     const direction = this.swipe.update({
       displacement,
-      speedThreshold: (config && config.swipeSpeed) || Motion.SWIPE_MIN_SPEED,
+      speedThreshold: tunedValue(config, 'swipeSpeed', Motion.SWIPE_MIN_SPEED),
       now,
     });
     // 显式和 0 比：SwipeDetector 用 0 表示"没触发"、±1 表示方向。`if (direction)`
@@ -251,6 +408,39 @@ class GestureInput {
     };
   }
 
+  // 连续动作（zoom / parallax）的门。返回 { zoom: bool, parallax: bool }。
+  //
+  // 规则很简单，复杂的是**为什么默认放行**：没录过的连续动作必须照旧可用。给它们做了
+  // 录制入口之后，如果"没录"变成"不能用"，那就是把一个现成的功能改成了必须先配置 ——
+  // 而用户要的是"也变成可录制的，不要现在这样钉死"，不是"必须录"。
+  //
+  // 手型匹配只看 template，不看 keyframeData：连续控制的门是"现在这只手是不是那个手型"，
+  // 是个每帧的判断。录成动态（一段动作）的话取它的起始姿势当门 —— 那是关键帧序列的第
+  // 一帧，也就是用户摆好准备做动作时的样子。
+  continuousGate(mirrored, config) {
+    const out = { zoom: true, parallax: true };
+    const recorded = (config && config.recorded) || null;
+    if (!recorded) return out;
+
+    const threshold = tunedValue(config, 'matchThreshold', 0.28);
+    const rotation = rotationRadians(config);
+    let pose = null;
+
+    for (const action of ['zoom', 'parallax']) {
+      const entry = recorded[action];
+      if (!entry || !entry.template) continue;      // 没录 ⟹ 放行，见上面
+      // 关掉的手势不当门用 —— 那等于回到"没录"的状态，内置映射照旧可用。
+      if (entry.enabled === false) continue;
+      if (entry.hands !== mirrored.length) { out[action] = false; continue; }
+      // 惰性建模板：大多数时候两个都没录，那就一次距离计算都不做。
+      if (!pose) pose = Pose.buildPoseTemplate(mirrored);
+      if (!pose) { out[action] = false; continue; }
+      out[action] = Pose.templateDistance(pose, entry.template, rotation)
+        < Pose.thresholdFor(entry.template, threshold);
+    }
+    return out;
+  }
+
   // 匹配用户录的手势。
   //
   // 这一段一开始漏了 —— 录制能存下来，但这里从不读它，所以用户录完手势不生效。
@@ -262,28 +452,140 @@ class GestureInput {
   //   只有 template   → 静态姿势匹配（用户录了一个手型，配合内置律用）
   updateRecorded(mirrored, now, config) {
     const recorded = config && config.recorded;
-    if (!recorded) return null;
+    if (!recorded || !Object.keys(recorded).length) {
+      this.probe = [{ why: '还没录过任何手势' }];
+      return null;
+    }
     const pose = Pose.buildPoseTemplate(mirrored);
-    if (!pose) return null;
+    if (!pose) {
+      this.probe = [{ why: '这一帧建不出姿势模板' }];
+      return null;
+    }
 
-    const threshold = (config && config.matchThreshold) || 0.28;
-    const rotation = (config && config.rotationTolerance) || 0;
+    const threshold = tunedValue(config, 'matchThreshold', 0.28);
+    const rotation = rotationRadians(config);
+
+    // 诊断：每个录过的动作，这一帧离它多远、为什么没触发。
+    //
+    // 存在的理由：「录了没反应」这句话对应六段链路（录制存盘 → 写配置 → 读配置 → 匹配
+     // → 发事件 → 主进程执行），而在此之前只有两头可见。中间四段全靠猜，而这一节里
+    // 任何一个 continue 都会让手势静默失效 —— 手数不对、距离差一点、armed 没复位，
+    // 三种原因指向完全不同的处理，症状却是同一句"没反应"。
+    this.probe = [];
 
     for (const [action, entry] of Object.entries(recorded)) {
-      if (!entry || !entry.template) continue;
+      if (!entry || !entry.template) { this.probe.push({ action, why: '没有模板' }); continue; }
+      // 用户关掉的手势不参与匹配。
+      //
+      // `!== false` 而不是 `=== true`：这个字段是后加的，存量录制没有它，缺字段必须
+      // 当成"开着" —— 否则升级会把用户已经录好的手势全部静默关掉。
+      if (entry.enabled === false) { this.probe.push({ action, why: '已关闭' }); continue; }
+      // 连续动作的录制走 continuousGate（每帧的门），不在这里触发一次 —— 否则摆出
+      // zoom 的手型会同时"触发一次 zoom 事件"和"开启连续 zoom"，前者是无意义的。
+      if (action === 'zoom' || action === 'parallax') continue;
       // 手数必须对得上：单手模板不该被双手姿势匹配，反之亦然。templateDistance 自己
       // 会返回 Infinity，但显式跳过省掉一次距离计算。
-      if (entry.hands !== mirrored.length) continue;
+      //
+      // ⚠️ 但**手数不够不等于手势失败** —— 那多半只是丢跟踪。真机 capture 实测：双手帧
+      // 只占 69%（单手 86%），而**双手连续段的中位长度只有 3 帧**，最长那段才 48 帧。
+      // 一个 10 关键帧的序列要走 10 帧连续双手，只有 2/4 段够长。
+      //
+      // 这就是「双手动态很难触发」：不是判据严，是**中间必然掉帧**，而掉的那些帧既不能
+      // 推进序列、又照样消耗超时预算 ⟹ 必然 tooSlow。
+      //
+      // 所以：手数不够时**把这一帧的时间还给序列**（延长它的预算），而不是让它白流。
+      // 这是「帧驱动的判定要给丢帧宽限」在这个项目里的第四次（保持判定、点击、
+      // trackingRate、这里）。
+      if (entry.hands !== mirrored.length) {
+        const short = mirrored.length < entry.hands;
+        if (short && entry.keyframeData && entry.keyframeData.length) {
+          const matcher = this.sequenceFor(action);
+          matcher.excuse(now);
+        }
+        this.probe.push({
+          action,
+          why: short ? `丢跟踪：要 ${entry.hands} 只手，现在 ${mirrored.length} 只（已宽限）`
+            : `要 ${entry.hands} 只手，现在 ${mirrored.length} 只`,
+        });
+        continue;
+      }
 
       if (entry.keyframeData && entry.keyframeData.length) {
         const matcher = this.sequenceFor(action);
+        const before = matcher.index || 0;
         const fired = matcher.update({
           pose,
           keyframes: entry.keyframeData,
-          threshold,
+          // ⚠️ 动态匹配的门比静态**宽**（× SEQUENCE_THRESHOLD_SCALE），而这不是"放松要求"。
+          //
+          // 两者要判别的东西不同：静态问"手是不是摆成了那个样子"（手可以停住，摆准），
+          // 动态问"手有没有经过那个中间姿势"（手一直在动，只是路过）。而路过的时候
+          // 手一帧就走掉 0.135，一个 0.28 的球只能停留 89ms。
+          //
+          // 真机干净帧扫门（"同一瞬间的手"该匹配 vs "动作不同阶段"不该匹配）：
+          //
+          //   门     该匹配命中   不该匹配误配
+          //   0.28      55%          1%      ← 原来在用的，白丢一半判别力
+          //   0.45      75%          2%
+          //   0.55      79%          5%      ← 取这个
+          //   0.68      85%          7%
+          //   0.90      87%         18%      ← 误配开始失控
+          //
+          // 静态那条**不动**：0.28 在真机上验过是好的（"静态识别是很好的"），而这次要修的
+          // 是动态。同一个模板在两条路上用不同的门，理由是上面那句 —— 判别的问题不一样。
+          threshold: Pose.thresholdFor(entry.template, threshold) * SEQUENCE_THRESHOLD_SCALE,
           rotationTolerance: rotation,
           distance: Pose.templateDistance,
           now,
+        });
+        // 动态手势的诊断要报**三样**：卡在第几步、离下一个关键帧多远、被什么挡住。
+        //
+        // 此前只报步数，而"卡在 2/7"说不出为什么 —— 五种 blocked 原因要完全不同的处理：
+        //   waitingStart    起始姿势没对上（可能是录坏了，也可能只差一点）
+        //   notReached      到了这一步但姿势没做到位 ⟹ 动作做大一点
+        //   beforeMidpoint  进了半径但还没过中点 ⟹ 方向不对，或两个关键帧本来就太近
+        //   tooSlow         起始对上了但整体超时 ⟹ 做快一点（不是改起始姿势）
+        //   cooldown        刚触发过，500ms 内不再认
+        const why = fired ? '触发' : ({
+          waitingStart: '等起始姿势',
+          notReached: '这一步没做到位',
+          beforeMidpoint: '还没过中点（方向不对？）',
+          tooSlow: '起始对上了但整体超时 —— 做快一点',
+          cooldown: '刚触发过，冷却中',
+          notBound: '没有关键帧',
+        }[matcher.blocked] || matcher.blocked || '进行中');
+        this.probe.push({
+          action,
+          why,
+          dynamic: true,
+          step: matcher.index || 0,
+          steps: entry.keyframeData.length,
+          // 距离在 fire()/reset() 里会被清掉，所以触发的那一帧没有数字 —— 那时也不需要。
+          distance: matcher.toNext ?? undefined,
+          fromPrev: matcher.toPrev ?? undefined,
+          threshold: matcher.threshold ?? threshold,
+          blocked: matcher.blocked || undefined,
+        });
+        // 跨帧累计：这次尝试走到过的**最远**一步，以及在哪一步耗了最多帧。
+        //
+        // 4/s 的快照会漏掉"卡了一下又过去了"，而"每次都停在第 4 步"和"每次停在不同的
+        // 步"指向完全不同的原因（那一个关键帧录坏了 vs 整体太慢/噪声大）。这个累计值
+        // 是唯一能分开它们的东西，而单帧快照按定义做不到。
+        const trail = this.trailFor(action, entry.keyframeData.length);
+        if (matcher.index === 0 && before > 0) trail.attempts += 1;   // 一次尝试结束了
+        if (matcher.index > trail.furthest) trail.furthest = matcher.index;
+        trail.frames[before] = (trail.frames[before] || 0) + 1;
+        if (fired) { trail.fired += 1; trail.furthest = 0; }
+        // 最卡的那一步 = 耗帧最多的那一步（不算第 0 步，那是"手在画面里但没做手势"）
+        let stall = 0;
+        for (let i = 1; i < trail.frames.length; i += 1) {
+          if ((trail.frames[i] || 0) > (trail.frames[stall] || 0)) stall = i;
+        }
+        Object.assign(this.probe[this.probe.length - 1], {
+          furthest: trail.furthest,
+          stallStep: stall || undefined,
+          stallFrames: stall ? trail.frames[stall] : undefined,
+          firedCount: trail.fired,
         });
         if (fired) return { action };
         continue;
@@ -294,20 +596,86 @@ class GestureInput {
       // 没有律又没有关键帧的，就当纯静态手势直接触发。
       if (!entry.law) {
         const distance = Pose.templateDistance(pose, entry.template, rotation);
+        // 双手的门放宽一倍 —— 见 pose.js 的 thresholdFor：双手模板是 126 维、两份独立
+        // 噪声，同一个没动的手在 0.28 下只有 51% 的帧命中（单手 67%）。
+        const gate = Pose.thresholdFor(entry.template, threshold);
         const state = this.staticState(action);
-        if (distance >= threshold) {
-          // 离开了姿势才重新武装。这一条是"保持住不连发"的真正机制 —— 光靠时间冷却
-          // 不够：一直摆着的手型会每过一个冷却期就再触发一次，而用户只做了一个动作。
-          state.armed = true;
-          continue;
-        }
+        // 距离和门一起报：只报"没匹配"说不出是差 0.01 还是差 10 倍，而那决定
+        // 是"再摆准一点"还是"这个模板录坏了"。
+        this.probe.push({
+          action,
+          distance: Number(distance.toFixed(3)),
+          threshold: gate,
+          armed: state.armed,
+          reArm: Number((gate * RE_ARM_RATIO).toFixed(3)),
+          why: distance >= gate ? '姿势不够近'
+            : state.armed ? '触发'
+            // 在滞回带里：够近所以不算离开，但已经触发过 ⟹ 这是"后面很难触发"的那个状态。
+            // 报出"离开到多少才重新武装"，否则用户只知道没反应、不知道该松多少。
+            : `要先离开到 ${(gate * RE_ARM_RATIO).toFixed(2)} 以上`,
+        });
+        // ⚠️ 重新武装的门**比触发的门低**，两者不能是同一个数。
+        //
+        // 共用一个门的后果是"第一次好触发，后面很难"：触发要 `距离 < gate`，而重新武装
+        // 要 `距离 >= gate` ⟹ 门放宽一倍之后，"离开姿势"也要离开一倍远才算离开。实测
+        // 双手（门 0.56）时手指微松只到 0.342，**仍然算"没离开"**，人得把手完全放开
+        // 才能再触发一次 —— 而没人会那么做。
+        //
+        //   动作      单手(门 0.28)   双手(门 0.56)
+        //   手指微松     0.303 ✅        0.342 ❌
+        //   明显松开     0.547 ✅        0.600 ✅（只比门高 7%）
+        //
+        // 仿真：摆姿势/微松循环 5 次，单手只触发 2 次、双手 1 次。这就是那个体感。
+        //
+        // 所以重新武装用 `gate * RE_ARM_RATIO`（0.6）：手离开到"触发门的六成"就算离开了。
+        // 这个区间同时也是滞回带 —— 触发和松开之间留一段死区，防止在门附近抖动时连发。
+        // 离开了姿势才重新武装。这一条是"保持住不连发"的真正机制 —— 光靠时间冷却不够：
+        // 一直摆着的手型会每过一个冷却期就再触发一次，而用户只做了一个动作。
+        if (distance >= gate * RE_ARM_RATIO) state.armed = true;
+        if (distance >= gate) continue;
         if (state.armed) {
           state.armed = false;
           return { action };
         }
+      } else {
+        // 有律的动作：模板只是一道门，触发交给挥动/倾斜。这里报出来是因为
+        // "录了有律的动作却没反应"的原因往往是**律那一侧**没触发，而不是姿势不对。
+        const distance = Pose.templateDistance(pose, entry.template, rotation);
+        const gate = Pose.thresholdFor(entry.template, threshold);
+        this.probe.push({
+          action,
+          distance: Number(distance.toFixed(3)),
+          threshold: gate,
+          why: distance < gate ? `手型对上了，等${entry.law === 'swipe' ? '挥动' : '倾斜'}`
+            : '手型不对（有律的动作要手型 + 动作都对）',
+        });
       }
     }
     return null;
+  }
+
+  // 动态手势的跨帧累计。按动作 id 一份，因为每个动作的关键帧数不同。
+  trailFor(action, steps) {
+    if (!this.trails) this.trails = new Map();
+    let trail = this.trails.get(action);
+    if (!trail || trail.frames.length !== steps + 1) {
+      // 关键帧数变了（重录过）就重开一份 —— 沿用旧的会让"最远第几步"跨两个不同的手势。
+      trail = { furthest: 0, fired: 0, attempts: 0, frames: new Array(steps + 1).fill(0) };
+      this.trails.set(action, trail);
+    }
+    return trail;
+  }
+
+  // 清掉累计。面板上按一下"重置诊断"用 —— 调完一个参数要能从干净的计数开始看，
+  // 否则前后两次的帧数混在一起，改好了也看不出来。
+  resetTrails() {
+    if (this.trails) this.trails.clear();
+  }
+
+  // 上一帧的诊断快照。sensor 每隔一段时间取一次发给面板 —— 每帧发是 30/s 的噪声，
+  // 而这个数据的用途是"我现在摆着手，它说我差多少"，不需要逐帧。
+  lastProbe() {
+    return this.probe || [];
   }
 
   // 手掌上下倾斜 → 视角上看/下看，走棘轮所以可重复。
@@ -334,7 +702,7 @@ class GestureInput {
       const d = this.path.displacement();
       return d ? d.speed : 0;
     })();
-    const triggerDeg = (config && config.tiltTriggerDeg) || 22;
+    const triggerDeg = tunedValue(config, 'tiltTriggerDeg', 22);
 
     const fired = this.ratchet.update({
       liveAngle: angle,

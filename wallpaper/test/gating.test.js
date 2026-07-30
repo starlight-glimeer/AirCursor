@@ -45,8 +45,19 @@ check('手势开 + 开关开 → 显示', () => {
   assert.strictEqual(wantsOverlay(cfg(true, true), null), true);
 });
 
-check('手势开 + 开关关 → 不显示', () => {
-  assert.strictEqual(wantsOverlay(cfg(true, false), null), false);
+// 契约变了:窗口的存在条件是"手势开着",因为摄像头就在这一层(和 AirCursor 3.x 一样)。
+// "显示骨架"那个开关只控制**画不画**,不控制建不建窗口 —— 按 showHands 建拆会连摄像头
+// 一起拆掉,而"我不想看骨架"不等于"我不想用手势"。
+check('手势开 + 开关关 → 窗口还在（摄像头在这一层）', () => {
+  assert.strictEqual(wantsOverlay(cfg(true, false), null), true);
+});
+
+check('关掉显示骨架时真的不画（否则窗口留着就等于一直显示）', () => {
+  const win = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay-window.js'), 'utf8');
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  assert.match(win, /showSkeleton \|\| overlay\.recording/, '帧循环没有按开关决定画不画');
+  assert.match(win, /overlay\.clear\(\)/, '不画时没有擦画布 —— 上一帧会留在屏幕上');
+  assert.match(overlay, /clear\(\)\s*\{/, 'overlay 没有 clear 方法');
 });
 
 // 录制是唯一必须看见手的时刻。"我关了骨架所以录制时什么都看不到"不是用户会预期的后果。
@@ -134,7 +145,9 @@ check('骨架窗口不可聚焦（不抢焦点）', () => {
 // 主进程按 `showHands || recordingAction` 决定开不开骨架窗口，sensor 按自己的条件决定发不发
 // 关键点。**这两个判据必须一致** —— 不一致的那半边不报错，只是录制时开出一个空窗口，
 // 症状和"骨架坏了"分不清。这条守的是两个文件之间的一致性，不是单个函数的正确性。
-check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时都放行）', () => {
+// 摄像头和骨架同窗口之后,这条"两个文件判据一致"的守卫换了对象:sendHands 仍要为录制
+// 放行(录制时必须看见手),而窗口的存在条件已经和 showHands 解耦。
+check('sendHands 为录制放行（录制时必须看见手）', () => {
   const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
   const send = sensor.slice(sensor.indexOf('function sendHands'), sensor.indexOf('function onResults'));
   assert.ok(/recorder\s*&&\s*recorder\.active/.test(send),
@@ -142,10 +155,18 @@ check('sensor 发骨架的条件和主进程开窗口的条件一致（录制时
 
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const sync = main.slice(main.indexOf('function syncOverlayVisibility'));
-  assert.ok(/showHands\s*\|\|\s*recordingAction/.test(sync.slice(0, 400)),
-    '主进程不再按 showHands || recordingAction 开窗口 —— 两边判据已经分叉');
+  assert.ok(/gestures\.enabled/.test(sync.slice(0, 600)),
+    '窗口的存在条件必须是 gestures.enabled —— 摄像头在这一层,按 showHands 拆会连摄像头一起拆');
 });
 
+// ── 能力可达性：接线齐了但用户点不到，等于没做 ──────────────────────────
+//
+// 这四条来自云端 agent，而它们逮到的正是我的错：我把 startCapture / undoRecording /
+// pointerHealth 都接了 preload + 主进程 + sensor 三层，面板零入口 —— 而我还跟用户说
+// "接进面板了"。三层各自都对，整条链没有入口，所有测试全绿。
+//
+// pointerHealth 那条最难看：它观测的正是"缺权限时 CGEvent.post 静默丢弃"，而我为那件事
+// 烧掉四轮。把观测手段建好却没地方看，等于没建。
 console.log('\n  WE 网页壁纸接线');
 
 const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
@@ -263,11 +284,20 @@ check('自己的三层景深壁纸仍然保持 contextIsolation: true', () => {
 
 // 两种壁纸源都钉在桌面层会互相遮挡，而"我看到的是哪个"就没法判断了。
 check('装载 WE 壁纸时销毁三层景深窗口（两者互斥）', () => {
-  // ⚠️ 用 lastIndexOf 找结束标记：那个字符串在上面的注释里也出现过一次，
-  // 用 indexOf 会切出空串 —— 断言就变成"永远失败"。切片式的源码守卫都有这个坑。
+  // ⚠️ 不用"另一个符号的位置"当终点 —— 那依赖两个东西在文件里的**先后顺序**，
+  // 而合并会改变顺序。这条守卫在合并时就是这么失败的：`we-ready` 的重复注册被删掉之后，
+  // 它的终点跑到了起点前面（报「切片范围不对：58752..55465」）。
+  //
+  // 改成从函数起点数括号找它自己的结尾 —— 那只依赖这个函数本身。
   const start = mainSrc.indexOf('function setWEWallpaper');
-  const end = mainSrc.lastIndexOf("ipcMain.on('we-ready'");
-  assert.ok(start > 0 && end > start, `切片范围不对：${start}..${end}`);
+  assert.ok(start > 0, '找不到 setWEWallpaper');
+  let depth = 0;
+  let end = start;
+  for (let i = mainSrc.indexOf('{', start); i < mainSrc.length; i += 1) {
+    if (mainSrc[i] === '{') depth += 1;
+    else if (mainSrc[i] === '}') { depth -= 1; if (depth === 0) { end = i + 1; break; } }
+  }
+  assert.ok(end > start, '数不出函数边界');
   const fn = mainSrc.slice(start, end);
   assert.match(fn, /wallWindow\.destroy\(\)/, '没销毁旧壁纸窗口，两层会叠在一起');
 });
@@ -419,6 +449,648 @@ check('录完报的是有手的帧数，不只是总帧数', () => {
   assert.match(dash, /withHands/, '没报有手帧数 —— 0 帧有手的空文件会看起来像成功');
 });
 
+// ── 和 AirCursor 3.x 的差距：三条都是真机数据逼出来的 ──────────────────────
+//
+// 用户报"现在不如 3.x 版本丝滑到位"，而那一版有真机报告可比：同一台机器 30fps、推理
+// 12ms。这次录的关键点是 14fps。三个根因，全部是这边缺了那边有的东西。
+
+check('推理有 busy 闸门（没有它真机只有 14fps）', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /if \(inferenceBusy \|\|/,
+    '每帧无条件 await hands.send 会串行堆积：实际帧率变成 1/(推理+摄像头间隔)，'
+    + '而不是取两者较大值。3.x 有这道闸，跑 30fps；没有它实测 14fps');
+  assert.match(sensor, /finally \{[\s\S]{0,80}inferenceBusy = false/,
+    '解锁必须在 finally：推理抛异常时不解锁会让手势永久停住，症状是"突然就不动了"');
+});
+
+check('推理间隔可调，且默认值来自 3.x 的真机报告', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /inferenceIntervalMs: 20/, '20ms 来自 3.x 真机 30fps/推理12ms 那份报告');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /gestureTuning\.inferenceIntervalMs/,
+    '从 config 读而不是写死 —— 写死的话真机上想调只能改代码重启');
+});
+
+check('指针跟食指指尖，不是掌心', () => {
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.match(input, /const tip = lm\[8\];[\s\S]{0,200}this\.pointer\.update\(tip\.x, tip\.y/,
+    '实测同一帧掌心和指尖差 36-38% 屏宽 —— 用掌心等于"指着一处、光标出现在大半个屏幕外"。'
+    + '3.x 用的是 gesture.index（指尖），那一版的评价是"很到位"');
+});
+
+check('视差用掌心，指针用指尖 —— 两个信号分开发', () => {
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.js'), 'utf8');
+  assert.match(input, /palmX:/, 'pointer 事件要同时带掌心，否则视差只能用指尖');
+  assert.match(wall, /g\.palmX/, '视差要用掌心：指尖会随屈指乱跳，画面会跟着手指头而不是手');
+});
+
+check('骨架一比一映射，不做"固定手宽"缩放', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  assert.doesNotMatch(overlay, /function toCanvas\([^)]*center[^)]*scale/,
+    'toCanvas 不该再接 center/scale —— 那个缩放把指尖朝掌心收缩了（实测 0.54 倍）');
+});
+
+
+check('改函数签名后调用点都跟上了（JS 不会为多传的参数报错）', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  // 上一轮我把 toCanvas 从 (p,w,h,center,scale) 改成 (p,w,h)，却漏了两个调用点。
+  // 多余的实参被静默忽略 ⟹ 缩放照旧生效，而我以为改完了，用户第二次报"还是偏右"。
+  const calls = [...overlay.matchAll(/toCanvas\(([^)]*)\)/g)]
+    .map((m) => m[1].split(',').length)
+    .filter((n) => n > 3);
+  assert.deepStrictEqual(calls, [],
+    `toCanvas 有调用点还在传 4 个以上参数 —— 那是旧的缩放签名，JS 不会报错但缩放会照旧生效`);
+});
+
+// 摄像头没有独立窗口了 —— 它在骨架层里(和 AirCursor 3.x 一样)。
+//
+// 那个独立窗口试过三种藏法,三种都失败:show:false 拿不到摄像头授权(macOS 只对可见窗口
+// 弹);完全挪到屏幕外被 macOS 钳回来;挪到主屏顶边之上 —— 而用户有外接显示器,那个位置
+// 正好落在外接屏上,于是外接屏出现一个黑框。
+//
+// 靠位置藏在多显示器下没有正确答案:任何"屏幕外"坐标都可能是另一块屏的屏内。所以窗口
+// 本身去掉了,而不是继续找藏法。
+check('摄像头在骨架层里，没有独立的 sensor 窗口', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const overlayHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  assert.doesNotMatch(main, /sensorWindow/, '还有 sensor 窗口的残留');
+  assert.doesNotMatch(main, /ensureSensor/, 'ensureSensor 应该已经删掉');
+  assert.match(overlayHtml, /<video id="cam"/, '骨架层里没有 video —— 摄像头没搬过来');
+  assert.match(overlayHtml, /src="sensor\.js"/, '骨架层没加载 sensor.js');
+});
+
+check('骨架层可聚焦，否则摄像头授权弹窗没人能回答', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const block = main.slice(main.indexOf('function ensureOverlay'), main.indexOf('function destroyOverlay'));
+  // 这是那个独立 sensor 窗口原本存在的理由,而正确解法是让骨架层可聚焦 ——
+  // AirCursor 3.x 的 overlay 就没设 focusable:false,它靠 setIgnoreMouseEvents 做穿透。
+  // 穿透和不可聚焦是两件事。
+  // 只看非注释行:文件里有一段注释解释"为什么不设 focusable:false",而按整段文本匹配
+  // 会把那段注释当成违规 —— 守卫太宽会逼人删掉解释,而解释正是下次别再犯的唯一依据。
+  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(code, /focusable:\s*false/,
+    '骨架层设了 focusable:false —— getUserMedia 的授权弹窗会没人能回答');
+  assert.match(block, /setIgnoreMouseEvents/, '穿透要靠 setIgnoreMouseEvents,不是靠不可聚焦');
+});
+
+// ⚠️ 这条守的是一个**能把用户锁在电脑外面**的失败。
+//
+// 上一版为了让摄像头授权弹窗可点,把穿透做成"拿到授权后才开"。后果:这一层盖在全屏
+// 最上层且不穿透 ⟹ 整个屏幕点不动 ⟹ 用户连关掉这个 App 都做不到。实测撞到过
+// ("鼠标直接废掉了,屏幕上所有的东西都点不动了")。
+//
+// 授权不需要**整层**可点,只需要请求发生在一个可交互的窗口里。所以穿透无条件开,
+// 而且有三重保险 + 一个不依赖鼠标的逃生开关。
+check('骨架层的穿透是无条件的（否则整个屏幕点不动）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const block = main.slice(main.indexOf('function ensureOverlay'), main.indexOf('function destroyOverlay'));
+  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  // 不能有任何条件包着它 —— 条件为假的那一刻鼠标就废了。
+  assert.doesNotMatch(code, /if\s*\([^)]*\)\s*\{?\s*\n?\s*overlayWindow\.setIgnoreMouseEvents/,
+    '穿透被条件包住了 —— 条件不成立时整个屏幕会点不动');
+  assert.match(code, /setIgnoreMouseEvents\(true, \{ forward: true \}\)/, '没有开穿透');
+  // ready-to-show 后重设:窗口重建时 Electron 可能丢掉之前那次设置。
+  assert.match(code, /ready-to-show[\s\S]{0,200}setIgnoreMouseEvents/,
+    '没有在 ready-to-show 后重设穿透 —— 那次设置可能被窗口重建丢掉');
+});
+
+check('有一个不依赖鼠标的逃生开关，而且告诉了用户', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 一个能把自己锁在外面的程序必须有不依赖鼠标的出口,而且不能和"退出"绑在一起 ——
+  // 用户可能只想拿回鼠标,不是想关掉壁纸。
+  assert.match(main, /Control\+Shift\+X[\s\S]{0,200}destroyOverlay\(\)/,
+    '没有"拆掉骨架层"的全局快捷键');
+  // 写在代码里但用户不知道,等于没有 —— 出事时他没法查文档。
+  //
+  // ⚠️ 这条原来查 `wall.html`(壁纸层那个引导浮层里写着它)。而用户要求删掉整个引导页
+  // ——「不,这个引导就不该存在」—— 于是这个说明差点跟着消失,**而它是"鼠标全屏点不动"时
+  // 唯一的出路**(我曾经真的把用户锁在电脑外面)。这条守卫当场逮住了那个损失。
+  //
+  // 现在它必须出现在两个地方:启动时的终端输出(那是唯一必然可见的地方,而且出事时
+  // 用户手上就有),以及面板。
+  // ⚠️ 只看**启动时打印的那几行**,不是整个文件。
+  //
+  // 第一版用 `/⌃⇧X[^\n]*(拆掉|骨架)/` 匹配整个 main.js —— 而那也命中了拆掉骨架层时
+  // 广播的那条日志(它同样含 ⌃⇧X 和"骨架")。于是删掉启动信息里那半句,守卫**依然通过**。
+  // 我是靠反向验证发现的:两个方向都验才知道它锚在了别的东西上。
+  const banner = main.slice(main.indexOf("=== GestureWall ==="));
+  assert.match(banner.slice(0, 400), /⌃⇧X/,
+    '终端启动信息里没有 ⌃⇧X —— 出事时用户无处可查(那几行是唯一必然可见的地方)');
+  assert.match(dash, /⌃⇧X/, '面板没列出这个快捷键');
+});
+
+check('语音默认关，且不在启动时抢麦克风', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8');
+  assert.match(main, /voice: false/, '语音必须默认关');
+  // 用户报："每次打开我们的产品，正在听的音乐音道就变了" —— helper 一启动就占麦克风，
+  // 而 macOS 上抢占音频输入会切换输入设备。可选功能不该有这种副作用。
+  const start = bridge.slice(bridge.indexOf('    start() {'), bridge.indexOf('    startVoice()'));
+  assert.doesNotMatch(start, /startVoiceHelper\(\)/,
+    'start() 里还在启动语音 helper —— 那会在打开产品时抢走麦克风');
+  assert.match(bridge, /startVoice\(\)/, '语音要能按需启动');
+  assert.match(bridge, /stopVoice\(\)/, '关掉时要真的杀掉 helper，否则麦克风一直被占');
+});
+
+check('三种权限都有授权入口（麦克风/语音识别单列）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  for (const [name, handler, button] of [
+    ['辅助功能', 'open-accessibility', 'grantAccessibility'],
+    ['摄像头', 'open-camera-settings', 'grantCamera'],
+    ['麦克风', 'open-microphone-settings', 'grantMic'],
+    ['语音识别', 'open-speech-settings', 'grantSpeech'],
+  ]) {
+    assert.ok(main.includes(handler), `${name} 没有打开设置的处理`);
+    assert.ok(html.includes(button), `${name} 没有按钮`);
+  }
+  // 语音识别授给的是 helper 不是主 App，这条在 AirCursor 上花过时间。
+  assert.match(html, /AirCursorVoice/, '没告诉用户语音识别那项要找 helper 的名字');
+});
+
+
+check('canvas 有 CSS 尺寸 —— 缺了整张画布会被压到屏幕左上角', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  // canvas 是 inline 元素，没有 CSS 尺寸时用默认 300x150，而 resize() 设的是
+  // canvas.width（绘制缓冲）—— 两者独立。缓冲 2940x1912 而 CSS 停在 300x150 的后果是
+  // 手在 x=0.74 画到屏幕 222px 而不是 1088px。症状是"骨架偏右下角"，而我为此改了两轮
+  // 画布内部的坐标计算，全都改错了地方。
+  const rules = [...style.matchAll(/#hands\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  assert.ok(rules.length > 0, '#hands 没有任何 CSS 规则');
+  // 最后一条规则生效，所以它必须带尺寸 —— 早期这里有两条，后一条没尺寸把前一条覆盖了。
+  const winner = rules[rules.length - 1];
+  assert.match(winner, /width:\s*100vw/, '生效的那条 #hands 规则没有宽度');
+  assert.match(winner, /height:\s*100vh/, '生效的那条 #hands 规则没有高度');
+});
+
+check('骨架几何自检存在，而且面板能看到', () => {
+  const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 自检报的是端到端：归一化坐标 → 屏幕像素，加上中间三层尺寸。缺任何一层都定位不到
+  // 这次那个 bug，而那个 bug 让两轮修复零效果。
+  assert.match(overlay, /selfCheck\(\)/, 'overlay 没有几何自检');
+  assert.match(overlay, /consistent:/, '自检没有报"三层尺寸一致吗"');
+  assert.match(overlay, /mapped:/, '自检没有报端到端映射');
+  // 没人能看的自检等于没有 —— 本轮已经犯过一次（三层接好、面板零入口）。
+  assert.match(dash, /onOverlayGeometry/, '面板没有订阅几何自检');
+  assert.ok(html.includes('overlay-geom'), '面板没有显示几何自检的地方');
+});
+
+
+// ── 同窗口脚本的顶层声明不能撞名 ─────────────────────────────────────────
+//
+// 摄像头搬进骨架层之后，sensor.js 和 overlay-window.js 跑在同一个窗口里，而两边都在
+// 顶层 `const T = window.GestureWallTemplates` ⟹ "Identifier 'T' has already been
+// declared" ⟹ **整层脚本全部停止执行**。
+//
+// 症状是"摄像头不启动"，和重名没有任何表面关系。我为此猜了两轮，直到把渲染进程的
+// console 转出来才看到那一行 —— 而那条日志转发是上一个 commit 才加的。
+check('同一个窗口加载的脚本都包在 IIFE 里（顶层声明会互相撞）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay.html'), 'utf8');
+  // 取出这个窗口加载的本地脚本（vendor 的不管，那些本来就是库）
+  const scripts = [...html.matchAll(/<script src="((?!vendor)[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(scripts.length >= 5, `只解析出 ${scripts.length} 个脚本，正则失效了`);
+
+  const naked = [];
+  for (const name of scripts) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+    // 去掉开头注释，看第一行实际代码是不是 IIFE
+    const firstCode = src.split('\n').find((l) => l.trim() && !l.trim().startsWith('//'));
+    if (!firstCode || !firstCode.trim().startsWith('(function')) naked.push(name);
+  }
+  assert.deepStrictEqual(naked, [],
+    `这些脚本没包 IIFE，顶层声明会和同窗口其他脚本相撞：${naked.join(', ')}`);
+});
+
+check('渲染进程的报错会转出来（否则这类错误只能靠猜）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 骨架层没有开发者工具、不在视线里。它抛的任何异常如果不转出来，症状就只剩
+  // "某个功能不工作"，而那和真正的原因可能毫无关系。
+  assert.match(main, /console-message/, '骨架层的 console 没有转发');
+  assert.match(main, /render-process-gone/, '崩溃没有上报');
+  assert.match(dash, /onHelperLog/, '面板没有订阅日志');
+  assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
+});
+
+// ── 已删掉的窗口不能还有代码在往它发消息 ─────────────────────────────────
+//
+// sensor 窗口删掉之后，`start-recording` 那个 handler 里还留着
+// `sensor.webContents.send(...)` —— 旁边的 cancel-recording / start-capture 都改成了
+// overlayWindow，只有这一个漏了。
+//
+// 它不是语法错误，`node --check` 全绿；只在用户点「录制」的那一刻抛 ReferenceError，
+// 而症状是"无法录制"，看不出和一个不存在的变量有关系。这一条和上面那个 `sendStatus`
+// 是同一类：**未定义标识符只在运行到那一行时才炸**，而那一行是用户交互才会走到的。
+check('主进程里没有向已删窗口发消息的残留（未定义标识符只在点下去那一刻才炸）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const code = main.split('\n')
+    .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+    .join('\n');
+  // 收件人必须是真实存在的窗口变量。任何别的名字都是残留。
+  // weWindow 是合并 WE 壁纸时加的第四个窗口。名单漏了它的后果是**假阳性** ——
+  // 守卫说"这是删窗口的残留",而它其实是个正常窗口。
+  const known = ['wallWindow', 'dashboardWindow', 'overlayWindow', 'weWindow',
+    'layer', 'win', 'target', 'w'];
+  const bad = [...code.matchAll(/(\w+)\.webContents\.send\(/g)]
+    .map((m) => m[1])
+    .filter((name) => !known.includes(name));
+  assert.deepStrictEqual([...new Set(bad)], [],
+    `这些收件人不是已知的窗口变量，很可能是删窗口时的残留：${[...new Set(bad)].join(', ')}`);
+});
+
+// 同一类的另一半：渲染进程里调了自己没定义的函数。
+//
+// sensor.js 的 onStartCapture 回调里写的是 `sendStatus(...)`，而这个文件里那个函数
+// 叫 `status` —— 于是「录 5 秒关键点」一点就抛 ReferenceError，录不到任何东西。
+// 用户看到的是"点了没反应，目录也是空的"。
+check('渲染脚本里调用的本地函数都有定义（拼错的函数名 node --check 查不出来）', () => {
+  for (const name of ['sensor.js', 'overlay-window.js', 'recorder.js', 'input.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    const defined = new Set([
+      ...[...code.matchAll(/function\s+(\w+)\s*\(/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s+(\w+)\s*=/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(':').pop().trim())),
+      ...[...code.matchAll(/class\s+(\w+)/g)].map((m) => m[1]),
+      // 类里的方法定义：`  foo(a, b) {`。它们既是定义也长得像调用，不收进来会全体误报。
+      ...[...code.matchAll(/^\s{2,}(?:async\s+|get\s+|set\s+)?(\w+)\s*\([^)]*\)\s*\{/gm)].map((m) => m[1]),
+    ]);
+    // 只查"看起来像本模块自己的辅助函数"的调用：小写开头、不带点。带点的是
+    // window.x / T.y 那类，跨模块引用不在这条守卫的范围内。
+    const called = [...code.matchAll(/(?<![.\w$])([a-z][a-zA-Z0-9_]{3,})\(/g)].map((m) => m[1]);
+    const builtin = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'typeof',
+      'require', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'parseInt',
+      'parseFloat', 'isNaN', 'fetch', 'atan2', 'hypot', 'round', 'floor', 'ceil', 'sqrt',
+      'min', 'max', 'abs', 'push', 'map', 'filter', 'slice', 'splice', 'forEach', 'join',
+      'split', 'indexOf', 'includes', 'reduce', 'sort', 'find', 'some', 'every', 'concat',
+      'toFixed', 'padEnd', 'padStart', 'match', 'replace', 'test', 'keys', 'values',
+      'entries', 'assign', 'stringify', 'parse', 'from', 'now', 'async', 'await', 'else',
+      'function', 'await',
+      // 浏览器全局(这几个文件跑在渲染进程里)
+      'requestAnimationFrame', 'cancelAnimationFrame', 'getComputedStyle']);
+    const missing = called.filter((n) => !defined.has(n) && !builtin.has(n));
+    assert.deepStrictEqual([...new Set(missing)], [],
+      `${name} 里这些函数被调用但没有定义（会在跑到那一行时抛 ReferenceError）：${[...new Set(missing)].join(', ')}`);
+  }
+});
+
+// ── vendor 副本不能和源头分叉 ────────────────────────────────────────────
+//
+// pose.js / motion.js / tracking.js 的源头在 ../../public/，`npm run vendor` 拷到
+// src/vendor/aircursor/。而 vendor 只在 npm install 时自动跑 ⟹ **改了源头不重跑就静默
+// 用旧副本**。
+//
+// 实测代价：z 归一化的修复提交了、测试全绿，而应用跑的是没修的副本。发现它纯属偶然
+// （新加的用例从 vendor 加载，报 0/40，而同一份逻辑在源头上是 39/40）。
+check('vendor 里的手势判定和 public/ 源头一致（改了源头不重跑 vendor 会静默用旧的）', () => {
+  const root = path.join(__dirname, '..', '..');
+  const stale = [];
+  for (const name of ['pose.js', 'motion.js', 'tracking.js']) {
+    const src = path.join(root, 'public', name);
+    const copy = path.join(__dirname, '..', 'src', 'vendor', 'aircursor', name);
+    if (!fs.existsSync(copy)) continue;   // 没跑过 vendor，别的用例会报
+    if (fs.readFileSync(src, 'utf8') !== fs.readFileSync(copy, 'utf8')) stale.push(name);
+  }
+  assert.deepStrictEqual(stale, [],
+    `这些副本和源头不一致，跑一次 npm run vendor：${stale.join(', ')}`);
+});
+
+// ── renderActionGroup 要的容器必须在 HTML 里 ─────────────────────────────
+//
+// `renderActionGroup` 第一行是 `if (!host) return;`。而 `systemActions` 这个容器在
+// dashboard.html 里**根本不存在** ⟹ 8 个系统动作（打开网易云/浏览器/访达、播放暂停、
+// 上下一曲…）一个都没渲染，静默地。
+//
+// 用户报"我希望手势打开网易云这个加进来" —— 而 `open_netease` 早就在动作表里了
+// （system.js，4 个候选路径），只是面板上看不到。这和之前那次「三层接好、面板零入口」
+// 完全同形：每一层单独看都对，整条链没有出口，所有测试全绿。
+check('面板渲染函数要的容器 id 在 HTML 里都存在', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // getElementById('x') 和 renderActionGroup('x', …) 两种取法都算
+  const ids = new Set([
+    ...[...dash.matchAll(/getElementById\('([\w-]+)'\)/g)].map((m) => m[1]),
+    ...[...dash.matchAll(/renderActionGroup\('([\w-]+)'/g)].map((m) => m[1]),
+  ]);
+  assert.ok(ids.size > 10, `只解析出 ${ids.size} 个 id，正则失效了`);
+  const missing = [...ids].filter((id) => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `这些容器在 HTML 里不存在，对应的界面会静默空白：${missing.join(', ')}`);
+});
+
+// 系统动作是"手势替代鼠标键盘"这个定位的落点，而它整块消失过一次。
+check('系统动作在面板上有自己的区域，而且真的被渲染', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(dash, /renderActionGroup\('systemActions'/, '面板没有渲染系统动作');
+  assert.ok(html.includes('id="systemActions"'), '系统动作没有容器');
+  // 打开应用不需要辅助功能授权，所以它是"能立刻用来验证手势通不通"的那一类 ——
+  // 用户就是要拿它直观测试效果。
+  const system = fs.readFileSync(path.join(__dirname, '..', 'src', 'system.js'), 'utf8');
+  assert.match(system, /open_netease/, '网易云那条规则没了');
+});
+
+// 界面主动说谎在这个项目里有过代价（识别行显示了手势名但动作不发生，因为显示和触发
+// 用了两个时间尺度）。这条守的是同一件事的另一半。
+check('静态/动态的显示读存下来的字段，不靠 keyframeData 猜', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // 猜的后果：**有律的动态动作不产生 keyframes**（recorder.js 里 `s.dynamic && !s.law`
+  // 才建关键帧序列），于是录了动态却显示"静态"。四格实测：动态+有律 是唯一说谎的那格。
+  const line = dash.split('\n').find((l) => l.includes("? '动态' : '静态'"));
+  assert.ok(line, '找不到静态/动态的判断 —— 被改写了');
+  assert.match(line, /recorded\.dynamic/,
+    '静态/动态是靠 keyframeData 猜的 —— 有律的动态动作不产生关键帧，会显示成静态');
+
+  // 而 recorder 那边必须真的存这个字段，否则读了也是 undefined。
+  const rec = fs.readFileSync(path.join(__dirname, '..', 'src', 'recorder.js'), 'utf8');
+  assert.match(rec, /dynamic: s\.dynamic/, 'recorder 没有把 dynamic 存进结果');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  assert.match(sensor, /dynamic: entry\.dynamic/, 'sensor 转发时把 dynamic 丢了');
+});
+
+// ── 诊断埋点必须能被看到 ─────────────────────────────────────────────────
+//
+// 这个项目已经犯过一次「把观测手段建好却没地方看」（pointerHealth 接了三层、面板零
+// 入口）。诊断的价值全在能不能被读到，所以埋点和显示要一起钉住。
+check('匹配诊断从 input 一路到面板', () => {
+    const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(input, /lastProbe\(\)/, 'input 没有暴露诊断快照');
+  assert.match(sensor, /input\.lastProbe/, 'sensor 没有取诊断');
+  assert.match(sensor, /probe/, 'sensor 没有把诊断发出去');
+  assert.match(dash, /s\.probe/, '面板没有读诊断');
+  assert.ok(html.includes('id="match-probe"'), '面板没有显示诊断的地方');
+  // 限速：30/s 的数字给人读只会看到一片闪烁，而且白付 26 次序列化。
+  assert.match(sensor, /PROBE_INTERVAL_MS/, '诊断没有限速 —— 30/s 的数字没法读');
+});
+
+// 「录了没反应」分不清是手势没认出来还是 App 打不开，而两者的下一步完全不同
+// （重录 vs 查 App 路径）。所以执行那一段也要自证。
+check('系统动作的执行过程可见（含每个候选的失败原因）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  // 识别到了要说一声：这是"手势那侧全部走通了"的唯一证明。
+  assert.match(main, /识别到.*执行系统动作/, '手势走到主进程时没有任何记录');
+  // ⚠️ `stdio: 'ignore'` 会把 open 的报错扔掉，而那句报错正是答案：
+  // 「Unable to find application named …」和「cannot be opened because it is damaged」
+  // 需要完全不同的处理，而退出码把它们压成同一个 1。
+  const block = main.slice(main.indexOf("if (kind === 'app')"), main.indexOf("if (kind === 'pointer')"));
+  assert.match(block, /encoding: 'utf8'/, "open 还在用 stdio:'ignore' —— 失败原因被扔掉了");
+  assert.match(block, /stderr/, '没有读 open 的报错');
+  assert.match(block, /helper-log/, '执行结果没进面板日志 —— 用户看不到终端');
+});
+
+// 每个手势的开关：用户要"精准使用"，也就是手势串了的时候能先关掉一个试试。
+check('单个手势的开关四层都通，而且不需要重录', () => {
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const input = fs.readFileSync(path.join(__dirname, '..', 'src', 'input.js'), 'utf8');
+  assert.match(preload, /toggleRecording/, 'preload 没暴露开关');
+  assert.match(main, /ipcMain\.handle\('toggle-recording'/, '主进程没注册开关');
+  assert.match(dash, /gw\.toggleRecording\(/, '面板上没有按钮 —— 前三层齐了也点不到');
+  assert.match(input, /entry\.enabled === false/, '判定侧没读这个字段 —— 开关是假的');
+
+  // ⚠️ 缺字段必须当成"开着"。用 `=== true` 会让存量录制在升级后全部静默失效。
+  assert.doesNotMatch(input, /entry\.enabled === true/,
+    '用了 `=== true` —— 存量录制没有这个字段，会被静默关掉');
+
+  // 开关存在 recorded[action] 上，跟着模板走：清除录制时一起消失，不留孤儿开关。
+  const handler = main.slice(main.indexOf("ipcMain.handle('toggle-recording'"));
+  assert.match(handler.slice(0, 500), /config\.recorded/,
+    '开关没存在 recorded 上 —— 另开一张表会留下指向已删手势的孤儿');
+});
+
+// ── 转发层不做白名单 ─────────────────────────────────────────────────────
+//
+// ⚠️ **这个错误在同一个文件里犯了三次。**
+//
+//   sendRecordingProgress   丢掉 extent / extentNeeded（幅度诊断显示不出来）
+//   sendRecordingResult(冲突) 丢掉 need / otherDisabled（面板显示「至少要 ?」）
+//   sendRecordingResult(失败) 丢掉 peak / need / frames
+//
+// 前两次是用户报上来的：加了一个诊断字段、测试全绿、真机上那个数字就是不出现。而症状
+// 看起来像 UI 的问题，因为产出端和显示端都是对的 —— 中间那层静默地把它删了。
+//
+// 转发层做白名单，等于给每个新字段埋一个静默失效。这三处传的都是给 UI 看的数据，没有
+// 敏感字段要挡，所以整体透传是对的。
+check('recorder 的结果整体透传，不逐个列字段', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const calls = [...sensor.matchAll(/sendRecording(?:Result|Progress)\(\{([^}]*)/g)]
+    .map((m) => m[1]);
+  assert.ok(calls.length >= 3, `只解析出 ${calls.length} 个转发点，正则失效了`);
+  // 三类要分开：
+  //   透传（带 `...`）                    ✅ 想要的
+  //   自己构造的小载荷（<4 个字段）        ✅ 没有上游字段可丢
+  //   入库载荷（`entry: {`）              ✅ 故意显式列字段 —— 那是要写盘的结构，
+  //                                        多带一个字段会永远留在用户的配置文件里
+  // 剩下的才是"转发上游产出却做了白名单"，也就是会静默吃掉新字段的那种。
+  const suspect = calls.filter((body) => {
+    if (body.includes('...')) return false;
+    if (body.includes('entry:')) return false;
+    return body.split(',').filter((x) => x.trim()).length >= 4;
+  });
+  assert.deepStrictEqual(suspect, [],
+    `这些转发点在做白名单，上游新增的字段会被静默丢掉：${suspect.map((s) => s.slice(0, 60)).join(' | ')}`);
+});
+
+// ── 诊断区的换行必须保留 ─────────────────────────────────────────────────
+//
+// `#match-probe` 和 `#overlay-geom` 用 `class="state"`，但它们**不在 `.rec` 里**，而
+// 唯一那条 state 规则是 `.rec .state` ⟹ 它们一直没有任何样式。
+//
+// 后果不是"丑"，是**读不到**：`white-space` 默认把 textContent 里的 `\n` 折叠成空格，
+// 多个手势的诊断挤成一行长文本。用户原话「我没有看到更多的日志信息」—— 诊断一直在发，
+// 只是显示成了一行。
+//
+// 这个形状是「接线齐了但用不上」的变体：数据到了、元素在、内容也写进去了，而**呈现层
+// 把它变成了不可读**。现有那条"CSS 类都有定义"的守卫查的是 `className='x'`，查不到这种。
+check('多行诊断的容器保留换行（否则挤成一行 = 看不到）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+
+  // 找出所有"往 textContent 里塞 \n"的元素 id —— 那些必须保留换行。
+  //
+  // ⚠️ 窗口是"到下一个 getElementById 为止"，不是固定字符数。第一版用 400 字符，而
+  // `#match-probe` 的写入点在 getElementById 之后 14 行（中间有一段注释和一个 map）
+  // ⟹ **它压根没被识别成多行容器,守卫就没检查它** —— 而它正是这次出问题的那个。
+  // 一个"全绿但没覆盖到目标"的守卫比没有更糟，因为它让人以为查过了。
+  const multiline = new Set();
+  const sites = [...dash.matchAll(/getElementById\('([\w-]+)'\)/g)];
+  for (let i = 0; i < sites.length; i += 1) {
+    const from = sites[i].index;
+    const to = i + 1 < sites.length ? sites[i + 1].index : dash.length;
+    if (/textContent\s*=\s*`[^`]*\\n/.test(dash.slice(from, to))) multiline.add(sites[i][1]);
+  }
+  assert.ok(multiline.has('match-probe'),
+    '没把 match-probe 识别成多行容器 —— 那正是这条守卫要看的那个，窗口切得太小了');
+  assert.ok(multiline.size >= 3, `只解析出 ${multiline.size} 个多行容器，正则失效了`);
+
+  const bad = [...multiline].filter((id) => {
+    if (new RegExp(`<pre[^>]*id="${id}"`).test(html)) return false;   // <pre> 默认保留换行
+    // ⚠️ 要查**所有**匹配的规则，不是第一条。CSS 里后面的覆盖前面的，而同一个 id 出现
+    // 两条规则是常事（`#live` 就有两条）。只看第一条会误判 —— 这正是 `#hands` 那个 bug
+    // 的形状（两条规则，后一条没尺寸把前一条盖了），而我写这条守卫时又踩了一次：
+    // 加了个重复的 `#live` 规则，以为原来没有。
+    const rules = [...style.matchAll(new RegExp(`#${id}\\b[^{]*\\{([^}]*)\\}`, 'g'))]
+      .map((m) => m[1]);
+    const wraps = rules.some((r) => /white-space:\s*(pre|pre-wrap|pre-line)/.test(r));
+    const unwraps = rules.some((r) => /white-space:\s*(normal|nowrap)/.test(r));
+    return !(wraps && !unwraps);
+  });
+  assert.deepStrictEqual(bad, [],
+    `这些容器写入多行文本但不保留换行，会挤成一行读不了：${bad.join(', ')}`);
+});
+
+// ── 整层静默停摆必须能被看见 ─────────────────────────────────────────────
+//
+// 用户报「摄像头亮着，但是骨架突然消失了，点击录制也录不了了」，并且**没有任何报错记录**。
+//
+// `onResults` 是 MediaPipe 从它自己的循环里调的回调 —— 这里抛一次异常，它可能就再也不
+// 回调了，而摄像头继续亮着。一次异常让整层永久停摆，却什么都不留下。
+//
+// 而这类失败的特征恰恰是"**没有输出**"，所以"没有日志"和"一切正常"在面板上长得一模一样。
+// 唯一的解法是有个东西**主动**每秒说一次话。
+check('骨架层的整层停摆能被观测到', () => {
+  const sensor = fs.readFileSync(path.join(__dirname, '..', 'src', 'sensor.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+
+  // ① MediaPipe 的回调必须包 try —— 它抛出去就可能不再回调
+  assert.match(sensor, /function onResults\(results\) \{\s*\n\s*try \{/,
+    'onResults 没包 try —— 抛一次异常整层可能永久停摆，而摄像头继续亮着');
+  assert.match(sensor, /onResultsInner/, '没有分出内层函数');
+
+  // ② 心跳：停了要主动说话
+  assert.match(sensor, /heartbeat/, 'sensor 没有心跳');
+  assert.match(sensor, /stalled/, '心跳不报"停了"');
+  assert.match(dash, /s\.heartbeat/, '面板没读心跳');
+  assert.ok(html.includes('id="heartbeat"'), '面板没有显示心跳的地方');
+
+  // ③ 摄像头帧数和推理帧数必须**分开**报：它们背离的那一刻指明是哪一层停的。
+  //    一个数说不出"摄像头亮着但骨架没了"是摄像头的问题还是推理的问题。
+  assert.match(sensor, /cameraFrameCount/, '没单独计摄像头帧数');
+  assert.match(dash, /cameraFrames/, '面板没显示摄像头帧数');
+
+  // ④ 兜底钩子：onResults 之外的路径（定时器、事件、await 链）绕过那个 try
+  assert.match(sensor, /addEventListener\('error'/, '没接未捕获异常');
+  assert.match(sensor, /addEventListener\('unhandledrejection'/, '没接未处理的 Promise 拒绝');
+
+  // ⑤ 推理失败不能被静默吞掉 —— 原来只有 finally，而 hands.send 失败正是
+  //    "摄像头亮着但没有骨架"的另一个候选原因
+  const frame = sensor.slice(sensor.indexOf('onFrame: async'), sensor.indexOf('width: 640'));
+  assert.match(frame, /catch \(error\)/, 'hands.send 的异常被吞掉了');
+});
+
+// ── 壁纸的空状态和调试 HUD:收缩之后它们的理由都过期了 ──────────────────────
+//
+// 用户报「我的这个产品一打开,即出现这个把壁纸盖住了」——**两个东西同时盖着**:
+//
+//   ① 空状态引导页,判据是"三张图设了没有",而那个入口(图库/模板 tab)已经砍掉
+//      ⟹ 它**永远显示**,还指着一个不存在的功能("按 ⌃⇧W 选三张图")
+//   ② 调试 HUD,`showHud: true` 是开发遗留,而它的复选框在「壁纸与音乐」tab 里
+//      ⟹ 打开就关不掉
+//
+// ⟹ **删一个 tab 时要查:有没有别处的逻辑依赖它提供的入口。**这两个都是"功能删了但
+// 引导/开关还指着它"。
+check('调试 HUD 默认关，而且有不依赖面板的开关', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /showHud: false/, 'HUD 默认开着 —— 它盖在壁纸左上角');
+  // ⚠️ "默认关 + 没有开关"等于这个观测手段不存在，而 HUD 报的壁纸层策略/帧率/
+  // 鼠标事件收不收到，正是壁纸出问题时第一个该看的东西。原来那个复选框在已删的 tab 里。
+  assert.match(main, /Control\+Shift\+H[\s\S]{0,200}showHud/,
+    'HUD 没有快捷键开关 —— 默认关之后它就彻底没入口了');
+  // 写在代码里但用户不知道等于没有。
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(dash, /⌃⇧H/, '面板没列出这个快捷键');
+});
+
+check('壁纸层没有引导浮层', () => {
+  // ⚠️ 契约变了两次，记下来因为第二次推翻了第一次。
+  //
+  // 原来有个空状态引导页（"按 ⌃⇧W 选三张图"），判据是三张图设了没有。产品收缩砍掉图库和
+  // 模板 tab 之后它永远显示、还指着不存在的操作，我第一版改成"指向创意工坊 + 装载 WE 后
+  // 隐藏"——**而用户要的是它根本不存在**：「不，这个引导就不该存在」。
+  //
+  // 壁纸层就该是壁纸。任何盖在上面的东西都要有一个比"帮助用户"更硬的理由，
+  // 而调试 HUD 有（默认关 + ⌃⇧H），引导没有。
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.html'), 'utf8');
+  assert.doesNotMatch(wall, /id="empty"/, '壁纸层又加了引导浮层');
+  assert.doesNotMatch(wall, /选三张图/, '还在提"选三张图" —— 那个入口早就删了');
+  // #hud 是唯一允许盖在壁纸上的东西，而它默认关。
+  const overlays = [...wall.matchAll(/<div id="([\w-]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(overlays, ['hud'],
+    `壁纸层多了浮层：${overlays.join(', ')} —— 只有 hud 该在这儿（而它默认关）`);
+});
+
+console.log('\n  浏览工坊 + 我的壁纸');
+
+// ⚠️ 浏览**故意**用要 key 的 QueryFiles，而详情**故意**用免 key 的那个。
+// 两条搞反的后果：浏览永远失败（没 key），或者详情无端要求配 key。
+check('浏览用 QueryFiles（要 key），详情用免 key 的那个', () => {
+  const browse = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-browse'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-set-key'"));
+  assert.match(browse, /QUERY_ENDPOINT/, '浏览没走 QueryFiles');
+  assert.match(browse, /needsKey/, '没 key 时没标出来 —— 用户不知道去哪配');
+  // 403/401 几乎一定是 key 不对，和网络问题该给不同建议
+  assert.match(browse, /403|401/, 'key 被拒和网络失败没分开');
+});
+
+// ⚠️ API key 也是凭证：泄漏了别人能用你的额度，而且它绑在你账号上。
+check('诊断报告里 API key 被脱敏', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function redactConfig'),
+    mainSrc.indexOf('function redactConfig') + 600);
+  assert.match(fn, /apiKey/, 'API key 没脱敏 —— 它和密码一样是凭证');
+});
+
+// 用户的原话："不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸就在这里"
+check('我的壁纸按"有 project.json"判定，不按"我们下载过"', () => {
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-local'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-add-dir'"));
+  assert.match(handler, /findWallpaperDirs/, '没用目录扫描');
+  assert.match(handler, /libraryDirs/, '没扫用户自己加的目录');
+  // ⚠️ 一个坏的 project.json 不能让整个列表变空
+  assert.match(handler, /broken/, '坏文件没单独标出来 —— 用户会找不到他知道存在的壁纸');
+  // ⚠️ 空列表时要报出扫过哪些目录，否则用户不知道我们找过哪儿
+  assert.match(handler, /scannedRoots/, '没报出扫过的目录');
+});
+
+// 不支持的类型**不隐藏** —— 用户明确说过"预览图是可以看到的吧"。
+check('不支持的类型仍然显示（只标出来，不隐藏）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const card = dash.slice(dash.indexOf('function workshopCard'),
+    dash.indexOf('async function runBrowse'));
+  assert.match(card, /放不了/, '不支持的类型没标出来');
+  assert.ok(!/return null|continue/.test(card), '卡片渲染里有跳过逻辑 —— 那会隐藏壁纸');
+});
+
+// ⚠️ 点卡片不该直接下载：几百 MB 的误点很贵。
+check('点工坊卡片是看详情，不是直接下载', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const browse = dash.slice(dash.indexOf('async function runBrowse'),
+    dash.indexOf("document.getElementById('br-go')"));
+  assert.match(browse, /renderPeek/, '点卡片没走预览');
+  assert.ok(!/workshopDownload/.test(browse), '点卡片直接下载了 —— 误点会很贵');
+});
+
+check('三个页签都在（创意工坊 / 我的壁纸 / 手势录制）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  for (const tab of ['we', 'mine', 'gesture']) {
+    assert.ok(html.includes(`data-tab="${tab}"`), `缺 ${tab} 页签`);
+    assert.ok(html.includes(`id="tab-${tab}"`), `缺 ${tab} 的 section`);
+  }
+});
+
+console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
 // ⚠️ 关键点录制的载荷必须带当时生效的 tuning。
 //
 // 回放探针的每个门限（挥动速度/倾斜角/匹配阈值）都从 capture.tuning 读，缺了会
@@ -623,8 +1295,11 @@ check('详情接口不需要 API key（所以预览是零门槛的）', () => {
   assert.match(src, /ISteamRemoteStorage\/GetPublishedFileDetails/,
     '没用免 key 的详情接口');
   // 主进程调的必须是那个免 key 的，不能是要 key 的 QueryFiles
+  // ⚠️ 切片终点用 workshop-set-key 而不是 workshop-local：
+  // 中间新插了 workshop-browse，而那条**故意**用要 key 的 QueryFiles。
+  // 切片太宽会把它算进来 ⟹ 守卫报假阳性，而我会去"修"一个不存在的问题。
   const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-details'"),
-    mainSrc.indexOf("ipcMain.handle('workshop-local'"));
+    mainSrc.indexOf("ipcMain.handle('workshop-browse'"));
   assert.match(handler, /DETAILS_ENDPOINT/, '详情没走免 key 的接口');
   assert.ok(!/QUERY_ENDPOINT/.test(handler), '详情用了要 API key 的 QueryFiles');
 });
@@ -873,4 +1548,3 @@ check('Finder 那个门默认关（开着会挡掉大部分点击）', () => {
     'helper 里的默认值还是开着 —— 两边不一致时 JS 那边改了也没用');
 });
 
-console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

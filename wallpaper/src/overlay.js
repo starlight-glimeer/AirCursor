@@ -47,18 +47,18 @@ function skeletonWidth(screenWidth) {
 // 手的位置仍然映射到全屏（抬手到屏幕右边，骨架就在右边），只有手的**尺寸**被压到固定
 // 大小。两者分开是关键：位置要覆盖整个屏幕才能指得到任何地方，尺寸不能跟着屏幕长。
 //
-// `center` 是这只手的掌心（归一化），缩放围绕它做，所以手不会因为缩放被拉到角落。
-function toCanvas(point, width, height, center, scale) {
-  if (!center || !scale) return { x: point.x * width, y: point.y * height };
-  const cx = center.x * width;
-  const cy = center.y * height;
-  return {
-    x: cx + (point.x * width - cx) * scale,
-    y: cy + (point.y * height - cy) * scale,
-  };
+// 归一化坐标 → 画布像素。**一比一,不缩放。**
+//
+// 原来这里把手按"固定手宽"缩放(围绕掌心压到 200px)。那是错的,而且错在一个不显眼的
+// 地方:缩放保住了掌心位置,却把**所有其他关键点朝掌心收缩** —— 实测压到 0.54 倍,于是
+// 指尖画出来离真实位置差一大截。用户的描述是"骨架位置不对、偏右",而根因不是偏移是收缩。
+//
+// 骨架的用途是"我的手现在在哪、指着什么",所以它必须和真实位置一一对应。手在画面里
+// 占多大,画出来就该占多大 —— 这本来就是摄像头看到的比例,不需要"修正"。
+function toCanvas(point, width, height) {
+  return { x: point.x * width, y: point.y * height };
 }
 
-// 一只手在归一化坐标里的宽度（包围盒），用来算该缩放多少。
 function handSpan(hand) {
   let minX = Infinity;
   let maxX = -Infinity;
@@ -93,6 +93,45 @@ class HandOverlay {
     this.lastAt = 0;
     this.width = 0;
     this.height = 0;
+  }
+
+  // 自检:把"画布到底多大、骨架到底画到哪个像素"报出来。
+  //
+  // 存在的理由是这条链改了两次零好转。我一直在量"手在数据里的位置"(那是对的),而从没量过
+  // "骨架落在屏幕的哪个像素" —— 两者之间隔着 canvas 缓冲尺寸、CSS 尺寸、DPR 三层,而错
+  // 就在 CSS 那层(canvas 没设 CSS 尺寸,默认 300x150,整张画布被压到屏幕左上角)。
+  //
+  // 所以这个方法报的是**端到端**:输入归一化坐标 → 输出屏幕像素,以及中间每一层的尺寸。
+  // 任何一层不对,数字自己会说出来。
+  selfCheck() {
+    const cssW = this.canvas.clientWidth;
+    const cssH = this.canvas.clientHeight;
+    const probes = [
+      { name: '左上', x: 0, y: 0 },
+      { name: '正中', x: 0.5, y: 0.5 },
+      { name: '右下', x: 1, y: 1 },
+    ];
+    return {
+      // 三个尺寸必须一致(乘 dpr 之后)。不一致就是画布被缩放显示了。
+      buffer: { w: this.canvas.width, h: this.canvas.height },
+      css: { w: cssW, h: cssH },
+      logical: { w: this.width, h: this.height },
+      dpr: cssW ? Number((this.canvas.width / cssW).toFixed(2)) : null,
+      // 缓冲和 CSS 的比值如果不等于 dpr,画布就在被拉伸/压缩。
+      consistent: cssW > 0 && Math.abs(this.width - cssW) < 2 && Math.abs(this.height - cssH) < 2,
+      // 端到端:归一化坐标画到哪个 CSS 像素。这三个数直接和"你看到骨架在哪"对照。
+      mapped: probes.map((p) => {
+        const out = toCanvas(p, this.width, this.height);
+        return { at: p.name, x: Math.round(out.x), y: Math.round(out.y) };
+      }),
+    };
+  }
+
+  // 擦掉但不销毁:关掉"显示骨架"时用。窗口要留着(摄像头在这一层),所以"不显示"只能
+  // 靠不画 —— 而画布上一帧的内容不会自己消失,必须擦。
+  clear() {
+    if (!this.width) return;
+    this.ctx.clearRect(0, 0, this.width, this.height);
   }
 
   resize(width, height, pixelRatio) {
@@ -148,12 +187,12 @@ class HandOverlay {
       const hue = handHue(index, this.recording) + Math.sin(t * 2.2 + index) * 22;
       const stroke = `hsl(${hue}, 100%, 64%)`;
       const core = `hsl(${hue + 25}, 100%, 82%)`;
-      // 按固定手宽缩放：位置铺满屏（指得到任何地方），尺寸压到一只手该有的大小。
-      const span = handSpan(hand);
-      const targetPx = skeletonWidth(this.width);
-      const currentPx = Math.max(1e-6, span.width * this.width);
-      const scale = Math.min(1, targetPx / currentPx);
-      const points = hand.map((p) => toCanvas(p, this.width, this.height, span.center, scale));
+      // 一比一,不缩放。
+      //
+      // 这里原来按"固定手宽"围绕掌心缩放。上一轮我改了 toCanvas 的签名却漏了这个调用点 ——
+      // 多余的实参被 JS 静默忽略,于是缩放照旧生效,而我以为改完了。用户第二次报"还是偏右"
+      // 才发现。⚠️ 改函数签名时必须同时查所有调用点:JS 不会为多传的参数报错。
+      const points = hand.map((p) => toCanvas(p, this.width, this.height));
 
       ctx.globalAlpha = alpha * 0.9;
       ctx.strokeStyle = stroke;
@@ -182,7 +221,7 @@ class HandOverlay {
       // 指针环画在食指指尖：这是"我在指哪"的答案，而那个问题之前完全没有答案。
       const tip = indexTip(hand);
       if (tip) {
-        this.drawPointer(toCanvas(tip, this.width, this.height, span.center, scale), alpha, t, hue);
+        this.drawPointer(toCanvas(tip, this.width, this.height), alpha, t, hue);
       }
     }
     ctx.restore();

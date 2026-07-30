@@ -177,10 +177,19 @@ function onGesture(g) {
     case 'tiltDown':
       view.target.pitch -= 0.3 * (g.repeat || 1);
       break;
-    case 'pointer':
-      if (typeof g.x === 'number') view.target.pointerX = g.x * 2 - 1;
-      if (typeof g.y === 'number') view.target.pointerY = -(g.y * 2 - 1);
+    case 'pointer': {
+      // 视差用掌心,不用指尖:要的是"手整体在哪"。指尖会随着屈指乱跳,而两者差 36-38%
+      // 屏宽 —— 用指尖做视差会让画面跟着手指头动而不是跟着手动。
+      // 用户为「视差跟随」录了手型的话，手型不在场就不动视差（保持在原位，不回中 ——
+      // 回中会让画面在手型将断将续时抽动）。`parallax !== false` 而不是 `=== true`：
+      // 没带这个字段的事件（旧版/其他来源）照旧放行。
+      if (g.parallax === false) break;
+      const px = typeof g.palmX === 'number' ? g.palmX : g.x;
+      const py = typeof g.palmY === 'number' ? g.palmY : g.y;
+      if (typeof px === 'number') view.target.pointerX = px * 2 - 1;
+      if (typeof py === 'number') view.target.pointerY = -(py * 2 - 1);
       break;
+    }
     case 'reset':
       resetView();
       break;

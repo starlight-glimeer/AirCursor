@@ -22,6 +22,15 @@ const Library = globalThis.GestureWallLibrary;
 // 系统动作（打开应用、媒体键）的定义，主进程和 dashboard 共用一份。
 require('./system.js');
 const System = globalThis.GestureWallSystem;
+// 冲突检测。主进程也要用它 —— 重新启用一个手势时得先确认它和在用的手势不撞，而那个
+// 判断只能在这里做（只有主进程手上有全部录制）。
+//
+// 直接 require 而不是重实现：两份实现只要有一点不同，就会出现"录的时候说没冲突、启用时
+// 说有冲突"这种自相矛盾的提示。这几个模块都挂 globalThis，在 node 里能直接跑。
+require(path.join(__dirname, 'vendor', 'aircursor', 'pose.js'));
+require(path.join(__dirname, 'vendor', 'aircursor', 'motion.js'));
+require('./recorder.js');
+const Recorder = globalThis.GestureWallRecorder;
 // 系统投递层(真鼠标/键盘事件 + 本地语音)。整个抽自 AirCursor 的 main.js,不是重写 ——
 // 那一层的每条约定都是真机烧出来的,见文件头。
 const { createSystemBridge } = require('./system-bridge.js');
@@ -53,7 +62,6 @@ function withLibraryStatus(cfg) {
 
 let wallWindow = null;
 let dashboardWindow = null;
-let sensorWindow = null;
 let overlayWindow = null;
 let weWindow = null;
 let weProject = null;      // 当前装载的 WE 壁纸（parseProject 的结果）
@@ -315,6 +323,12 @@ const defaultConfig = {
     maxPrediction: 0.026, // 外推上限，防止一次丢跟踪把画面甩出去
     swipeSpeed: 2.6,      // 挥动速度门，掌宽/秒
     tiltTriggerDeg: 22,   // 手掌倾斜多少度算一格
+    // 两次推理最少间隔。20ms 来自 AirCursor 3.x 的真机报告:那一版在同一台机器上
+    // 30fps、推理 12ms。太小会让推理挤掉绘制,太大直接变成帧率上限。
+    inferenceIntervalMs: 20,
+    // 骨架发送间隔。和摄像头同频(30fps),不额外降 —— 骨架的用途是"我的手在哪",
+    // 而降频在这上面直接表现为"不跟手"。
+    handIntervalMs: 33,
   },
   // 用户存的排布预设，名字 → 视觉参数。必须在这里声明，因为 mergeConfig 只遍历
   // defaultConfig 的键 —— 不声明的话存进去的预设在下次启动时被静默丢掉。
@@ -328,6 +342,11 @@ const defaultConfig = {
   // 壁纸上画手骨架和指针位置。默认开：录制和调手感时看不见手在哪，反馈只有文字，
   // 而"手势没反应"和"手没被检测到"是两件需要分开的事。
   showHands: true,
+  // 语音命令。默认关:开着会占麦克风,而那会切换音频输入设备、影响正在播放的音乐。
+  voice: false,
+  // 摄像头授权拿到过没有。决定骨架层一开始要不要鼠标穿透 —— 授权弹窗在穿透窗口上
+  // 点不动,所以第一次必须留着可交互。
+  cameraGranted: false,
   // 手 → 真光标。默认关:一开摄像头就抢走鼠标,用户会没法用鼠标去把它关掉。
   // 需要辅助功能授权,而缺权限时 CGEvent 静默丢弃 —— 所以面板要显示投递层健康状态。
   controlCursor: false,
@@ -359,8 +378,13 @@ const defaultConfig = {
     // 退出时会还原用户原来的壁纸。
     placeholderWallpaper: true,
     // Steam 创意工坊。⚠️ 密码存在本地配置文件里（明文），诊断报告导出时会脱敏。
-    steam: { username: null, password: null, guardCode: null },
+    // ⚠️ apiKey 只用于浏览/搜索（QueryFiles 要它），装载壁纸不需要。
+    // 导诊断报告时和密码一起脱敏。
+    steam: { username: null, password: null, guardCode: null, apiKey: null },
     steamCmdPath: null,
+    // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
+    // 这里是"我从别处拿到的壁纸放在哪"。
+    libraryDirs: [],
     // WE 壁纸的层策略。
     //
     // ⚠️ 默认改回 desktop 了（原来是 bottom-normal），因为那两件事现在**不再互斥**：
@@ -382,7 +406,12 @@ const defaultConfig = {
     // 那比"点壁纸完全没反应"可接受得多。
     mouseGateFinder: false,
   },
-  debug: { showHud: true },
+  // ⚠️ 默认**关**。这是开发时的遗留:HUD 盖在壁纸左上角,而它报的东西(fps、壁纸层策略、
+  // 鼠标事件收不收到、三层设了没)全是调试信息。用户报「一打开就出现这个把壁纸盖住了」。
+  //
+  // 而且那个开关原来在「壁纸与音乐」tab 里,收缩之后没了入口 ⟹ 打开就关不掉。
+  // 要看它的话 ⌃⇧H。
+  debug: { showHud: false },
 };
 
 let config = null;
@@ -464,7 +493,7 @@ function writeConfig() {
 // "面板上有的条目不标缺失"，而那种不一致查起来比缺功能烦。
 function broadcast(channel, payload) {
   const body = channel === 'config' ? withLibraryStatus(payload) : payload;
-  for (const win of [wallWindow, dashboardWindow, sensorWindow, overlayWindow, weWindow]) {
+  for (const win of [wallWindow, dashboardWindow, overlayWindow, weWindow]) {
     if (win && !win.isDestroyed()) win.webContents.send(channel, body);
   }
 }
@@ -502,7 +531,7 @@ function handleVoiceText(phrase) {
     broadcast('voice-status', { text: `没匹配上:${text}` });
     return;
   }
-  const result = runSystemAction(hit.action);
+  const result = runSystemAction(hit.action, '语音');
   broadcast('voice-status', { text: `${result.ok ? '已执行' : '执行失败'}:${text}` });
 }
 
@@ -656,7 +685,11 @@ function ensureOverlay() {
     fullscreenable: false,
     hasShadow: false,
     skipTaskbar: true,
-    focusable: false,
+    // ⚠️ 不设 focusable: false。
+    //
+    // 摄像头现在就在这个窗口里(和 AirCursor 3.x 一样),而 getUserMedia 的授权弹窗
+    // 出现在一个不可聚焦的窗口上时**没人能回答它**。3.x 的 overlay 也没设这个 ——
+    // 它靠 setIgnoreMouseEvents 做穿透,那是正确的做法:穿透和不可聚焦是两件事。
     enableLargerThanScreen: true,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -666,11 +699,53 @@ function ensureOverlay() {
       backgroundThrottling: false,
     },
   });
+  // 渲染进程的 console 转到主进程 + 面板。
+  //
+  // 摄像头搬进这一层之后没启动,而我花了几轮在推断原因 —— 因为这个窗口里抛的任何异常
+  // **谁都看不到**:它没有开发者工具、不在视线里,而 sensor.js 的加载期错误只会让摄像头
+  // 静默不起。AirCursor 3.x 转了这个,他的没转。
+  //
+  // Electron 36 起签名从 (event, level, message, line, sourceId) 变成单个 details
+  // 对象,两种都接才不会静默变哑。
+  overlayWindow.webContents.on('console-message', (...args) => {
+    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
+    const level = d ? d.level : args[1];
+    const message = d ? d.message : args[2];
+    if (level === 'error' || level === 'warning' || /⚠️|失败|Error/.test(String(message))) {
+      broadcast('helper-log', { source: 'overlay', message: String(message) });
+    }
+  });
+  // 未捕获异常单独报:它比 console.error 更致命(整个脚本停在那里),而 console-message
+  // 在某些 Electron 版本上拿不到它。
+  overlayWindow.webContents.on('render-process-gone', (_e, details) => {
+    broadcast('helper-log', { source: 'overlay', message: `骨架层崩了:${details.reason}` });
+  });
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // forward: true 让鼠标事件继续传给下面的窗口，否则这一层会让整个屏幕点不动。
+  // 穿透**永远开**,没有例外。
+  //
+  // 上一版为了让摄像头授权弹窗可点,把穿透做成了"拿到授权后才开" —— 结果这一层盖在
+  // 全屏最上层且不穿透,吃掉了用户所有的点击,连启动页的按钮都点不进去。用户报
+  // "开头的 gesturewall 我点不进去了"。
+  //
+  // 那个取舍本身就是错的:摄像头授权不需要**整层**可点,只需要请求发生在一个可交互的
+  // 窗口里。所以授权改由 dashboard 发起(它是普通窗口),拿到之后骨架层直接用 —— 权限是
+  // 授给整个 App 的,不是授给某个窗口。
   overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+  // 三重保险。这一层盖在全屏最上层,任何一条失效的后果都是**整个屏幕点不动** ——
+  // 用户实测到过("鼠标直接废掉了,屏幕上所有的东西都点不动了"),而那种状态下他连
+  // 关掉这个 App 都做不到。所以不依赖任何单一机制:
+  //
+  //   setIgnoreMouseEvents  Electron 层面的穿透
+  //   ready-to-show 后重设   窗口重建/显示时 Electron 有可能丢掉上面那次设置
+  //   body pointer-events    CSS 层面,即使 Electron 那边失效也不会吃掉点击
+  overlayWindow.once('ready-to-show', () => {
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
+  });
   liftOverMenuBar(overlayWindow);
   overlayWindow.on('closed', () => { overlayWindow = null; });
   return overlayWindow;
@@ -685,37 +760,29 @@ function destroyOverlay() {
 //
 // 录制时强制显示而不管用户设置 —— 那是唯一必须看见手的时刻，而"我关了骨架所以录制时
 // 什么都看不到"不是一个用户会预期的后果。
+// 骨架窗口的存在条件 = 手势开着。**不再看 showHands。**
+//
+// 因为摄像头就在这个窗口里(和 AirCursor 3.x 一样),而"我不想看骨架"不等于"我不想用
+// 手势" —— 按 showHands 建拆窗口会连摄像头一起拆掉。
+//
+// "显示不显示骨架"改成只控制画不画:窗口本来就是全屏透明的,不画就等于不存在。这样
+// 也顺带去掉了那个独立的 sensor 窗口 —— 而它在外接显示器上表现为一个黑框(用户拍了照),
+// 因为我三次都在靠"位置"藏它,而多屏下任何"屏幕外"的坐标都可能是另一块屏的屏内。
 function syncOverlayVisibility() {
-  const wanted = !!(config && config.gestures.enabled && (config.showHands || recordingAction));
+  const wanted = !!(config && config.gestures.enabled);
   if (wanted) ensureOverlay();
   else destroyOverlay();
+  // 画不画由 overlay 自己按 config 决定,这里只负责把 config 送到。
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('config', config);
+  }
 }
 
-// The camera lives in its own hidden window rather than in the wall: a
-// desktop-level window may not be focusable, and getUserMedia in a window that
-// cannot be focused is a permission prompt nobody can answer. Separating it also
-// means the wall keeps rendering if gesture recognition dies.
-function ensureSensor() {
-  if (sensorWindow && !sensorWindow.isDestroyed()) return sensorWindow;
-  sensorWindow = new BrowserWindow({
-    width: 360,
-    height: 270,
-    show: false,
-    skipTaskbar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false,
-    },
-  });
-  sensorWindow.loadFile(path.join(__dirname, 'sensor.html'));
-  sensorWindow.webContents.on('did-finish-load', () => {
-    sensorWindow.webContents.send('config', config);
-  });
-  sensorWindow.on('closed', () => { sensorWindow = null; });
-  return sensorWindow;
-}
+// 摄像头没有独立窗口了 —— 它在骨架层里(和 AirCursor 3.x 一样)。
+//
+// 原来那个 sensor 窗口的存在理由是"骨架层 focusable:false,授权弹窗没人能回答",而正确
+// 解法是让骨架层可聚焦(3.x 就没设那个),不是造第二个窗口。那个窗口在外接显示器上表现为
+// 一个黑框,而我三次靠"位置"藏它都失败:多屏下任何"屏幕外"的坐标都可能是另一块屏的屏内。
 
 // ---------------------------------------------------------------------------
 // IPC
@@ -735,84 +802,11 @@ ipcMain.handle('set-config', (_event, patch) => {
 
 const LAYER_LABEL = { background: '背景', subject: '主体', shard: '碎片' };
 
-ipcMain.handle('pick-image', async (_event, layer) => {
-  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
-    title: `选择${LAYER_LABEL[layer] || ''}图片`,
-    properties: ['openFile'],
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
-  });
-  if (result.canceled || !result.filePaths[0]) return null;
-  config.layers[layer] = result.filePaths[0];
-  writeConfig();
-  broadcast('config', config);
-  return result.filePaths[0];
-});
-
-ipcMain.handle('clear-image', (_event, layer) => {
-  config.layers[layer] = null;
-  writeConfig();
-  broadcast('config', config);
-  return config;
-});
-
-// 从图库直接指派到某一层，不开文件对话框。
-ipcMain.handle('set-layer', (_event, layer, filePath) => {
-  if (!LAYER_LABEL[layer]) return { ok: false };
-  config.layers[layer] = filePath || null;
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-// ---------------------------------------------------------------------------
-// 图库
-// ---------------------------------------------------------------------------
-
-// 一次多选：攒素材这件事是批量的，一张一张开对话框是纯摩擦。
-ipcMain.handle('library-add', async () => {
-  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
-    title: '添加素材到图库',
-    properties: ['openFile', 'multiSelections'],
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
-  });
-  if (result.canceled) return { ok: false };
-  let items = config.library || [];
-  for (const filePath of result.filePaths) {
-    // 按文件名猜槽位：带 alpha 的 PNG 大概率是抠好的主体。猜错代价很小（用户在下拉里
-    // 改一下），而每张都要手选槽位的代价是真实的。
-    const guess = /\.png$/i.test(filePath) ? 'subject' : 'background';
-    items = Library.add(items, filePath, guess);
-  }
-  config.library = items;
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true, added: result.filePaths.length };
-});
-
-ipcMain.handle('library-remove', (_event, id) => {
-  config.library = Library.remove(config.library || [], id);
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-ipcMain.handle('library-set-slot', (_event, id, slot) => {
-  config.library = Library.setSlot(config.library || [], id, slot);
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-ipcMain.handle('set-strategy', (_event, id) => {
-  recreateWall(id);
-  return { ok: true, id };
-});
-
 ipcMain.handle('set-gestures', (_event, enabled) => {
   config.gestures.enabled = !!enabled;
   writeConfig();
-  if (config.gestures.enabled) ensureSensor();
-  else if (sensorWindow && !sensorWindow.isDestroyed()) sensorWindow.destroy();
+  // 建/拆窗口交给 syncOverlayVisibility 一处管 —— 两处都能拆窗口时,"谁拆的"会变成
+  // 一个需要查的问题。
   syncOverlayVisibility();
   broadcast('config', config);
   return config;
@@ -838,34 +832,6 @@ function currentPreset() {
   return out;
 }
 
-ipcMain.handle('save-preset', (_event, name) => {
-  const label = String(name || '').trim() || `预设 ${Object.keys(config.presets || {}).length + 1}`;
-  config.presets = { ...(config.presets || {}), [label]: currentPreset() };
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true, name: label };
-});
-
-ipcMain.handle('load-preset', (_event, name) => {
-  const preset = config.presets && config.presets[name];
-  if (!preset) return { ok: false, error: 'NOT_FOUND' };
-  config = mergeConfig(config, preset);
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-ipcMain.handle('delete-preset', (_event, name) => {
-  if (!config.presets || !(name in config.presets)) return { ok: false };
-  const next = { ...config.presets };
-  delete next[name];
-  // 整个替换而不是改单键：mergeConfig 是深合并，传一个缺了某键的对象删不掉它。
-  config.presets = next;
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
 // Gesture and music events both land here and go straight through. Main relays
 // rather than translates: whoever produces an event decides what it means, so
 // there is one place to look when something fires that should not have.
@@ -878,23 +844,69 @@ ipcMain.handle('delete-preset', (_event, name) => {
 // 直接映射成"手势在就按住"做不到,因为手势事件不带持续状态。
 let dragHeld = false;
 
-function runSystemAction(id) {
+// `source` 说明是谁触发的：'手势' 还是 '试一下' 按钮。
+//
+// ⚠️ 不带这个参数时两条路径打出**一模一样**的日志，而用户点了「试一下」看到
+// `open_netease → ok` 会以为手势通了 —— 实测发生过，而它把排查方向整个带偏：那条 ok
+// 只证明 App 能打开，手势那侧可能一步都没走。
+//
+// 日志的第一要务是说清"这是谁干的"，否则它自己就是一个误导源。
+function runSystemAction(id, source = '?') {
   const kind = System.systemKindOf(id);
   if (!kind) return { ok: false, error: 'NOT_SYSTEM_ACTION' };
 
   if (kind === 'app') {
+    // 每个候选的失败原因都留下来。`stdio: 'ignore'` 会把 open 的报错扔掉，而那句报错
+    // 正是答案：「Unable to find application named …」和「The application cannot be
+    // opened because it is damaged」需要完全不同的处理，而退出码把它们压成同一个 1。
+    const tried = [];
     const args = System.openApp(id, (candidate) => {
       try {
-        return spawnSync('/usr/bin/open', candidate, { stdio: 'ignore' }).status === 0;
-      } catch {
+        const r = spawnSync('/usr/bin/open', candidate, { encoding: 'utf8' });
+        const why = r.status === 0 ? 'ok'
+          : (String(r.stderr || '').trim().split('\n')[0] || `退出码 ${r.status}`);
+        tried.push(`open ${candidate.join(' ')} → ${why}`);
+        return r.status === 0;
+      } catch (error) {
+        tried.push(`open ${candidate.join(' ')} → ${error.message}`);
         return false;
       }
     });
     // 报出用了哪个候选：同一个 App 在不同机器上路径/bundle id/名字都可能不同，而
     // "试了四个都失败"和"第二个成功了"需要分开看。
-    if (args) console.log(`[system] ${id} → open ${args.join(' ')}`);
-    else console.warn(`[system] ${id} 全部候选都失败了`);
-    return { ok: !!args, via: args };
+    //
+    // 送进面板的日志窗格，不只是 console —— 用户看不到终端时 console.log 等于不存在，
+    // 而这条链（录制 → 匹配 → 事件 → 执行）里"执行"是唯一能自证成败的一段。
+    for (const line of tried) {
+      broadcast('helper-log', { source: `system/${source}`, message: `${id} ${line}` });
+    }
+    if (!args) {
+      broadcast('helper-log', {
+        source: `system/${source}`,
+        message: `⚠️ ${id}：${tried.length} 个候选全失败 —— 这台机器上找不到那个 App，`
+          + '和手势没关系（手势那侧已经走到这里了）',
+      });
+    }
+    return { ok: !!args, via: args, tried };
+  }
+
+  if (kind === 'pointer') {
+    // 这一类走 systemBridge,也就是 CGEvent。缺授权时它静默丢弃,所以健康状态一起返回 ——
+    // 让调用方能区分"发出去了"和"系统收到了",那两件事在 AirCursor 上分不开时烧掉四轮。
+    const meta = System.POINTER_ACTIONS[id];
+    if (!meta) return { ok: false, error: 'UNKNOWN_POINTER_ACTION' };
+    if (meta.command === 'dragToggle') {
+      dragHeld = !dragHeld;
+      systemBridge.send({ type: dragHeld ? 'down' : 'up' });
+      return { ok: true, held: dragHeld, health: systemBridge.health() };
+    }
+    systemBridge.send({ type: meta.command });
+    const health = systemBridge.health();
+    // 没授权就直说,而不是报 ok:true 让用户以为点了
+    if (health.trusted === false) {
+      return { ok: false, error: 'NO_ACCESSIBILITY', health };
+    }
+    return { ok: true, health };
   }
 
   if (kind === 'pointer') {
@@ -942,7 +954,10 @@ ipcMain.on('gesture', (_event, payload) => {
   // 系统动作在主进程执行，不转给壁纸 —— 壁纸不知道怎么打开应用，转过去只是让它
   // 收到一个不认识的 action 然后什么都不做（那正是"手势没反应"的一种）。
   if (payload && System.systemKindOf(payload.action)) {
-    const result = runSystemAction(payload.action);
+    // 这一行是"手势那侧全部走通了"的证明。没有它，「录了没反应」分不清是手势没认出来
+    // 还是 App 打不开 —— 而两者的下一步完全不同（重录 vs 查 App 路径）。
+    broadcast('helper-log', { source: 'gesture', message: `识别到「${payload.action}」→ 执行系统动作` });
+    const result = runSystemAction(payload.action, '手势');
     // dashboard 仍然要知道：它显示"最近事件"，而系统动作的成败是那里唯一的反馈。
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       dashboardWindow.webContents.send('gesture', { ...payload, system: true, ok: result.ok });
@@ -969,22 +984,83 @@ ipcMain.on('gesture', (_event, payload) => {
 
 // 面板上手动试一个系统动作。录制之前先确认"这个动作在我机器上能用"，否则录完发现
 // 打不开应用，分不清是手势没认出来还是 App 找不到。
-ipcMain.handle('test-system-action', (_event, id) => runSystemAction(id));
+ipcMain.handle('test-system-action', (_event, id) => {
+  broadcast('helper-log', { source: '面板', message: `「试一下」${id} —— 这条不代表手势通了` });
+  return runSystemAction(id, '试一下');
+});
 
 // 投递层的健康状态。这是"手势没反应"时第一个该看的东西:识别成功和事件送达是两个
 // 独立的 claim,而缺权限时 CGEvent 静默丢弃 —— AirCursor 为此烧掉四轮。
 ipcMain.handle('pointer-health', () => systemBridge.health());
 
+// 打开系统设置的辅助功能页。
+//
+// 之前只显示"无辅助功能授权"然后就没了 —— 用户知道缺什么,不知道去哪给。而 macOS 的
+// 那个面板藏在系统设置三层下面,报出问题却不给路径等于把活推给用户。
+ipcMain.handle('open-accessibility', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+  return { ok: true };
+});
+
+// 打开摄像头授权页。同理:摄像头被拒之后光说"启动失败"没用。
+// 语音按需开关。默认关,而且这不是保守 —— helper 一启动就占麦克风,而 macOS 上抢占音频
+// 输入会切换输入设备、连带影响正在播放的音轨(用户报过:"每次打开我们的产品音道就变了")。
+// 一个可选功能不该有这种副作用。
+ipcMain.handle('set-voice', (_event, enabled) => {
+  config.voice = !!enabled;
+  writeConfig();
+  const result = enabled ? systemBridge.startVoice() : systemBridge.stopVoice();
+  broadcast('config', config);
+  return result;
+});
+
+// 麦克风授权页。和辅助功能/摄像头同一个原则:说了缺什么就得给路径。
+ipcMain.handle('open-microphone-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+  return { ok: true };
+});
+// 语音识别单独一项授权,而且授给的是 AirCursorVoice 那个 helper 不是主 App ——
+// 这一条在 AirCursor 上花过时间,写下来免得再查。
+ipcMain.handle('open-speech-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition');
+  return { ok: true };
+});
+
+ipcMain.handle('open-camera-settings', () => {
+  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Camera');
+  return { ok: true };
+});
+
 // 录 5 秒原始关键点。两边所有用例都是合成手,而合成手缺的是真机噪声的**时间相关结构**
 // (相邻帧一起漂、丢跟踪后重新检出会跳),而那个差异决定判定层在真手上成不成立。
 ipcMain.handle('start-capture', () => {
-  if (!sensorWindow || sensorWindow.isDestroyed()) {
+  // 窗口存在 ≠ 摄像头在跑。用户报过一次:点了按钮显示"正在录制 5 秒",然后什么都没发生、
+  // 目录也是空的 —— 那次是 MediaPipe 没加载(vendor 步骤没跑),窗口好好地开着。
+  // 只查窗口是不够的。
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
     return { ok: false, reason: '摄像头没有开着 —— 先勾上「开启摄像头手势」' };
   }
-  sensorWindow.webContents.send('start-capture');
+  if (!sensorReady) {
+    return { ok: false, reason: `摄像头还没就绪:${sensorStatusText || '正在启动'}` };
+  }
+  overlayWindow.webContents.send('start-capture');
+  // 兜底:5 秒后该有文件了。没有就说出来 —— 一个只说"正在录制"然后永远不再说话的
+  // 界面,和坏掉没有区别。
+  const expectBy = Date.now();
+  setTimeout(() => {
+    if (lastCaptureAt >= expectBy) return;
+    broadcast('capture-saved', { error: '5 秒过去了但没有产出文件 —— 摄像头可能没真的在出帧' });
+  }, 7000);
   return { ok: true };
 });
+// sensor 的就绪状态。摄像头真的在出帧才算就绪 —— 窗口开着但模型没加载时它是 false。
+let overlayGeometry = null;
+let sensorReady = false;   // sensor 显式报的,不靠猜文案
+let sensorStatusText = '';
+let lastCaptureAt = 0;
+
 ipcMain.on('save-capture', (_event, payload) => {
+  lastCaptureAt = Date.now();
   try {
     const dir = path.join(app.getPath('userData'), 'captures');
     fs.mkdirSync(dir, { recursive: true });
@@ -1005,13 +1081,24 @@ ipcMain.handle('reveal-captures', () => {
   return { ok: true, dir };
 });
 
-ipcMain.on('sensor-status', (_event, payload) => broadcast('sensor-status', payload));
+// 骨架的几何自检。转给面板显示 —— 一个没人能看的自检和没有自检是一回事,
+// 而这个项目本轮已经犯过那个错(三层接好、面板零入口)。
+ipcMain.on('overlay-geometry', (_event, payload) => {
+  overlayGeometry = payload;
+  broadcast('overlay-geometry', payload);
+});
 
-// 关键点只转给骨架层：dashboard 和壁纸都不画它，而这是 30/s 的高频消息，多发纯浪费。
-ipcMain.on('hands', (_event, payload) => {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('hands', payload);
+ipcMain.on('sensor-status', (_event, payload) => {
+  // 记下来源状态,让 start-capture 能判断"摄像头是不是真的在出帧"。判据是文本里没有
+  // ⚠️ 且已经报到"已开启" —— sensor 自己在成功那一刻才发这句。
+  sensorStatusText = (payload && payload.text) || '';
+  if (payload && typeof payload.ready === 'boolean') sensorReady = payload.ready;
+  // 记下"授权拿到过",面板用它决定要不要显示"先去授权"那一步。不再和穿透挂钩。
+  if (payload && payload.ready && !config.cameraGranted) {
+    config.cameraGranted = true;
+    writeConfig();
   }
+  broadcast('sensor-status', payload);
 });
 
 // ---------------------------------------------------------------------------
@@ -1023,18 +1110,19 @@ ipcMain.on('hands', (_event, payload) => {
 
 ipcMain.handle('start-recording', (_event, action) => {
   if (!config.gestures.enabled) return { ok: false, error: '先开启摄像头手势' };
-  const sensor = ensureSensor();
-  if (!sensor || sensor.isDestroyed()) return { ok: false, error: '摄像头窗口没起来' };
+  // 摄像头在骨架层里,所以确保那一层在。
+  const layer = ensureOverlay();
+  if (!layer || layer.isDestroyed()) return { ok: false, error: '骨架层没起来' };
   recordingAction = action;
   // 录制时骨架强制显示，不管用户的开关 —— 那是唯一必须看见手的时刻。
   syncOverlayVisibility();
-  sensor.webContents.send('start-recording', { action });
+  layer.webContents.send('start-recording', { action });
   return { ok: true };
 });
 
 ipcMain.handle('cancel-recording', () => {
-  if (sensorWindow && !sensorWindow.isDestroyed()) {
-    sensorWindow.webContents.send('cancel-recording', {});
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('cancel-recording', {});
   }
   recordingAction = null;
   syncOverlayVisibility();
@@ -1084,6 +1172,54 @@ ipcMain.handle('clear-recording', (_event, action) => {
   writeConfig();
   broadcast('config', config);
   return { ok: true };
+});
+
+// 单个手势的开关。
+//
+// 存在 `recorded[action].enabled` 上而不是另开一张表：它跟着模板走，清除录制时一起消失，
+// 不会留下一堆指向已删手势的孤儿开关。
+//
+// 不需要回退：这个操作本身是可逆的（再点一下就回来），而 rememberPrevious 是给破坏性
+// 操作准备的。给可逆操作也存快照会把真正需要回退的那一版挤掉。
+ipcMain.handle('toggle-recording', (_event, action, enabled) => {
+  const entry = config.recorded && config.recorded[action];
+  if (!entry) return { ok: false, error: '这个动作还没录过' };
+
+  // 重新启用时才检查冲突 —— 那是两个手势真正开始同时生效的那一刻。
+  //
+  // 录制时不检查关掉的手势（用户把 A 关了正是为了腾出那个手型），代价就是这里必须拦：
+  // 不拦的话打开的瞬间两个撞在一起的手势同时活着，而用户得到的是"另一个动作"。
+  // 把成本放在这里，因为这一刻他正在主动打开它，因果关系是清楚的。
+  if (enabled && entry.template) {
+    const tuning = config.gestureTuning || {};
+    const hit = Recorder.conflictingAction(
+      action,
+      entry.template,
+      config.recorded,
+      tuning.matchThreshold || 0.28,
+      ((tuning.rotationTolerance || 20) * Math.PI) / 180,
+      // 只和**在用的**手势比：另一个关着的手势不构成障碍，它自己被打开时也会走这道检查。
+      { againstDisabled: false },
+    );
+    if (hit) {
+      const other = System.systemKindOf(hit.action) || hit.action;
+      broadcast('helper-log', {
+        source: '面板',
+        message: `⚠️ 打不开手势「${action}」：和「${hit.action}」太像（距离 ${hit.distance}，`
+          + `至少要 ${hit.need}）。要用它得先清除或重录其中一个`,
+      });
+      return { ok: false, conflictWith: hit.action, distance: hit.distance, need: hit.need, other };
+    }
+  }
+
+  config.recorded = { ...config.recorded, [action]: { ...entry, enabled: !!enabled } };
+  writeConfig();
+  broadcast('config', config);
+  broadcast('helper-log', {
+    source: '面板',
+    message: `${enabled ? '启用' : '关闭'}手势「${action}」`,
+  });
+  return { ok: true, enabled: !!enabled };
 });
 
 ipcMain.on('recording-progress', (_event, payload) => {
@@ -1479,11 +1615,6 @@ ipcMain.on('we-mouse-seen', (_event, payload) => {
   pageMouseSeen = { ...payload, at: Date.now() };
 });
 
-ipcMain.on('we-ready', () => {
-  weReady = true;
-  broadcast('we-status', weStatus(null));
-});
-
 ipcMain.handle('we-pick', async () => {
   const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
     title: '选择 Wallpaper Engine 壁纸目录（含 project.json）',
@@ -1748,38 +1879,149 @@ ipcMain.handle('workshop-details', async (_event, input) => {
 //
 // ⚠️ 这条补的是另一半体验缺口：下载过的东西要能重新装载，
 // 而不是每次都重新填 ID。工坊页面的"已订阅"在本地的对应物就是这个。
+// 浏览工坊（仿 Steam 那套：搜索 + 排序 + 类型筛选 + 分页）。
+//
+// ⚠️ 这条要 Steam Web API key（免费）。和"贴 ID 看详情"那条不同 ——
+// 那条免 key。所以没配 key 时要说清怎么弄，不能只报"失败"。
+ipcMain.handle('workshop-browse', async (_event, opts) => {
+  const key = (config.we.steam && config.we.steam.apiKey) || '';
+  if (!key) {
+    return { ok: false, needsKey: true, error: Workshop.apiKeyHint() };
+  }
+
+  const params = Workshop.browseParams({ key, ...(opts || {}) });
+  try {
+    const response = await net.fetch(
+      `${Workshop.QUERY_ENDPOINT}?${params.toString()}`);
+    if (!response.ok) {
+      // ⚠️ 403 几乎一定是 key 不对，而那和"网络问题"该给不同建议。
+      if (response.status === 403 || response.status === 401) {
+        return {
+          ok: false, needsKey: true,
+          error: `API key 被拒（HTTP ${response.status}）—— key 填错了或者失效了`,
+        };
+      }
+      logEvent('workshop', `浏览请求失败 HTTP ${response.status}`);
+      return { ok: false, error: `Steam 接口返回 ${response.status}` };
+    }
+    const { items, total } = Workshop.parseBrowseResponse(await response.json());
+    // 支持性判断只有 we-host 一个来源（workshop.js 故意不判，那条漂过一次）。
+    const enriched = items.map((item) => ({
+      ...item,
+      supported: item.type ? WE.isSupportedType(item.type) : false,
+      refusal: item.type ? WE.typeRefusal(item.type) : null,
+    }));
+    logEvent('workshop', `浏览到 ${enriched.length} 项（共 ${total}）`);
+    return { ok: true, items: enriched, total };
+  } catch (error) {
+    logEvent('workshop', `浏览请求异常：${error.message}`);
+    return {
+      ok: false,
+      error: `连不上 Steam 接口：${error.message}`,
+      hint: '这个接口在国内常常要代理。而"贴 ID 装载"走的是另一条路，可能不受影响。',
+    };
+  }
+});
+
+ipcMain.handle('workshop-set-key', (_event, apiKey) => {
+  config.we.steam = { ...(config.we.steam || {}), apiKey: apiKey || null };
+  writeConfig(config);
+  return { ok: true, hasKey: !!apiKey };
+});
+
+ipcMain.handle('workshop-browse-meta', () => ({
+  sorts: Workshop.SORT_ORDERS,
+  typeTags: Workshop.TYPE_TAGS_QUERY,
+  hasKey: !!(config.we.steam && config.we.steam.apiKey),
+  keyHint: Workshop.apiKeyHint(),
+}));
+
+// 「我的壁纸」：扫所有存储目录，不管壁纸是怎么来的。
+//
+// ⚠️ 判据是**目录里有 project.json**，不是"我们下载过"。用户的原话：
+// "不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸就在这里"
+// ⟹ 手动拷进去的、朋友发的、从别的机器搬来的，全都能用。
 ipcMain.handle('workshop-local', () => {
-  const found = [];
-  for (const root of Workshop.STEAM_ROOTS) {
-    const base = path.join(root, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID);
-    let entries = [];
+  // steamcmd 的下载目录 + 用户自己加的目录。
+  const roots = [
+    ...Workshop.STEAM_ROOTS.map((r) =>
+      path.join(r, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID)),
+    ...(config.we.libraryDirs || []),
+  ];
+
+  const { dirs, truncated } = Workshop.findWallpaperDirs(roots, {
+    listDir: (d) => fs.readdirSync(d),
+    isDir: (d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } },
+    exists: (f) => fs.existsSync(f),
+  });
+
+  const items = [];
+  for (const dir of dirs) {
     try {
-      entries = fs.readdirSync(base, { withFileTypes: true });
-    } catch { continue; }   // 目录不存在很正常（还没下过东西）
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const dir = path.join(base, entry.name);
-      const projectFile = path.join(dir, 'project.json');
-      if (!fs.existsSync(projectFile)) continue;
-      try {
-        const project = WE.parseProject(JSON.parse(fs.readFileSync(projectFile, 'utf8')));
-        if (!project) continue;
-        found.push({
-          id: entry.name,
-          dir,
-          title: project.title,
-          type: project.type,
-          typeLabel: project.typeLabel,
-          supported: project.supported,
-          gifScene: project.gifScene,
-          // 本地预览图走自定义 protocol 读不到（那个只服务当前壁纸），
-          // 所以给绝对路径让面板用 file:// 显示。
-          preview: previewPathOf(dir, project),
-        });
-      } catch { /* project.json 坏了就跳过，别让一个坏的挡住整个列表 */ }
+      const project = WE.parseProject(
+        JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8')));
+      if (!project) continue;
+      items.push({
+        id: path.basename(dir),
+        dir,
+        title: project.title,
+        type: project.type,
+        typeLabel: project.typeLabel,
+        supported: project.supported,
+        gifScene: project.gifScene,
+        refusal: project.supported ? null : WE.typeRefusal(project.type),
+        preview: previewPathOf(dir, project),
+        // 当前装载的是哪个 —— 列表里要能标出来。
+        active: !!(weProject && weProject.dir === dir),
+      });
+    } catch {
+      // ⚠️ 一个坏的 project.json 不能让整个列表变空。
+      // 但也别静默丢掉 —— 列出来并说明，否则用户找不到他知道存在的那个壁纸。
+      items.push({
+        id: path.basename(dir), dir, title: path.basename(dir),
+        broken: true, refusal: 'project.json 读不出来（文件坏了或格式不对）',
+      });
     }
   }
-  return { ok: true, items: found };
+
+  // 排序：能用的在前、当前装载的最前，其余按标题。
+  // ⚠️ 不按目录名排：那是一串工坊 ID，对人没有意义。
+  items.sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    if (a.supported !== b.supported) return a.supported ? -1 : 1;
+    return String(a.title).localeCompare(String(b.title), 'zh');
+  });
+
+  return {
+    ok: true, items, truncated,
+    roots: roots.filter((r) => fs.existsSync(r)),
+    // ⚠️ 报出"扫了哪些目录" —— 列表是空的时候，用户要知道我们找过哪儿。
+    scannedRoots: roots,
+  };
+});
+
+// 加一个自己的壁纸目录。
+ipcMain.handle('workshop-add-dir', async () => {
+  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
+    title: '选择壁纸存储目录（里面每个子目录是一个壁纸）',
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: '加入我的壁纸',
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const dir = result.filePaths[0];
+  const dirs = config.we.libraryDirs || [];
+  if (!dirs.includes(dir)) dirs.push(dir);
+  config.we.libraryDirs = dirs;
+  writeConfig(config);
+  broadcast('config', config);
+  return { ok: true, dir };
+});
+
+ipcMain.handle('workshop-remove-dir', (_event, dir) => {
+  config.we.libraryDirs = (config.we.libraryDirs || []).filter((d) => d !== dir);
+  writeConfig(config);
+  broadcast('config', config);
+  return { ok: true };
 });
 
 // 装载一个已经下载好的
@@ -1962,7 +2204,8 @@ ipcMain.handle('export-diagnostics', () => {
       wall: !!(wallWindow && !wallWindow.isDestroyed()),
       we: !!(weWindow && !weWindow.isDestroyed()),
       dashboard: !!(dashboardWindow && !dashboardWindow.isDestroyed()),
-      sensor: !!(sensorWindow && !sensorWindow.isDestroyed()),
+      // 摄像头搬进骨架层了,没有独立的 sensor 窗口 —— 报骨架层的状态。
+      sensor: !!(overlayWindow && !overlayWindow.isDestroyed()),
       strategy: currentStrategy ? currentStrategy.id : null,
       weStrategy: config.we.strategy,
       // 实际拿到的窗口尺寸 vs 屏幕尺寸 —— 菜单栏那条缝就是这里看出来的。
@@ -2004,6 +2247,8 @@ function redactConfig(source) {
   if (copy.we && copy.we.steam) {
     if (copy.we.steam.password) copy.we.steam.password = '***';
     if (copy.we.steam.guardCode) copy.we.steam.guardCode = '***';
+    // ⚠️ API key 也是凭证 —— 泄漏了别人能用你的额度、而且它绑在你账号上。
+    if (copy.we.steam.apiKey) copy.we.steam.apiKey = '***';
   }
   return copy;
 }
@@ -2230,7 +2475,7 @@ app.whenReady().then(() => {
   }
   followDisplayChanges();
   openDashboard();
-  if (config.gestures.enabled) ensureSensor();
+  // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
   syncOverlayVisibility();
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
@@ -2243,9 +2488,31 @@ app.whenReady().then(() => {
   globalShortcut.register('Control+Shift+L', cycleStrategy);
   globalShortcut.register('Control+Shift+R', () => broadcast('reset-view', {}));
   globalShortcut.register('Control+Shift+Q', () => app.quit());
+  // 逃生开关:把骨架层直接拆掉。
+  //
+  // 这一层盖在全屏最上层,如果穿透因为任何原因失效,后果是**整个屏幕点不动** —— 用户
+  // 实测撞到过,而那种状态下鼠标废掉、连关掉这个 App 都做不到。一个能把自己锁在外面的
+  // 程序必须有一个不依赖鼠标的出口,而且这个出口不能和"退出"绑在一起(用户可能只是想
+  // 拿回鼠标,不是想关掉壁纸)。
+  globalShortcut.register('Control+Shift+X', () => {
+    destroyOverlay();
+    broadcast('helper-log', { source: 'main', message: '骨架层已拆掉(⌃⇧X) —— 鼠标恢复。重新勾选「显示手骨架」可以再开' });
+  });
+
+  // 调试 HUD 的开关。默认关(它盖在壁纸上),而原来那个复选框在「壁纸与音乐」tab 里 ——
+  // 收缩之后那个 tab 没了 ⟹ 没有快捷键的话它就彻底没入口了。
+  //
+  // ⚠️ 这条不是可选的:一个"默认关且没有开关"的观测手段等于不存在,而 HUD 报的
+  // 壁纸层策略/帧率/鼠标事件收不收到,正是壁纸出问题时第一个该看的东西。
+  globalShortcut.register('Control+Shift+H', () => {
+    config.debug = { ...config.debug, showHud: !config.debug.showHud };
+    writeConfig();
+    broadcast('config', config);
+  });
 
   console.log('\n=== GestureWall ===');
-  console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧Q 退出\n');
+  console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧H 调试信息');
+  console.log('  ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
 
 // Deliberately does not quit: closing the settings window is not quitting the
