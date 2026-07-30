@@ -817,4 +817,59 @@ check('四种系统权限都有 Info.plist 的用途说明', () => {
   }
 });
 
+// ── 抽取代码时会丢掉它引用的模块级变量 ────────────────────────────────────
+//
+// `system-bridge.js` 是从 AirCursor 的 `electron/main.js` **逐字搬过来**的,而那边有一个
+// 模块级的 `let quitting = false`(`electron/main.js:29`)—— 抽出来时**没带上**。
+//
+// 于是 helper 的 `exit` 回调里那句 `if (quitting) return;` 引用了一个不存在的标识符
+// ⟹ 退出应用时 helper 被 kill → 回调触发 → **`ReferenceError` 弹 Uncaught Exception 框**。
+// 用户实测撞到过(打包版退出时)。
+//
+// 它躲过了所有测试:`node --check` 只解析语法,而那个回调只在**helper 真的退出时**才跑 ——
+// 也就是只有真机、只有退出那一刻。这是"未定义标识符"在这个项目里的**第三次**
+// (`sensor.webContents.send` / `sendStatus` / 这次),而这次的成因不同:**不是拼错名字,
+// 是抽取代码时丢了依赖**。
+//
+// ⟹ 逐字搬一段代码时,它引用的模块级变量不会跟着来,而缺失只在运行到那一行时才炸。
+check('主进程侧的模块里没有未定义的裸标识符', () => {
+  for (const name of ['system-bridge.js', 'library.js', 'system.js', 'nowplaying.js']) {
+    const file = path.join(__dirname, '..', 'src', name);
+    if (!fs.existsSync(file)) continue;
+    const src = fs.readFileSync(file, 'utf8');
+    const code = src.split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n');
+
+    // 这条只查**一类**东西:`if (x)` / `if (!x)` / `x = ...` 里的裸标识符。
+    // 那是抽取代码最容易丢的形状（模块级的状态变量），而全量标识符扫描误报太多。
+    const defined = new Set([
+      ...[...code.matchAll(/(?:const|let|var)\s+(\w+)/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(':').pop().split('=')[0].trim())),
+      ...[...code.matchAll(/function\s+(\w+)/g)].map((m) => m[1]),
+      // 函数参数（含解构的）
+      ...[...code.matchAll(/(?:function\s*\w*|=>)?\s*\(([^)]*)\)\s*(?:=>|\{)/g)]
+        .flatMap((m) => m[1].replace(/[{}]/g, ',').split(',')
+          .map((x) => x.split('=')[0].split(':').pop().trim())),
+      ...[...code.matchAll(/^\s{2,}(?:async\s+|get\s+|set\s+)?(\w+)\s*\(/gm)].map((m) => m[1]),
+      ...[...code.matchAll(/catch\s*\(\s*(\w+)/g)].map((m) => m[1]),
+      ...[...code.matchAll(/for\s*\(\s*(?:const|let)\s+(?:\[)?([\w, ]+)/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.trim())),
+    ].filter(Boolean));
+
+    const globals = new Set(['app', 'process', 'console', 'Buffer', 'module', 'exports',
+      'require', '__dirname', '__filename', 'setTimeout', 'setInterval', 'clearTimeout',
+      'clearInterval', 'Math', 'JSON', 'Date', 'Object', 'Array', 'String', 'Number',
+      'Boolean', 'Error', 'Promise', 'Set', 'Map', 'globalThis', 'window', 'undefined',
+      'null', 'true', 'false', 'this']);
+
+    // 只看 `if (x)` 和 `if (!x)` —— 抽取代码丢掉的状态变量几乎都以这个形状出现。
+    const used = [...code.matchAll(/\bif\s*\(\s*!?([a-z][a-zA-Z0-9_]*)\s*\)/g)].map((m) => m[1]);
+    const missing = [...new Set(used.filter((n) => !defined.has(n) && !globals.has(n)))];
+    assert.deepStrictEqual(missing, [],
+      `${name} 里这些标识符被判断但没有定义（抽取代码时丢了？）：${missing.join(', ')}`);
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
