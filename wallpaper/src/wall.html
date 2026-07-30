@@ -13,19 +13,6 @@
 
   /* Placeholder shown when no images are set, so a fresh install looks
      deliberate rather than broken. */
-  #empty {
-    position: fixed; inset: 0; display: grid; place-items: center;
-    font: 500 16px/1.9 -apple-system, "PingFang SC", sans-serif;
-    color: rgba(255,255,255,.62); text-align: center;
-    background: radial-gradient(120% 90% at 50% 40%, #23252e 0%, #14151a 55%, #0d0e12 100%);
-    pointer-events: none;
-  }
-  #empty.hide { display: none; }
-  #empty b { display: block; font-size: 26px; color: #fff; margin-bottom: 12px; letter-spacing: .06em; }
-  #empty kbd {
-    font: 600 13px/1 ui-monospace, monospace; padding: 3px 7px; border-radius: 5px;
-    background: rgba(255,255,255,.13); color: #fff;
-  }
 
   #hud {
     position: fixed; left: 18px; top: 18px; z-index: 10;
@@ -43,18 +30,6 @@
 </head>
 <body>
   <canvas id="stage"></canvas>
-  <!-- 空状态引导。⚠️ 产品收缩之后它的判据变了。
-       原来是"三张图设了没有"——而那个入口(图库/模板 tab)已经砍掉,于是它**永远显示**,
-       还指着一个不存在的功能("选三张图")。用户报「一打开就出现这个把壁纸盖住了」。
-       现在的判据是"装载了 WE 壁纸没有",文案指向创意工坊。 -->
-  <div id="empty">
-    <div>
-      <b>GestureWall</b>
-      按 <kbd>⌃⇧W</kbd> 打开设置 → <b style="display:inline;font-size:inherit">创意工坊</b>，装载一个壁纸<br>
-      鼠标点不动了按 <kbd>⌃⇧X</kbd>：拆掉手骨架那一层，鼠标立刻恢复<br>
-      <span style="opacity:.7">看不见壁纸？按 <kbd>⌃⇧L</kbd> 换一种壁纸层策略</span>
-    </div>
-  </div>
   <div id="hud"></div>
 
   <script src="vendor/three.r128.min.js"></script>
@@ -63,26 +38,5 @@
   <script src="layers.js"></script>
   <script src="mood.js"></script>
   <script src="wall.js"></script>
-  <script>
-    // Hide the placeholder as soon as any layer has an image.
-    //
-    // Both paths matter: onConfig covers later changes, but a freshly created
-    // window (every ⌃⇧L press makes a new one) gets its config by asking, and
-    // without the second call the placeholder flashed black over an already
-    // configured wallpaper on every strategy switch.
-    const empty = document.getElementById('empty');
-    function syncPlaceholder(c) {
-      // ⚠️ 两个都算"有内容":装载了 WE 壁纸,或者三层景深有图。
-      //
-      // 只看三张图是收缩前的判据 —— 那时图库是产品的一部分。现在那个入口没了,
-      // 而 WE 壁纸装载之后它自己那一层会盖上来,所以那时也不该再显示引导。
-      const weLoaded = !!(c && c.we && c.we.dir);
-      const anyLayer = !!(c && c.layers
-        && (c.layers.background || c.layers.subject || c.layers.shard));
-      empty.classList.toggle('hide', weLoaded || anyLayer);
-    }
-    window.gw.onConfig(syncPlaceholder);
-    window.gw.getConfig().then(syncPlaceholder);
-  </script>
 </body>
 </html>

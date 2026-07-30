@@ -557,14 +557,27 @@ check('骨架层的穿透是无条件的（否则整个屏幕点不动）', () =
 
 check('有一个不依赖鼠标的逃生开关，而且告诉了用户', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.html'), 'utf8');
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   // 一个能把自己锁在外面的程序必须有不依赖鼠标的出口,而且不能和"退出"绑在一起 ——
   // 用户可能只想拿回鼠标,不是想关掉壁纸。
   assert.match(main, /Control\+Shift\+X[\s\S]{0,200}destroyOverlay\(\)/,
     '没有"拆掉骨架层"的全局快捷键');
   // 写在代码里但用户不知道,等于没有 —— 出事时他没法查文档。
-  assert.match(wall, /⌃⇧X/, '启动页没告诉用户鼠标点不动时按什么');
+  //
+  // ⚠️ 这条原来查 `wall.html`(壁纸层那个引导浮层里写着它)。而用户要求删掉整个引导页
+  // ——「不,这个引导就不该存在」—— 于是这个说明差点跟着消失,**而它是"鼠标全屏点不动"时
+  // 唯一的出路**(我曾经真的把用户锁在电脑外面)。这条守卫当场逮住了那个损失。
+  //
+  // 现在它必须出现在两个地方:启动时的终端输出(那是唯一必然可见的地方,而且出事时
+  // 用户手上就有),以及面板。
+  // ⚠️ 只看**启动时打印的那几行**,不是整个文件。
+  //
+  // 第一版用 `/⌃⇧X[^\n]*(拆掉|骨架)/` 匹配整个 main.js —— 而那也命中了拆掉骨架层时
+  // 广播的那条日志(它同样含 ⌃⇧X 和"骨架")。于是删掉启动信息里那半句,守卫**依然通过**。
+  // 我是靠反向验证发现的:两个方向都验才知道它锚在了别的东西上。
+  const banner = main.slice(main.indexOf("=== GestureWall ==="));
+  assert.match(banner.slice(0, 400), /⌃⇧X/,
+    '终端启动信息里没有 ⌃⇧X —— 出事时用户无处可查(那几行是唯一必然可见的地方)');
   assert.match(dash, /⌃⇧X/, '面板没列出这个快捷键');
 });
 
@@ -1001,22 +1014,22 @@ check('调试 HUD 默认关，而且有不依赖面板的开关', () => {
   assert.match(dash, /⌃⇧H/, '面板没列出这个快捷键');
 });
 
-check('壁纸空状态的判据包含"装载了 WE 壁纸"', () => {
-  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.html'), 'utf8');
-  const fn = wall.slice(wall.indexOf('function syncPlaceholder'));
-  assert.match(fn.slice(0, 600), /we\s*&&\s*c\.we\.dir|weLoaded/,
-    '空状态只看三张图 —— 那个入口已经砍掉，而装载 WE 壁纸之后也不该再显示引导');
-  // 文案不能指向已删的功能。
+check('壁纸层没有引导浮层', () => {
+  // ⚠️ 契约变了两次，记下来因为第二次推翻了第一次。
   //
-  // ⚠️ 只看**非注释**内容。这个文件的注释里有一句"还指着一个不存在的功能(选三张图)"——
-  // 那是解释为什么改的,而按整段文本匹配会把那句解释当成违规。**守卫太宽会逼人删掉解释,
-  // 而解释正是下次别再犯的唯一依据。**这个错我在 focusable 那条守卫上犯过一次。
-  const visible = wall
-    .replace(/<!--[\s\S]*?-->/g, '')      // HTML 注释
-    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.doesNotMatch(visible, /选三张图/,
-    '引导页还在说"选三张图" —— 图库和模板 tab 已经删了，那是个不存在的操作');
-  assert.match(wall, /创意工坊/, '引导页没指向现在真实存在的入口');
+  // 原来有个空状态引导页（"按 ⌃⇧W 选三张图"），判据是三张图设了没有。产品收缩砍掉图库和
+  // 模板 tab 之后它永远显示、还指着不存在的操作，我第一版改成"指向创意工坊 + 装载 WE 后
+  // 隐藏"——**而用户要的是它根本不存在**：「不，这个引导就不该存在」。
+  //
+  // 壁纸层就该是壁纸。任何盖在上面的东西都要有一个比"帮助用户"更硬的理由，
+  // 而调试 HUD 有（默认关 + ⌃⇧H），引导没有。
+  const wall = fs.readFileSync(path.join(__dirname, '..', 'src', 'wall.html'), 'utf8');
+  assert.doesNotMatch(wall, /id="empty"/, '壁纸层又加了引导浮层');
+  assert.doesNotMatch(wall, /选三张图/, '还在提"选三张图" —— 那个入口早就删了');
+  // #hud 是唯一允许盖在壁纸上的东西，而它默认关。
+  const overlays = [...wall.matchAll(/<div id="([\w-]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(overlays, ['hud'],
+    `壁纸层多了浮层：${overlays.join(', ')} —— 只有 hud 该在这儿（而它默认关）`);
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
