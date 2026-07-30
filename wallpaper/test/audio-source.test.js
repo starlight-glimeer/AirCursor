@@ -149,4 +149,39 @@ check('网易云 bundle id 是常量而不是散在各处', () => {
   assert.strictEqual(A.NETEASE_BUNDLE, 'com.netease.163music');
 });
 
+console.log('\n  开发模式 vs 打包（两个授权身份）');
+
+// ⚠️ macOS 按二进制记权限。npm start 跑的是 node_modules 里的 Electron ⟹ 「屏幕录制」
+// 列表里出现的是 Electron，**不是本应用**。所以"去勾上本应用"在开发模式下是一条
+// 做不到的指令 —— 用户会找不到条目，然后合理地怀疑自己操作错了。
+//
+// 这条实测发生过：用户问"但是我们这个是应用吗，我好像没看到"。
+check('开发模式的提示说清"要打包才能验"，不叫用户去勾不存在的条目', () => {
+  const dev = A.permissionHint(false);
+  assert.match(dev, /npm start|开发模式/, '没说明这是开发模式的限制');
+  assert.match(dev, /打包|\.app/, '没告诉用户要打包');
+  assert.ok(!/勾上本应用/.test(dev), '开发模式下还在叫用户勾一个不存在的列表项');
+});
+
+check('打包后的提示才给授权路径，并提醒要重启进程', () => {
+  const packed = A.permissionHint(true);
+  assert.match(packed, /屏幕录制/, '没给权限位置');
+  // macOS 只在进程启动时读授权，勾完不重启等于没勾 —— 那会看起来像"授权没用"。
+  assert.match(packed, /退出|重启|重新打开/, '没提醒授权后要完全退出再打开');
+});
+
+check('denied 状态按身份给不同文案，并标出 needsPackaging', () => {
+  const dev = A.describeStatus({ type: 'status', state: 'denied', message: 'x' }, false);
+  const packed = A.describeStatus({ type: 'status', state: 'denied', message: 'x' }, true);
+  assert.strictEqual(dev.needsPackaging, true);
+  assert.notStrictEqual(dev.text, packed.text, '两种身份说的是同一句话');
+});
+
+// 默认值必须是"打包"，因为漏传参数时给出"要打包"的建议是无害的，
+// 而反过来（在开发模式说"去勾上本应用"）会让用户白折腾。
+check('packaged 默认为 true（漏传时宁可给保守建议）', () => {
+  const out = A.describeStatus({ type: 'status', state: 'denied' });
+  assert.strictEqual(out.needsPackaging, false);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

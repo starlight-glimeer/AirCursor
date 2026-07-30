@@ -431,4 +431,25 @@ check('protocol 用 WE.resolveAsset 而不是自己拼路径', () => {
     '还在用模板字符串拼 file:// URL');
 });
 
+// ⚠️ 打包后 __dirname 在 asar 归档里，而 swiftc 读不了归档里的文件（那不是目录）。
+// 症状：开发模式好用，打包后音频静默不工作 —— 而打包正是验音频的唯一途径。
+check('helper 源码路径按打包状态分叉（asar 里读不到文件）', () => {
+  const idx = mainSrc.indexOf('AudioSource.start(');
+  const block = mainSrc.slice(idx, idx + 900);
+  assert.match(block, /app\.isPackaged/,
+    'helper 源码路径没按打包状态分叉 —— 打包后 swiftc 读不到 asar 里的文件');
+  assert.match(block, /process\.resourcesPath/, '打包分支没走 resourcesPath');
+});
+
+// 开发模式和打包后是两个授权身份。文案说错会让用户去找一个不存在的列表项，
+// 然后合理地怀疑自己操作错了 —— 那比不提示更糟。
+check('权限提示按打包状态分叉（npm start 下那个权限不可达）', () => {
+  const audio = fs.readFileSync(path.join(__dirname, '..', 'src', 'audio-source.js'), 'utf8');
+  assert.match(audio, /function permissionHint\(packaged\)/, '没有分身份的提示函数');
+  assert.match(codeOnly(audio), /npm start/, '开发模式那条文案没提到 npm start');
+  const idx = mainSrc.indexOf('AudioSource.start(');
+  assert.match(mainSrc.slice(idx, idx + 900), /packaged:\s*app\.isPackaged/,
+    'main.js 没把打包状态传给音频层');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

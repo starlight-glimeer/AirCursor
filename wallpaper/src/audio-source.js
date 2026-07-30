@@ -44,7 +44,23 @@ function parseLines(buffer, chunk) {
 // ⚠️ 这一层存在的理由：这条链所有失败都是静默的。没授权 → 没数据 → 柱子不动，
 // 和"网易云没在放歌"、"这个壁纸不支持音频"完全同一个症状。所以每种状态都要有
 // **一句人话**，而不是让用户对着不动的画面猜。
-function describeStatus(msg) {
+// ⚠️ 开发模式（npm start）和打包后的 .app 是**两个不同的授权身份**。
+//
+// macOS 按二进制记权限，而 npm start 跑的是 node_modules 里的 Electron ——
+// 「屏幕录制」列表里出现的是 Electron（甚至只有终端），**不是本应用**。所以让用户
+// "去勾上本应用"是一条做不到的指令：他会找不到条目，然后合理地怀疑自己操作错了。
+//
+// 这正是 aircursor-notes/pitfalls.md 第一条写的东西（`packaged: false` ⟹ 权限类
+// 问题到此为止，先打包再验），那条是另一个模块烧掉四轮换来的，我在音频上又踩了一次。
+function permissionHint(packaged) {
+  if (packaged) {
+    return '拿不到系统音频，去「系统设置 → 隐私与安全性 → 屏幕录制」里勾上本应用，然后完全退出再打开';
+  }
+  return '开发模式（npm start）拿不到屏幕录制权限 —— 授权列表里只有 Electron，没有本应用。'
+    + '这一项要打包成 .app 才能验（npm run dist:mac）';
+}
+
+function describeStatus(msg, packaged = true) {
   if (!msg || msg.type !== 'status') return null;
   switch (msg.state) {
     case 'running':
@@ -62,8 +78,10 @@ function describeStatus(msg) {
     case 'denied':
       return {
         ok: false,
-        // 权限是最可能的原因，直接把动作写出来。
-        text: '拿不到系统音频，去「系统设置 → 隐私与安全性 → 屏幕录制」里勾上本应用',
+        // 权限是最可能的原因，但**开发模式下那个权限根本不可达** —— 说错了会让
+        // 用户去找一个不存在的列表项。
+        text: permissionHint(packaged),
+        needsPackaging: !packaged,
         detail: msg.message,
       };
     case 'stopped':
@@ -116,7 +134,8 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
 }
 
 // 启动采集。onFrame 拿 128 段数组，onStatus 拿 describeStatus 的结果。
-function start({ sourcePath, outDir, bundle, onFrame, onStatus, spawnFn = spawn, runFn = spawnSync }) {
+function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
+  spawnFn = spawn, runFn = spawnSync }) {
   const built = ensureHelper(sourcePath, outDir, runFn);
   if (!built.ok) {
     onStatus({ ok: false, text: built.error });
@@ -137,7 +156,7 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, spawnFn = spawn,
       if (msg.type === 'audio' && Array.isArray(msg.bins)) {
         onFrame(msg.bins);
       } else if (msg.type === 'status') {
-        const described = describeStatus(msg);
+        const described = describeStatus(msg, packaged);
         if (described) onStatus(described);
       }
     }
@@ -152,10 +171,7 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, spawnFn = spawn,
   child.on('exit', (code) => {
     // 退出码是 helper 自己定的：2=没权限、3=流被停。
     if (code === 2) {
-      onStatus({
-        ok: false,
-        text: '拿不到系统音频，去「系统设置 → 隐私与安全性 → 屏幕录制」里勾上本应用',
-      });
+      onStatus({ ok: false, text: permissionHint(packaged), needsPackaging: !packaged });
     } else if (code !== 0 && code !== null) {
       onStatus({ ok: false, text: `音频采集退出（code ${code}）` });
     }
@@ -169,4 +185,6 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, spawnFn = spawn,
   };
 }
 
-module.exports = { NETEASE_BUNDLE, parseLines, describeStatus, ensureHelper, start };
+module.exports = {
+  NETEASE_BUNDLE, parseLines, describeStatus, permissionHint, ensureHelper, start,
+};

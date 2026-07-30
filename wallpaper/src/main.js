@@ -1326,9 +1326,16 @@ function syncAudioSource() {
   if (audioTap) return;   // 已经在跑
 
   audioTap = AudioSource.start({
-    sourcePath: path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'),
+    // ⚠️ 打包后 __dirname 在 asar 包里，而 asar 里的文件 swiftc 读不到（那是个
+    // 归档不是目录）。所以 helper 源码要走 extraResources 出来的 resourcesPath。
+    // 这和另一个模块的 system-bridge.js 是同一个写法（它已经踩过这条）。
+    sourcePath: app.isPackaged
+      ? path.join(process.resourcesPath, 'native', 'GestureWallAudio.swift')
+      : path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'),
     outDir: path.join(app.getPath('userData'), 'native'),
     bundle: config.we.audioSource === 'netease' ? AudioSource.NETEASE_BUNDLE : null,
+    // 开发模式和打包后的 .app 是两个授权身份，提示文案必须分开说。
+    packaged: app.isPackaged,
     onFrame: pushWEAudio,
     onStatus: (status) => {
       audioStatus = status;

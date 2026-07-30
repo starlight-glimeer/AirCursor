@@ -79,16 +79,34 @@ final class Spectrum {
         var windowed = [Float](repeating: 0, count: FFT_SIZE)
         vDSP_vmul(input, 1, window, 1, &windowed, 1, vDSP_Length(FFT_SIZE))
 
-        // 实数转复数打包格式
-        windowed.withUnsafeBufferPointer { ptr in
-            ptr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: FFT_SIZE / 2) { complex in
-                var split = DSPSplitComplex(realp: &real, imagp: &imag)
-                vDSP_ctoz(complex, 2, &split, 1, vDSP_Length(FFT_SIZE / 2))
+        // ⚠️ 这一段的写法是被编译器警告逼出来的，而那个警告是真 bug 不是风格问题：
+        //
+        //   var split = DSPSplitComplex(realp: &real, imagp: &imag)   // ← 错
+        //
+        // `&real` 从 [Float] 隐式转出的指针**只在 init 那一次调用期间有效**，
+        // 出了那行就悬空了。而 split 是拿来给后面 vDSP_ctoz / vDSP_fft_zrip 写结果的 ——
+        // 也就是往已经失效的地址写。这类问题不会崩，会写坏或读到垃圾，
+        // 表现是"频谱是噪声"或"柱子乱跳"，而且时好时坏。
+        //
+        // 正确做法是让 real/imag 的可变缓冲在**整个使用期间**都处于 with… 作用域内。
+        real.withUnsafeMutableBufferPointer { realBuf in
+            imag.withUnsafeMutableBufferPointer { imagBuf in
+                var split = DSPSplitComplex(realp: realBuf.baseAddress!,
+                                            imagp: imagBuf.baseAddress!)
+                windowed.withUnsafeBufferPointer { ptr in
+                    ptr.baseAddress!.withMemoryRebound(
+                        to: DSPComplex.self, capacity: FFT_SIZE / 2
+                    ) { complex in
+                        vDSP_ctoz(complex, 2, &split, 1, vDSP_Length(FFT_SIZE / 2))
+                    }
+                }
+                vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                magnitudes.withUnsafeMutableBufferPointer { magBuf in
+                    vDSP_zvabs(&split, 1, magBuf.baseAddress!, 1,
+                               vDSP_Length(FFT_SIZE / 2))
+                }
             }
         }
-        var split = DSPSplitComplex(realp: &real, imagp: &imag)
-        vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-        vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(FFT_SIZE / 2))
 
         // 512 个 bin 降到 128：**按对数频率分组**，不是线性平均。
         //
