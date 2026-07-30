@@ -221,6 +221,13 @@
                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ws-card .meta .sub { color: var(--dim); font-size: 11px; }
   .ws-card .acts { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  /* 筛选分组：标签在左、按钮在右，一组一行。仿 Steam 创意工坊的侧栏排版。 */
+  .br-group { display: grid; grid-template-columns: 68px 1fr; gap: 8px;
+              align-items: start; margin-bottom: 6px; }
+  .br-group-label { font-size: 11px; color: var(--dim); padding-top: 6px; }
+  .br-group .we-src { margin-bottom: 0; }
+  .br-group button { font-size: 11px; padding: 3px 10px; }
+
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
              background: #15151b; cursor: pointer; }
@@ -283,6 +290,7 @@
 <nav>
   <div class="brand">GestureWall</div>
   <button data-tab="we" class="on">创意工坊</button>
+  <button data-tab="mine">我的壁纸</button>
   <button data-tab="gesture">手势录制</button>
   <div class="spacer"></div>
   <div class="keys">
@@ -297,6 +305,36 @@
 </nav>
 
 <main>
+
+  <!-- ============ 我的壁纸 ============ -->
+  <section id="tab-mine">
+    <h2>我的壁纸</h2>
+    <p class="lead">
+      扫存储目录里所有含 <code>project.json</code> 的壁纸 ——
+      <b>不管它是怎么来的</b>：工坊下载的、手动拷进去的、别人发的，都在这里。
+    </p>
+
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="mine-refresh" type="button">刷新</button>
+        <button class="act" id="mine-add-dir" type="button">加一个壁纸目录…</button>
+      </div>
+      <div id="mine-state" class="hint">—</div>
+    </div>
+
+    <div id="mine-grid" class="ws-grid"></div>
+
+    <h3>存储目录</h3>
+    <div class="card">
+      <div id="mine-dirs"></div>
+      <p class="hint">
+        steamcmd 的下载目录是<b>自动扫的</b>，不用加。
+        <br>⚠️ 每个子目录要是一个壁纸（里面有 <code>project.json</code>）——
+        直接放一堆 mp4 是认不出来的。
+        <br>⚠️ 最多扫 2 层深、500 个 —— 再多会让面板卡住。
+      </p>
+    </div>
+  </section>
 
   <!-- ============ WE 网页壁纸 ============ -->
   <section id="tab-we" class="on">
@@ -315,7 +353,40 @@
       <div id="we-state" class="hint">未装载</div>
     </div>
 
-    <h3>从创意工坊下载</h3>
+    <h3>浏览创意工坊</h3>
+    <div class="card">
+      <!-- 仿 Steam 创意工坊：搜索框 + 排序 + 类型筛选 + 网格 + 分页。
+           ⚠️ 有些类型我们放不了（scene / application），但**预览图照样能看** ——
+           用户明确说过这点。所以不支持的项不隐藏，只在卡片上标出来。 -->
+      <div class="bar-row">
+        <input id="br-q" type="text" placeholder="搜索壁纸名（留空看热门）">
+        <button class="act primary" id="br-go" type="button">搜索</button>
+      </div>
+      <div id="br-sorts" class="we-src"></div>
+      <!-- 四组筛选：类型 / 年龄分级 / 分辨率 / 主题。
+           ⚠️ 全部走 Steam 的 requiredtags，没有独立参数 —— 类型和年龄是同一套机制。
+           ⚠️ 默认只勾「全年龄」：浏览工坊时默认不该出现成人内容。 -->
+      <div id="br-filters"></div>
+      <div id="br-state" class="hint">—</div>
+      <div id="br-grid" class="ws-grid"></div>
+      <div class="bar-row" id="br-pager" style="display:none">
+        <button class="act" id="br-prev" type="button">上一页</button>
+        <span id="br-page" class="hint"></span>
+        <button class="act" id="br-next" type="button">下一页</button>
+      </div>
+      <!-- API key。⚠️ 单独放在最下面：它是"配一次就不用管"的东西，
+           而放在顶上会让人以为不配就不能用（贴 ID 装载是不需要它的）。 -->
+      <details id="br-key-box">
+        <summary class="hint">浏览需要 Steam API key（免费，点开看怎么弄）</summary>
+        <div class="bar-row">
+          <input id="br-key" type="password" placeholder="粘贴那串 key">
+          <button class="act" id="br-key-save" type="button">保存</button>
+        </div>
+        <p class="hint" id="br-key-hint"></p>
+      </details>
+    </div>
+
+    <h3>按 ID 装载</h3>
     <div class="card">
       <p class="hint">
         你的 Steam 账号买过 Wallpaper Engine，<b>工坊内容就能用</b> ——

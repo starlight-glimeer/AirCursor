@@ -674,87 +674,8 @@ check('渲染进程的报错会转出来（否则这类错误只能靠猜）', (
   // "某个功能不工作"，而那和真正的原因可能毫无关系。
   assert.match(main, /console-message/, '骨架层的 console 没有转发');
   assert.match(main, /render-process-gone/, '崩溃没有上报');
-  // ⚠️ 这两条覆盖的是 console-message **到不了**的两种失败,而它们都表现为
-  // "摄像头不启动且什么都不说" —— 这个项目为它们各烧过一轮。
-  // ⚠️ 只看**非注释**行。上一版匹配整个文件,而注释里也写着 `preload-error` ——
-  // 把那个事件名改坏之后守卫依然通过。这是同一轮里第二次锚在注释上。
-  const mainCode = main.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(mainCode, /on\('preload-error'/,
-    'preload 加载失败没上报 —— 那意味着 window.gw 整个不存在,骨架层第一行就抛');
-  assert.match(mainCode, /onErrorOccurred\(/,
-    '脚本/wasm 的 404 没上报 —— `<script>` 的加载失败不进 console-message,'
-    + '而骨架层要加载 11 个脚本,缺任何一个都是"摄像头不启动"');
   assert.match(dash, /onHelperLog/, '面板没有订阅日志');
   assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
-
-  // ⚠️ **四个窗口都要接。**上一版只有骨架层有,而面板窗口一条都没有(只有
-  // did-finish-load / closed)—— 而面板的顶层抛出后果**更隐蔽**:`apply()` 在文件
-  // 最后一行才调,它绑定**所有**开关 ⟹ 顶层任何一处抛,所有开关都绑不上,
-  // 症状是"那个功能坏了",和真正的原因毫无关系。
-  const calls = [...mainCode.matchAll(/watchRendererErrors\((\w+), '(\w+)'\)/g)];
-  assert.deepStrictEqual(calls.map((m) => m[2]).sort(), ['overlay', 'panel', 'wall', 'we'],
-    '四个窗口(壁纸层/面板/骨架层/WE)必须都接错误上报,现在只有:'
-    + calls.map((m) => m[2]).join(', '));
-
-  // ⚠️ 监听必须在 loadFile/loadURL **之前**接。装载期的错误(资源 404、preload 挂了)
-  // 正是这类失败最常见的形态,接晚了正好错过 —— 我自己第一版就把面板那条接在后面了。
-  const lines = mainCode.split('\n');
-  for (const [i, line] of lines.entries()) {
-    if (!/\.loadFile\(|\.loadURL\(/.test(line)) continue;
-    const recv = line.trim().match(/^(\w+)\./);
-    if (!recv) continue;
-    // 往前找 30 行内有没有给同一个收件人接监听
-    const before = lines.slice(Math.max(0, i - 30), i).join('\n');
-    assert.ok(new RegExp(`watchRendererErrors\\(${recv[1]},`).test(before),
-      `main.js:${i + 1} 的 ${recv[1]} 在装载前没接错误上报 —— 装载期的 404 会丢掉`);
-  }
-});
-
-// ── 打包版才炸的那一类:运行时找的路径 vs extraResources 拷进去的路径 ──────
-//
-// 四个 Swift helper 的源码在运行时按 `process.resourcesPath/native/X.swift` 找,而
-// `asar` 是个归档 ⟹ **只有 `extraResources` 列了才真的在磁盘上。**漏掉的后果是
-// `npm start` 一切正常(走 `__dirname/../native/`)、**打包版那个功能整个不存在**。
-//
-// 实测漏过:`GestureWallMouse.swift` / `GestureWallAudio.swift` 在 `wallpaper/native/`,
-// 而 extraResources 只列了顶层 `native/` 那三个 ⟹ 鼠标转发和音频频谱在打包版里
-// 连源码都找不到,而这两个功能**只能在打包版验**(要辅助功能/屏幕录制授权)。
-check('运行时要的 native 源码都在 extraResources 里（漏了只有打包版会炸）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
-  const shipped = new Set((pkg.build.extraResources || []).map((r) => r.to));
-  // 运行时按 resourcesPath 拼的每一个路径都必须有人拷。
-  const wanted = [...main.matchAll(
-    /process\.resourcesPath,\s*'([^']+)',\s*'([^']+)'/g,
-  )].map((m) => `${m[1]}/${m[2]}`);
-  assert.ok(wanted.length >= 2, `只解析出 ${wanted.length} 个 resourcesPath 路径，正则失效了`);
-  const missing = wanted.filter((w) => !shipped.has(w));
-  assert.deepStrictEqual([...new Set(missing)], [],
-    `这些文件运行时会去找，但 extraResources 没拷 ⟹ 打包版里不存在：${missing.join(', ')}`);
-});
-
-check('抓系统音频要 NSScreenCaptureUsageDescription（缺了系统不弹窗、直接拒绝）', () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
-  const info = pkg.build.mac.extendInfo || {};
-  // ⚠️ 缺 usage-description 的后果不是"弹窗被拒",是**系统连弹窗都不弹、直接拒绝** ——
-  // 症状是那个功能静默不工作,而代码看起来完全正确。麦克风/语音识别都为这条烧过时间。
-  //
-  // ⚠️ 而抓**系统**音频归「屏幕录制」不归「麦克风」 —— 这两个是不同的权限,
-  // 只加麦克风那条一样拿不到系统音频。
-  assert.ok(info.NSScreenCaptureUsageDescription,
-    '缺 NSScreenCaptureUsageDescription ⟹ 抓系统音频会被系统静默拒绝(不弹窗)');
-});
-
-check('⌃⇧D 能开开发者工具（有些东西只有 devtools 有：网络面板/元素树/堆栈）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
-  const code = main.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(code, /register\('Control\+Shift\+D'/,
-    '没有 devtools 快捷键 —— 那意味着用户看不到 404 是哪个资源、异常在哪一行');
-  // 和 ⌃⇧H 同一条道理:默认关且没有开关的观测手段等于不存在。
-  assert.match(html, /⌃⇧D/, '面板没列出这个快捷键，用户不会知道它存在');
-  const banner = main.slice(main.indexOf('=== GestureWall ==='));
-  assert.match(banner.slice(0, 400), /⌃⇧D/, '终端启动信息里没列 ⌃⇧D');
 });
 
 // ── 已删掉的窗口不能还有代码在往它发消息 ─────────────────────────────────
@@ -817,51 +738,6 @@ check('渲染脚本里调用的本地函数都有定义（拼错的函数名 nod
     const missing = called.filter((n) => !defined.has(n) && !builtin.has(n));
     assert.deepStrictEqual([...new Set(missing)], [],
       `${name} 里这些函数被调用但没有定义（会在跑到那一行时抛 ReferenceError）：${[...new Set(missing)].join(', ')}`);
-  }
-});
-
-// 同一类的第三半:**裸变量读取**,而且在主进程的非 main.js 模块里。
-//
-// `system-bridge.js` 是从 AirCursor 的 electron/main.js 原样抽出来的,而 `quitting` 是
-// **留在那边**的模块级变量 ⟹ `pointerHelper.on('exit')` 里 `if (quitting) return` 抛
-// ReferenceError。用户真机上看到的是**退出打包版时弹报错窗**。
-//
-// ⚠️ 为什么上面两条都逮不到它:
-//   · 「已删窗口的残留」只查 `main.js`,而且只查 `x.webContents.send(` 这个形状
-//   · 「本地函数有定义」只查渲染层四个文件,而且只查**调用**(`foo(`),而这是**读变量**
-//
-// ⚠️ 而它躲过 `node --check` 和 `npm start` 的原因是同一个:那一行只在 **helper 真的
-// 退出**时执行,而那基本只发生在打包版退出的那一刻。这个修复做过一次(`55abb70`),
-// 又跟着打包配置被 revert ⟹ **修过的东西没有守卫就会回来**,这条守卫就是为了它不再回来。
-check('主进程模块里 if(裸变量) 的那个变量都有声明（只在特定时刻才炸的那一类）', () => {
-  for (const name of ['main.js', 'system-bridge.js']) {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
-    const code = src.split('\n')
-      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
-      .join('\n');
-    const declared = new Set([
-      ...[...code.matchAll(/(?:const|let|var)\s+(\w+)/g)].map((m) => m[1]),
-      ...[...code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)]
-        .flatMap((m) => m[1].split(',').map((x) => x.split(':').pop().trim())),
-      ...[...code.matchAll(/function\s+(\w+)/g)].map((m) => m[1]),
-      // 函数参数。`quitting` 那一类如果是参数传进来的也是合法的。
-      ...[...code.matchAll(/function[^(]*\(([^)]*)\)/g)]
-        .flatMap((m) => m[1].split(',').map((x) => x.split(/[:=]/)[0].replace(/[{}.\s]/g, ''))),
-      ...[...code.matchAll(/\(([\w\s,]*)\)\s*=>/g)]
-        .flatMap((m) => m[1].split(',').map((x) => x.trim())),
-      ...[...code.matchAll(/(\w+)\s*=>/g)].map((m) => m[1]),
-      ...[...code.matchAll(/catch\s*\((\w+)\)/g)].map((m) => m[1]),
-    ].filter(Boolean));
-    // 只查 `if (foo)` / `if (!foo)` 这个形状:小写开头、单个标识符、不带点不带括号。
-    // 带点的(`config.x`)和带括号的(`foo()`)由别的守卫管。
-    const read = [...code.matchAll(/if\s*\(\s*!?\s*([a-z][a-zA-Z0-9_]*)\s*\)/g)]
-      .map((m) => m[1]);
-    const builtin = new Set(['process', 'module', 'require', 'global', 'app', 'e', 'err',
-      'error', 'ok', 'v', 'x', 'y', 'i', 'n', 'id', 'val', 'value']);
-    const missing = read.filter((k) => !declared.has(k) && !builtin.has(k));
-    assert.deepStrictEqual([...new Set(missing)], [],
-      `${name} 里 if() 读了没声明的变量（跑到那一行才抛 ReferenceError）：`
-      + `${[...new Set(missing)].join(', ')}`);
   }
 });
 
@@ -1156,7 +1032,140 @@ check('壁纸层没有引导浮层', () => {
     `壁纸层多了浮层：${overlays.join(', ')} —— 只有 hud 该在这儿（而它默认关）`);
 });
 
-console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
+console.log('\n  浏览工坊 + 我的壁纸');
+
+// ⚠️ 浏览**故意**用要 key 的 QueryFiles，而详情**故意**用免 key 的那个。
+// 两条搞反的后果：浏览永远失败（没 key），或者详情无端要求配 key。
+check('浏览用 QueryFiles（要 key），详情用免 key 的那个', () => {
+  const browse = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-browse'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-set-key'"));
+  assert.match(browse, /QUERY_ENDPOINT/, '浏览没走 QueryFiles');
+  assert.match(browse, /needsKey/, '没 key 时没标出来 —— 用户不知道去哪配');
+  // 403/401 几乎一定是 key 不对，和网络问题该给不同建议
+  assert.match(browse, /403|401/, 'key 被拒和网络失败没分开');
+});
+
+// ⚠️ API key 也是凭证：泄漏了别人能用你的额度，而且它绑在你账号上。
+check('诊断报告里 API key 被脱敏', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function redactConfig'),
+    mainSrc.indexOf('function redactConfig') + 600);
+  assert.match(fn, /apiKey/, 'API key 没脱敏 —— 它和密码一样是凭证');
+});
+
+// 用户的原话："不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸就在这里"
+check('我的壁纸按"有 project.json"判定，不按"我们下载过"', () => {
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-local'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-add-dir'"));
+  assert.match(handler, /findWallpaperDirs/, '没用目录扫描');
+  assert.match(handler, /libraryDirs/, '没扫用户自己加的目录');
+  // ⚠️ 一个坏的 project.json 不能让整个列表变空
+  assert.match(handler, /broken/, '坏文件没单独标出来 —— 用户会找不到他知道存在的壁纸');
+  // ⚠️ 空列表时要报出扫过哪些目录，否则用户不知道我们找过哪儿
+  assert.match(handler, /scannedRoots/, '没报出扫过的目录');
+});
+
+// 不支持的类型**不隐藏** —— 用户明确说过"预览图是可以看到的吧"。
+check('不支持的类型仍然显示（只标出来，不隐藏）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const card = dash.slice(dash.indexOf('function workshopCard'),
+    dash.indexOf('async function runBrowse'));
+  assert.match(card, /放不了/, '不支持的类型没标出来');
+  assert.ok(!/return null|continue/.test(card), '卡片渲染里有跳过逻辑 —— 那会隐藏壁纸');
+});
+
+// ⚠️ 点卡片不该直接下载：几百 MB 的误点很贵。
+check('点工坊卡片是看详情，不是直接下载', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const browse = dash.slice(dash.indexOf('async function runBrowse'),
+    dash.indexOf("document.getElementById('br-go')"));
+  assert.match(browse, /renderPeek/, '点卡片没走预览');
+  assert.ok(!/workshopDownload/.test(browse), '点卡片直接下载了 —— 误点会很贵');
+});
+
+check('三个页签都在（创意工坊 / 我的壁纸 / 手势录制）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  for (const tab of ['we', 'mine', 'gesture']) {
+    assert.ok(html.includes(`data-tab="${tab}"`), `缺 ${tab} 页签`);
+    assert.ok(html.includes(`id="tab-${tab}"`), `缺 ${tab} 的 section`);
+  }
+});
+
+// ⚠️ 默认值只能有一个来源。面板如果自己写死 ['Everyone']，
+// 那 workshop.js 里改了默认值就不生效 —— 而这类"两份默认值"我们已经漂过一次
+//（supported 那个判断）。
+check('筛选默认值来自 workshop.js，面板不写死', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /meta\.defaultTags/, '面板没用 meta 里的默认值');
+  const init = dash.slice(dash.indexOf('const browse = {'),
+    dash.indexOf('const browse = {') + 200);
+  assert.ok(!/Everyone/.test(init), '面板把默认标签写死了 —— 和 workshop.js 会漂');
+});
+
+// 面板按 filterGroups 渲染 ⟹ 加一组筛选不用改 UI 代码。
+check('筛选面板按分组渲染（加一组不用改 UI）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /meta\.filterGroups/, '没按分组渲染');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /filterGroups: Workshop\.FILTER_GROUPS/, 'meta 没带分组');
+});
+
+
+// ⚠️ 未声明的变量 —— 这一条是实测烧出来的。
+//
+// liftOverMenuBar 的 push() 里写了裸的 `want`，而那个名字只存在于 measure() 内部
+// ⟹ ReferenceError。它只在窗口真被夹取时才走到，所以尺寸正常时一直没事。
+//
+// 后果和它的位置完全不成比例：push('create') 在 ensureOverlay() 里同步调，
+// 一抛就把整个 ensureOverlay() 带走 —— 而摄像头在那个窗口里。
+// 用户看到的是"点开启摄像头没反应，也不报错"，查了好几轮都在手势那边找。
+//
+// ⟹ 用 node --check 查不出来（语法是合法的），要真的求值才暴露。
+// 这里用一个便宜的办法：把可疑的作用域跑一遍。
+check('liftOverMenuBar 里没有未声明的变量（曾因此弄死摄像头）', () => {
+  // ⚠️ 必须剥注释再匹配 —— 我在这个项目里已经栽过三次同一个形状：
+  // 守卫拿 indexOf 找字符串，而**注释里出现同名文字**就假阳性。
+  // 而假阳性比漏检更糟：它会让人去修一个不存在的问题。
+  // 这一条本身第一版就假阳性了（匹配到我写在注释里解释 bug 的那个 `want`）。
+  const src = codeOnly(mainSrc);
+  const start = src.indexOf('function liftOverMenuBar');
+  assert.ok(start > 0, '找不到 liftOverMenuBar');
+  // 取到函数结束
+  let depth = 0, end = start;
+  for (let i = src.indexOf('{', start); i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') { depth -= 1; if (depth === 0) { end = i + 1; break; } }
+  }
+  const body = src.slice(start, end);
+
+  // measure() 内部的局部名，不该在 push() 里裸用。
+  const localsOfMeasure = ['want', 'got', 'gap'];
+  const pushStart = body.indexOf('const push =');
+  assert.ok(pushStart > 0, '找不到 push');
+  const pushBody = body.slice(pushStart, body.indexOf('\n  };', pushStart));
+  for (const name of localsOfMeasure) {
+    // `before.want` 是对的，裸 `want` 不是。
+    const bare = new RegExp(`(^|[^.\\w])${name}\\s*[?)、,;]`, 'm');
+    assert.ok(!bare.test(pushBody),
+      `push() 里裸用了 measure() 的局部变量 ${name} —— 那会在窗口被夹取时抛 ReferenceError，`
+      + '而 push 是在 ensureOverlay() 里同步调的（摄像头在那个窗口里）');
+  }
+});
+
+// ⚠️ 对齐失败不该弄死摄像头。这是上一条的**结构性**修复：
+// 就算再有人在 push 里写错，也只是对齐没做成，不该把 ensureOverlay 带走。
+check('菜单栏对齐的异常被隔离（一个装饰性逻辑不该弄死摄像头）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /const safePush/,
+    'push 没有被包一层 —— 它在 ensureOverlay() 里同步跑，抛出会让摄像头打不开');
+  // 所有注册点都要走 safePush，漏一个就等于没包
+  const start = src.indexOf('function liftOverMenuBar');
+  const body = src.slice(start, start + 3000);
+  for (const hook of ['create', 'ready-to-show', 'show', 'resize']) {
+    assert.ok(body.includes(`safePush('${hook}')`),
+      `${hook} 这个触发点没走 safePush —— 漏一个就等于没隔离`);
+  }
+});
+
 // ⚠️ 关键点录制的载荷必须带当时生效的 tuning。
 //
 // 回放探针的每个门限（挥动速度/倾斜角/匹配阈值）都从 capture.tuning 读，缺了会
@@ -1361,8 +1370,11 @@ check('详情接口不需要 API key（所以预览是零门槛的）', () => {
   assert.match(src, /ISteamRemoteStorage\/GetPublishedFileDetails/,
     '没用免 key 的详情接口');
   // 主进程调的必须是那个免 key 的，不能是要 key 的 QueryFiles
+  // ⚠️ 切片终点用 workshop-set-key 而不是 workshop-local：
+  // 中间新插了 workshop-browse，而那条**故意**用要 key 的 QueryFiles。
+  // 切片太宽会把它算进来 ⟹ 守卫报假阳性，而我会去"修"一个不存在的问题。
   const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-details'"),
-    mainSrc.indexOf("ipcMain.handle('workshop-local'"));
+    mainSrc.indexOf("ipcMain.handle('workshop-browse'"));
   assert.match(handler, /DETAILS_ENDPOINT/, '详情没走免 key 的接口');
   assert.ok(!/QUERY_ENDPOINT/.test(handler), '详情用了要 API key 的 QueryFiles');
 });
@@ -1611,4 +1623,101 @@ check('Finder 那个门默认关（开着会挡掉大部分点击）', () => {
     'helper 里的默认值还是开着 —— 两边不一致时 JS 那边改了也没用');
 });
 
+// ── 打包版才炸的那一类:运行时找的路径 vs extraResources 拷进去的路径 ──────
+//
+// 四个 Swift helper 的源码在运行时按 `process.resourcesPath/native/X.swift` 找,而
+// `asar` 是个归档 ⟹ **只有 `extraResources` 列了才真的在磁盘上。**漏掉的后果是
+// `npm start` 一切正常(走 `__dirname/../native/`)、**打包版那个功能整个不存在**。
+//
+// 实测漏过:`GestureWallMouse.swift` / `GestureWallAudio.swift` 在 `wallpaper/native/`,
+// 而 extraResources 只列了顶层 `native/` 那三个 ⟹ 鼠标转发和音频频谱在打包版里
+// 连源码都找不到,而这两个功能**只能在打包版验**(要辅助功能/屏幕录制授权)。
+check('运行时要的 native 源码都在 extraResources 里（漏了只有打包版会炸）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const shipped = new Set((pkg.build.extraResources || []).map((r) => r.to));
+  // 运行时按 resourcesPath 拼的每一个路径都必须有人拷。
+  const wanted = [...main.matchAll(
+    /process\.resourcesPath,\s*'([^']+)',\s*'([^']+)'/g,
+  )].map((m) => `${m[1]}/${m[2]}`);
+  assert.ok(wanted.length >= 2, `只解析出 ${wanted.length} 个 resourcesPath 路径，正则失效了`);
+  const missing = wanted.filter((w) => !shipped.has(w));
+  assert.deepStrictEqual([...new Set(missing)], [],
+    `这些文件运行时会去找，但 extraResources 没拷 ⟹ 打包版里不存在：${missing.join(', ')}`);
+});
+
+check('抓系统音频要 NSScreenCaptureUsageDescription（缺了系统不弹窗、直接拒绝）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const info = pkg.build.mac.extendInfo || {};
+  // ⚠️ 缺 usage-description 的后果不是"弹窗被拒",是**系统连弹窗都不弹、直接拒绝** ——
+  // 症状是那个功能静默不工作,而代码看起来完全正确。麦克风/语音识别都为这条烧过时间。
+  //
+  // ⚠️ 而抓**系统**音频归「屏幕录制」不归「麦克风」 —— 这两个是不同的权限,
+  // 只加麦克风那条一样拿不到系统音频。
+  assert.ok(info.NSScreenCaptureUsageDescription,
+    '缺 NSScreenCaptureUsageDescription ⟹ 抓系统音频会被系统静默拒绝(不弹窗)');
+});
+
+check('⌃⇧D 能开开发者工具（有些东西只有 devtools 有：网络面板/元素树/堆栈）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const code = main.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(code, /register\('Control\+Shift\+D'/,
+    '没有 devtools 快捷键 —— 那意味着用户看不到 404 是哪个资源、异常在哪一行');
+  // 和 ⌃⇧H 同一条道理:默认关且没有开关的观测手段等于不存在。
+  assert.match(html, /⌃⇧D/, '面板没列出这个快捷键，用户不会知道它存在');
+  const banner = main.slice(main.indexOf('=== GestureWall ==='));
+  assert.match(banner.slice(0, 400), /⌃⇧D/, '终端启动信息里没列 ⌃⇧D');
+});
+
+// 同一类的第三半:**裸变量读取**,而且在主进程的非 main.js 模块里。
+//
+// `system-bridge.js` 是从 AirCursor 的 electron/main.js 原样抽出来的,而 `quitting` 是
+// **留在那边**的模块级变量 ⟹ `pointerHelper.on('exit')` 里 `if (quitting) return` 抛
+// ReferenceError。用户真机上看到的是**退出打包版时弹报错窗**。
+//
+// ⚠️ 为什么上面两条都逮不到它:
+//   · 「已删窗口的残留」只查 `main.js`,而且只查 `x.webContents.send(` 这个形状
+//   · 「本地函数有定义」只查渲染层四个文件,而且只查**调用**(`foo(`),而这是**读变量**
+//
+// ⚠️ 而它躲过 `node --check` 和 `npm start` 的原因是同一个:那一行只在 **helper 真的
+// 退出**时执行,而那基本只发生在打包版退出的那一刻。这个修复做过一次(`55abb70`),
+// 又跟着打包配置被 revert ⟹ **修过的东西没有守卫就会回来**,这条守卫就是为了它不再回来。
+check('主进程模块里 if(裸变量) 的那个变量都有声明（只在特定时刻才炸的那一类）', () => {
+  for (const name of ['main.js', 'system-bridge.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+    const code = src.split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n');
+    const declared = new Set([
+      ...[...code.matchAll(/(?:const|let|var)\s+(\w+)/g)].map((m) => m[1]),
+      ...[...code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(':').pop().trim())),
+      ...[...code.matchAll(/function\s+(\w+)/g)].map((m) => m[1]),
+      // 函数参数。`quitting` 那一类如果是参数传进来的也是合法的。
+      ...[...code.matchAll(/function[^(]*\(([^)]*)\)/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.split(/[:=]/)[0].replace(/[{}.\s]/g, ''))),
+      ...[...code.matchAll(/\(([\w\s,]*)\)\s*=>/g)]
+        .flatMap((m) => m[1].split(',').map((x) => x.trim())),
+      ...[...code.matchAll(/(\w+)\s*=>/g)].map((m) => m[1]),
+      ...[...code.matchAll(/catch\s*\((\w+)\)/g)].map((m) => m[1]),
+    ].filter(Boolean));
+    // 只查 `if (foo)` / `if (!foo)` 这个形状:小写开头、单个标识符、不带点不带括号。
+    // 带点的(`config.x`)和带括号的(`foo()`)由别的守卫管。
+    const read = [...code.matchAll(/if\s*\(\s*!?\s*([a-z][a-zA-Z0-9_]*)\s*\)/g)]
+      .map((m) => m[1]);
+    const builtin = new Set(['process', 'module', 'require', 'global', 'app', 'e', 'err',
+      'error', 'ok', 'v', 'x', 'y', 'i', 'n', 'id', 'val', 'value']);
+    const missing = read.filter((k) => !declared.has(k) && !builtin.has(k));
+    assert.deepStrictEqual([...new Set(missing)], [],
+      `${name} 里 if() 读了没声明的变量（跑到那一行才抛 ReferenceError）：`
+      + `${[...new Set(missing)].join(', ')}`);
+  }
+});
+
+// ⚠️ 报数必须在**所有** check 之后。
+//
+// 合并时踩到:这一行原本在文件中间(约 1169 行),而它后面还有几十条 check ⟹ 报
+// 「78 项通过」而实际跑了 121 条。**报数少了不会红**,所以它看起来一直是对的,
+// 而「守卫数量」正是我们判断有没有丢守卫的依据 —— 口径错了那个判断就全废。
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

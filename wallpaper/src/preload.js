@@ -59,6 +59,11 @@ contextBridge.exposeInMainWorld('gw', {
   workshopProbe: () => ipcRenderer.invoke('workshop-probe'),
   workshopDetails: (input) => ipcRenderer.invoke('workshop-details', input),
   workshopLocal: () => ipcRenderer.invoke('workshop-local'),
+  workshopBrowse: (opts) => ipcRenderer.invoke('workshop-browse', opts),
+  workshopBrowseMeta: () => ipcRenderer.invoke('workshop-browse-meta'),
+  workshopSetKey: (key) => ipcRenderer.invoke('workshop-set-key', key),
+  workshopAddDir: () => ipcRenderer.invoke('workshop-add-dir'),
+  workshopRemoveDir: (dir) => ipcRenderer.invoke('workshop-remove-dir', dir),
   workshopLoadLocal: (dir) => ipcRenderer.invoke('workshop-load-local', dir),
 
   // 诊断报告

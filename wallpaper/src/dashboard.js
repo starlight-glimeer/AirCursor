@@ -621,6 +621,7 @@ function apply(next) {
   cursorToggle.checked = !!config.controlCursor;
   renderAudioSource();
   renderWEStrategy();
+  renderMineDirs();
   mouseForwardBox.checked = !!(config.we && config.we.mouseForward);
   mouseGateBox.checked = !!(config.we && config.we.mouseGateFinder);
   if (!built) {
@@ -1219,6 +1220,251 @@ document.getElementById('ws-peek').onclick = async () => {
   renderPeek(result.items[0]);
 };
 
+// ---------------------------------------------------------------------------
+// 浏览创意工坊（仿 Steam 排版）
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 不支持的类型（scene / application）**不隐藏** —— 用户明确说过
+// "虽然有些类型无法支持现在，但是预览图是可以看到的吧"。
+// 隐藏它们会让人以为工坊里没东西；标出来才是诚实的。
+// ⚠️ tags 初值由 meta.defaultTags 填（只勾「全年龄」）—— 不在这里写死，
+// 因为默认值的依据在 workshop.js（唯一来源）。
+const browse = { sort: 'trending', tags: [], page: 1, total: 0, perPage: 30 };
+
+function renderBrowseControls(meta) {
+  const sortHost = document.getElementById('br-sorts');
+  sortHost.className = 'we-src';
+  sortHost.innerHTML = '';
+  for (const s of meta.sorts) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = s.id === browse.sort ? 'on' : '';
+    b.textContent = s.label;
+    b.onclick = () => { browse.sort = s.id; browse.page = 1; runBrowse(); };
+    sortHost.appendChild(b);
+  }
+
+  // 四组筛选，按 meta.filterGroups 渲染 —— 加一组不用改这里。
+  const host = document.getElementById('br-filters');
+  host.innerHTML = '';
+  for (const group of meta.filterGroups || []) {
+    const row = document.createElement('div');
+    row.className = 'br-group';
+
+    const label = document.createElement('span');
+    label.className = 'br-group-label';
+    label.textContent = group.label;
+    row.appendChild(label);
+
+    const btns = document.createElement('div');
+    btns.className = 'we-src';
+    for (const t of group.tags) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = browse.tags.includes(t.id) ? 'on' : '';
+      // ⚠️ 类型那组标出能不能跑 —— 那样点进去之前就知道，
+      // 而不是筛出一屏全是"放不了"。
+      b.textContent = t.supported === false && group.id === 'type'
+        ? `${t.label}（放不了）` : t.label;
+      // 成人内容那两项给个提示，免得误点
+      if (group.id === 'age' && !t.defaultOn) b.title = '默认不勾';
+      b.onclick = () => {
+        browse.tags = browse.tags.includes(t.id)
+          ? browse.tags.filter((x) => x !== t.id) : [...browse.tags, t.id];
+        browse.page = 1;
+        renderBrowseControls(meta);
+        runBrowse();
+      };
+      btns.appendChild(b);
+    }
+    row.appendChild(btns);
+    host.appendChild(row);
+  }
+}
+
+// 一张工坊卡片。仿 Steam：预览图 + 标题 + 类型 + 订阅数。
+function workshopCard(item, onPick) {
+  const card = document.createElement('div');
+  card.className = 'ws-item';
+  card.title = item.title || item.id;
+
+  const img = document.createElement('img');
+  if (item.preview) img.src = item.preview;
+  // ⚠️ 预览图挂了不能让卡片塌掉 —— Steam 的 CDN 在国内常要代理，
+  // 而"图没出来"和"这个壁纸有问题"是两件事。
+  img.onerror = () => { img.style.display = 'none'; };
+  card.appendChild(img);
+
+  const nm = document.createElement('div');
+  nm.className = 'nm';
+  nm.textContent = item.title || item.id;
+  card.appendChild(nm);
+
+  const tp = document.createElement('div');
+  tp.className = item.supported ? 'tp' : 'tp no';
+  const parts = [];
+  if (item.type) parts.push(item.supported ? item.type : `${item.type}·放不了`);
+  else parts.push('类型未标');
+  if (item.subscriptions) parts.push(`${item.subscriptions} 订阅`);
+  if (item.sizeBytes) parts.push(W_FORMAT(item.sizeBytes));
+  tp.textContent = parts.join(' · ');
+  card.appendChild(tp);
+
+  card.onclick = () => onPick(item);
+  return card;
+}
+
+async function runBrowse() {
+  const state = document.getElementById('br-state');
+  const grid = document.getElementById('br-grid');
+  state.textContent = '查询中…';
+  grid.innerHTML = '';
+
+  const result = await window.gw.workshopBrowse({
+    query: document.getElementById('br-q').value,
+    sort: browse.sort, tags: browse.tags,
+    page: browse.page, perPage: browse.perPage,
+  });
+
+  if (!result.ok) {
+    state.innerHTML = `<span class="warn">${result.error}</span>`
+      + (result.hint ? `\n${result.hint}` : '');
+    // 没 key 时把那块展开 —— 否则用户看到错误但找不到在哪配。
+    if (result.needsKey) document.getElementById('br-key-box').open = true;
+    document.getElementById('br-pager').style.display = 'none';
+    return;
+  }
+
+  browse.total = result.total;
+  state.textContent = result.items.length
+    ? `共 ${result.total} 个，第 ${browse.page} 页`
+    : '这一页没东西（换个搜索词或排序试试）';
+
+  for (const item of result.items) {
+    grid.appendChild(workshopCard(item, (picked) => {
+      // 点卡片 = 填到"按 ID 装载"那栏并看详情，不直接下载 ——
+      // ⚠️ 直接下几百 MB 会让误点变成很贵的操作。
+      document.getElementById('ws-id').value = picked.id;
+      renderPeek({ ...picked, ok: true });
+      document.getElementById('ws-id').scrollIntoView({ behavior: 'smooth' });
+    }));
+  }
+
+  const pages = Math.ceil(result.total / browse.perPage) || 1;
+  document.getElementById('br-pager').style.display = result.items.length ? 'flex' : 'none';
+  document.getElementById('br-page').textContent = `${browse.page} / ${pages}`;
+  document.getElementById('br-prev').disabled = browse.page <= 1;
+  document.getElementById('br-next').disabled = browse.page >= pages;
+}
+
+document.getElementById('br-go').onclick = () => { browse.page = 1; runBrowse(); };
+document.getElementById('br-q').onkeydown = (e) => {
+  if (e.key === 'Enter') { browse.page = 1; runBrowse(); }
+};
+document.getElementById('br-prev').onclick = () => { browse.page -= 1; runBrowse(); };
+document.getElementById('br-next').onclick = () => { browse.page += 1; runBrowse(); };
+document.getElementById('br-key-save').onclick = async () => {
+  await window.gw.workshopSetKey(document.getElementById('br-key').value.trim());
+  document.getElementById('br-key').value = '';
+  runBrowse();
+};
+
+// ⚠️ try 住：这是我加的初始化，它抛了不该影响手势那些开关。
+try {
+window.gw.workshopBrowseMeta().then((meta) => {
+  if (!meta) return;
+  // 默认只勾「全年龄」。⚠️ 浏览工坊时默认不该出现成人内容，
+  // 而"默认全开让用户自己关"在这件事上是错的默认值。
+  if (!browse.tags.length) browse.tags = meta.defaultTags || [];
+  renderBrowseControls(meta);
+  document.getElementById('br-key-hint').textContent = meta.keyHint;
+  if (!meta.hasKey) {
+    document.getElementById('br-state').innerHTML =
+      '<span class="hint">配了 API key 才能浏览（下面那块）。'
+      + '不配也能用 —— 贴工坊链接到下面「按 ID 装载」。</span>';
+  } else {
+    runBrowse();
+  }
+}).catch(() => {});
+} catch (error) { console.error('[dashboard] 工坊浏览初始化失败：', error); }
+
+// ---------------------------------------------------------------------------
+// 我的壁纸
+// ---------------------------------------------------------------------------
+//
+// 用户的原话："不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸
+// 就在这里" ⟹ 判据是目录里有 project.json，不是"我们下载过"。
+async function renderMine() {
+  const state = document.getElementById('mine-state');
+  const grid = document.getElementById('mine-grid');
+  const result = await window.gw.workshopLocal();
+
+  if (!result.ok || !result.items.length) {
+    grid.innerHTML = '';
+    // ⚠️ 空列表时报出扫过哪些目录 —— 否则用户不知道我们找过哪儿，
+    // 而他可能把壁纸放在别的地方。
+    state.innerHTML = '一个壁纸都没找到。扫过这些目录：\n'
+      + (result.scannedRoots || []).join('\n');
+    return;
+  }
+
+  const usable = result.items.filter((i) => i.supported).length;
+  state.textContent = `${result.items.length} 个壁纸，其中 ${usable} 个能跑`
+    + (result.truncated ? '（超过 500 个，只列了前 500）' : '');
+
+  grid.innerHTML = '';
+  for (const item of result.items) {
+    const card = workshopCard({
+      ...item,
+      // 本地文件走 file://（自定义 protocol 只服务当前装载的那个）
+      preview: item.preview ? `file://${encodeURI(item.preview)}` : null,
+    }, async () => {
+      if (item.broken) return;
+      const out = await window.gw.workshopLoadLocal(item.dir);
+      if (!out.ok) state.innerHTML = `<span class="warn">${out.error}</span>`;
+      renderWEStatus();
+      renderMine();
+    });
+    // 当前装载的那个标出来 —— 否则一屏缩略图里认不出哪个在用。
+    if (item.active) card.style.borderColor = 'var(--accent)';
+    grid.appendChild(card);
+  }
+}
+
+function renderMineDirs() {
+  const host = document.getElementById('mine-dirs');
+  const dirs = (config.we && config.we.libraryDirs) || [];
+  host.innerHTML = '';
+  if (!dirs.length) {
+    host.innerHTML = '<span class="hint">还没加自定义目录（steamcmd 那个是自动扫的）。</span>';
+    return;
+  }
+  for (const dir of dirs) {
+    const row = document.createElement('div');
+    row.className = 'bar-row';
+    const label = document.createElement('span');
+    label.className = 'hint';
+    label.textContent = dir;
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'act danger';
+    del.textContent = '移除';
+    del.onclick = async () => {
+      await window.gw.workshopRemoveDir(dir);
+      renderMineDirs();
+      renderMine();
+    };
+    row.append(label, del);
+    host.appendChild(row);
+  }
+}
+
+document.getElementById('mine-refresh').onclick = renderMine;
+document.getElementById('mine-add-dir').onclick = async () => {
+  const out = await window.gw.workshopAddDir();
+  if (out.ok) { renderMineDirs(); renderMine(); }
+};
+
 // 已下载的列表 —— 下过的东西要能重新装载，而不是每次重填 ID。
 async function renderLocal() {
   const host = document.getElementById('ws-local');
@@ -1342,5 +1588,17 @@ window.gw.onVideoStatus((status) => {
 window.gw.onWeStatus(() => renderWEStatus());
 window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
 
-window.gw.getConfig().then(apply);
+// ⚠️ apply() 必须最先跑，而且不能被任何东西挡住。
+//
+// 它负责绑定**所有**开关（包括「开启摄像头手势」）。而这个文件顶层有很多初始化代码，
+// 任何一处抛异常都会让它永远跑不到 —— 表现是"点开关完全没反应，也没报错"。
+//
+// 实测踩到：用户报"摄像头打不开、点了什么反应都没有"，而纯 main 是好的 ——
+// 也就是我往顶层加的东西里有一处抛了，把 apply() 挡在后面。
+//
+// ⟹ 两条改动：① apply() 提到最前面 ② 我加的初始化各自 try 住，互不牵连。
+window.gw.getConfig().then(apply).catch((error) => {
+  // apply 自己抛的话开关全绑不上，那是最坏的情况 —— 必须能看见。
+  console.error('[dashboard] apply() 失败，开关可能都没绑上：', error);
+});
 renderWEStatus();

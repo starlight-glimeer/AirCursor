@@ -203,17 +203,16 @@ function liftOverMenuBar(win, label) {
       return;
     }
     try {
-      // ⚠️ `before.want` 而不是裸 `want`。
+      // ⚠️ 用 before.want，不是裸的 `want` —— 那个名字只存在于 measure() 内部。
       //
-      // `want` 只存在于 `measure()` 的作用域里,这一行引用的是一个**不存在的标识符**
-      // ⟹ 每次都抛 ReferenceError,而它在 try 里 ⟹ 被 catch、只打一句 warn。
+      // 原来这里写的是 `want ? want : screen…`，而 push() 的作用域里没有 want ⟹
+      // **ReferenceError**。而且它只在窗口真被夹取时才走到（没夹取的话上面就 return 了），
+      // 所以尺寸正常的窗口一直没事，掩盖了这个错。
       //
-      // 后果:这个函数的**第一件事从来没执行过**(见上面的注释:"把 frame 设成整屏")。
-      // 而它不崩、不报错,只在分辨率变化时表现为"窗口没跟着变" —— 而那种情况少见,
-      // 所以躲了很久。
-      //
-      // ⚠️ 而这条**不是**摄像头打不开的原因(云端 agent 一开始那么判断,后来自己更正了)。
-      // 被 catch 住的异常带不走 ensureOverlay。两件事无关。
+      // 后果比看起来严重得多：push('create') 是在 ensureOverlay() 里**同步**调的，
+      // 所以它一抛，整个 ensureOverlay() 就抛 —— 而骨架层里装着摄像头。
+      // ⟹ 症状是"点开启摄像头完全没反应，也不报错"，看起来像摄像头/手势坏了，
+      // 而真正的原因在一个菜单栏对齐的辅助函数里。
       win.setBounds(before.want);
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
@@ -228,11 +227,25 @@ function liftOverMenuBar(win, label) {
     };
   };
 
-  push('create');
-  win.once('ready-to-show', () => push('ready-to-show'));
-  win.on('show', () => push('show'));
+  // ⚠️ 整个 push 包起来：这是**菜单栏对齐**，而它被用在骨架层上（摄像头在那里面）。
+  //
+  // 实测教训：push 里一个 ReferenceError 让 ensureOverlay() 整个抛出，
+  // 表现成"摄像头打不开、点了没反应、也不报错" —— 一个纯装饰性的对齐逻辑
+  // 不该有能力弄死摄像头。⟹ 对齐失败就只是对齐失败，报出来，别往上冒。
+  const safePush = (reason) => {
+    try {
+      push(reason);
+    } catch (error) {
+      console.warn(`[${label || 'win'}] 菜单栏对齐失败（${reason}）：${error.message}`);
+      menuBarState = { sizeOk: false, label, lastReason: reason, error: error.message };
+    }
+  };
+
+  safePush('create');
+  win.once('ready-to-show', () => safePush('ready-to-show'));
+  win.on('show', () => safePush('show'));
   // resize 覆盖分辨率变化和 macOS 的夹取 —— 那两件都需要重设 frame。
-  win.on('resize', () => push('resize'));
+  win.on('resize', () => safePush('resize'));
   return measure;
 }
 
@@ -389,8 +402,13 @@ const defaultConfig = {
     // 退出时会还原用户原来的壁纸。
     placeholderWallpaper: true,
     // Steam 创意工坊。⚠️ 密码存在本地配置文件里（明文），诊断报告导出时会脱敏。
-    steam: { username: null, password: null, guardCode: null },
+    // ⚠️ apiKey 只用于浏览/搜索（QueryFiles 要它），装载壁纸不需要。
+    // 导诊断报告时和密码一起脱敏。
+    steam: { username: null, password: null, guardCode: null, apiKey: null },
     steamCmdPath: null,
+    // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
+    // 这里是"我从别处拿到的壁纸放在哪"。
+    libraryDirs: [],
     // WE 壁纸的层策略。
     //
     // ⚠️ 默认改回 desktop 了（原来是 bottom-normal），因为那两件事现在**不再互斥**：
@@ -541,59 +559,6 @@ function handleVoiceText(phrase) {
   broadcast('voice-status', { text: `${result.ok ? '已执行' : '执行失败'}:${text}` });
 }
 
-
-// 渲染进程的异常上报。**四个窗口都要接**,而这一层的存在理由是:
-//
-// 渲染进程里没有开发者工具、不在视线里,它抛的任何异常都表现为"某个功能静默不工作" ——
-// 和真正的原因毫无关系。这个项目为它烧过好几轮(`const T` 撞名让整层脚本停止执行,
-// 症状只是"摄像头不启动";我猜了两轮零进展,而刚加的日志转发两行就给出了答案)。
-//
-// ⚠️ 面板窗口(`dashboardWindow`)的后果比骨架层**更隐蔽**:`apply()` 在文件最后一行才调,
-// 它负责绑定**所有**开关 ⟹ 顶层任何一处抛,所有开关都绑不上,看起来像"那个功能坏了"。
-// 而这个窗口此前**一条错误监听都没有**(只有 did-finish-load / closed)。
-//
-// 四条通道各自覆盖别的抓不到的东西:
-//
-//   · console-message      —— console.error / 未捕获异常的常规路径
-//   · preload-error        —— preload 挂了 ⟹ `window.gw` 整个不存在,第一行就抛
-//   · 资源 404             —— **`<script>` 的 404 不进 console-message**。烧过两轮:
-//                             vendor 空、打包后 asar 读不到 wasm
-//   · render-process-gone  —— 整个渲染进程没了
-function watchRendererErrors(win, label) {
-  if (!win || win.isDestroyed()) return;
-
-  // ⚠️ Electron 36 起签名从 (event, level, message, line, sourceId) 变成单个 details
-  // 对象,两种都接才不会静默变哑。
-  win.webContents.on('console-message', (...args) => {
-    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
-    const level = d ? d.level : args[1];
-    const message = d ? d.message : args[2];
-    if (level === 'error' || level === 'warning' || /⚠️|失败|Error/.test(String(message))) {
-      broadcast('helper-log', { source: label, message: String(message) });
-    }
-  });
-
-  win.webContents.on('preload-error', (_e, preloadPath, error) => {
-    broadcast('helper-log', {
-      source: label,
-      message: `⚠️ preload 加载失败:${error && error.message} (${preloadPath}) —— `
-        + 'window.gw 不存在,这一层什么都干不了',
-    });
-  });
-
-  win.webContents.session.webRequest.onErrorOccurred({ urls: ['file:///*'] }, (details) => {
-    if (!/\.(js|wasm|tflite|data|binarypb|css|html)$/.test(details.url)) return;
-    broadcast('helper-log', {
-      source: label,
-      message: `⚠️ 加载失败:${details.url.split('/').slice(-2).join('/')} (${details.error})`,
-    });
-  });
-
-  win.webContents.on('render-process-gone', (_e, details) => {
-    broadcast('helper-log', { source: label, message: `渲染进程崩了:${details.reason}` });
-  });
-}
-
 function createWallWindow(strategyId) {
   const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
   currentStrategy = strategy;
@@ -689,6 +654,33 @@ function cycleStrategy() {
   recreateWall(WALL_STRATEGIES[next].id);
 }
 
+// 渲染进程的未捕获异常。
+//
+// ⚠️ 这是"点了没反应"这类问题的**唯一**观测点：面板的 JS 一旦在顶层抛，
+// 后面的初始化全停（包括绑定开关），而异常本身进不了终端也进不了任何界面。
+//
+// 骨架层更糟 —— 它没有开发者工具、不在视线里，那是另一个模块注释里明说过的坑。
+function watchRendererErrors(win, label) {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[${label}] 渲染进程挂了：${details.reason}`);
+    logEvent(label, `渲染进程挂了：${details.reason}`);
+  });
+  win.webContents.on('preload-error', (_e, preloadPath, error) => {
+    console.error(`[${label}] preload 出错 ${preloadPath}：${error.message}`);
+    logEvent(label, `preload 出错：${error.message}`);
+  });
+  // ⚠️ console-message 是唯一能把页面里的异常捞出来的通道。
+  // level 3 = error。只报 error 和 warning，否则日志会被刷屏。
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    if (level < 2) return;
+    const where = sourceId ? `${sourceId.split('/').pop()}:${line}` : '?';
+    const text = `${message} (${where})`;
+    console.error(`[${label}] ${level === 3 ? '错误' : '警告'}：${text}`);
+    logEvent(label, text, { level });
+  });
+}
+
 function openDashboard() {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.show();
@@ -708,13 +700,9 @@ function openDashboard() {
       nodeIntegration: false,
     },
   });
-  // ⚠️ 这个窗口此前一条错误监听都没有。它的顶层抛出后果比骨架层更隐蔽:`apply()`
-  // 在最后一行才调,它绑定**所有**开关 ⟹ 顶层任何一处抛,所有开关都绑不上,
-  // 看起来像"那个功能坏了"。
-  //
-  // ⚠️ 必须在 loadFile **之前** —— 我自己第一版接在后面了,而装载期的错误
-  // (资源 404 / preload 挂了)正是这一层最常见的失败,接晚了正好错过。
-  watchRendererErrors(dashboardWindow, 'panel');
+  // ⚠️ 面板的异常最误导：它一抛，后面的初始化全停（包括绑定所有开关），
+  // 表现为"某个开关点了完全没反应"—— 而那看起来像那个功能坏了。
+  watchRendererErrors(dashboardWindow, 'dashboard');
   dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html'));
   dashboardWindow.webContents.on('did-finish-load', () => {
     dashboardWindow.webContents.send('config', config);
@@ -766,6 +754,29 @@ function ensureOverlay() {
       backgroundThrottling: false,
     },
   });
+  // 渲染进程的 console 转到主进程 + 面板。
+  //
+  // 摄像头搬进这一层之后没启动,而我花了几轮在推断原因 —— 因为这个窗口里抛的任何异常
+  // **谁都看不到**:它没有开发者工具、不在视线里,而 sensor.js 的加载期错误只会让摄像头
+  // 静默不起。AirCursor 3.x 转了这个,他的没转。
+  //
+  // Electron 36 起签名从 (event, level, message, line, sourceId) 变成单个 details
+  // 对象,两种都接才不会静默变哑。
+  overlayWindow.webContents.on('console-message', (...args) => {
+    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
+    const level = d ? d.level : args[1];
+    const message = d ? d.message : args[2];
+    if (level === 'error' || level === 'warning' || /⚠️|失败|Error/.test(String(message))) {
+      broadcast('helper-log', { source: 'overlay', message: String(message) });
+    }
+  });
+  // 未捕获异常单独报:它比 console.error 更致命(整个脚本停在那里),而 console-message
+  // 在某些 Electron 版本上拿不到它。
+  overlayWindow.webContents.on('render-process-gone', (_e, details) => {
+    broadcast('helper-log', { source: 'overlay', message: `骨架层崩了:${details.reason}` });
+  });
+  // ⚠️ 骨架层最需要这个：它没有开发者工具、不在视线里，
+  // 而摄像头就在这个窗口里 —— 它的加载期错误只会表现成"摄像头打不开"。
   watchRendererErrors(overlayWindow, 'overlay');
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
@@ -1491,7 +1502,7 @@ function createWEWindow() {
   });
 
   // ⚠️ 必须在 loadFile/loadURL **之前**接 —— 装载期的错误(资源 404、preload 挂了)
-  // 是这一层最常见的失败,接晚了正好错过。
+  // 是这一层最常见的失败,接晚了正好错过。原版接在装载之后。
   watchRendererErrors(win, 'we');
 
   // ⚠️ web 和 video 的装载路径必须分开：video 的 project.file 是视频文件名不是 html，
@@ -1930,38 +1941,153 @@ ipcMain.handle('workshop-details', async (_event, input) => {
 //
 // ⚠️ 这条补的是另一半体验缺口：下载过的东西要能重新装载，
 // 而不是每次都重新填 ID。工坊页面的"已订阅"在本地的对应物就是这个。
+// 浏览工坊（仿 Steam 那套：搜索 + 排序 + 类型筛选 + 分页）。
+//
+// ⚠️ 这条要 Steam Web API key（免费）。和"贴 ID 看详情"那条不同 ——
+// 那条免 key。所以没配 key 时要说清怎么弄，不能只报"失败"。
+ipcMain.handle('workshop-browse', async (_event, opts) => {
+  const key = (config.we.steam && config.we.steam.apiKey) || '';
+  if (!key) {
+    return { ok: false, needsKey: true, error: Workshop.apiKeyHint() };
+  }
+
+  const params = Workshop.browseParams({ key, ...(opts || {}) });
+  try {
+    const response = await net.fetch(
+      `${Workshop.QUERY_ENDPOINT}?${params.toString()}`);
+    if (!response.ok) {
+      // ⚠️ 403 几乎一定是 key 不对，而那和"网络问题"该给不同建议。
+      if (response.status === 403 || response.status === 401) {
+        return {
+          ok: false, needsKey: true,
+          error: `API key 被拒（HTTP ${response.status}）—— key 填错了或者失效了`,
+        };
+      }
+      logEvent('workshop', `浏览请求失败 HTTP ${response.status}`);
+      return { ok: false, error: `Steam 接口返回 ${response.status}` };
+    }
+    const { items, total } = Workshop.parseBrowseResponse(await response.json());
+    // 支持性判断只有 we-host 一个来源（workshop.js 故意不判，那条漂过一次）。
+    const enriched = items.map((item) => ({
+      ...item,
+      supported: item.type ? WE.isSupportedType(item.type) : false,
+      refusal: item.type ? WE.typeRefusal(item.type) : null,
+    }));
+    logEvent('workshop', `浏览到 ${enriched.length} 项（共 ${total}）`);
+    return { ok: true, items: enriched, total };
+  } catch (error) {
+    logEvent('workshop', `浏览请求异常：${error.message}`);
+    return {
+      ok: false,
+      error: `连不上 Steam 接口：${error.message}`,
+      hint: '这个接口在国内常常要代理。而"贴 ID 装载"走的是另一条路，可能不受影响。',
+    };
+  }
+});
+
+ipcMain.handle('workshop-set-key', (_event, apiKey) => {
+  config.we.steam = { ...(config.we.steam || {}), apiKey: apiKey || null };
+  writeConfig(config);
+  return { ok: true, hasKey: !!apiKey };
+});
+
+ipcMain.handle('workshop-browse-meta', () => ({
+  sorts: Workshop.SORT_ORDERS,
+  // 四组筛选（类型/年龄分级/分辨率/主题）—— 面板照这个渲染，
+  // 加一组不用改 UI 代码。
+  filterGroups: Workshop.FILTER_GROUPS,
+  defaultTags: Workshop.defaultTags(),
+  typeTags: Workshop.TYPE_TAGS_QUERY,
+  hasKey: !!(config.we.steam && config.we.steam.apiKey),
+  keyHint: Workshop.apiKeyHint(),
+}));
+
+// 「我的壁纸」：扫所有存储目录，不管壁纸是怎么来的。
+//
+// ⚠️ 判据是**目录里有 project.json**，不是"我们下载过"。用户的原话：
+// "不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸就在这里"
+// ⟹ 手动拷进去的、朋友发的、从别的机器搬来的，全都能用。
 ipcMain.handle('workshop-local', () => {
-  const found = [];
-  for (const root of Workshop.STEAM_ROOTS) {
-    const base = path.join(root, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID);
-    let entries = [];
+  // steamcmd 的下载目录 + 用户自己加的目录。
+  const roots = [
+    ...Workshop.STEAM_ROOTS.map((r) =>
+      path.join(r, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID)),
+    ...(config.we.libraryDirs || []),
+  ];
+
+  const { dirs, truncated } = Workshop.findWallpaperDirs(roots, {
+    listDir: (d) => fs.readdirSync(d),
+    isDir: (d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } },
+    exists: (f) => fs.existsSync(f),
+  });
+
+  const items = [];
+  for (const dir of dirs) {
     try {
-      entries = fs.readdirSync(base, { withFileTypes: true });
-    } catch { continue; }   // 目录不存在很正常（还没下过东西）
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const dir = path.join(base, entry.name);
-      const projectFile = path.join(dir, 'project.json');
-      if (!fs.existsSync(projectFile)) continue;
-      try {
-        const project = WE.parseProject(JSON.parse(fs.readFileSync(projectFile, 'utf8')));
-        if (!project) continue;
-        found.push({
-          id: entry.name,
-          dir,
-          title: project.title,
-          type: project.type,
-          typeLabel: project.typeLabel,
-          supported: project.supported,
-          gifScene: project.gifScene,
-          // 本地预览图走自定义 protocol 读不到（那个只服务当前壁纸），
-          // 所以给绝对路径让面板用 file:// 显示。
-          preview: previewPathOf(dir, project),
-        });
-      } catch { /* project.json 坏了就跳过，别让一个坏的挡住整个列表 */ }
+      const project = WE.parseProject(
+        JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8')));
+      if (!project) continue;
+      items.push({
+        id: path.basename(dir),
+        dir,
+        title: project.title,
+        type: project.type,
+        typeLabel: project.typeLabel,
+        supported: project.supported,
+        gifScene: project.gifScene,
+        refusal: project.supported ? null : WE.typeRefusal(project.type),
+        preview: previewPathOf(dir, project),
+        // 当前装载的是哪个 —— 列表里要能标出来。
+        active: !!(weProject && weProject.dir === dir),
+      });
+    } catch {
+      // ⚠️ 一个坏的 project.json 不能让整个列表变空。
+      // 但也别静默丢掉 —— 列出来并说明，否则用户找不到他知道存在的那个壁纸。
+      items.push({
+        id: path.basename(dir), dir, title: path.basename(dir),
+        broken: true, refusal: 'project.json 读不出来（文件坏了或格式不对）',
+      });
     }
   }
-  return { ok: true, items: found };
+
+  // 排序：能用的在前、当前装载的最前，其余按标题。
+  // ⚠️ 不按目录名排：那是一串工坊 ID，对人没有意义。
+  items.sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    if (a.supported !== b.supported) return a.supported ? -1 : 1;
+    return String(a.title).localeCompare(String(b.title), 'zh');
+  });
+
+  return {
+    ok: true, items, truncated,
+    roots: roots.filter((r) => fs.existsSync(r)),
+    // ⚠️ 报出"扫了哪些目录" —— 列表是空的时候，用户要知道我们找过哪儿。
+    scannedRoots: roots,
+  };
+});
+
+// 加一个自己的壁纸目录。
+ipcMain.handle('workshop-add-dir', async () => {
+  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
+    title: '选择壁纸存储目录（里面每个子目录是一个壁纸）',
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: '加入我的壁纸',
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const dir = result.filePaths[0];
+  const dirs = config.we.libraryDirs || [];
+  if (!dirs.includes(dir)) dirs.push(dir);
+  config.we.libraryDirs = dirs;
+  writeConfig(config);
+  broadcast('config', config);
+  return { ok: true, dir };
+});
+
+ipcMain.handle('workshop-remove-dir', (_event, dir) => {
+  config.we.libraryDirs = (config.we.libraryDirs || []).filter((d) => d !== dir);
+  writeConfig(config);
+  broadcast('config', config);
+  return { ok: true };
 });
 
 // 装载一个已经下载好的
@@ -2187,6 +2313,8 @@ function redactConfig(source) {
   if (copy.we && copy.we.steam) {
     if (copy.we.steam.password) copy.we.steam.password = '***';
     if (copy.we.steam.guardCode) copy.we.steam.guardCode = '***';
+    // ⚠️ API key 也是凭证 —— 泄漏了别人能用你的额度、而且它绑在你账号上。
+    if (copy.we.steam.apiKey) copy.we.steam.apiKey = '***';
   }
   return copy;
 }
@@ -2423,6 +2551,23 @@ app.whenReady().then(() => {
   systemBridge.start();
 
   globalShortcut.register('Control+Shift+W', openDashboard);
+  // ⚠️ 面板的 JS 异常**谁都看不到**，而后果是"后面的初始化全停"——
+  // 表现为某个开关点了完全没反应（连状态行都不变）。
+  //
+  // 实测踩到：用户报"摄像头打不开、点了什么反应都没有、也没报错"。
+  // 而纯 main 是好的 ⟹ 我这轮往 dashboard.js 顶层加的代码里有一处抛了，
+  // 于是 apply()（在最后一行才调，负责绑定所有开关）永远跑不到。
+  //
+  // ⟹ 有个能看见异常的入口，比逐个猜哪行抛快一个量级。
+  globalShortcut.register('Control+Shift+D', () => {
+    for (const win of [dashboardWindow, weWindow, wallWindow, overlayWindow]) {
+      if (!win || win.isDestroyed()) continue;
+      // ⚠️ 要能**关**。原版只有 openDevTools ⟹ 一按就四个 devtools 窗口,再按一次
+      // 也关不掉 —— 而它盖在壁纸上,那本身就成了新问题。
+      if (win.webContents.isDevToolsOpened()) win.webContents.closeDevTools();
+      else win.webContents.openDevTools({ mode: 'detach' });
+    }
+  });
   globalShortcut.register('Control+Shift+L', cycleStrategy);
   globalShortcut.register('Control+Shift+R', () => broadcast('reset-view', {}));
   globalShortcut.register('Control+Shift+Q', () => app.quit());
@@ -2446,19 +2591,6 @@ app.whenReady().then(() => {
     config.debug = { ...config.debug, showHud: !config.debug.showHud };
     writeConfig();
     broadcast('config', config);
-  });
-
-  // 开发者工具。四个窗口的异常现在都会转到面板的日志区,而**有些东西只有 devtools 有**:
-  // 网络面板(哪个资源 404 了)、元素树(元素在不在)、堆栈(异常从哪一行来)。
-  //
-  // ⚠️ 为什么给的是骨架层和面板:它们是两个"看不见但会静默失效"的窗口。壁纸层的问题
-  // 看得见(黑屏/不动),而这两层的失败症状是"某个开关没反应"。
-  globalShortcut.register('Control+Shift+D', () => {
-    for (const win of [dashboardWindow, overlayWindow]) {
-      if (!win || win.isDestroyed()) continue;
-      if (win.webContents.isDevToolsOpened()) win.webContents.closeDevTools();
-      else win.webContents.openDevTools({ mode: 'detach' });
-    }
   });
 
   console.log('\n=== GestureWall ===');

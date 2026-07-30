@@ -408,7 +408,253 @@ function formatSize(bytes) {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 「我的壁纸」：扫指定目录，不管壁纸是怎么来的
+// ─────────────────────────────────────────────────────────────────────────
+//
+// 用户的原话："自己的壁纸资源就是「我的壁纸」下载的壁纸，不知道从哪里得到的壁纸，
+// 反正只要在指定的壁纸存储目录中有的壁纸就在这里"
+//
+// ⟹ 判据是**目录里有没有 project.json**，不是"我们下载过"。
+// 那样手动拷进去的、朋友发的、从别的机器拷来的，全都能用。
+//
+// ⚠️ 扫描要防三件事，而每一件不防都会表现成"列表是空的 / 卡住"：
+//   ① 深度 —— 用户可能把壁纸放在嵌套目录里，但无限递归会扫穷整个盘
+//   ② 数量 —— 工坊目录可能有几百个，全读 project.json 会卡住界面
+//   ③ 坏文件 —— 一个坏的 project.json 不能让整个列表变空
+
+// 扫多深。
+//
+// ⚠️ 这个数字的含义要说准，我第一版就搞混了：它是**递归调用的层数**，
+// 而"能找到几层深的壁纸"比它多一层。
+//   depth=0  扫 <root> 的直接子目录        → 找到 <root>/<壁纸>/project.json
+//   depth=1  再往下一层                    → 找到 <root>/<分类>/<壁纸>/project.json
+// ⟹ 所以 1 就够（标准布局 + 一层用户分类），设 2 会多扫一层没用的。
+const SCAN_MAX_DEPTH = 1;
+// 最多列多少。⚠️ 不是性能洁癖：工坊订阅几百个很常见，
+// 而读几百个 project.json + 找预览图会让面板卡住好几秒。
+const SCAN_MAX_ITEMS = 500;
+
+// 找出所有含 project.json 的目录。
+//
+// listDir / isDir 由调用方注入 —— 那样这个函数是纯的、能测，
+// 而不用在测试里造真实目录树。
+function findWallpaperDirs(roots, { listDir, isDir, exists }) {
+  const found = [];
+  const seen = new Set();
+
+  const walk = (dir, depth) => {
+    if (found.length >= SCAN_MAX_ITEMS) return;
+    if (depth > SCAN_MAX_DEPTH) return;
+    // ⚠️ 同一个目录被两个 root 覆盖时（比如 root 互为父子）会重复扫。
+    if (seen.has(dir)) return;
+    seen.add(dir);
+
+    let entries = [];
+    try {
+      entries = listDir(dir) || [];
+    } catch {
+      return;   // 权限不足、目录不存在 —— 都不该让整个扫描失败
+    }
+
+    for (const name of entries) {
+      if (found.length >= SCAN_MAX_ITEMS) return;
+      // 跳过隐藏目录：.DS_Store 那类，以及用户不想让我们进的
+      if (name.startsWith('.')) continue;
+      const child = `${dir}/${name}`;
+      if (!isDir(child)) continue;
+      if (exists(`${child}/project.json`)) {
+        found.push(child);
+      } else {
+        walk(child, depth + 1);
+      }
+    }
+  };
+
+  for (const root of roots || []) {
+    if (root && isDir(root)) walk(root, 0);
+  }
+  return { dirs: found, truncated: found.length >= SCAN_MAX_ITEMS };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 浏览工坊（仿 Steam 创意工坊的排版）
+// ─────────────────────────────────────────────────────────────────────────
+//
+// ⚠️ 这条**需要 Steam Web API key**（免费，在 steamcommunity.com/dev/apikey 申请）。
+// 和"贴 ID 看详情"那条不同（那条免 key）：
+//
+//   ISteamRemoteStorage/GetPublishedFileDetails  ✅ 免 key —— 按 ID 拿详情
+//   IPublishedFileService/QueryFiles             ⚠️ 要 key —— 搜索/浏览/排行
+//
+// ⟹ 所以浏览是"配了 key 才有"的功能，而没配 key 时要说清怎么弄，
+// 不能只报"请求失败"。
+
+// Steam 的排序类型。⚠️ 这些数字是 Steam 定的枚举，不是我编的。
+// 而 `search_text` 非空时**必须**用 12（RankedByTextSearch）——
+// 否则搜索词被忽略、返回的是热门榜，而那看起来像"搜索没用"。
+const SORT_ORDERS = [
+  { id: 'trending', label: '近期热门', queryType: 3 },
+  { id: 'recent', label: '最新发布', queryType: 1 },
+  { id: 'popular', label: '总下载量', queryType: 9 },
+  { id: 'subscribed', label: '订阅最多', queryType: 9 },
+];
+
+const TEXT_SEARCH_QUERY_TYPE = 12;
+
+function queryTypeFor(sortId, hasText) {
+  if (hasText) return TEXT_SEARCH_QUERY_TYPE;
+  const hit = SORT_ORDERS.find((s) => s.id === sortId);
+  return hit ? hit.queryType : 3;
+}
+
+// ⚠️ 工坊的筛选**全部走 requiredtags**，没有独立的参数 —— 类型、年龄分级、
+// 分辨率、主题，Steam 都当成标签。这一点不知道的话会去找 `maturity=` 那种参数，
+// 而那不存在。
+//
+// ⚠️⚠️ 而 requiredtags 是**区分大小写**的，写错会**返回空结果且不报错** ——
+// 那看起来像"这个筛选下没东西"，而不像"我拼错了"。所以下面每组都用 Steam 认的原文。
+
+// 类型。
+const TYPE_TAGS_QUERY = [
+  { id: 'Scene', label: '场景', supported: false },
+  { id: 'Video', label: '视频', supported: true },
+  { id: 'Web', label: '网页', supported: true },
+  { id: 'Application', label: '程序', supported: false },
+];
+
+// 年龄分级。
+//
+// ⚠️ 这三个字符串我核过两遍，因为 Open Wallpaper Engine 里有**两套不一样的命名**：
+//   WorkshopViewModel        ["Everyone", "Questionable", "Mature"]   ← 发给 API 的
+//   FilterResultsViewModel   ["Everyone", "Partial Nudity", "Mature"] ← 筛本地已下载的
+// 我用前者。真样本印证：那个壁纸的 project.json 里是 `"contentrating": "Everyone"`。
+//
+// ⚠️ 默认只勾 Everyone（OWE 也这么做）—— 浏览工坊时默认不该出现成人内容，
+// 而"默认全开然后让用户自己关"在这件事上是错的默认值。
+const AGE_TAGS_QUERY = [
+  { id: 'Everyone', label: '全年龄', defaultOn: true },
+  { id: 'Questionable', label: '轻度不适宜', defaultOn: false },
+  { id: 'Mature', label: '成人内容', defaultOn: false },
+];
+
+// 分辨率。⚠️ 这些是 Steam 的原文，不是我起的名。
+const RESOLUTION_TAGS_QUERY = [
+  { id: 'Standard Definition', label: '标准清晰度' },
+  { id: '1280 x 720', label: '720p' },
+  { id: '1920 x 1080', label: '1080p' },
+  { id: '2560 x 1440', label: '1440p' },
+  { id: '3840 x 2160', label: '4K' },
+  { id: 'Ultrawide Standard', label: '带鱼屏' },
+  { id: 'Dual Monitor', label: '双屏' },
+  { id: 'Triple Monitor', label: '三屏' },
+  { id: 'Portrait', label: '竖屏' },
+];
+
+// 主题。真样本用的就是这一套（那个壁纸的 tags 是 ["Sci-Fi"]）。
+const GENRE_TAGS_QUERY = [
+  { id: 'Abstract', label: '抽象' },
+  { id: 'Animal', label: '动物' },
+  { id: 'Anime', label: '动漫' },
+  { id: 'Cartoon', label: '卡通' },
+  { id: 'CGI', label: 'CGI' },
+  { id: 'Cyberpunk', label: '赛博朋克' },
+  { id: 'Fantasy', label: '幻想' },
+  { id: 'Game', label: '游戏' },
+  { id: 'Girls', label: '女性角色' },
+  { id: 'Guys', label: '男性角色' },
+  { id: 'Landscape', label: '风景' },
+  { id: 'Medieval', label: '中世纪' },
+  { id: 'Memes', label: '梗图' },
+  { id: 'Music', label: '音乐' },
+  { id: 'Nature', label: '自然' },
+  { id: 'Pixel art', label: '像素画' },
+  { id: 'Relaxing', label: '放松' },
+  { id: 'Retro', label: '复古' },
+  { id: 'Sci-Fi', label: '科幻' },
+  { id: 'Sports', label: '运动' },
+  { id: 'Technology', label: '科技' },
+  { id: 'Television', label: '影视' },
+  { id: 'Vehicle', label: '载具' },
+  { id: 'Unspecified', label: '未分类' },
+];
+
+// 筛选分组 —— 面板照这个渲染，加一组不用改 UI 代码。
+const FILTER_GROUPS = [
+  { id: 'type', label: '类型', tags: TYPE_TAGS_QUERY },
+  { id: 'age', label: '年龄分级', tags: AGE_TAGS_QUERY },
+  { id: 'resolution', label: '分辨率', tags: RESOLUTION_TAGS_QUERY },
+  { id: 'genre', label: '主题', tags: GENRE_TAGS_QUERY },
+];
+
+// 默认勾上的标签。⚠️ 只有年龄分级有默认值，别的组默认不筛
+//（筛了反而看不到"海量资源"）。
+function defaultTags() {
+  return AGE_TAGS_QUERY.filter((t) => t.defaultOn).map((t) => t.id);
+}
+
+// 组装浏览请求的查询参数。
+//
+// ⚠️ `return_previews` / `return_tags` 少了的话，返回的项**没有预览图和类型** ——
+// 而那正是"浏览着挑壁纸"的全部依据。用户说过："预览图是可以看到的吧"。
+function browseParams({ key, query, sort, tags, page, perPage }) {
+  const hasText = !!(query && query.trim());
+  const params = new URLSearchParams();
+  params.set('key', key);
+  params.set('appid', WE_APP_ID);
+  params.set('query_type', String(queryTypeFor(sort, hasText)));
+  params.set('page', String(Math.max(1, page || 1)));
+  // ⚠️ 用 == null 而不是 || —— perPage: 0 是 falsy，`|| 30` 会把它变成 30，
+  // 于是"限到 1"这个夹取根本没跑到。这类 falsy 兜底吞掉合法值的错很难看出来。
+  const n = perPage == null ? 30 : Number(perPage);
+  params.set('numperpage', String(Math.min(50, Math.max(1, Number.isFinite(n) ? n : 30))));
+  params.set('return_previews', 'true');
+  params.set('return_tags', 'true');
+  params.set('return_short_description', 'true');
+  params.set('return_metadata', 'true');
+  if (hasText) params.set('search_text', query.trim());
+  (tags || []).forEach((tag, i) => params.set(`requiredtags[${i}]`, tag));
+  return params;
+}
+
+// QueryFiles 的响应结构和 GetPublishedFileDetails **不一样**：
+// 前者是 response.publishedfiledetails 但字段略有差异，而且带 total。
+// ⚠️ 复用 parseDetail 是对的（字段名大部分相同），但 total 要单独取 ——
+// 没有它就没法做分页（不知道有几页）。
+function parseBrowseResponse(json) {
+  const response = (json && json.response) || {};
+  const list = response.publishedfiledetails;
+  return {
+    items: Array.isArray(list) ? list.map(parseDetail).filter(Boolean) : [],
+    total: Number(response.total) || 0,
+  };
+}
+
+// 没配 key 时给出能照做的步骤。
+// ⚠️ "需要 API key"这五个字对用户没用 —— 他不知道去哪弄、要不要钱。
+function apiKeyHint() {
+  return '浏览工坊需要一个 Steam Web API key（免费）：\n'
+    + '  1. 打开 steamcommunity.com/dev/apikey\n'
+    + '  2. 域名随便填（比如 localhost），提交\n'
+    + '  3. 把那串 key 粘到下面\n'
+    + '（只用来搜索和浏览。贴 ID 装载壁纸不需要它。）';
+}
+
 root.GestureWallWorkshop = {
+  SORT_ORDERS,
+  TYPE_TAGS_QUERY,
+  AGE_TAGS_QUERY,
+  RESOLUTION_TAGS_QUERY,
+  GENRE_TAGS_QUERY,
+  FILTER_GROUPS,
+  defaultTags,
+  queryTypeFor,
+  browseParams,
+  parseBrowseResponse,
+  apiKeyHint,
+  SCAN_MAX_DEPTH,
+  SCAN_MAX_ITEMS,
+  findWallpaperDirs,
   DETAILS_ENDPOINT,
   QUERY_ENDPOINT,
   detailsBody,

@@ -474,4 +474,224 @@ check('推断出的类型带 typeSource，供上层判支持性', () => {
   assert.strictEqual(item.supported, undefined);
 });
 
+console.log('\n  浏览工坊（仿 Steam 排版）');
+
+// ⚠️ 这条是 Steam 的硬规则：search_text 非空时必须用 query_type=12
+//（RankedByTextSearch）。用别的值搜索词会被**静默忽略** ——
+// 返回的是热门榜，而那看起来像"搜索没用"。
+check('有搜索词时强制用文本搜索的 query_type', () => {
+  assert.strictEqual(S.queryTypeFor('trending', true), 12);
+  assert.strictEqual(S.queryTypeFor('recent', true), 12, '有搜索词时排序不该覆盖它');
+  // 没搜索词时按排序走
+  assert.strictEqual(S.queryTypeFor('trending', false), 3);
+  assert.strictEqual(S.queryTypeFor('recent', false), 1);
+});
+
+check('未知排序回落到热门，不产生非法 query_type', () => {
+  assert.strictEqual(S.queryTypeFor('不存在的排序', false), 3);
+  assert.strictEqual(S.queryTypeFor(null, false), 3);
+});
+
+// ⚠️ return_previews / return_tags 少了的话，返回的项**没有预览图和类型** ——
+// 而那正是"浏览着挑壁纸"的全部依据。用户明确说过"预览图是可以看到的吧"。
+check('请求必须要预览图和类型标签（那是浏览的全部依据）', () => {
+  const p = S.browseParams({ key: 'K', page: 1 });
+  assert.strictEqual(p.get('return_previews'), 'true', '没要预览图');
+  assert.strictEqual(p.get('return_tags'), 'true', '没要类型标签');
+  assert.strictEqual(p.get('appid'), '431960');
+});
+
+check('搜索词和标签正确编码', () => {
+  const p = S.browseParams({ key: 'K', query: '龙猫', tags: ['Video', 'Scene'] });
+  assert.strictEqual(p.get('search_text'), '龙猫');
+  assert.strictEqual(p.get('requiredtags[0]'), 'Video');
+  assert.strictEqual(p.get('requiredtags[1]'), 'Scene');
+});
+
+// 空搜索词不该产生 search_text= 参数 —— 那会让 Steam 当成"搜空字符串"。
+check('空搜索词不带 search_text', () => {
+  const p = S.browseParams({ key: 'K', query: '   ' });
+  assert.strictEqual(p.has('search_text'), false, '空白搜索词被当成搜索了');
+});
+
+// ⚠️ 类型标签首字母必须大写：Steam 的 requiredtags 区分大小写，
+// 传 'scene' 会返回空结果**而不报错** —— 那看起来像"这个筛选没东西"。
+check('类型标签是 Steam 认的大写形式', () => {
+  for (const t of S.TYPE_TAGS_QUERY) {
+    assert.match(t.id, /^[A-Z]/, `${t.id} 首字母没大写 —— Steam 会返回空结果且不报错`);
+  }
+  // 而且要标出哪些我们放不了 —— 筛选按钮上就能看到
+  assert.strictEqual(S.TYPE_TAGS_QUERY.find((t) => t.id === 'Scene').supported, false);
+  assert.strictEqual(S.TYPE_TAGS_QUERY.find((t) => t.id === 'Web').supported, true);
+});
+
+check('每页数量有上下限（Steam 不接受任意值）', () => {
+  assert.strictEqual(S.browseParams({ key: 'K', perPage: 999 }).get('numperpage'), '50');
+  assert.strictEqual(S.browseParams({ key: 'K', perPage: 0 }).get('numperpage'), '1');
+  assert.strictEqual(S.browseParams({ key: 'K', page: -5 }).get('page'), '1');
+});
+
+// ⚠️ total 是分页的唯一依据 —— 没有它就不知道有几页。
+check('响应解析出 total（没它做不了分页）', () => {
+  const out = S.parseBrowseResponse({
+    response: { total: 1234, publishedfiledetails: [
+      { publishedfileid: '1', result: 1, title: 'a', tags: [{ tag: 'Web' }] },
+    ] },
+  });
+  assert.strictEqual(out.total, 1234);
+  assert.strictEqual(out.items.length, 1);
+  assert.strictEqual(out.items[0].type, 'web');
+});
+
+check('响应缺字段时不抛', () => {
+  assert.deepStrictEqual(S.parseBrowseResponse(null), { items: [], total: 0 });
+  assert.deepStrictEqual(S.parseBrowseResponse({ response: {} }), { items: [], total: 0 });
+});
+
+// "需要 API key"这五个字对用户没用 —— 他不知道去哪弄、要不要钱。
+check('没 key 时给出能照做的步骤', () => {
+  const hint = S.apiKeyHint();
+  assert.match(hint, /steamcommunity\.com\/dev\/apikey/, '没给申请地址');
+  assert.match(hint, /免费/, '没说明是免费的');
+  // ⚠️ 还要说清"不配也能用"，否则用户以为整个功能被锁住了
+  assert.match(hint, /不需要它|装载/, '没说明装载壁纸不需要 key');
+});
+
+console.log('\n  我的壁纸（扫目录，不管来源）');
+
+// 用假文件系统测，那样不用造真实目录树。
+function fakeFs(tree, files) {
+  return {
+    listDir: (d) => { if (!tree[d]) throw new Error('ENOENT'); return tree[d]; },
+    isDir: (d) => !!tree[d],
+    exists: (f) => files.has(f),
+  };
+}
+
+check('找出所有含 project.json 的目录', () => {
+  const tree = { '/a': ['w1', 'w2'], '/a/w1': ['project.json'], '/a/w2': ['project.json'] };
+  const files = new Set(['/a/w1/project.json', '/a/w2/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs.sort(), ['/a/w1', '/a/w2']);
+});
+
+// 用户可能建了分类文件夹，所以要往下找一层。
+check('嵌套一层也能找到（用户会建分类目录）', () => {
+  const tree = { '/a': ['分类'], '/a/分类': ['w3'], '/a/分类/w3': ['project.json'] };
+  const files = new Set(['/a/分类/w3/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/分类/w3']);
+});
+
+// ⚠️ 深度必须有上限：无限递归会扫穷整个盘（用户可能把 root 设成家目录）。
+check('深度有上限（否则会扫穷整个盘）', () => {
+  const tree = { '/a': ['b'], '/a/b': ['c'], '/a/b/c': ['d'], '/a/b/c/d': ['project.json'] };
+  const files = new Set(['/a/b/c/d/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.strictEqual(out.dirs.length, 0, '超过 2 层还在扫 —— 深目录会拖死扫描');
+});
+
+// ⚠️ 找到 project.json 就停，不往里钻 —— 壁纸目录里可能有几百个资产文件。
+check('找到 project.json 就停，不进壁纸内部', () => {
+  const tree = {
+    '/a': ['w1'], '/a/w1': ['project.json', 'assets'],
+    '/a/w1/assets': ['nested'], '/a/w1/assets/nested': ['project.json'],
+  };
+  const files = new Set(['/a/w1/project.json', '/a/w1/assets/nested/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/w1'], '钻进壁纸内部了');
+});
+
+// 权限不足、目录不存在 —— 都不该让整个扫描失败。
+check('读不了的目录被跳过，不中断扫描', () => {
+  const tree = { '/a': ['bad', 'good'], '/a/good': ['project.json'] };
+  const files = new Set(['/a/good/project.json']);
+  // '/a/bad' 不在 tree 里 ⟹ isDir 返回 false，直接跳过
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/good']);
+});
+
+check('隐藏目录被跳过（.DS_Store 那类）', () => {
+  const tree = { '/a': ['.hidden', 'w1'], '/a/.hidden': ['project.json'], '/a/w1': ['project.json'] };
+  const files = new Set(['/a/.hidden/project.json', '/a/w1/project.json']);
+  const out = S.findWallpaperDirs(['/a'], fakeFs(tree, files));
+  assert.deepStrictEqual(out.dirs, ['/a/w1']);
+});
+
+check('多个 root 里重复的目录只算一次', () => {
+  const tree = { '/a': ['w1'], '/a/w1': ['project.json'] };
+  const files = new Set(['/a/w1/project.json']);
+  const out = S.findWallpaperDirs(['/a', '/a'], fakeFs(tree, files));
+  assert.strictEqual(out.dirs.length, 1, '同一个目录被算了两次');
+});
+
+check('root 不存在时安静跳过', () => {
+  const out = S.findWallpaperDirs(['/不存在'], fakeFs({}, new Set()));
+  assert.deepStrictEqual(out.dirs, []);
+});
+
+console.log('\n  筛选分组（年龄分级那一套）');
+
+// ⚠️ 工坊的筛选**全部走 requiredtags**，没有独立参数 —— 类型、年龄、分辨率、主题
+// 都是标签。不知道这点的话会去找 `maturity=` 那种参数，而那不存在。
+check('四组筛选都在，且都用 requiredtags 机制', () => {
+  const ids = S.FILTER_GROUPS.map((g) => g.id);
+  assert.deepStrictEqual(ids, ['type', 'age', 'resolution', 'genre']);
+  for (const g of S.FILTER_GROUPS) {
+    assert.ok(g.tags.length > 0, `${g.id} 组是空的`);
+    assert.ok(g.label, `${g.id} 组没有中文标签`);
+  }
+});
+
+// ⚠️ 这三个字符串我核过两遍，因为 Open Wallpaper Engine 里有**两套不一样的命名**：
+//   WorkshopViewModel        ["Everyone","Questionable","Mature"]     ← 发给 API
+//   FilterResultsViewModel   ["Everyone","Partial Nudity","Mature"]   ← 筛本地已下载
+// 用错的那套会让筛选**返回空结果且不报错** —— 看起来像"这个分级下没东西"。
+check('年龄分级用 Steam API 认的那套命名', () => {
+  const ids = S.AGE_TAGS_QUERY.map((t) => t.id);
+  assert.deepStrictEqual(ids, ['Everyone', 'Questionable', 'Mature']);
+  // 真样本印证：那个壁纸的 project.json 里是 "contentrating": "Everyone"
+  assert.ok(ids.includes('Everyone'));
+  // 而 'Partial Nudity' 是筛本地用的，不该出现在这里
+  assert.ok(!ids.includes('Partial Nudity'),
+    '用了筛本地那套命名 —— API 会返回空结果且不报错');
+});
+
+// ⚠️ "默认全开然后让用户自己关"在这件事上是错的默认值。
+check('默认只勾全年龄（浏览时不该出现成人内容）', () => {
+  const defaults = S.defaultTags();
+  assert.deepStrictEqual(defaults, ['Everyone']);
+  assert.ok(!defaults.includes('Mature'), '默认勾上了成人内容');
+});
+
+// requiredtags 区分大小写，而这几组的原文都不是简单的首字母大写
+//（'Sci-Fi' 带连字符、'Pixel art' 只有首词大写、'1920 x 1080' 带空格）
+// ⟹ 逐个核对比"写个正则"可靠。
+check('标签用 Steam 的原文（大小写和空格都不能改）', () => {
+  const genres = S.GENRE_TAGS_QUERY.map((t) => t.id);
+  assert.ok(genres.includes('Sci-Fi'), 'Sci-Fi 的连字符写法不对');
+  assert.ok(genres.includes('Pixel art'), 'Pixel art 只有首词大写');
+  const res = S.RESOLUTION_TAGS_QUERY.map((t) => t.id);
+  assert.ok(res.includes('1920 x 1080'), '分辨率标签的空格写法不对');
+  assert.ok(res.includes('Ultrawide Standard'));
+});
+
+// 四组的标签混在一个 requiredtags 数组里传 —— 那是 Steam 的机制。
+check('多组标签能一起传（类型+年龄+主题同时筛）', () => {
+  const p = S.browseParams({
+    key: 'K', tags: ['Video', 'Everyone', 'Anime'],
+  });
+  assert.strictEqual(p.get('requiredtags[0]'), 'Video');
+  assert.strictEqual(p.get('requiredtags[1]'), 'Everyone');
+  assert.strictEqual(p.get('requiredtags[2]'), 'Anime');
+});
+
+// 标签 id 不能重复 —— 重复的话 UI 上会出现两个一样的按钮，
+// 而点其中一个会让另一个的状态显示错。
+check('所有组的标签 id 全局唯一', () => {
+  const all = S.FILTER_GROUPS.flatMap((g) => g.tags.map((t) => t.id));
+  const dup = all.filter((x, i) => all.indexOf(x) !== i);
+  assert.deepStrictEqual(dup, [], `重复的标签 id：${dup.join(', ')}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
