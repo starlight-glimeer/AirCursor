@@ -14,7 +14,8 @@
     "postinstall": "bash wallpaper/scripts/fetch-vendor.sh",
     "sync": "git pull --ff-only && npm install --silent && bash wallpaper/scripts/fingerprint.sh",
     "fingerprint": "bash wallpaper/scripts/fingerprint.sh",
-    "whatswrong": "bash wallpaper/scripts/whatswrong.sh"
+    "whatswrong": "bash wallpaper/scripts/whatswrong.sh",
+    "restore-gestures": "bash wallpaper/scripts/restore-gestures.sh"
   },
   "build": {
     "appId": "com.starlightglimeer.aircursor",
