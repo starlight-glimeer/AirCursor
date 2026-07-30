@@ -40,22 +40,6 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
   const voiceInfoSource = sourcePaths(root).voiceInfo;
   let pointerHelper = null;
   let voiceHelper = null;
-  // 正在退出。helper 的 exit 回调用它区分"意外退出"和"我们主动杀的"。
-  //
-  // ⚠️ 这个变量**曾经不存在**,而 `exit` 回调里的 `if (quitting) return;` 照样引用它 ——
-  // 因为这个文件是从 AirCursor 的 `electron/main.js` **逐字搬过来**的,而那边 `quitting`
-  // 是模块级变量(`electron/main.js:29`),抽出来时没带上。
-  //
-  // 后果:退出应用时 helper 被 kill → exit 回调触发 → `ReferenceError: quitting is not
-  // defined` → **弹一个 Uncaught Exception 对话框**。用户实测撞到过。
-  //
-  // 而它躲过了所有测试:`node --check` 只解析语法,而那个回调只在**helper 真的退出时**
-  // 才跑 —— 也就是只有真机、只有退出那一刻。这是"未定义标识符"在这个项目里的第三次
-  // (前两次:`sensor.webContents.send` 和 `sendStatus`),而这次是**抽取代码时丢了依赖**,
-  // 不是拼错名字。
-  //
-  // ⟹ **逐字搬一段代码时,它引用的模块级变量不会跟着来**,而缺失只在运行到那一行时才炸。
-  let quitting = false;
   let voiceBuffer = '';
   let voiceStatus = '等待';
   let systemCursorHidden = false;
@@ -331,9 +315,6 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
       return { ok: true };
     },
     stop() {
-      // 先置位再 kill：kill 会同步触发 exit 回调，而那个回调要靠这个标志判断
-      // "这是我们主动杀的"，否则退出时会报一次"helper 意外退出"。
-      quitting = true;
       if (pointerHelper && !pointerHelper.killed) pointerHelper.kill();
       if (voiceHelper && !voiceHelper.killed) voiceHelper.kill();
     },
