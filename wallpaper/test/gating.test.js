@@ -852,4 +852,25 @@ check('主进程报注入计数，面板能分辨三种原因', () => {
   assert.match(dash, /pointerdown 没有/, '缺"事件族不对"这条');
 });
 
+// ⚠️ 这条守的是一个**默认值**，而它让整个功能看起来是坏的。
+//
+// 我把"只在桌面被聚焦（前台是 Finder）时转发"默认设成开。实测（诊断报告）：
+//   mouse: { status: { ok: true }, injected: 0 }
+// 也就是转发起来了、一个事件都没进去 —— 门把它们全挡了。
+//
+// OWE 需要那个门是因为它是**纯壁纸应用**（前台是 Finder 约等于在看壁纸），
+// 而我们有面板、终端、诊断报告 —— 用户大部分时间前台不是 Finder。
+// ⟹ 默认必须放行。副作用（别的应用里滑滚轮壁纸也动）比"点了完全没反应"可接受得多。
+check('Finder 那个门默认关（开着会挡掉大部分点击）', () => {
+  const defaults = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
+    mainSrc.indexOf('let config = null'));
+  assert.match(defaults, /mouseGateFinder:\s*false/,
+    'Finder 门默认开着 —— 那会挡掉绝大多数点击，而状态却显示"已开 ✅"');
+  // Swift 那边的默认值也要一致，否则改了 JS 没用
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'), 'utf8');
+  assert.match(swift, /var gateOnFinder = false/,
+    'helper 里的默认值还是开着 —— 两边不一致时 JS 那边改了也没用');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

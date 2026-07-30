@@ -371,9 +371,16 @@ const defaultConfig = {
     // 鼠标转发。desktop 层收不到鼠标，靠 helper 抓全局事件再注入。
     // ⚠️ 监听鼠标不需要辅助功能权限（键盘才需要），所以 npm start 就能用。
     mouseForward: true,
-    // 只在桌面被聚焦（前台是 Finder）时转发。关掉的话在别的应用里滑滚轮
-    // 壁纸也会跟着动 —— 那不是功能是干扰。
-    mouseAlways: false,
+    // 「只在桌面被聚焦（前台是 Finder）时转发」这个门。
+    //
+    // ⚠️ 默认**关**。我一开始设成 true，而那让整个功能看起来是坏的 ——
+    // 实测诊断报告：status.ok=true 而 injected=0，因为门把事件全挡了。
+    //
+    // OWE 需要这个门是因为它是纯壁纸应用（前台是 Finder 约等于在看壁纸），
+    // 而我们有面板、终端、诊断报告 —— 用户大部分时间前台不是 Finder。
+    // ⟹ 默认放行。代价是在别的应用里滑滚轮壁纸也会动，
+    // 那比"点壁纸完全没反应"可接受得多。
+    mouseGateFinder: false,
   },
   debug: { showHud: true },
 };
@@ -2053,7 +2060,7 @@ function syncMouseForward() {
       ? path.join(process.resourcesPath, 'native', 'GestureWallMouse.swift')
       : path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'),
     outDir: path.join(app.getPath('userData'), 'native'),
-    always: !!config.we.mouseAlways,
+    gateFinder: !!config.we.mouseGateFinder,
     onEvent: (event) => {
       if (!weWindow || weWindow.isDestroyed()) return;
       const point = MouseBridge.toWindowPoint(event, weWindow.getBounds());

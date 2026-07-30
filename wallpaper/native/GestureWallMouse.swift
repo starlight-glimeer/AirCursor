@@ -93,26 +93,43 @@ func handle(_ event: NSEvent) {
     }
 }
 
-// 只在"用户正在看桌面"时转发。
+// 「只在用户正在看桌面时转发」这个门 —— 默认**关**。
 //
-// ⚠️ 这个门是必须的（OWE 也有）：不加的话你在别的应用里滑滚轮，
-// 壁纸也会跟着动 —— 那不是功能，是干扰。
+// ⚠️ 这个默认值我一开始设反了，而那让功能看起来是坏的。实测证据（诊断报告）：
+//   mouse: { status: { ok: true }, injected: 0 }
+// 也就是 helper 起来了、一个事件都没转发过 —— 因为门把它们全挡了。
 //
-// 判据是前台应用是不是 Finder。⚠️ 桌面被聚焦时前台应用就是 Finder，
-// 这是 macOS 的既有行为，不是我们的约定。
+// 为什么 OWE 需要这个门而我们不需要：它是**纯壁纸应用**，用户和它的唯一交互
+// 就是桌面，所以"前台是 Finder"约等于"在看壁纸"。而我们有面板、有终端、
+// 有诊断报告 —— 用户大部分时间前台**不是** Finder，那个门会挡掉绝大多数点击。
 //
-// `--always` 用来绕过这个门，因为**这个判据本身可能不成立**（比如用户用了
-// 别的桌面管理工具）。给个开关比让人卡在"点了没反应"上好。
-var requireFinder = true
+// ⟹ 默认放行，需要收紧的人用 `--gate-finder` 打开。
+// 代价是在别的应用里滑滚轮壁纸也会动 —— 那是个可接受的副作用，
+// 而"点壁纸完全没反应"不是。
+var gateOnFinder = false
+// 被门挡掉的计数。⚠️ 必须报出来：否则"没反应"和"被挡了"分不清，
+// 而那正是我上一版让用户白测一轮的原因。
+var blockedByGate = 0
 
 for arg in CommandLine.arguments.dropFirst() {
-    if arg == "--always" { requireFinder = false }
+    if arg == "--gate-finder" { gateOnFinder = true }
+    // 兼容旧参数名（老的 helper 二进制可能还在缓存里）
+    if arg == "--always" { gateOnFinder = false }
 }
 
 let monitor = NSEvent.addGlobalMonitorForEvents(matching: WATCHED) { event in
-    if requireFinder {
+    if gateOnFinder {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        guard front == "com.apple.finder" else { return }
+        if front != "com.apple.finder" {
+            blockedByGate += 1
+            // 每挡 50 个报一次，让上层知道"事件有，但被门挡了"。
+            if blockedByGate % 50 == 1 {
+                emit(["type": "status", "state": "gated",
+                      "blocked": blockedByGate,
+                      "front": front ?? "(未知)"])
+            }
+            return
+        }
     }
     handle(event)
 }
@@ -126,6 +143,6 @@ if monitor == nil {
     exit(2)
 }
 
-emit(["type": "status", "state": "running", "requireFinder": requireFinder])
+emit(["type": "status", "state": "running", "gateOnFinder": gateOnFinder])
 // RunLoop 必须跑起来，否则监听回调一次都不会触发（进程会直接退出）。
 RunLoop.main.run()

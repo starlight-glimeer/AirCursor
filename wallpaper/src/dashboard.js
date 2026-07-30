@@ -621,7 +621,7 @@ function apply(next) {
   renderAudioSource();
   renderWEStrategy();
   mouseForwardBox.checked = !!(config.we && config.we.mouseForward);
-  mouseAlwaysBox.checked = !!(config.we && config.we.mouseAlways);
+  mouseGateBox.checked = !!(config.we && config.we.mouseGateFinder);
   if (!built) {
     renderSliders('tuning', TUNING);
     renderSliders('musicTuning', MUSIC_TUNING);
@@ -828,13 +828,13 @@ function renderWEStrategy() {
 // 鼠标转发。⚠️ 这是"真壁纸层 + 鼠标交互"能同时成立的关键 ——
 // 我原来做成了让用户在两者间选一个，而用户否掉了那个方案（他是对的）。
 const mouseForwardBox = document.getElementById('mouseForward');
-const mouseAlwaysBox = document.getElementById('mouseAlways');
+const mouseGateBox = document.getElementById('mouseGateFinder');
 const mouseStateNode = document.getElementById('mouse-state');
 
 mouseForwardBox.onchange = () =>
   window.gw.weSetMouseForward({ mouseForward: mouseForwardBox.checked });
-mouseAlwaysBox.onchange = () =>
-  window.gw.weSetMouseForward({ mouseAlways: mouseAlwaysBox.checked });
+mouseGateBox.onchange = () =>
+  window.gw.weSetMouseForward({ mouseGateFinder: mouseGateBox.checked });
 
 window.gw.onMouseStatus((status) => {
   if (!status) { mouseStateNode.textContent = '—'; return; }

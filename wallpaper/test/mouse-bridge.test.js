@@ -141,13 +141,31 @@ check('监听建不起来时说清不是权限问题', () => {
   assert.match(generic.text, /不是权限/, '没说明这不是权限问题');
 });
 
-// "只在桌面被聚焦时转发"和"任何时候都转发"是不同的行为，用户要知道自己在哪个。
+// "只在桌面被聚焦时转发"和"一直转发"是不同的行为，用户要知道自己在哪个。
+// ⚠️ 字段名从 requireFinder 改成 gateOnFinder 了 —— 连带这条断言也要改。
 check('running 状态说明当前是哪种转发模式', () => {
-  const gated = M.describeStatus({ type: 'status', state: 'running', requireFinder: true });
-  const always = M.describeStatus({ type: 'status', state: 'running', requireFinder: false });
-  assert.ok(gated.ok && always.ok);
-  assert.notStrictEqual(gated.text, always.text, '两种模式说的是同一句话');
+  const gated = M.describeStatus({ type: 'status', state: 'running', gateOnFinder: true });
+  const open = M.describeStatus({ type: 'status', state: 'running', gateOnFinder: false });
+  assert.ok(gated.ok && open.ok);
+  assert.notStrictEqual(gated.text, open.text, '两种模式说的是同一句话');
   assert.match(gated.text, /桌面/);
+});
+
+// ⚠️ 这条是这一轮的核心教训。诊断报告显示：
+//   mouse: { status: { ok: true }, injected: 0 }
+// helper 起来了、状态显示成功、而一个事件都没转发过 —— 因为"只在桌面被聚焦时"
+// 那个门把它们全挡了。而用户看到的是 "✅ 鼠标转发已开"。
+//
+// ⟹ 被门挡掉**必须单独报**，否则"成功"和"完全没用"长得一样。
+check('被门挡掉时明确报出来（不能显示成"已开 ✅"）', () => {
+  const out = M.describeStatus({
+    type: 'status', state: 'gated', blocked: 137, front: 'com.apple.Terminal',
+  });
+  assert.strictEqual(out.ok, false, '被挡了还报 ok —— 那正是让人白测一轮的原因');
+  assert.match(out.text, /挡/, '没说清是被挡了');
+  assert.match(out.text, /137/, '没报被挡了多少个');
+  assert.match(out.text, /Terminal/, '没说当前前台是谁 —— 那是查因的关键');
+  assert.match(out.text, /关掉/, '没告诉用户怎么办');
 });
 
 check('helper 源码不在时报错而不是抛', () => {

@@ -124,9 +124,20 @@ function describeStatus(msg) {
   if (msg.state === 'running') {
     return {
       ok: true,
-      text: msg.requireFinder
+      text: msg.gateOnFinder
         ? '鼠标转发已开（只在桌面被聚焦时生效）'
-        : '鼠标转发已开（任何时候都转发）',
+        : '鼠标转发已开',
+      gateOnFinder: !!msg.gateOnFinder,
+    };
+  }
+  // ⚠️ 被门挡掉要单独报。上一版就是因为没有这条，
+  // 用户看到 "已开 ✅" 而实际一个事件都没进去 —— 白测了一轮。
+  if (msg.state === 'gated') {
+    return {
+      ok: false,
+      text: `鼠标事件被"只在桌面被聚焦时"那个门挡住了（已挡 ${msg.blocked} 个，`
+        + `当前前台是 ${msg.front}）—— 把那个开关关掉`,
+      gated: true, blocked: msg.blocked,
     };
   }
   if (msg.state === 'failed') {
@@ -137,7 +148,7 @@ function describeStatus(msg) {
   return { ok: false, text: `未知状态 ${msg.state}` };
 }
 
-function start({ sourcePath, outDir, always, onEvent, onStatus,
+function start({ sourcePath, outDir, gateFinder, onEvent, onStatus,
   spawnFn = spawn, runFn = spawnSync }) {
   const built = ensureHelper(sourcePath, outDir, runFn);
   if (!built.ok) {
@@ -145,7 +156,8 @@ function start({ sourcePath, outDir, always, onEvent, onStatus,
     return null;
   }
 
-  const child = spawnFn(built.binary, always ? ['--always'] : [],
+  // ⚠️ 默认不传参数就是"不设门" —— 那个默认值我改过一次（见 Swift 那边的注释）。
+  const child = spawnFn(built.binary, gateFinder ? ['--gate-finder'] : [],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   let buffer = '';
 
