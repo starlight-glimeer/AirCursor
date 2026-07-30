@@ -631,4 +631,43 @@ check('已下载列表扫本地，不需要网络', () => {
   assert.match(handler, /catch/, '解析失败没兜底，一个坏文件会让列表全空');
 });
 
+console.log('\n  跨桌面行为（实测撞上"壁纸追过来"）');
+
+// ⚠️ 这条来自真机反馈：用户左右切桌面，壁纸"直接追过来覆盖了"。
+//
+// 根因是**普通窗口 + setVisibleOnAllWorkspaces(true) 这个组合本身是错的**：
+// 对普通窗口，"在所有桌面可见"的意思是"这一个窗口跟着你跑"，
+// 而不是"每个桌面都有壁纸"。
+//
+// 真壁纸层（desktop 策略）没这个问题 —— 那一层本来就每个 Space 各自渲染。
+//
+// macOS 原生要的是 collectionBehavior = [.stationary, .canJoinAllSpaces]，
+// 关键在 .stationary（跨 Space 存在但不随切换移动）。
+// ⚠️ Electron 只暴露了 canJoinAllSpaces 那半边 ⟹ 拿不到那个组合。
+check('bottom-normal 不设跨桌面（普通窗口那么设会跟着你跑）', () => {
+  const start = mainSrc.indexOf("id: 'bottom-normal'");
+  const end = mainSrc.indexOf("id: 'floating'");
+  assert.ok(start > 0 && end > start, '找不到 bottom-normal 策略');
+  const strategy = codeOnly(mainSrc.slice(start, end));
+  assert.ok(!/setVisibleOnAllWorkspaces/.test(strategy),
+    'bottom-normal 又设了 setVisibleOnAllWorkspaces —— 切桌面时壁纸会追过来覆盖');
+});
+
+// desktop 是真壁纸层，那里的语义是对的，必须保留。
+check('desktop 保留跨桌面（真壁纸层每个 Space 各自渲染）', () => {
+  const start = mainSrc.indexOf("id: 'desktop'");
+  const end = mainSrc.indexOf("id: 'bottom-normal'");
+  const strategy = mainSrc.slice(start, end);
+  assert.match(strategy, /setVisibleOnAllWorkspaces\(true/,
+    'desktop 层丢了跨桌面 —— 那样别的桌面就没壁纸了');
+});
+
+// WE 壁纸默认走 bottom-normal（因为它的交互主体是鼠标），
+// 所以上面那条修的正好是用户实际在用的那条。
+check('WE 壁纸默认策略仍是能收鼠标的那条', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
+    mainSrc.indexOf('function sendWEProperties'));
+  assert.match(fn, /config\.we\.strategy\s*\|\|\s*'bottom-normal'/);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

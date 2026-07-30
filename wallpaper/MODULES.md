@@ -75,6 +75,17 @@ git -C ~/workspace/AirCursor worktree remove /tmp/we-test --force
 ⟹ 所以下面那些"零真机验证"的警告**对上述路径已经不适用了**。仍然没验的只有：
 音频频谱（要打包 + 屏幕录制权限）、多显示器、手势控制 WE 壁纸。
 
+⚠️ **另一条真机才暴露的**：`bottom-normal` 策略下切桌面时壁纸会**跟着追过来覆盖**。
+根因是「普通窗口 + `setVisibleOnAllWorkspaces(true)`」这个组合本身错了 ——
+对普通窗口那个 API 的意思是"这一个窗口跟着你跑"，不是"每个桌面都有壁纸"。
+
+macOS 原生要的是 `collectionBehavior = [.stationary, .canJoinAllSpaces]`，
+关键在 **`.stationary`**（跨 Space 存在但不随切换移动）。
+⚠️ **Electron 只暴露了 `canJoinAllSpaces` 那半边** ⟹ 拿不到那个组合。
+
+⟹ 现状：`bottom-normal` 只待在当前桌面（其他桌面显示系统原生壁纸）。
+要"每个桌面都有我们的壁纸**且**能收鼠标"，得写原生模块补 `.stationary`。
+
 ⚠️ **一条真机才暴露的事**：工坊里有的物品只上传了**缩略图**没有本体
 （文件名带 `preview`，几百像素）。那种放大后必然糊，而"糊"看起来像渲染差 ——
 所以现在会明确警告，并且小图自动改用 `contain` 而不是 `cover`。

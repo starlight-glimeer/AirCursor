@@ -77,6 +77,8 @@ const WALL_STRATEGIES = [
     label: 'desktop 层（真壁纸层，收不到鼠标）',
     options: { type: 'desktop' },
     apply: (win) => {
+      // desktop 是真壁纸层：每个 Space 各自渲染，所以"所有桌面可见"在这里的语义
+      // 是对的（每个桌面都有壁纸），不会变成"一个窗口跟着你跑"。
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       // The menu bar strip is the one part a normal window cannot reach: macOS
       // reserves it, and setBounds gets clamped just below it. Verified against the
@@ -87,11 +89,22 @@ const WALL_STRATEGIES = [
   },
   {
     id: 'bottom-normal',
-    label: '普通窗口压到最底（能收鼠标，会出现在 Mission Control）',
+    label: '普通窗口压到最底（能收鼠标，只在当前桌面）',
     options: {},
     apply: (win) => {
       win.setAlwaysOnTop(false);
-      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      // ⚠️ **不能**设 setVisibleOnAllWorkspaces(true)。
+      //
+      // 实测（用户左右切桌面）：壁纸"直接追过来覆盖"了。原因是这是个**普通窗口** ——
+      // "在所有桌面可见"对它的意思是"这一个窗口跟着你跑"，而不是"每个桌面都有壁纸"。
+      //
+      // 真壁纸层（desktop 策略）没这个问题：那一层本来就是每个 Space 各自渲染的，
+      // 所以 canJoinAllSpaces 在那里的语义才是对的。
+      //
+      // macOS 原生的做法是 collectionBehavior = [.stationary, .canJoinAllSpaces]
+      //（OWE 就这么写的），关键在 **.stationary**：跨 Space 存在但**不随切换移动**。
+      // ⚠️ 而 Electron 只暴露了 canJoinAllSpaces 那半边，没有 stationary。
+      // ⟹ 拿不到那个组合，所以这条策略只能待在当前桌面。
       liftOverMenuBar(win);
     },
   },
@@ -105,6 +118,9 @@ const WALL_STRATEGIES = [
       // level is only for checking the rendering, so covering everything is the
       // point.
       win.setAlwaysOnTop(true, 'screen-saver');
+      // ⚠️ 这条**故意**保留跨桌面：它的用途是"一定看得见，用来验渲染"，
+      // 那时候跟着切桌面走是符合意图的。而 bottom-normal 那条不行 ——
+      // 那是当壁纸用的，壁纸跟着你跑就成了"覆盖别的桌面"。
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       liftOverMenuBar(win);
     },
