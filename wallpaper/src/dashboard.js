@@ -935,17 +935,129 @@ for (const [id, key] of [['ws-user', 'username'], ['ws-pass', 'password'], ['ws-
   };
 }
 
-document.getElementById('ws-download').onclick = async () => {
+// 先看预览再决定装不装。
+//
+// ⚠️ 这一步是补一个产品缺口：我原来只做了"填 ID → 下载"，而那等于把命令行搬进 GUI。
+// 工坊的本质是浏览，没有预览图就没法挑。而且类型在这里就能看到 ⟹ scene 类可以在
+// 下载几百 MB 之前就说清"装了也只能看静态图"。
+const peekCard = document.getElementById('ws-peek-card');
+
+function renderPeek(item) {
+  peekCard.innerHTML = '';
+  peekCard.className = 'ws-card on';
+  if (!item.ok) {
+    peekCard.innerHTML = `<div class="meta"><span class="warn">${item.reason}</span></div>`;
+    return;
+  }
+
+  if (item.preview) {
+    const img = document.createElement('img');
+    img.src = item.preview;
+    // ⚠️ 预览图加载失败不能让卡片塌掉 —— 那会看起来像"这个壁纸有问题"，
+    // 而实际上只是图挂了（Steam 的 CDN 在国内经常要代理）。
+    img.onerror = () => { img.style.display = 'none'; };
+    peekCard.appendChild(img);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const typeText = item.type
+    ? `${item.type}${item.supported ? ' · 能跑' : ' · 暂不支持'}`
+    : '类型未标注';
+  meta.innerHTML = `<b>${item.title}</b>`
+    + `<span class="sub">${typeText} · ${W_FORMAT(item.sizeBytes)} · ${item.subscriptions} 人订阅</span>`;
+  if (!item.supported && item.type) {
+    // 在下载之前就说清后果。⚠️ 让用户下完 200MB 才发现装不了，比一开始说清糟得多。
+    meta.innerHTML += `<span class="warn">${item.type === 'scene'
+      ? 'scene 类是 WE 编辑器的私有格式（含它自己方言的 shader 和粒子），装了也只能看静态图'
+      : 'application 类是 Windows 程序，macOS 上跑不了'}</span>`;
+  }
+  peekCard.appendChild(meta);
+
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.className = item.supported ? 'act primary' : 'act';
+  go.textContent = item.supported ? '下载并装载' : '仍要下载';
+  go.onclick = () => startDownload(item.id);
+  acts.appendChild(go);
+  peekCard.appendChild(acts);
+}
+
+const W_FORMAT = (bytes) => {
+  const n = Number(bytes) || 0;
+  if (n <= 0) return '大小未知';
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+};
+
+document.getElementById('ws-peek').onclick = async () => {
   const input = document.getElementById('ws-id').value;
+  peekCard.className = 'ws-card on';
+  peekCard.innerHTML = '<div class="meta">查询中…</div>';
+  const result = await window.gw.workshopDetails(input);
+  if (!result.ok) {
+    peekCard.innerHTML = `<div class="meta"><span class="warn">${result.error}</span>`
+      + `${result.hint ? `\n${result.hint}` : ''}</div>`;
+    return;
+  }
+  if (!result.items.length) {
+    peekCard.innerHTML = '<div class="meta">没查到这个物品</div>';
+    return;
+  }
+  renderPeek(result.items[0]);
+};
+
+// 已下载的列表 —— 下过的东西要能重新装载，而不是每次重填 ID。
+async function renderLocal() {
+  const host = document.getElementById('ws-local');
+  const result = await window.gw.workshopLocal();
+  if (!result.ok || !result.items.length) {
+    host.innerHTML = '<span class="hint">还没下过东西。上面贴个链接试试。</span>';
+    return;
+  }
+  host.innerHTML = '';
+  for (const item of result.items) {
+    const card = document.createElement('div');
+    card.className = 'ws-item';
+    card.title = item.dir;
+    const img = document.createElement('img');
+    // 本地文件走 file://（自定义 protocol 只服务当前装载的那个壁纸）
+    if (item.preview) img.src = `file://${encodeURI(item.preview)}`;
+    img.onerror = () => { img.style.display = 'none'; };
+    card.appendChild(img);
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = item.title || item.id;
+    card.appendChild(nm);
+    const tp = document.createElement('div');
+    tp.className = item.supported ? 'tp' : 'tp no';
+    tp.textContent = item.supported ? item.typeLabel
+      : `${item.typeLabel} · 暂不支持`;
+    card.appendChild(tp);
+    card.onclick = async () => {
+      const out = await window.gw.workshopLoadLocal(item.dir);
+      if (!out.ok) wsState.innerHTML = `<span class="warn">${out.error}</span>`;
+      renderWEStatus();
+    };
+    host.appendChild(card);
+  }
+}
+
+document.getElementById('ws-refresh-local').onclick = renderLocal;
+renderLocal();
+
+async function startDownload(id) {
   wsState.textContent = '开始…';
-  const result = await window.gw.workshopDownload(input);
+  const result = await window.gw.workshopDownload(id);
   if (result.ok) {
     wsState.innerHTML = `✅ 装载成功\n${result.dir}`;
     renderWEStatus();
+    renderLocal();
     return;
   }
-  // ⚠️ 失败时把能行动的信息全给出来：原因 + 我们找过的路径 + 原始输出末尾。
-  // 只说"下载失败"的话，用户和我都没法判断是账号、ID、还是我的路径推断错了。
   let html = `<span class="warn">${result.error}</span>`;
   if (result.searched && result.searched.length) {
     html += `\n找过这些路径：\n${result.searched.join('\n')}`;
@@ -954,7 +1066,7 @@ document.getElementById('ws-download').onclick = async () => {
     html += `\n\nsteamcmd 最后几行：\n${result.tail.slice(-8).join('\n')}`;
   }
   wsState.innerHTML = html;
-};
+}
 
 // 进度实时显示。⚠️ 没有它，下载大壁纸时界面一动不动，和卡死分不清。
 window.gw.onWorkshopProgress((hit) => {

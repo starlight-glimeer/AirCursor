@@ -571,4 +571,59 @@ check('换源时显式 load（否则旧视频继续放）', () => {
     '换源没调 load —— 旧的那段会继续放，看起来像装载失败');
 });
 
+// ⚠️ 这条守的是刚犯的错：我把 ws-download 按钮换成 ws-peek，但 dashboard.js 里
+// 还留着 getElementById('ws-download').onclick ⟹ **启动时抛异常，整个面板挂掉**。
+//
+// node --check 看不见这个（语法完全合法），而症状是"面板打开一片空白"——
+// 和"面板没做好"分不清。另一个模块也栽过同一个形状（删下拉框留下元素引用）。
+check('dashboard.js 引用的 element id 在 HTML 里都存在', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const ids = [...js.matchAll(/getElementById\('([\w-]+)'\)/g)].map((m) => m[1]);
+  assert.ok(ids.length > 10, `只解析出 ${ids.length} 个 id，正则失效了`);
+  const missing = [...new Set(ids)].filter((id) => !html.includes(`id="${id}"`));
+  assert.deepStrictEqual(missing, [],
+    `这些 id 在 HTML 里不存在 ⟹ 启动时抛异常、整个面板挂掉：${missing.join(', ')}`);
+});
+
+console.log('\n  工坊内容展示');
+
+// ⚠️ 只给"填 ID"的输入框等于把命令行搬进 GUI，而工坊的本质是浏览。
+// 用户的原话："平时不都是随便浏览着看的吗"。
+check('详情接口不需要 API key（所以预览是零门槛的）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'workshop.js'), 'utf8');
+  assert.match(src, /ISteamRemoteStorage\/GetPublishedFileDetails/,
+    '没用免 key 的详情接口');
+  // 主进程调的必须是那个免 key 的，不能是要 key 的 QueryFiles
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-details'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-local'"));
+  assert.match(handler, /DETAILS_ENDPOINT/, '详情没走免 key 的接口');
+  assert.ok(!/QUERY_ENDPOINT/.test(handler), '详情用了要 API key 的 QueryFiles');
+});
+
+// 类型在下载**之前**就能知道 —— 靠工坊的 tag。
+// ⚠️ 让用户下完几百 MB 才发现装不了，比一开始说清糟得多。
+check('下载前就能看出类型，并说清装了会怎样', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /item\.supported/, '预览卡片没用类型判断');
+  assert.match(dash, /只能看静态图|暂不支持/, '不支持的类型没在下载前说清后果');
+});
+
+// 预览图挂了不能让卡片塌掉 —— Steam 的 CDN 在国内常要代理，
+// 而"图没加载出来"和"这个壁纸有问题"是两件事。
+check('预览图加载失败有兜底', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /img\.onerror/, '预览图没有 onerror 兜底');
+});
+
+// 下过的东西要能重新装载，不用每次重填 ID。
+check('已下载列表扫本地，不需要网络', () => {
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('workshop-local'"),
+    mainSrc.indexOf("ipcMain.handle('workshop-load-local'"));
+  assert.match(handler, /STEAM_ROOTS/, '没扫所有候选根目录');
+  assert.match(handler, /readdirSync/, '没读目录');
+  // ⚠️ 一个坏的 project.json 不能挡住整个列表
+  assert.match(handler, /catch/, '解析失败没兜底，一个坏文件会让列表全空');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

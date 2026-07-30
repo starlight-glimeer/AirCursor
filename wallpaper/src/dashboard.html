@@ -191,6 +191,28 @@
   }
   .tier.pro { background: rgba(255,180,84,.18); color: var(--warn); }
 
+  /* ---- 创意工坊：预览卡片和已下载列表 ----
+     没有预览图就没法挑壁纸，而挑不了这个功能只服务已经知道 ID 的人。 */
+  .ws-card { display: none; gap: 12px; margin-top: 10px; padding: 10px;
+             border: 1px solid var(--line); border-radius: 8px; background: #15151b; }
+  .ws-card.on { display: flex; }
+  .ws-card img { width: 160px; height: 90px; object-fit: cover; border-radius: 6px;
+                 background: #000; flex-shrink: 0; }
+  .ws-card .meta { flex: 1; min-width: 0; font-size: 12px; line-height: 1.7; }
+  .ws-card .meta b { display: block; font-size: 13px; color: var(--text);
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-card .meta .sub { color: var(--dim); font-size: 11px; }
+  .ws-card .acts { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+             background: #15151b; cursor: pointer; }
+  .ws-item:hover { border-color: rgba(255,255,255,.22); }
+  .ws-item img { width: 100%; height: 84px; object-fit: cover; display: block; background: #000; }
+  .ws-item .nm { font-size: 11px; padding: 6px 8px 2px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .ws-item .tp { font-size: 10px; color: var(--dim); padding: 0 8px 7px; }
+  .ws-item .tp.no { color: #ffb4b4; }
+
   /* ---- WE 壁纸的自动生成控件 ----
      和 .row2 分开：那个是 1fr/64px 两列，而这里要 标签/控件/读数 三列，
      且控件类型不固定（滑块、下拉、勾选、文本各占中间那格）。 */
@@ -306,9 +328,14 @@
         那些是文件，和 WE 本体是不是 Windows 无关。
       </p>
       <div class="bar-row">
-        <input id="ws-id" type="text" placeholder="工坊 ID 或创意工坊页面链接">
-        <button class="act primary" id="ws-download" type="button">下载并装载</button>
+        <input id="ws-id" type="text" placeholder="贴创意工坊页面链接或 ID，先看预览再决定">
+        <button class="act" id="ws-peek" type="button">看看是什么</button>
       </div>
+
+      <!-- 预览卡片：贴链接之后先看这个再决定装不装。
+           ⚠️ 存在的理由：只给一个填 ID 的输入框等于把命令行搬进 GUI，而工坊的本质是浏览。
+           而且类型标签在这里就能看到 ⟹ scene 类可以在下载 200MB 之前就劝退。 -->
+      <div id="ws-peek-card" class="ws-card"></div>
       <div class="we-row">
         <label>Steam 用户名</label>
         <input id="ws-user" type="text" placeholder="登录名，不是昵称">
@@ -325,6 +352,14 @@
         <span></span>
       </div>
       <div id="ws-state" class="hint">—</div>
+    </div>
+
+    <h3>已下载的壁纸</h3>
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="ws-refresh-local" type="button">刷新列表</button>
+      </div>
+      <div id="ws-local" class="ws-grid"><span class="hint">还没下过东西。</span></div>
       <p class="hint">
         ⚠️ 需要 <b>steamcmd</b>（Valve 官方命令行工具）：<code>brew install --cask steamcmd</code>
         <br>⚠️ Guard 码几分钟就过期 —— 报"需要验证码"时再填，然后立刻点下载。

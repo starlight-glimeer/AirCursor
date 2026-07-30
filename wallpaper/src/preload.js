@@ -58,6 +58,9 @@ contextBridge.exposeInMainWorld('gw', {
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),
   workshopSetSteam: (patch) => ipcRenderer.invoke('workshop-set-steam', patch),
   workshopProbe: () => ipcRenderer.invoke('workshop-probe'),
+  workshopDetails: (input) => ipcRenderer.invoke('workshop-details', input),
+  workshopLocal: () => ipcRenderer.invoke('workshop-local'),
+  workshopLoadLocal: (dir) => ipcRenderer.invoke('workshop-load-local', dir),
 
   // 诊断报告
   exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),

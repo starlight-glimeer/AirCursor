@@ -226,7 +226,103 @@ function redactArgs(args) {
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 工坊内容展示（预览图、标题、类型）
+// ─────────────────────────────────────────────────────────────────────────
+//
+// 为什么必须有：只给一个"填 ID"的输入框是把命令行搬进 GUI —— 而工坊的本质是**浏览**。
+// 用户说得对："平时不都是随便浏览着看的吗"。没有预览图就没法挑，而挑不了这个功能
+// 等于只服务已经知道 ID 的人。
+//
+// ⚠️ Steam 有两个相关 API，差别决定我们能做到哪一步（读 OWE 的代码确认的）：
+//
+//   ISteamRemoteStorage/GetPublishedFileDetails  ✅ 不要 API key
+//     按 ID 批量拿：标题、预览图 URL、类型标签、大小、订阅数
+//   IPublishedFileService/QueryFiles             ⚠️ 要 Web API key
+//     搜索、按热度浏览、排行榜
+//
+// ⟹ 所以"贴一个 ID/链接就能先看到预览图再决定装不装"零门槛就能做；
+// "在应用内浏览整个工坊"需要用户去申请一个免费的 Web API key。
+// 两件分开做，先把零门槛那半边做掉。
+const DETAILS_ENDPOINT = 'https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/';
+const QUERY_ENDPOINT = 'https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/';
+
+// 批量取详情的 POST body。表单编码，不是 JSON —— 这个 API 只吃 form。
+function detailsBody(workshopIds) {
+  const ids = (workshopIds || []).filter(Boolean);
+  const parts = [`itemcount=${ids.length}`];
+  ids.forEach((id, i) => parts.push(`publishedfileids[${i}]=${encodeURIComponent(id)}`));
+  return parts.join('&');
+}
+
+// WE 用 tag 标类型（Scene / Video / Web / Application）。
+// ⚠️ 这是**装载前**就能知道类型的唯一途径 —— 靠它我们能在下载之前就告诉用户
+// "这个是 scene，装了也只能看静态图"，而不是让他下完 200MB 才发现。
+const TYPE_TAGS = { scene: 'scene', video: 'video', web: 'web', application: 'application' };
+
+function typeFromTags(tags) {
+  for (const tag of tags || []) {
+    const name = String((tag && tag.tag) || tag || '').toLowerCase();
+    if (TYPE_TAGS[name]) return name;
+  }
+  return null;
+}
+
+// 把 API 的一项翻译成我们要显示的样子。
+//
+// ⚠️ 字段全部防御性读取：这个 API 对已删除/私有的物品返回 result != 1 且大部分字段缺失，
+// 而那时候直接读 .title 会是 undefined ⟹ 界面上出现一张无字白卡片，
+// 用户不知道是加载中还是这个壁纸没了。
+function parseDetail(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = raw.publishedfileid ? String(raw.publishedfileid) : null;
+  if (!id) return null;
+  // result: 1 = 正常，其他都是拿不到（已删除、私有、ID 不存在）
+  const ok = raw.result === 1 || raw.result === undefined;
+  if (!ok) {
+    return { id, ok: false, reason: '这个工坊物品拿不到 —— 已删除、设为私有，或者 ID 不对' };
+  }
+  const type = typeFromTags(raw.tags);
+  return {
+    id,
+    ok: true,
+    title: raw.title || '(无标题)',
+    preview: raw.preview_url || null,
+    type,
+    // 大小和订阅数都是给人做决定用的：几百 MB 的壁纸值不值得等，
+    // 订阅数说明它是不是靠谱的作品。
+    sizeBytes: Number(raw.file_size) || 0,
+    subscriptions: Number(raw.subscriptions) || 0,
+    description: (raw.description || '').slice(0, 400),
+    // ⚠️ 直接告诉用户"装了会怎样"，而不是等他下完才知道。
+    // 这是把「四种类型明确分派」那个决定往前挪到下载之前。
+    supported: type === 'web' || type === 'video',
+  };
+}
+
+function parseDetailsResponse(json) {
+  const list = json && json.response && json.response.publishedfiledetails;
+  if (!Array.isArray(list)) return [];
+  return list.map(parseDetail).filter(Boolean);
+}
+
+// 人能读的大小。⚠️ 显示 "228893184" 对做决定毫无帮助。
+function formatSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n <= 0) return '大小未知';
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 root.GestureWallWorkshop = {
+  DETAILS_ENDPOINT,
+  QUERY_ENDPOINT,
+  detailsBody,
+  typeFromTags,
+  parseDetail,
+  parseDetailsResponse,
+  formatSize,
   WE_APP_ID,
   STEAMCMD_CANDIDATES,
   STEAM_ROOTS,

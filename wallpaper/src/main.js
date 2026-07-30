@@ -1453,6 +1453,97 @@ ipcMain.handle('workshop-download', async (_event, input) => {
   });
 });
 
+// 取工坊物品详情（预览图、标题、类型）。
+//
+// ⚠️ 这条**不需要登录也不需要 API key** —— 用的是 GetPublishedFileDetails。
+// 所以"贴个链接先看预览图再决定装不装"是零门槛的，而那正是工坊该有的体验：
+// 只给一个填 ID 的输入框等于把命令行搬进 GUI。
+ipcMain.handle('workshop-details', async (_event, input) => {
+  // 一次可以查多个：用户可能粘一串 ID，或者我们将来做"已订阅列表"。
+  const ids = (Array.isArray(input) ? input : [input])
+    .map((x) => Workshop.parseWorkshopId(x))
+    .filter(Boolean);
+  if (!ids.length) {
+    return { ok: false, error: '认不出工坊 ID —— 贴数字 ID 或创意工坊页面链接都行' };
+  }
+
+  try {
+    const response = await net.fetch(Workshop.DETAILS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: Workshop.detailsBody(ids),
+    });
+    if (!response.ok) {
+      logEvent('workshop', `详情请求失败 HTTP ${response.status}`);
+      return { ok: false, error: `Steam 接口返回 ${response.status}` };
+    }
+    const items = Workshop.parseDetailsResponse(await response.json());
+    logEvent('workshop', `取到 ${items.length} 个物品的详情`);
+    return { ok: true, items };
+  } catch (error) {
+    // ⚠️ 网络失败要和"物品不存在"分开说。国内访问 api.steampowered.com 经常需要代理，
+    // 而"连不上"和"这个壁纸没了"是完全不同的两件事。
+    logEvent('workshop', `详情请求异常：${error.message}`);
+    return {
+      ok: false,
+      error: `连不上 Steam 接口：${error.message}`,
+      hint: '这个接口在国内常常要代理。壁纸下载走 steamcmd 是另一条路，可能不受影响。',
+    };
+  }
+});
+
+// 已下载的壁纸列表 —— 本地扫一遍，不需要网络。
+//
+// ⚠️ 这条补的是另一半体验缺口：下载过的东西要能重新装载，
+// 而不是每次都重新填 ID。工坊页面的"已订阅"在本地的对应物就是这个。
+ipcMain.handle('workshop-local', () => {
+  const found = [];
+  for (const root of Workshop.STEAM_ROOTS) {
+    const base = path.join(root, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID);
+    let entries = [];
+    try {
+      entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch { continue; }   // 目录不存在很正常（还没下过东西）
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(base, entry.name);
+      const projectFile = path.join(dir, 'project.json');
+      if (!fs.existsSync(projectFile)) continue;
+      try {
+        const project = WE.parseProject(JSON.parse(fs.readFileSync(projectFile, 'utf8')));
+        if (!project) continue;
+        found.push({
+          id: entry.name,
+          dir,
+          title: project.title,
+          type: project.type,
+          typeLabel: project.typeLabel,
+          supported: project.supported,
+          gifScene: project.gifScene,
+          // 本地预览图走自定义 protocol 读不到（那个只服务当前壁纸），
+          // 所以给绝对路径让面板用 file:// 显示。
+          preview: previewPathOf(dir, project),
+        });
+      } catch { /* project.json 坏了就跳过，别让一个坏的挡住整个列表 */ }
+    }
+  }
+  return { ok: true, items: found };
+});
+
+// 装载一个已经下载好的
+ipcMain.handle('workshop-load-local', (_event, dir) => {
+  if (!dir || !fs.existsSync(path.join(dir, 'project.json'))) {
+    return { ok: false, error: '这个目录里没有 project.json' };
+  }
+  const out = setWEWallpaper(dir);
+  if (out.ok) {
+    config.we.dir = dir;
+    writeConfig(config);
+    broadcast('config', config);
+  }
+  return out;
+});
+
 ipcMain.handle('workshop-set-steam', (_event, patch) => {
   config.we.steam = { ...(config.we.steam || {}), ...(patch || {}) };
   writeConfig(config);

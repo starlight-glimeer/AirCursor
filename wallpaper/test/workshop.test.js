@@ -272,4 +272,92 @@ check('找不到时能列出所有找过的路径', () => {
   for (const p of paths) assert.match(p, /workshop\/content\/431960\/999$/);
 });
 
+console.log('\n  内容展示（预览图 / 类型 / 大小）');
+
+// ⚠️ 这一节的由来：用户说"我怎么知道 id 或者链接，平时不都是随便浏览着看的吗"。
+// 他说得对 —— 只给填 ID 的输入框等于把命令行搬进 GUI。
+//
+// 关键发现（读 OWE 的代码确认）：Steam 有两个接口，
+//   GetPublishedFileDetails  ✅ 不要 API key —— 标题、预览图、类型、大小
+//   QueryFiles               ⚠️ 要 API key —— 搜索、按热度浏览
+// 所以"贴链接先看预览"零门槛能做，"应用内浏览整个工坊"要用户去申请免费 key。
+check('详情接口是免 key 的那个', () => {
+  assert.match(S.DETAILS_ENDPOINT, /ISteamRemoteStorage\/GetPublishedFileDetails/);
+});
+
+// 这个接口只吃表单编码，不是 JSON。
+check('请求体是表单编码，支持批量', () => {
+  const body = S.detailsBody(['111', '222']);
+  assert.strictEqual(body, 'itemcount=2&publishedfileids[0]=111&publishedfileids[1]=222');
+});
+
+check('空输入不产生坏请求', () => {
+  assert.strictEqual(S.detailsBody([]), 'itemcount=0');
+  assert.strictEqual(S.detailsBody(null), 'itemcount=0');
+});
+
+// WE 用 tag 标类型 —— 这是**下载之前**知道类型的唯一途径。
+// ⟹ 靠它能在下载几百 MB 之前就说清"这是 scene，装了也只能看静态图"。
+check('从 tag 认出四种类型', () => {
+  assert.strictEqual(S.typeFromTags([{ tag: 'Scene' }]), 'scene');
+  assert.strictEqual(S.typeFromTags([{ tag: 'Video' }]), 'video');
+  // tag 里混着别的分类标签（Anime、Nature 那些），要能挑出类型那个
+  assert.strictEqual(S.typeFromTags([{ tag: 'Anime' }, { tag: 'Web' }]), 'web');
+  assert.strictEqual(S.typeFromTags([{ tag: 'Nature' }]), null);
+  assert.strictEqual(S.typeFromTags(null), null);
+});
+
+check('详情解析出预览图、标题、类型、能不能跑', () => {
+  const item = S.parseDetail({
+    publishedfileid: '3747222633', result: 1, title: '音域回响',
+    preview_url: 'https://images.steamusercontent.com/x.jpg',
+    tags: [{ tag: 'Web' }], file_size: '2500000', subscriptions: 1234,
+  });
+  assert.strictEqual(item.ok, true);
+  assert.strictEqual(item.title, '音域回响');
+  assert.strictEqual(item.type, 'web');
+  assert.strictEqual(item.supported, true, 'web 类应该判为能跑');
+  assert.ok(item.preview);
+});
+
+check('scene / application 判为不能跑', () => {
+  for (const tag of ['Scene', 'Application']) {
+    const item = S.parseDetail({
+      publishedfileid: '1', result: 1, title: 'x', tags: [{ tag }],
+    });
+    assert.strictEqual(item.supported, false, `${tag} 被误判成能跑`);
+  }
+});
+
+// ⚠️ 已删除/私有的物品：API 返回 result != 1 且大部分字段缺失。
+// 不处理的话界面上出现一张无字白卡片 —— 用户不知道是加载中还是壁纸没了。
+check('已删除 / 私有的物品说清原因，不给白卡片', () => {
+  const item = S.parseDetail({ publishedfileid: '999', result: 9 });
+  assert.strictEqual(item.ok, false);
+  assert.match(item.reason, /删除|私有|ID/);
+});
+
+check('没有 id 的项直接丢掉（不产生空卡片）', () => {
+  assert.strictEqual(S.parseDetail({ result: 1, title: 'x' }), null);
+  assert.strictEqual(S.parseDetail(null), null);
+});
+
+check('响应解析容错（字段缺失不抛）', () => {
+  assert.deepStrictEqual(S.parseDetailsResponse(null), []);
+  assert.deepStrictEqual(S.parseDetailsResponse({ response: {} }), []);
+  const items = S.parseDetailsResponse({
+    response: { publishedfiledetails: [{ publishedfileid: '1', result: 1 }, null] },
+  });
+  assert.strictEqual(items.length, 1);
+});
+
+// ⚠️ 显示 "228893184" 对做决定毫无帮助 —— 用户要判断的是"这个值不值得等"。
+check('大小格式化成人能读的', () => {
+  assert.match(S.formatSize(2500000), /2\.4 MB/);
+  assert.match(S.formatSize(2500000000), /2\.3\d GB/);
+  assert.match(S.formatSize(5000), /5 KB/);
+  assert.strictEqual(S.formatSize(0), '大小未知');
+  assert.strictEqual(S.formatSize(null), '大小未知');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
