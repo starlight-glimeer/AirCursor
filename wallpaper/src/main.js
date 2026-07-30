@@ -33,6 +33,7 @@ require('./workshop.js');
 const Workshop = globalThis.GestureWallWorkshop;
 
 const AudioSource = require('./audio-source.js');
+const MouseBridge = require('./mouse-bridge.js');
 
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
@@ -356,9 +357,19 @@ const defaultConfig = {
     // Steam 创意工坊。⚠️ 密码存在本地配置文件里（明文），诊断报告导出时会脱敏。
     steam: { username: null, password: null, guardCode: null },
     steamCmdPath: null,
-    // WE 壁纸单独的层策略：默认 bottom-normal（能收鼠标），不跟 wallStrategy 走。
-    // 三层景深那边靠手势控制、不需要鼠标，所以两者的最优选择不一样。
-    strategy: 'bottom-normal',
+    // WE 壁纸的层策略。
+    //
+    // ⚠️ 默认改回 desktop 了（原来是 bottom-normal），因为那两件事现在**不再互斥**：
+    // 真壁纸层能覆盖菜单栏，而鼠标事件靠全局监听 + sendInputEvent 转发补回来
+    //（mouse-bridge.js）。用户明确否掉了"选一个残废"那个方案 ——
+    // mac 原生壁纸没有那条缝，而鼠标交互失效不可接受。他是对的。
+    strategy: 'desktop',
+    // 鼠标转发。desktop 层收不到鼠标，靠 helper 抓全局事件再注入。
+    // ⚠️ 监听鼠标不需要辅助功能权限（键盘才需要），所以 npm start 就能用。
+    mouseForward: true,
+    // 只在桌面被聚焦（前台是 Finder）时转发。关掉的话在别的应用里滑滚轮
+    // 壁纸也会跟着动 —— 那不是功能是干扰。
+    mouseAlways: false,
   },
   debug: { showHud: true },
 };
@@ -1149,7 +1160,7 @@ function createWEWindow() {
   //
   // 所以 WE 壁纸默认用能收鼠标的那个策略。代价是它会出现在 Mission Control 里，
   // 而那个代价比"交互整个不工作"小得多。用户仍可用 ⌃⇧L 切回去。
-  const strategyId = config.we.strategy || 'bottom-normal';
+  const strategyId = config.we.strategy || 'desktop';
   const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
   const { bounds } = screen.getPrimaryDisplay();
   const win = new BrowserWindow({
@@ -1328,6 +1339,7 @@ function setWEWallpaper(dir) {
     weProject = null;
     destroyWEWindow();
     syncAudioSource();
+    syncMouseForward();
     if (!wallWindow || wallWindow.isDestroyed()) wallWindow = createWallWindow(config.wallStrategy);
     broadcast('we-status', weStatus(null));
     return { ok: true, cleared: true };
@@ -1347,6 +1359,7 @@ function setWEWallpaper(dir) {
   destroyWEWindow();
   weWindow = createWEWindow();
   syncAudioSource();
+  syncMouseForward();
   return { ok: true, project: { title: weProject.title, dir: weProject.dir } };
 }
 
@@ -1847,6 +1860,7 @@ ipcMain.handle('export-diagnostics', () => {
     we: { ready: weReady },
     video: videoStatus,
     audio: audioStatus,
+    mouse: { status: mouseStatus, lastEvent: lastMouseEvent },
     workshop: {
       steamcmd: findSteamCmd(),
       username: (config.we.steam && config.we.steam.username) || null,
@@ -1886,6 +1900,61 @@ ipcMain.handle('we-status', () => ({
   ...weStatus(null), audio: audioStatus, video: videoStatus,
 }));
 
+// ---------------------------------------------------------------------------
+// 鼠标转发：让真壁纸层也能收到鼠标
+// ---------------------------------------------------------------------------
+let mouseTap = null;
+let mouseStatus = null;
+// 最近一次转发的事件，进诊断报告。
+// ⚠️ 没有它，"点了没反应"分不清是：helper 没抓到 / 坐标算错 / 注入了但页面不响应。
+let lastMouseEvent = null;
+
+function syncMouseForward() {
+  // 只有 desktop 层需要转发 —— 普通窗口自己就能收鼠标，
+  // 再转发一次会变成**双份事件**（点一下算两下）。
+  const need = !!(weProject && config.we.mouseForward
+    && (config.we.strategy || 'desktop') === 'desktop');
+
+  if (!need) {
+    if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+    mouseStatus = null;
+    return;
+  }
+  if (mouseTap) return;
+
+  mouseTap = MouseBridge.start({
+    sourcePath: app.isPackaged
+      ? path.join(process.resourcesPath, 'native', 'GestureWallMouse.swift')
+      : path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'),
+    outDir: path.join(app.getPath('userData'), 'native'),
+    always: !!config.we.mouseAlways,
+    onEvent: (event) => {
+      if (!weWindow || weWindow.isDestroyed()) return;
+      const point = MouseBridge.toWindowPoint(event, weWindow.getBounds());
+      if (!point) return;   // 落在窗口外（多显示器时会）
+      const input = MouseBridge.toInputEvent(event, point);
+      if (!input) return;
+      weWindow.webContents.sendInputEvent(input);
+      lastMouseEvent = { kind: event.kind, x: point.x, y: point.y, at: Date.now() };
+    },
+    onStatus: (status) => {
+      mouseStatus = status;
+      broadcast('mouse-status', status);
+      if (!status.ok) console.warn('[mouse]', status.text);
+    },
+  });
+}
+
+ipcMain.handle('we-set-mouse-forward', (_event, patch) => {
+  config.we = { ...config.we, ...(patch || {}) };
+  writeConfig(config);
+  // 改了 always 要重启 helper（那是启动参数）
+  if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+  syncMouseForward();
+  broadcast('config', config);
+  return { ok: true };
+});
+
 // 切 WE 壁纸的层策略。
 //
 // ⚠️ 这个开关存在是因为那是个**真取舍**，不该由我替用户决定：
@@ -1902,6 +1971,9 @@ ipcMain.handle('we-set-strategy', (_event, id) => {
     destroyWEWindow();
     weWindow = createWEWindow();
   }
+  // ⚠️ 换策略要重算转发：desktop 需要转发，普通窗口不能转发（会变双份事件）。
+  if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+  syncMouseForward();
   broadcast('config', config);
   return { ok: true, strategy: id };
 });
@@ -2046,4 +2118,5 @@ app.on('will-quit', () => {
   // 摄像头/麦克风/屏幕录制，而且下次启动会看到"两个 helper 在跑"。
   systemBridge.stop();
   if (audioTap) audioTap.stop();
+  if (mouseTap) mouseTap.stop();
 });

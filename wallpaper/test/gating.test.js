@@ -435,17 +435,40 @@ check('关键点录制带上当时的 tuning（否则探针会拿默认值误判
     'capture 载荷没带 tuning —— 回放探针会静默用默认门限判定');
 });
 
-// ⚠️ WE 网页壁纸的交互主体是鼠标（样本 pointerdown ×9、onClick ×8，"点一下掉流星"
-// 是它的卖点）。而 desktop 策略是真壁纸层、收不到鼠标 ⟹ 装上去是"画面出来了但点它
-// 没反应"，和壁纸本身坏了分不清。所以它必须默认用能收鼠标的策略。
-check('WE 壁纸默认用能收鼠标的层策略（不是 desktop）', () => {
+// ⚠️ 这条守卫翻过一次，方向值得记。
+//
+// 原来它断言"默认必须是 bottom-normal（能收鼠标）"，前提是"真壁纸层和鼠标交互
+// 互斥，只能选一个"。用户否掉了那个前提：mac 原生壁纸没有顶部那条缝，
+// 而鼠标交互失效对交互式壁纸不可接受。
+//
+// ⟹ 正解是两者兼得（OWE 那套）：窗口留在壁纸层，鼠标靠全局监听 + sendInputEvent
+// 转发。所以现在默认是 desktop，而"能收鼠标"由 mouse-bridge 保证。
+check('WE 壁纸默认真壁纸层（能覆盖菜单栏），鼠标靠转发补回来', () => {
   const fn = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
     mainSrc.indexOf('function sendWEProperties'));
-  assert.match(fn, /config\.we\.strategy\s*\|\|\s*'bottom-normal'/,
-    'WE 窗口跟着 wallStrategy 走了 —— 默认 desktop 收不到鼠标，交互整个不工作');
+  assert.match(fn, /config\.we\.strategy\s*\|\|\s*'desktop'/,
+    'WE 窗口默认不是 desktop —— 那样顶部菜单栏区域就没内容');
   const defaults = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
     mainSrc.indexOf('let config = null'));
-  assert.match(defaults, /strategy:\s*'bottom-normal'/, 'we.strategy 的默认值不对');
+  assert.match(defaults, /strategy:\s*'desktop'/, 'we.strategy 的默认值不对');
+  assert.match(defaults, /mouseForward:\s*true/,
+    '默认没开鼠标转发 —— 那样 desktop 层的壁纸点不动，等于回到了旧的残废状态');
+});
+
+// ⚠️ 双份事件是这条链最容易出的错：普通窗口自己就能收鼠标，
+// 再转发一次 = 点一下算两下。而"点一下触发两次"看起来像壁纸自己的 bug。
+check('只在 desktop 层转发鼠标（普通窗口会变双份事件）', () => {
+  const fn = mainSrc.slice(mainSrc.indexOf('function syncMouseForward'),
+    mainSrc.indexOf("ipcMain.handle('we-set-mouse-forward'"));
+  assert.match(fn, /=== 'desktop'/,
+    '没限制只在 desktop 层转发 —— 普通窗口上会变成双份事件');
+});
+
+// 换策略时必须重算转发，否则从 desktop 切到普通窗口后转发还开着（双份事件）。
+check('换层策略时重算鼠标转发', () => {
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('we-set-strategy'"),
+    mainSrc.indexOf("// 切音源"));
+  assert.match(handler, /syncMouseForward/, '换策略后没重算转发');
 });
 
 // 资产解析走 we-host 的纯函数，不在 main.js 里手写 —— 那三种错法（越界/空路径/
@@ -662,12 +685,15 @@ check('desktop 保留跨桌面（真壁纸层每个 Space 各自渲染）', () =
     'desktop 层丢了跨桌面 —— 那样别的桌面就没壁纸了');
 });
 
-// WE 壁纸默认走 bottom-normal（因为它的交互主体是鼠标），
-// 所以上面那条修的正好是用户实际在用的那条。
-check('WE 壁纸默认策略仍是能收鼠标的那条', () => {
-  const fn = mainSrc.slice(mainSrc.indexOf('function createWEWindow'),
-    mainSrc.indexOf('function sendWEProperties'));
-  assert.match(fn, /config\.we\.strategy\s*\|\|\s*'bottom-normal'/);
+// 坐标换算和事件字段是这条链上"错了不报错"的两处。
+check('鼠标事件的坐标换算和字段名有守卫', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mouse-bridge.js'), 'utf8');
+  // ⚠️ 窗口通常就在 (0,0)，所以不减 bounds 也测不出来 —— 直到接第二块屏。
+  assert.match(src, /event\.x - bounds\.x/, '没减窗口偏移，多显示器时坐标会错');
+  // ⚠️ clickCount 缺了页面只收到 mousedown、收不到 click。
+  assert.match(src, /clickCount/, '缺 clickCount —— 页面收不到 click 事件');
+  // ⚠️ canScroll 缺了滚动事件会被丢掉。
+  assert.match(src, /canScroll/, '缺 canScroll —— 滚轮会失效');
 });
 
 console.log('\n  菜单栏那条带子（我在这上面连错三轮）');

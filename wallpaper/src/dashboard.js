@@ -620,6 +620,8 @@ function apply(next) {
   cursorToggle.checked = !!config.controlCursor;
   renderAudioSource();
   renderWEStrategy();
+  mouseForwardBox.checked = !!(config.we && config.we.mouseForward);
+  mouseAlwaysBox.checked = !!(config.we && config.we.mouseAlways);
   if (!built) {
     renderSliders('tuning', TUNING);
     renderSliders('musicTuning', MUSIC_TUNING);
@@ -822,6 +824,24 @@ function renderWEStrategy() {
     host.appendChild(button);
   }
 }
+
+// 鼠标转发。⚠️ 这是"真壁纸层 + 鼠标交互"能同时成立的关键 ——
+// 我原来做成了让用户在两者间选一个，而用户否掉了那个方案（他是对的）。
+const mouseForwardBox = document.getElementById('mouseForward');
+const mouseAlwaysBox = document.getElementById('mouseAlways');
+const mouseStateNode = document.getElementById('mouse-state');
+
+mouseForwardBox.onchange = () =>
+  window.gw.weSetMouseForward({ mouseForward: mouseForwardBox.checked });
+mouseAlwaysBox.onchange = () =>
+  window.gw.weSetMouseForward({ mouseAlways: mouseAlwaysBox.checked });
+
+window.gw.onMouseStatus((status) => {
+  if (!status) { mouseStateNode.textContent = '—'; return; }
+  mouseStateNode.innerHTML = status.ok
+    ? `✅ ${status.text}`
+    : `<span class="warn">${status.text}</span>`;
+});
 
 // 状态分三层显示，因为它们代表不同的失败：
 //   装载了没有 → 根本没选壁纸

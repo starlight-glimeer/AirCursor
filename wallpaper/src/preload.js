@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('gw', {
   weSetProperty: (key, value) => ipcRenderer.invoke('we-set-property', key, value),
   weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
   weSetStrategy: (id) => ipcRenderer.invoke('we-set-strategy', id),
+  weSetMouseForward: (patch) => ipcRenderer.invoke('we-set-mouse-forward', patch),
 
   // 创意工坊
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),
@@ -96,6 +97,7 @@ contextBridge.exposeInMainWorld('gw', {
   onWeStatus: on('we-status'),
   onWeAudioStatus: on('we-audio-status'),
   onWorkshopProgress: on('workshop-progress'),
+  onMouseStatus: on('mouse-status'),
   onVideoStatus: on('video-status'),
   onVideoSource: on('video-source'),
   onCancelRecording: on('cancel-recording'),

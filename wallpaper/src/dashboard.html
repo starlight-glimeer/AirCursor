@@ -370,13 +370,16 @@
     <h3>壁纸层</h3>
     <div class="card">
       <div id="we-strategy" class="we-src"></div>
+      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
+      <div class="toggle"><input type="checkbox" id="mouseAlways"><label for="mouseAlways">任何时候都转发（默认只在桌面被聚焦时）</label></div>
+      <div id="mouse-state" class="hint">—</div>
       <p class="hint">
-        ⚠️ 这是个<b>取舍，没有两全的选项</b>：
-        <br>· <b>真壁纸层</b> —— 顶部菜单栏区域也有内容，但<b>收不到鼠标</b>
-        （壁纸自己的点击交互会失效，手势不受影响）
-        <br>· <b>普通窗口压最底</b> —— 能收鼠标，但顶部那 25px 是系统菜单栏画的，
-        我们画不进去（那不是 bug，是 macOS 的图层规则）
-        <br>· <b>悬浮最上层</b> —— 只用来验渲染，会盖住所有窗口
+        <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
+        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
+        <b>点击、拖拽、滚轮都能用</b>。
+        <br>⚠️ 这个不需要辅助功能权限（监听鼠标不需要，键盘才需要）。
+        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
+        再转发一次会变成双份事件（点一下算两下）。
       </p>
     </div>
 
