@@ -541,6 +541,59 @@ function handleVoiceText(phrase) {
   broadcast('voice-status', { text: `${result.ok ? '已执行' : '执行失败'}:${text}` });
 }
 
+
+// 渲染进程的异常上报。**四个窗口都要接**,而这一层的存在理由是:
+//
+// 渲染进程里没有开发者工具、不在视线里,它抛的任何异常都表现为"某个功能静默不工作" ——
+// 和真正的原因毫无关系。这个项目为它烧过好几轮(`const T` 撞名让整层脚本停止执行,
+// 症状只是"摄像头不启动";我猜了两轮零进展,而刚加的日志转发两行就给出了答案)。
+//
+// ⚠️ 面板窗口(`dashboardWindow`)的后果比骨架层**更隐蔽**:`apply()` 在文件最后一行才调,
+// 它负责绑定**所有**开关 ⟹ 顶层任何一处抛,所有开关都绑不上,看起来像"那个功能坏了"。
+// 而这个窗口此前**一条错误监听都没有**(只有 did-finish-load / closed)。
+//
+// 四条通道各自覆盖别的抓不到的东西:
+//
+//   · console-message      —— console.error / 未捕获异常的常规路径
+//   · preload-error        —— preload 挂了 ⟹ `window.gw` 整个不存在,第一行就抛
+//   · 资源 404             —— **`<script>` 的 404 不进 console-message**。烧过两轮:
+//                             vendor 空、打包后 asar 读不到 wasm
+//   · render-process-gone  —— 整个渲染进程没了
+function watchRendererErrors(win, label) {
+  if (!win || win.isDestroyed()) return;
+
+  // ⚠️ Electron 36 起签名从 (event, level, message, line, sourceId) 变成单个 details
+  // 对象,两种都接才不会静默变哑。
+  win.webContents.on('console-message', (...args) => {
+    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
+    const level = d ? d.level : args[1];
+    const message = d ? d.message : args[2];
+    if (level === 'error' || level === 'warning' || /⚠️|失败|Error/.test(String(message))) {
+      broadcast('helper-log', { source: label, message: String(message) });
+    }
+  });
+
+  win.webContents.on('preload-error', (_e, preloadPath, error) => {
+    broadcast('helper-log', {
+      source: label,
+      message: `⚠️ preload 加载失败:${error && error.message} (${preloadPath}) —— `
+        + 'window.gw 不存在,这一层什么都干不了',
+    });
+  });
+
+  win.webContents.session.webRequest.onErrorOccurred({ urls: ['file:///*'] }, (details) => {
+    if (!/\.(js|wasm|tflite|data|binarypb|css|html)$/.test(details.url)) return;
+    broadcast('helper-log', {
+      source: label,
+      message: `⚠️ 加载失败:${details.url.split('/').slice(-2).join('/')} (${details.error})`,
+    });
+  });
+
+  win.webContents.on('render-process-gone', (_e, details) => {
+    broadcast('helper-log', { source: label, message: `渲染进程崩了:${details.reason}` });
+  });
+}
+
 function createWallWindow(strategyId) {
   const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
   currentStrategy = strategy;
@@ -579,6 +632,7 @@ function createWallWindow(strategyId) {
     },
   });
 
+  watchRendererErrors(win, 'wall');
   win.loadFile(path.join(__dirname, 'wall.html'));
   try {
     strategy.apply(win);
@@ -654,6 +708,13 @@ function openDashboard() {
       nodeIntegration: false,
     },
   });
+  // ⚠️ 这个窗口此前一条错误监听都没有。它的顶层抛出后果比骨架层更隐蔽:`apply()`
+  // 在最后一行才调,它绑定**所有**开关 ⟹ 顶层任何一处抛,所有开关都绑不上,
+  // 看起来像"那个功能坏了"。
+  //
+  // ⚠️ 必须在 loadFile **之前** —— 我自己第一版接在后面了,而装载期的错误
+  // (资源 404 / preload 挂了)正是这一层最常见的失败,接晚了正好错过。
+  watchRendererErrors(dashboardWindow, 'panel');
   dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html'));
   dashboardWindow.webContents.on('did-finish-load', () => {
     dashboardWindow.webContents.send('config', config);
@@ -705,53 +766,7 @@ function ensureOverlay() {
       backgroundThrottling: false,
     },
   });
-  // 渲染进程的 console 转到主进程 + 面板。
-  //
-  // 摄像头搬进这一层之后没启动,而我花了几轮在推断原因 —— 因为这个窗口里抛的任何异常
-  // **谁都看不到**:它没有开发者工具、不在视线里,而 sensor.js 的加载期错误只会让摄像头
-  // 静默不起。AirCursor 3.x 转了这个,他的没转。
-  //
-  // Electron 36 起签名从 (event, level, message, line, sourceId) 变成单个 details
-  // 对象,两种都接才不会静默变哑。
-  overlayWindow.webContents.on('console-message', (...args) => {
-    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
-    const level = d ? d.level : args[1];
-    const message = d ? d.message : args[2];
-    if (level === 'error' || level === 'warning' || /⚠️|失败|Error/.test(String(message))) {
-      broadcast('helper-log', { source: 'overlay', message: String(message) });
-    }
-  });
-  // 未捕获异常单独报:它比 console.error 更致命(整个脚本停在那里),而 console-message
-  // 在某些 Electron 版本上拿不到它。
-  // ⚠️ preload 挂了 = `window.gw` 整个不存在 ⟹ 骨架层的第一行就抛,而 console-message
-  // 那条转发本身也可能来不及接上。这是"摄像头不启动"里最沉默的一种。
-  overlayWindow.webContents.on('preload-error', (_e, preloadPath, error) => {
-    broadcast('helper-log', {
-      source: 'overlay',
-      message: `⚠️ preload 加载失败:${error && error.message} (${preloadPath}) —— `
-        + 'window.gw 不存在,骨架层什么都干不了',
-    });
-  });
-
-  // ⚠️ 脚本 404。骨架层加载 11 个脚本(MediaPipe 3 个 + 判定 3 个 + 自己 5 个),
-  // 缺任何一个都表现为"摄像头不启动",而 `<script>` 的 404 **不进 console-message**。
-  //
-  // 这个项目为它烧过两轮:一次是 postinstall 掉了(vendor 空 → 404),一次是打包后
-  // asar 读不到 wasm。两次的症状都是"摄像头不开且什么都不说"。
-  overlayWindow.webContents.session.webRequest.onErrorOccurred(
-    { urls: ['file:///*'] },
-    (details) => {
-      if (!/\.(js|wasm|tflite|data|binarypb)$/.test(details.url)) return;
-      broadcast('helper-log', {
-        source: 'overlay',
-        message: `⚠️ 加载失败:${details.url.split('/').slice(-2).join('/')} (${details.error})`,
-      });
-    },
-  );
-
-  overlayWindow.webContents.on('render-process-gone', (_e, details) => {
-    broadcast('helper-log', { source: 'overlay', message: `骨架层崩了:${details.reason}` });
-  });
+  watchRendererErrors(overlayWindow, 'overlay');
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -1474,6 +1489,10 @@ function createWEWindow() {
       backgroundThrottling: false,
     },
   });
+
+  // ⚠️ 必须在 loadFile/loadURL **之前**接 —— 装载期的错误(资源 404、preload 挂了)
+  // 是这一层最常见的失败,接晚了正好错过。
+  watchRendererErrors(win, 'we');
 
   // ⚠️ web 和 video 的装载路径必须分开：video 的 project.file 是视频文件名不是 html，
   // 拿它去 loadURL 会让 Chromium 直接下载或黑屏（不报错）。
@@ -2429,9 +2448,22 @@ app.whenReady().then(() => {
     broadcast('config', config);
   });
 
+  // 开发者工具。四个窗口的异常现在都会转到面板的日志区,而**有些东西只有 devtools 有**:
+  // 网络面板(哪个资源 404 了)、元素树(元素在不在)、堆栈(异常从哪一行来)。
+  //
+  // ⚠️ 为什么给的是骨架层和面板:它们是两个"看不见但会静默失效"的窗口。壁纸层的问题
+  // 看得见(黑屏/不动),而这两层的失败症状是"某个开关没反应"。
+  globalShortcut.register('Control+Shift+D', () => {
+    for (const win of [dashboardWindow, overlayWindow]) {
+      if (!win || win.isDestroyed()) continue;
+      if (win.webContents.isDevToolsOpened()) win.webContents.closeDevTools();
+      else win.webContents.openDevTools({ mode: 'detach' });
+    }
+  });
+
   console.log('\n=== GestureWall ===');
   console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧H 调试信息');
-  console.log('  ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
+  console.log('  ⌃⇧D 开发者工具    ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
 
 // Deliberately does not quit: closing the settings window is not quitting the

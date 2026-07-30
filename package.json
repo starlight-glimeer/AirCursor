@@ -41,6 +41,14 @@
       {
         "from": "native/AirCursorVoiceInfo.plist",
         "to": "native/AirCursorVoiceInfo.plist"
+      },
+      {
+        "from": "wallpaper/native/GestureWallMouse.swift",
+        "to": "native/GestureWallMouse.swift"
+      },
+      {
+        "from": "wallpaper/native/GestureWallAudio.swift",
+        "to": "native/GestureWallAudio.swift"
       }
     ],
     "mac": {
@@ -49,7 +57,8 @@
         "NSCameraUsageDescription": "AirCursor uses the camera to recognize your hand gestures.",
         "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
         "NSSpeechRecognitionUsageDescription": "AirCursor uses speech recognition for optional local voice commands.",
-        "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request."
+        "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request.",
+      "NSScreenCaptureUsageDescription": "GestureWall captures system audio to drive the audio-reactive wallpaper."
       },
       "target": [
         "dmg"

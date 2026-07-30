@@ -686,6 +686,75 @@ check('渲染进程的报错会转出来（否则这类错误只能靠猜）', (
     + '而骨架层要加载 11 个脚本,缺任何一个都是"摄像头不启动"');
   assert.match(dash, /onHelperLog/, '面板没有订阅日志');
   assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
+
+  // ⚠️ **四个窗口都要接。**上一版只有骨架层有,而面板窗口一条都没有(只有
+  // did-finish-load / closed)—— 而面板的顶层抛出后果**更隐蔽**:`apply()` 在文件
+  // 最后一行才调,它绑定**所有**开关 ⟹ 顶层任何一处抛,所有开关都绑不上,
+  // 症状是"那个功能坏了",和真正的原因毫无关系。
+  const calls = [...mainCode.matchAll(/watchRendererErrors\((\w+), '(\w+)'\)/g)];
+  assert.deepStrictEqual(calls.map((m) => m[2]).sort(), ['overlay', 'panel', 'wall', 'we'],
+    '四个窗口(壁纸层/面板/骨架层/WE)必须都接错误上报,现在只有:'
+    + calls.map((m) => m[2]).join(', '));
+
+  // ⚠️ 监听必须在 loadFile/loadURL **之前**接。装载期的错误(资源 404、preload 挂了)
+  // 正是这类失败最常见的形态,接晚了正好错过 —— 我自己第一版就把面板那条接在后面了。
+  const lines = mainCode.split('\n');
+  for (const [i, line] of lines.entries()) {
+    if (!/\.loadFile\(|\.loadURL\(/.test(line)) continue;
+    const recv = line.trim().match(/^(\w+)\./);
+    if (!recv) continue;
+    // 往前找 30 行内有没有给同一个收件人接监听
+    const before = lines.slice(Math.max(0, i - 30), i).join('\n');
+    assert.ok(new RegExp(`watchRendererErrors\\(${recv[1]},`).test(before),
+      `main.js:${i + 1} 的 ${recv[1]} 在装载前没接错误上报 —— 装载期的 404 会丢掉`);
+  }
+});
+
+// ── 打包版才炸的那一类:运行时找的路径 vs extraResources 拷进去的路径 ──────
+//
+// 四个 Swift helper 的源码在运行时按 `process.resourcesPath/native/X.swift` 找,而
+// `asar` 是个归档 ⟹ **只有 `extraResources` 列了才真的在磁盘上。**漏掉的后果是
+// `npm start` 一切正常(走 `__dirname/../native/`)、**打包版那个功能整个不存在**。
+//
+// 实测漏过:`GestureWallMouse.swift` / `GestureWallAudio.swift` 在 `wallpaper/native/`,
+// 而 extraResources 只列了顶层 `native/` 那三个 ⟹ 鼠标转发和音频频谱在打包版里
+// 连源码都找不到,而这两个功能**只能在打包版验**(要辅助功能/屏幕录制授权)。
+check('运行时要的 native 源码都在 extraResources 里（漏了只有打包版会炸）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const shipped = new Set((pkg.build.extraResources || []).map((r) => r.to));
+  // 运行时按 resourcesPath 拼的每一个路径都必须有人拷。
+  const wanted = [...main.matchAll(
+    /process\.resourcesPath,\s*'([^']+)',\s*'([^']+)'/g,
+  )].map((m) => `${m[1]}/${m[2]}`);
+  assert.ok(wanted.length >= 2, `只解析出 ${wanted.length} 个 resourcesPath 路径，正则失效了`);
+  const missing = wanted.filter((w) => !shipped.has(w));
+  assert.deepStrictEqual([...new Set(missing)], [],
+    `这些文件运行时会去找，但 extraResources 没拷 ⟹ 打包版里不存在：${missing.join(', ')}`);
+});
+
+check('抓系统音频要 NSScreenCaptureUsageDescription（缺了系统不弹窗、直接拒绝）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const info = pkg.build.mac.extendInfo || {};
+  // ⚠️ 缺 usage-description 的后果不是"弹窗被拒",是**系统连弹窗都不弹、直接拒绝** ——
+  // 症状是那个功能静默不工作,而代码看起来完全正确。麦克风/语音识别都为这条烧过时间。
+  //
+  // ⚠️ 而抓**系统**音频归「屏幕录制」不归「麦克风」 —— 这两个是不同的权限,
+  // 只加麦克风那条一样拿不到系统音频。
+  assert.ok(info.NSScreenCaptureUsageDescription,
+    '缺 NSScreenCaptureUsageDescription ⟹ 抓系统音频会被系统静默拒绝(不弹窗)');
+});
+
+check('⌃⇧D 能开开发者工具（有些东西只有 devtools 有：网络面板/元素树/堆栈）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const code = main.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(code, /register\('Control\+Shift\+D'/,
+    '没有 devtools 快捷键 —— 那意味着用户看不到 404 是哪个资源、异常在哪一行');
+  // 和 ⌃⇧H 同一条道理:默认关且没有开关的观测手段等于不存在。
+  assert.match(html, /⌃⇧D/, '面板没列出这个快捷键，用户不会知道它存在');
+  const banner = main.slice(main.indexOf('=== GestureWall ==='));
+  assert.match(banner.slice(0, 400), /⌃⇧D/, '终端启动信息里没列 ⌃⇧D');
 });
 
 // ── 已删掉的窗口不能还有代码在往它发消息 ─────────────────────────────────
