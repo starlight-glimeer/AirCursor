@@ -7,10 +7,13 @@
 //
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme,
+  protocol, net, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+// spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
+const { spawn, spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 // 图库的纯逻辑（无 DOM、无 Electron），主进程和 dashboard 共用同一份 —— 两份实现
 // 只要有一点不同，就会出现"面板里显示的和实际存的不一样"。
@@ -32,6 +35,15 @@ const Recorder = globalThis.GestureWallRecorder;
 // 那一层的每条约定都是真机烧出来的,见文件头。
 const { createSystemBridge } = require('./system-bridge.js');
 
+require('./we-host.js');
+const WE = globalThis.GestureWallWE;
+
+require('./workshop.js');
+const Workshop = globalThis.GestureWallWorkshop;
+
+const AudioSource = require('./audio-source.js');
+const MouseBridge = require('./mouse-bridge.js');
+
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
 // 广播前给图库条目标上"文件还在不在"。
@@ -51,6 +63,9 @@ function withLibraryStatus(cfg) {
 let wallWindow = null;
 let dashboardWindow = null;
 let overlayWindow = null;
+let weWindow = null;
+let weProject = null;      // 当前装载的 WE 壁纸（parseProject 的结果）
+let weReady = false;       // 壁纸自己调过 wallpaperReady 了吗
 // 正在录制哪个动作。主进程要知道，因为录制期间骨架强制显示、其他手势必须屏蔽。
 let recordingAction = null;
 let currentStrategy = null;
@@ -71,22 +86,35 @@ const WALL_STRATEGIES = [
     label: 'desktop 层（真壁纸层，收不到鼠标）',
     options: { type: 'desktop' },
     apply: (win) => {
+      // desktop 是真壁纸层：每个 Space 各自渲染，所以"所有桌面可见"在这里的语义
+      // 是对的（每个桌面都有壁纸），不会变成"一个窗口跟着你跑"。
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       // The menu bar strip is the one part a normal window cannot reach: macOS
       // reserves it, and setBounds gets clamped just below it. Verified against the
       // system's own wallpaper, which does cover it — so the window has to be told
       // it may sit outside the visible frame, and then asked again.
-      liftOverMenuBar(win);
+      liftOverMenuBar(win, 'desktop');
     },
   },
   {
     id: 'bottom-normal',
-    label: '普通窗口压到最底（能收鼠标，会出现在 Mission Control）',
+    label: '普通窗口压到最底（能收鼠标，只在当前桌面）',
     options: {},
     apply: (win) => {
       win.setAlwaysOnTop(false);
-      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      liftOverMenuBar(win);
+      // ⚠️ **不能**设 setVisibleOnAllWorkspaces(true)。
+      //
+      // 实测（用户左右切桌面）：壁纸"直接追过来覆盖"了。原因是这是个**普通窗口** ——
+      // "在所有桌面可见"对它的意思是"这一个窗口跟着你跑"，而不是"每个桌面都有壁纸"。
+      //
+      // 真壁纸层（desktop 策略）没这个问题：那一层本来就是每个 Space 各自渲染的，
+      // 所以 canJoinAllSpaces 在那里的语义才是对的。
+      //
+      // macOS 原生的做法是 collectionBehavior = [.stationary, .canJoinAllSpaces]
+      //（OWE 就这么写的），关键在 **.stationary**：跨 Space 存在但**不随切换移动**。
+      // ⚠️ 而 Electron 只暴露了 canJoinAllSpaces 那半边，没有 stationary。
+      // ⟹ 拿不到那个组合，所以这条策略只能待在当前桌面。
+      liftOverMenuBar(win, 'bottom-normal');
     },
   },
   {
@@ -99,8 +127,11 @@ const WALL_STRATEGIES = [
       // level is only for checking the rendering, so covering everything is the
       // point.
       win.setAlwaysOnTop(true, 'screen-saver');
+      // ⚠️ 这条**故意**保留跨桌面：它的用途是"一定看得见，用来验渲染"，
+      // 那时候跟着切桌面走是符合意图的。而 bottom-normal 那条不行 ——
+      // 那是当壁纸用的，壁纸跟着你跑就成了"覆盖别的桌面"。
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      liftOverMenuBar(win);
+      liftOverMenuBar(win, 'floating');
     },
   },
 ];
@@ -118,19 +149,84 @@ const WALL_STRATEGIES = [
 //
 // Bounds are read fresh on every call rather than captured once, because this is
 // also what runs when the display changes resolution.
-function liftOverMenuBar(win) {
-  const push = () => {
-    if (!win || win.isDestroyed()) return;
+// 把窗口推到整块屏幕（含菜单栏那 25px 的区域）。
+//
+// ⚠️ 这个函数改了三次，而**前三次都在修错的东西**。诊断报告（2026-07-30）证明了这点：
+//
+//   weBounds: { x:0, y:0, width:1470, height:956 }
+//   display:  { x:0, y:0, width:1470, height:956 }
+//   menuBar:  { ok: true, pushes: 0 }
+//
+// 窗口尺寸和屏幕**一像素不差**，pushes:0 说明压根没被夹过。
+// 而用户仍然看到顶上那条带子。
+//
+// ⟹ 真相：那不是"窗口没盖住"，是**普通窗口画不到菜单栏那一层**。
+// 菜单栏是系统绘制的独立图层，普通窗口（bottom-normal / floating 策略）无论多大，
+// 那 25px 永远画在它上面。而真壁纸层（desktop 策略）在菜单栏**之下**，
+// 半透明的菜单栏会透出壁纸 —— 所以那条策略下用户实测过是"铺满"的。
+//
+// ⟹ 也就是说这是个**取舍**，不是 bug：
+//     desktop        菜单栏区域有内容 ✅，收不到鼠标 ❌
+//     bottom-normal  能收鼠标 ✅，菜单栏那 25px 是系统的 ⚠️
+//
+// 我在这上面连错三轮的教训：**尺寸是可测的，而我三次都没去测**。
+// 前两版加的是"推得更执着"（重试、事件驱动），第三版才想到核对实际 bounds ——
+// 而那个核对一上线就证明前提是错的。⟹ 报出可核对的数字比修得更用力重要。
+//
+// 现在这个函数只做两件事：把 frame 设成整屏（分辨率变化时仍然需要），
+// 以及**如实报告尺寸对不对** —— 后者让"那条带子"不再被误判成尺寸问题。
+function liftOverMenuBar(win, label) {
+  const measure = () => {
+    if (!win || win.isDestroyed()) return null;
+    const want = screen.getPrimaryDisplay().bounds;
+    const got = win.getBounds();
+    // 四个方向都量：只查 y 和 height 的话，多显示器时 x 被夹会漏掉。
+    const gap = {
+      x: got.x - want.x, y: got.y - want.y,
+      width: want.width - got.width, height: want.height - got.height,
+    };
+    return { want, got, gap, clamped: Object.values(gap).some((v) => v !== 0) };
+  };
+
+  const push = (reason) => {
+    const before = measure();
+    if (!before) return;
+    // 幂等：已经对了就不设。无条件 setBounds 会和 macOS 轮流改 frame（壁纸会抖），
+    // 而且它让 resize→setBounds→resize 的递归自己断掉。
+    if (!before.clamped) {
+      menuBarState = {
+        sizeOk: true, label, lastReason: reason,
+        // ⚠️ 尺寸对 ≠ 菜单栏区域有内容。这两件事必须分开报，
+        // 否则"尺寸没问题"会被读成"那条带子是 bug"。
+        coversMenuBar: label === 'desktop',
+      };
+      return;
+    }
     try {
-      win.setBounds(screen.getPrimaryDisplay().bounds);
+      win.setBounds(want ? want : screen.getPrimaryDisplay().bounds);
     } catch (error) {
       console.warn('[wall] setBounds failed:', error.message);
+      return;
     }
+    const after = measure();
+    menuBarState = {
+      sizeOk: after ? !after.clamped : false,
+      gap: after && after.clamped ? after.gap : null,
+      label, lastReason: reason,
+      coversMenuBar: label === 'desktop',
+    };
   };
-  push();
-  win.once('ready-to-show', push);
-  setTimeout(push, 350);
+
+  push('create');
+  win.once('ready-to-show', () => push('ready-to-show'));
+  win.on('show', () => push('show'));
+  // resize 覆盖分辨率变化和 macOS 的夹取 —— 那两件都需要重设 frame。
+  win.on('resize', () => push('resize'));
+  return measure;
 }
+
+// 最近一次覆盖核对的结果，进诊断报告。
+let menuBarState = null;
 
 // Follow the display when it changes.
 //
@@ -266,6 +362,45 @@ const defaultConfig = {
   // 拒绝了"用画圈打开某个功能"（适合动态的被强制静态），也在静止姿势就够用的地方
   // 强加了做动作的步骤。
   recordOptions: {},
+  // WE 网页壁纸。和我们自己的三层景深壁纸并列，是第二种"壁纸源"。
+  we: {
+    // 壁纸目录（含 project.json）。null = 用我们自己的三层景深。
+    dir: null,
+    // 用户在面板上改过的属性覆盖，键对齐 project.json 的 properties。
+    // 只存改过的：project.json 的默认值是权威来源，全量复制会在壁纸更新后变陈旧。
+    overrides: {},
+    fps: 30,
+    // 音源。ScreenCaptureKit 抓系统音频，要屏幕录制权限。
+    // 'off' 时壁纸会走它自己的空闲动画（样本有 idleWaveEnabled）。
+    audioSource: 'off',
+    // 把系统原生壁纸设成当前壁纸的静态帧。⚠️ 这不是装饰：我们的窗口在壁纸层之上，
+    // 切 Space 时有一帧延迟会露出下面那层。设成一样的图就看不出来了。
+    // 退出时会还原用户原来的壁纸。
+    placeholderWallpaper: true,
+    // Steam 创意工坊。⚠️ 密码存在本地配置文件里（明文），诊断报告导出时会脱敏。
+    steam: { username: null, password: null, guardCode: null },
+    steamCmdPath: null,
+    // WE 壁纸的层策略。
+    //
+    // ⚠️ 默认改回 desktop 了（原来是 bottom-normal），因为那两件事现在**不再互斥**：
+    // 真壁纸层能覆盖菜单栏，而鼠标事件靠全局监听 + sendInputEvent 转发补回来
+    //（mouse-bridge.js）。用户明确否掉了"选一个残废"那个方案 ——
+    // mac 原生壁纸没有那条缝，而鼠标交互失效不可接受。他是对的。
+    strategy: 'desktop',
+    // 鼠标转发。desktop 层收不到鼠标，靠 helper 抓全局事件再注入。
+    // ⚠️ 监听鼠标不需要辅助功能权限（键盘才需要），所以 npm start 就能用。
+    mouseForward: true,
+    // 「只在桌面被聚焦（前台是 Finder）时转发」这个门。
+    //
+    // ⚠️ 默认**关**。我一开始设成 true，而那让整个功能看起来是坏的 ——
+    // 实测诊断报告：status.ok=true 而 injected=0，因为门把事件全挡了。
+    //
+    // OWE 需要这个门是因为它是纯壁纸应用（前台是 Finder 约等于在看壁纸），
+    // 而我们有面板、终端、诊断报告 —— 用户大部分时间前台不是 Finder。
+    // ⟹ 默认放行。代价是在别的应用里滑滚轮壁纸也会动，
+    // 那比"点壁纸完全没反应"可接受得多。
+    mouseGateFinder: false,
+  },
   debug: { showHud: true },
 };
 
@@ -284,7 +419,11 @@ function readConfig() {
 // mergeConfig 只遍历 default 的键 —— 那对"字段固定的配置块"是对的（新版本加的键能
 // 落回默认），但对 presets 这种用户自己起名的字典是灾难：默认是 {}，于是存下的每一个
 // 预设都在下次启动时被静默丢掉。
-const OPAQUE_DICTS = new Set(['presets', 'slots', 'recorded', 'recordOptions', 'recordUndo']);
+// overrides 和 recordUndo 也是不透明字典：键分别是壁纸自己定的（gridSize/theme/…）
+// 和动作 id，我们不认识 —— 按 defaultConfig 的键去递归合并会把它们全丢掉。
+const OPAQUE_DICTS = new Set([
+  'presets', 'slots', 'recorded', 'recordOptions', 'recordUndo', 'overrides',
+]);
 
 // Deep merge so a config written by an older version keeps working when new keys
 // appear: a missing key falls back to the new default instead of reading
@@ -296,6 +435,39 @@ function mergeConfig(base, saved, key) {
   const out = {};
   for (const k of Object.keys(base)) out[k] = mergeConfig(base[k], saved[k], k);
   return out;
+}
+
+// 一次性迁移：把存量配置里已经作废的选择改掉。
+//
+// ⚠️ 为什么需要这个：mergeConfig 会**保留**用户存过的值（那是对的 ——
+// 用户改过的设置不该被新版本覆盖）。但有些旧值现在是**明确错的**，
+// 不是"用户的偏好"。
+//
+// 实测踩到的那次：我把 we.strategy 的默认值从 bottom-normal 改成 desktop
+//（因为鼠标转发让"真壁纸层 + 能点"同时成立了），而用户的 config.json 里
+// 存着旧的 bottom-normal ⟹ 三个现象一个根因：
+//   覆盖不了菜单栏（普通窗口画不到那层）
+//   点击没反应（转发只在 desktop 层开）
+//   切桌面看到原生壁纸（普通窗口叠在壁纸层之上，有一帧延迟）
+//
+// ⟹ 改默认值对存量用户是无效的，必须显式迁移。
+function migrateConfig(cfg) {
+  let changed = false;
+  const we = cfg.we || {};
+
+  // bottom-normal 现在没有存在理由了：它唯一的优势（能收鼠标）已经被
+  // desktop + 鼠标转发覆盖，而它的劣势（画不到菜单栏那层）无法弥补。
+  if (we.strategy === 'bottom-normal') {
+    we.strategy = 'desktop';
+    changed = true;
+    console.log('[config] 迁移：we.strategy bottom-normal → desktop'
+      + '（真壁纸层能覆盖菜单栏，鼠标靠转发补回来）');
+  }
+  // 老配置里没有这两个键（mergeConfig 会补上默认值，但如果用户存过 false 就不动）
+  if (we.mouseForward === undefined) { we.mouseForward = true; changed = true; }
+
+  cfg.we = we;
+  return changed;
 }
 
 function writeConfig() {
@@ -311,7 +483,7 @@ function writeConfig() {
 // "面板上有的条目不标缺失"，而那种不一致查起来比缺功能烦。
 function broadcast(channel, payload) {
   const body = channel === 'config' ? withLibraryStatus(payload) : payload;
-  for (const win of [wallWindow, dashboardWindow, overlayWindow, overlayWindow]) {
+  for (const win of [wallWindow, dashboardWindow, overlayWindow, weWindow]) {
     if (win && !win.isDestroyed()) win.webContents.send(channel, body);
   }
 }
@@ -828,6 +1000,25 @@ function runSystemAction(id, source = '?') {
     return { ok: true, health };
   }
 
+  if (kind === 'pointer') {
+    // 这一类走 systemBridge,也就是 CGEvent。缺授权时它静默丢弃,所以健康状态一起返回 ——
+    // 让调用方能区分"发出去了"和"系统收到了",那两件事在 AirCursor 上分不开时烧掉四轮。
+    const meta = System.POINTER_ACTIONS[id];
+    if (!meta) return { ok: false, error: 'UNKNOWN_POINTER_ACTION' };
+    if (meta.command === 'dragToggle') {
+      dragHeld = !dragHeld;
+      systemBridge.send({ type: dragHeld ? 'down' : 'up' });
+      return { ok: true, held: dragHeld, health: systemBridge.health() };
+    }
+    systemBridge.send({ type: meta.command });
+    const health = systemBridge.health();
+    // 没授权就直说,而不是报 ok:true 让用户以为点了
+    if (health.trusted === false) {
+      return { ok: false, error: 'NO_ACCESSIBILITY', health };
+    }
+    return { ok: true, health };
+  }
+
   const meta = System.MEDIA_KEYS[id];
   if (!meta) return { ok: false, error: 'UNKNOWN_MEDIA_KEY' };
   try {
@@ -1001,13 +1192,6 @@ ipcMain.on('sensor-status', (_event, payload) => {
   broadcast('sensor-status', payload);
 });
 
-// 关键点只转给骨架层：dashboard 和壁纸都不画它，而这是 30/s 的高频消息，多发纯浪费。
-ipcMain.on('hands', (_event, payload) => {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('hands', payload);
-  }
-});
-
 // ---------------------------------------------------------------------------
 // 手势录制
 //
@@ -1153,12 +1337,1103 @@ ipcMain.on('recording-result', (_event, payload) => {
 });
 
 // ---------------------------------------------------------------------------
+// WE 网页壁纸
+// ---------------------------------------------------------------------------
+
+// 为什么不能 loadFile 直接开：那些壁纸是 Vite 打的 ES module
+// （`<script type="module" crossorigin>`），而 ES module 在 Chromium 里一律按 CORS
+// 语义抓取 —— file:// 的 origin 是 opaque，模块加载直接失败。样本的 bundle 还带
+// Vite 的 preload polyfill，对每个 chunk 做 fetch()，在 file:// 下同样抛。
+//
+// 症状会是**白屏**，而白屏看起来像"这个壁纸不兼容"，不像"协议选错了"。
+//
+// 自定义 scheme 声明成 standard + secure 之后，模块和 fetch 都按正常 http 语义走，
+// 不用关 webSecurity（壁纸是第三方 HTML，不该给它降全局安全等级）。
+const WE_SCHEME = 'wall';
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: WE_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+}]);
+
+// 把 wall://host/<相对路径> 映射到当前壁纸目录下的文件。
+//
+// ⚠️ 只服务当前壁纸目录，且路径要夹在目录内 —— 第三方 HTML 里一个
+// `fetch('../../../../etc/passwd')` 不该读到东西。
+function registerWEProtocol() {
+  protocol.handle(WE_SCHEME, (request) => {
+    if (!weProject || !weProject.dir) return new Response('no wallpaper', { status: 404 });
+    const url = new URL(request.url);
+    // 解析逻辑在 we-host.js 里（纯函数、可测）：越界、空路径、百分号编码这三件
+    // 都会错，而每一件的症状都是白屏 —— 看起来像"这个壁纸不兼容"。
+    const target = WE.resolveAsset(url.pathname, weProject.dir, weProject.file);
+    if (!target) return new Response('forbidden', { status: 403 });
+    // ⚠️ 必须用 pathToFileURL，不能裸拼 `file://${target}`。
+    // 目录名里的 # ? % 会被当成 URL 的片段/查询/转义起点 ⟹ 路径被**静默截断**，
+    // 变成 404 ⟹ 白屏，而白屏看起来像"这个壁纸不兼容"。
+    // 实测：'a#b' / 'c?d' / 'e%f' 三种都会错；中文和空格恰好没事，
+    // 所以拿中文路径测过也证明不了裸拼是安全的。
+    return net.fetch(pathToFileURL(target).href);
+  });
+}
+
+// 读壁纸目录的 project.json。
+function loadWEProject(dir) {
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'project.json'), 'utf8');
+    const parsed = WE.parseProject(JSON.parse(raw));
+    if (!parsed) return { ok: false, error: 'project.json 解析后为空' };
+    if (!parsed.supported) {
+      // ⚠️ 不支持时给的是**理由 + 预览图**，不是一句"不支持"。
+      // 而且明确说"这不是坏了" —— 否则用户会去排查一个不存在的 bug。
+      return {
+        ok: false,
+        error: WE.refusalReason(parsed),
+        project: { ...parsed, dir },
+        preview: previewPathOf(dir, parsed),
+      };
+    }
+    // video 类的入口是视频文件不是 html，这里先做个明显性检查。
+    if (parsed.type === 'video') {
+      const hint = WE.videoHint(parsed.file);
+      if (hint) return { ok: false, error: hint, project: { ...parsed, dir } };
+    }
+    return { ok: true, project: { ...parsed, dir } };
+  } catch (error) {
+    return { ok: false, error: `读 project.json 失败：${error.message}` };
+  }
+}
+
+// 把系统原生壁纸设成我们壁纸的静态帧（占位）。
+//
+// ⚠️ 这解决的是用户实测的"来回切换桌面会有延迟，看到 mac 的原生壁纸"。
+//
+// 原因：我们的窗口在壁纸层**之上**，而切 Space 时窗口重新合成有一帧延迟 ——
+// 那一帧露出下面的系统壁纸。这不是 bug，是图层顺序的必然结果。
+//
+// ⟹ Open Wallpaper Engine 的解法很聪明：**把系统壁纸设成我们内容的静态帧**。
+// 那样下面那层和我们画的东西长得一样，露出来也看不出来。
+//（它的 setPlacehoderWallpaper 就干这个，用视频第一帧。）
+//
+// Electron 没有 setDesktopImageURL 的等价 API，但 osascript 可以 ——
+// 而且 System Events 设桌面图片**不需要任何权限**（标准 AppleScript 词典）。
+//
+// ⚠️ 必须先存下用户原来的壁纸，退出时还回去。不然我们改了他的系统设置不还原，
+// 那是很讨人嫌的行为。
+let originalWallpaper = null;
+
+function readSystemWallpaper() {
+  const result = spawnSync('/usr/bin/osascript', ['-e',
+    'tell application "System Events" to get picture of current desktop'],
+    { encoding: 'utf8', timeout: 5000 });
+  if (result.status !== 0) return null;
+  const out = String(result.stdout || '').trim();
+  return out || null;
+}
+
+function setSystemWallpaper(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return false;
+  // ⚠️ 路径里的引号要转义 —— 壁纸目录名是用户可控的，
+  // 一个引号就能把 AppleScript 劈开（而那会静默失败）。
+  const escaped = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const result = spawnSync('/usr/bin/osascript', ['-e',
+    `tell application "System Events" to set picture of every desktop to "${escaped}"`],
+    { encoding: 'utf8', timeout: 8000 });
+  if (result.status !== 0) {
+    // 说出来而不是静默 —— 失败的后果是切桌面时仍然闪，
+    // 而那看起来像"这个修复没用"。
+    logEvent('wallpaper', `设置系统壁纸失败：${(result.stderr || '').trim().slice(0, 150)}`);
+    return false;
+  }
+  return true;
+}
+
+// 用壁纸的预览图当占位。
+//
+// ⚠️ 用 preview 而不是"视频第一帧"：抽第一帧要 ffmpeg，而 preview.gif/jpg
+// 工坊物品基本都有，而且它就是这个壁纸的代表画面 —— 正好合用。
+function placeholderFromProject(dir, project) {
+  const preview = previewPathOf(dir, project);
+  if (!preview) return null;
+  // ⚠️ GIF 不能直接当桌面图片（macOS 只取第一帧，而且有时候整个失败）。
+  // 有 jpg/png 优先用，只有 gif 时也试一下 —— 失败会被 setSystemWallpaper 报出来。
+  return preview;
+}
+
+// 找预览图。不支持的类型至少让用户看见"这个壁纸长什么样"，从而知道该不该找替代。
+// ⚠️ project.json 的 preview 字段可能指向不存在的文件，所以逐个试。
+function previewPathOf(dir, project) {
+  const names = [project && project.preview, 'preview.gif', 'preview.jpg', 'preview.png']
+    .filter(Boolean);
+  for (const name of names) {
+    const candidate = path.join(dir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function destroyWEWindow() {
+  if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+  if (weWindow && !weWindow.isDestroyed()) weWindow.destroy();
+  weWindow = null;
+  weReady = false;
+}
+
+function createWEWindow() {
+  if (!weProject) return null;
+  // ⚠️ WE 网页壁纸的交互主体是**鼠标**（这个样本 pointerdown ×9、onClick ×8，
+  // "点一下掉流星"就是它的卖点）。而默认策略 desktop 是真壁纸层、**收不到鼠标事件** ——
+  // 装上去会是"画面出来了但点它没反应"，和壁纸坏了分不清。
+  //
+  // 所以 WE 壁纸默认用能收鼠标的那个策略。代价是它会出现在 Mission Control 里，
+  // 而那个代价比"交互整个不工作"小得多。用户仍可用 ⌃⇧L 切回去。
+  const strategyId = config.we.strategy || 'desktop';
+  const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
+  const { bounds } = screen.getPrimaryDisplay();
+  const win = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    skipTaskbar: true,
+    enableLargerThanScreen: true,
+    // 不透明：WE 壁纸自己画满整屏（样本的 body 是 background:#000）。
+    // transparent 会让它的 GLSL 混色和我们的透明背景打架。
+    backgroundColor: '#000000',
+    ...strategy.options,
+    webPreferences: {
+      // ⚠️ 两种 preload：video 是我们自己的页面（要 gw 那套），
+      // web 是第三方壁纸（只给 WE 的 5 个全局函数，见 we-preload.js 的注释）。
+      preload: WE.isMediaType(weProject.type)
+        ? path.join(__dirname, 'preload.js')
+        : path.join(__dirname, 'we-preload.js'),
+      // ⚠️ 这里曾经是 contextIsolation: false，因为属性接口是反向的（壁纸自己挂
+      // window.wallpaperPropertyListener 等宿主去调），而隔离世界读不到页面挂的东西。
+      //
+      // 改回 true 了。壁纸是从创意工坊下的第三方 HTML，同世界意味着它可能摸到
+      // require ⟹ 能读用户的文件系统。那个风险不值得为一个接口形状承担，而且两个
+      // 方向都有不关隔离的办法：
+      //   我们→壁纸：contextBridge.exposeInMainWorld（它本来就是往主世界桥）
+      //   壁纸→我们：executeJavaScript 跑在主世界（见 sendWEProperties）
+      contextIsolation: true,
+      nodeIntegration: false,
+      // 第三方 HTML 就该按第三方对待。sandbox 会限制 preload 里能 require 的东西，
+      // 而 we-preload 只用 electron 的 contextBridge/ipcRenderer，两个都在白名单内。
+      // ⚠️ video 那条走我们自己的 preload.js，它 require 的也只有 electron。
+      sandbox: true,
+      // 壁纸持续动画，而"不是焦点窗口"对壁纸是常态 —— 让 Chromium 在那里节流
+      // 等于永久卡住动画。
+      backgroundThrottling: false,
+    },
+  });
+
+  // ⚠️ web 和 video 的装载路径必须分开：video 的 project.file 是视频文件名不是 html，
+  // 拿它去 loadURL 会让 Chromium 直接下载或黑屏（不报错）。
+  if (WE.isMediaType(weProject.type)) {
+    // 页面是我们自己的 video.html，视频文件通过 IPC 把 wall:// 的 URL 送进去。
+    win.loadFile(path.join(__dirname, 'video.html'));
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.send('video-source', {
+        url: `${WE_SCHEME}://wallpaper/${encodeURIComponent(weProject.file)}`,
+      });
+    });
+  } else {
+    win.loadURL(`${WE_SCHEME}://wallpaper/${weProject.file}`);
+  }
+  try {
+    strategy.apply(win);
+  } catch (error) {
+    console.warn(`[we] strategy ${strategy.id} apply failed:`, error.message);
+  }
+
+  // 加载失败要说出来。白屏的原因有好几种（协议没注册、文件名不对、模块加载失败），
+  // 而它们在外面看起来一模一样。
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.warn(`[we] 加载失败 ${code} ${desc} ${url}`);
+    broadcast('we-status', weStatus(`加载失败：${desc}`));
+  });
+
+  win.webContents.on('did-finish-load', () => {
+    sendWEProperties();
+    // ⚠️ 不在这里判"成功"。did-finish-load 只说 HTML 到了，不说里面的 ES module
+    // 跑起来了 —— 而模块加载失败正是 file:// 那个坑的症状。真正的成功信号是壁纸
+    // 自己调 wallpaperReady（见 ipcMain.on('we-ready')）。
+    broadcast('we-status', weStatus(null));
+  });
+
+  return win;
+}
+
+// 把 project.json 的属性（叠加用户覆盖）发给壁纸。
+//
+// ⚠️ 这条是**反向**的：壁纸自己执行 `window.wallpaperPropertyListener = {…}` 然后等
+// 宿主去调它。所以不能走 IPC + preload —— 隔离世界里读不到页面挂的对象。
+//
+// executeJavaScript **默认跑在主世界**（要跑隔离世界得显式用
+// executeJavaScriptInIsolatedWorld），所以主进程可以直接在页面世界里调那个对象。
+// 这样属性能发进去，而 contextIsolation 保持开着。
+//
+// 页面可能还没挂上（壁纸的 bundle 是 ES module，加载是异步的），所以脚本里自己判断
+// 并把没送到的报回来 —— 由调用方决定要不要重试。
+function applyWEProperties(props, general) {
+  if (!weWindow || weWindow.isDestroyed()) return Promise.resolve({ applied: false });
+  // JSON.stringify 两次：一次把对象变成字面量，外层那次是为了让它作为字符串安全嵌入。
+  // 直接拼对象会让壁纸名里的引号或反斜杠把脚本劈开。
+  const script = `(() => {
+    const listener = window.wallpaperPropertyListener;
+    if (!listener) return { applied: false, reason: 'no-listener' };
+    let user = false, general = false;
+    try {
+      if (typeof listener.applyUserProperties === 'function') {
+        listener.applyUserProperties(JSON.parse(${JSON.stringify(JSON.stringify(props))}));
+        user = true;
+      }
+      if (typeof listener.applyGeneralProperties === 'function') {
+        listener.applyGeneralProperties(JSON.parse(${JSON.stringify(JSON.stringify(general))}));
+        general = true;
+      }
+    } catch (error) {
+      return { applied: false, reason: String(error && error.message) };
+    }
+    return { applied: user || general, user, general };
+  })()`;
+  return weWindow.webContents.executeJavaScript(script, true)
+    .catch((error) => ({ applied: false, reason: String(error && error.message) }));
+}
+
+// 发属性，页面还没挂好就重试。
+//
+// ⚠️ 有上限：不是每个壁纸都有可配置项，无上限重试会对那些壁纸永远转下去。
+const WE_PROP_RETRY_MS = 120;
+const WE_PROP_TIMEOUT_MS = 8000;
+let wePropTimer = null;
+
+function sendWEProperties() {
+  if (!weWindow || weWindow.isDestroyed() || !weProject) return;
+  const props = WE.userProperties(weProject.properties, config.we.overrides);
+  const general = WE.generalProperties(config.we.fps);
+  const startedAt = Date.now();
+
+  if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+
+  const attempt = async () => {
+    const result = await applyWEProperties(props, general);
+    if (result.applied) {
+      if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+      return;
+    }
+    if (Date.now() - startedAt > WE_PROP_TIMEOUT_MS) {
+      if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+      // 说出来而不是静默放弃：'no-listener' 是"这个壁纸没有可配置项"（正常），
+      // 别的原因是真出问题了。两者在画面上都看不出来。
+      if (result.reason !== 'no-listener') {
+        console.warn('[we] 属性发不进去:', result.reason);
+      }
+    }
+  };
+
+  attempt();
+  wePropTimer = setInterval(attempt, WE_PROP_RETRY_MS);
+}
+
+function weStatus(error) {
+  return {
+    // 菜单栏覆盖的核对结果 —— 那条缝和壁纸装载是两件事，但用户看到的是同一块屏幕。
+    menuBar: menuBarState,
+    dir: weProject ? weProject.dir : null,
+    title: weProject ? weProject.title : null,
+    wantsAudio: weProject ? weProject.wantsAudio : false,
+    // ⚠️ ready 是"壁纸里的 JS 真的跑起来了"，不是"窗口开了"。这两件事分开报,
+    // 因为白屏时它们的值不同 —— 这是唯一能区分"没加载"和"加载了但没渲染"的观测点。
+    ready: weReady,
+    audioSource: config && config.we ? config.we.audioSource : 'off',
+    // 采集侧的状态（权限、是否真的按 App 过滤成功）单独一层，别和窗口状态混。
+    audio: audioStatus,
+    error: error || null,
+  };
+}
+
+// 装载一个 WE 壁纸目录。null = 卸掉，回到我们自己的三层景深。
+function setWEWallpaper(dir) {
+  if (!dir) {
+    weProject = null;
+    destroyWEWindow();
+    syncAudioSource();
+    syncMouseForward();
+    if (!wallWindow || wallWindow.isDestroyed()) wallWindow = createWallWindow(config.wallStrategy);
+    broadcast('we-status', weStatus(null));
+    return { ok: true, cleared: true };
+  }
+
+  const loaded = loadWEProject(dir);
+  if (!loaded.ok) {
+    broadcast('we-status', weStatus(loaded.error));
+    return { ok: false, error: loaded.error };
+  }
+
+  weProject = loaded.project;
+  weReady = false;
+  // 两种壁纸源互斥：都钉在桌面层会互相遮挡，而"我看到的是哪个"就没法判断了。
+  if (wallWindow && !wallWindow.isDestroyed()) wallWindow.destroy();
+  wallWindow = null;
+  destroyWEWindow();
+  weWindow = createWEWindow();
+  syncAudioSource();
+  syncMouseForward();
+
+  // 把系统壁纸换成这个壁纸的静态帧，消掉切桌面时那一帧的闪烁。
+  // ⚠️ 先记住原来的，退出时还回去。
+  if (originalWallpaper === null) originalWallpaper = readSystemWallpaper();
+  const placeholder = placeholderFromProject(weProject.dir, weProject);
+  if (placeholder && config.we.placeholderWallpaper !== false) {
+    const ok = setSystemWallpaper(placeholder);
+    logEvent('wallpaper', ok
+      ? `系统壁纸已设为占位图（消掉切桌面那一帧的闪烁）：${path.basename(placeholder)}`
+      : '系统壁纸占位图没设上 —— 切桌面时可能会闪一下原生壁纸');
+  }
+  return { ok: true, project: { title: weProject.title, dir: weProject.dir } };
+}
+
+// 壁纸自己调 wallpaperReady 了 —— 这是"里面的 JS 活着"的唯一证据。
+ipcMain.on('we-mouse-seen', (_event, payload) => {
+  pageMouseSeen = { ...payload, at: Date.now() };
+});
+
+ipcMain.handle('we-pick', async () => {
+  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
+    title: '选择 Wallpaper Engine 壁纸目录（含 project.json）',
+    properties: ['openDirectory'],
+    buttonLabel: '装载',
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const out = setWEWallpaper(result.filePaths[0]);
+  if (out.ok) {
+    config.we.dir = weProject.dir;
+    writeConfig(config);
+    broadcast('config', config);
+  }
+  return out;
+});
+
+ipcMain.handle('we-clear', () => {
+  const out = setWEWallpaper(null);
+  config.we.dir = null;
+  writeConfig(config);
+  broadcast('config', config);
+  return out;
+});
+
+// 面板上改一项属性。热改：不重载页面，直接发属性 —— 样本的 applyUserProperties 就是
+// 为运行时改配置设计的（WE 用户在 Steam 面板上拖滑块就是走这条）。
+ipcMain.handle('we-set-property', (_event, key, value) => {
+  if (!weProject) return { ok: false, error: '没有装载 WE 壁纸' };
+  config.we.overrides[key] = value;
+  writeConfig(config);
+  if (weWindow && !weWindow.isDestroyed()) {
+    // 单项热改也走 executeJavaScript —— 和上面同一条路，不是两套机制。
+    applyWEProperties({ [key]: { value } }, WE.generalProperties(config.we.fps));
+  }
+  return { ok: true };
+});
+
+// 面板要渲染配置控件，直接从 project.json 生成 —— 不给每个壁纸手写 UI。
+ipcMain.handle('we-controls', () => {
+  if (!weProject) return { ok: false, controls: [] };
+  return {
+    ok: true,
+    title: weProject.title,
+    controls: WE.controlsOf(weProject.properties),
+    overrides: config.we.overrides,
+  };
+});
+
+// ---------------------------------------------------------------------------
+// 创意工坊：用用户的 Steam 账号拉壁纸
+// ---------------------------------------------------------------------------
+//
+// 用户买了 Wallpaper Engine（Windows-only），但**工坊内容不是平台相关的** ——
+// 那些就是文件，而 steamcmd 有 mac 版。所以账号里的资源能直接用。
+
+// 最近的事件环，进诊断报告。
+// ⚠️ 这条链的失败模式又多又静默（没装/没登录/Guard 过期/ID 不存在/下了但目录空），
+// 每一种都表现成"壁纸没出来"。所以留一份带时间戳的原始记录，
+// 而不是只留最后一句结论 —— 结论是我判断出来的，可能判错。
+const EVENT_LIMIT = 200;
+const events = [];
+function logEvent(source, message, extra) {
+  const entry = { at: Date.now(), source, message, ...(extra || {}) };
+  events.push(entry);
+  if (events.length > EVENT_LIMIT) events.shift();
+  // B 层：终端日志。白屏这类问题只有逐环节的时间戳能看出卡在第几步。
+  console.log(`[${source}] ${message}`);
+  return entry;
+}
+
+function findSteamCmd() {
+  const custom = config.we.steamCmdPath;
+  const candidates = custom ? [custom, ...Workshop.STEAMCMD_CANDIDATES]
+    : Workshop.STEAMCMD_CANDIDATES;
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch { /* 权限问题当没找到 */ }
+  }
+  return null;
+}
+
+let downloading = null;
+
+ipcMain.handle('workshop-download', async (_event, input) => {
+  const workshopId = Workshop.parseWorkshopId(input);
+  if (!workshopId) {
+    return { ok: false, error: '认不出工坊 ID —— 贴数字 ID 或者创意工坊页面的链接都行' };
+  }
+  if (downloading) return { ok: false, error: '已经在下一个了，等它完成' };
+
+  const steamcmd = findSteamCmd();
+  if (!steamcmd) {
+    logEvent('workshop', 'steamcmd 没找到');
+    return { ok: false, error: Workshop.installHint(), needsInstall: true };
+  }
+
+  const creds = config.we.steam || {};
+  if (!creds.username) {
+    return { ok: false, error: '先填 Steam 用户名（工坊物品要登录才能下）', needsLogin: true };
+  }
+
+  const args = Workshop.downloadArgs({
+    username: creds.username,
+    password: creds.password,
+    guardCode: creds.guardCode,
+    workshopId,
+  });
+  // ⚠️ 日志里必须脱敏：诊断报告会发给别人看，而 args 里有明文密码。
+  logEvent('workshop', `steamcmd ${Workshop.redactArgs(args).join(' ')}`);
+
+  return new Promise((resolve) => {
+    const lines = [];
+    const child = spawn(steamcmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    downloading = { workshopId, child };
+
+    let buffer = '';
+    const onChunk = (chunk) => {
+      buffer += String(chunk);
+      const parts = buffer.split('\n');
+      buffer = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        lines.push(line);
+        const hit = Workshop.classifyLine(line);
+        if (hit) {
+          logEvent('workshop', hit.text, { kind: hit.kind });
+          broadcast('workshop-progress', hit);
+        }
+      }
+    };
+    child.stdout.on('data', onChunk);
+    child.stderr.on('data', onChunk);
+
+    child.on('exit', (code) => {
+      downloading = null;
+      const summary = Workshop.summarize(lines);
+      // ⚠️ 不从 steamcmd 的路径推数据目录 —— 那条我错过一次：brew 的
+      // /opt/homebrew/bin/steamcmd 只是包装脚本（真二进制在 Caskroom/…/MacOS/），
+      // 而数据实际落在 ~/Library/Application Support/Steam（steamcmd 自己的启动
+      // 输出里写着）。所以逐个候选去找，找到哪个算哪个。
+      let dir = Workshop.findDownloaded(workshopId, (p) => fs.existsSync(p));
+
+      // ⚠️ legacy 工坊物品：Steam 对老的单文件上传**不解包**，原样存成
+      // <工坊ID>/<数字>_legacy.bin。实测（用户的 3339949060）：
+      //   Success. Downloaded item ... to ".../3339949060/…_legacy.bin" (966026 bytes)
+      // 也就是下载真的成功了，只是形状不是我们期待的 project.json + 资产。
+      //
+      // 原来的判据（目录里有 project.json）会把它判成失败 ⟹ 报"下载完了但找不到文件"，
+      // 而那会让人去查网络和账号，方向完全错。
+      if (!dir) {
+        const rawDir = Workshop.findDownloadedDir(workshopId, (p) => fs.existsSync(p));
+        if (rawDir) {
+          const legacy = Workshop.findLegacyBin(rawDir, (d) => fs.readdirSync(d));
+          if (legacy) {
+            const unpacked = unpackLegacy(legacy, rawDir);
+            logEvent('workshop', `legacy 物品：${unpacked.label}`, { legacy, ok: unpacked.ok });
+            if (unpacked.ok) {
+              dir = rawDir;
+              // 成功但有警告（比如拿到的是缩略图）也要说出来 ——
+              // 否则用户看到糊的画面会以为是我们渲染差。
+              if (unpacked.warning) {
+                logEvent('workshop', unpacked.warning);
+                broadcast('workshop-progress', { kind: 'warning', text: unpacked.warning });
+              }
+            } else {
+              resolve({
+                ok: false,
+                error: unpacked.error,
+                legacy: { file: legacy, ...unpacked },
+                hint: unpacked.hint,
+              });
+              return;
+            }
+          }
+        }
+      }
+
+      if (dir) {
+        logEvent('workshop', `下载成功：${dir}`);
+        const out = setWEWallpaper(dir);
+        config.we.dir = dir;
+        writeConfig(config);
+        broadcast('config', config);
+        resolve({ ok: true, dir, ...out });
+        return;
+      }
+      // ⚠️ 走到这里说明 steamcmd 退出了但我们找不到文件。**分开报两种情况**：
+      // 有明确原因（登录/ID）就报那个；没有就报"下载完了但找不到文件"并给出
+      // 我们找过的路径 —— 那种情况多半是 steamcmd 的根目录推断错了，
+      // 而不给路径的话完全没法查。
+      const reason = summary && summary.kind !== 'downloaded'
+        ? summary.text
+        : `steamcmd 退出（code ${code}）但找不到文件`;
+      const searched = Workshop.searchedPaths(workshopId);
+      logEvent('workshop', `失败：${reason}`, { searched });
+      resolve({
+        ok: false,
+        error: reason,
+        // ⚠️ 把找过的**所有**路径报出来。这条链最可能的失败就是路径不对，
+        // 而不给路径的话用户和我都不知道往哪查。
+        searched,
+        // 最后 30 行原始输出。⚠️ 我的关键字分类可能漏，原文是兜底。
+        tail: lines.slice(-30),
+      });
+    });
+
+    child.on('error', (error) => {
+      downloading = null;
+      logEvent('workshop', `起不来：${error.message}`);
+      resolve({ ok: false, error: `steamcmd 起不来：${error.message}` });
+    });
+  });
+});
+
+// 取工坊物品详情（预览图、标题、类型）。
+//
+// ⚠️ 这条**不需要登录也不需要 API key** —— 用的是 GetPublishedFileDetails。
+// 所以"贴个链接先看预览图再决定装不装"是零门槛的，而那正是工坊该有的体验：
+// 只给一个填 ID 的输入框等于把命令行搬进 GUI。
+ipcMain.handle('workshop-details', async (_event, input) => {
+  // 一次可以查多个：用户可能粘一串 ID，或者我们将来做"已订阅列表"。
+  const ids = (Array.isArray(input) ? input : [input])
+    .map((x) => Workshop.parseWorkshopId(x))
+    .filter(Boolean);
+  if (!ids.length) {
+    return { ok: false, error: '认不出工坊 ID —— 贴数字 ID 或创意工坊页面链接都行' };
+  }
+
+  try {
+    const response = await net.fetch(Workshop.DETAILS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: Workshop.detailsBody(ids),
+    });
+    if (!response.ok) {
+      logEvent('workshop', `详情请求失败 HTTP ${response.status}`);
+      return { ok: false, error: `Steam 接口返回 ${response.status}` };
+    }
+    // ⚠️ 支持性判断在这里加上，来源是 we-host 的 TYPES（唯一来源）。
+    // workshop.js 故意不判 —— 它曾经自己维护一份列表然后漂了。
+    const items = Workshop.parseDetailsResponse(await response.json()).map((item) => ({
+      ...item,
+      supported: item.type ? WE.isSupportedType(item.type) : false,
+      refusal: item.type ? WE.typeRefusal(item.type) : null,
+    }));
+    logEvent('workshop', `取到 ${items.length} 个物品的详情`);
+    return { ok: true, items };
+  } catch (error) {
+    // ⚠️ 网络失败要和"物品不存在"分开说。国内访问 api.steampowered.com 经常需要代理，
+    // 而"连不上"和"这个壁纸没了"是完全不同的两件事。
+    logEvent('workshop', `详情请求异常：${error.message}`);
+    return {
+      ok: false,
+      error: `连不上 Steam 接口：${error.message}`,
+      hint: '这个接口在国内常常要代理。壁纸下载走 steamcmd 是另一条路，可能不受影响。',
+    };
+  }
+});
+
+// 已下载的壁纸列表 —— 本地扫一遍，不需要网络。
+//
+// ⚠️ 这条补的是另一半体验缺口：下载过的东西要能重新装载，
+// 而不是每次都重新填 ID。工坊页面的"已订阅"在本地的对应物就是这个。
+ipcMain.handle('workshop-local', () => {
+  const found = [];
+  for (const root of Workshop.STEAM_ROOTS) {
+    const base = path.join(root, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID);
+    let entries = [];
+    try {
+      entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch { continue; }   // 目录不存在很正常（还没下过东西）
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(base, entry.name);
+      const projectFile = path.join(dir, 'project.json');
+      if (!fs.existsSync(projectFile)) continue;
+      try {
+        const project = WE.parseProject(JSON.parse(fs.readFileSync(projectFile, 'utf8')));
+        if (!project) continue;
+        found.push({
+          id: entry.name,
+          dir,
+          title: project.title,
+          type: project.type,
+          typeLabel: project.typeLabel,
+          supported: project.supported,
+          gifScene: project.gifScene,
+          // 本地预览图走自定义 protocol 读不到（那个只服务当前壁纸），
+          // 所以给绝对路径让面板用 file:// 显示。
+          preview: previewPathOf(dir, project),
+        });
+      } catch { /* project.json 坏了就跳过，别让一个坏的挡住整个列表 */ }
+    }
+  }
+  return { ok: true, items: found };
+});
+
+// 装载一个已经下载好的
+ipcMain.handle('workshop-load-local', (_event, dir) => {
+  if (!dir || !fs.existsSync(path.join(dir, 'project.json'))) {
+    return { ok: false, error: '这个目录里没有 project.json' };
+  }
+  const out = setWEWallpaper(dir);
+  if (out.ok) {
+    config.we.dir = dir;
+    writeConfig(config);
+    broadcast('config', config);
+  }
+  return out;
+});
+
+// 解 legacy.bin。
+//
+// ⚠️ 里面是什么只能靠魔数判，不能猜 —— 可能是 zip、WE 的 PKGV 私有归档、
+// 或者裸的一个视频文件。三种处置完全不同，判错就是又一轮来回。
+function unpackLegacy(binPath, targetDir) {
+  let head;
+  try {
+    const fd = fs.openSync(binPath, 'r');
+    head = Buffer.alloc(16);
+    fs.readSync(fd, head, 0, 16, 0);
+    fs.closeSync(fd);
+  } catch (error) {
+    return { ok: false, error: `读不了 legacy 文件：${error.message}` };
+  }
+
+  const sniff = Workshop.sniffLegacy(head);
+
+  if (sniff.kind === 'zip') {
+    // macOS 自带 ditto，比 unzip 更能处理奇怪的归档，而且不需要额外依赖。
+    const result = spawnSync('/usr/bin/ditto', ['-x', '-k', binPath, targetDir],
+      { encoding: 'utf8', timeout: 120000 });
+    if (result.status !== 0) {
+      return {
+        ok: false, label: sniff.label,
+        error: `解压失败：${(result.stderr || '').slice(0, 200)}`,
+      };
+    }
+    // ⚠️ 解出来必须真的有 project.json，否则只是换了个地方失败。
+    // 而且 zip 里可能多一层同名目录，所以往下找一层。
+    if (fs.existsSync(path.join(targetDir, 'project.json'))) {
+      return { ok: true, label: `${sniff.label} → 已解包` };
+    }
+    for (const entry of fs.readdirSync(targetDir, { withFileTypes: true })) {
+      if (entry.isDirectory()
+        && fs.existsSync(path.join(targetDir, entry.name, 'project.json'))) {
+        return { ok: true, label: `${sniff.label} → 已解包（在子目录 ${entry.name}）`,
+          nested: path.join(targetDir, entry.name) };
+      }
+    }
+    return {
+      ok: false, label: sniff.label,
+      error: '解压成功但里面没有 project.json —— 这个归档可能不是 WE 壁纸',
+    };
+  }
+
+  // 视频/图片：legacy 时代的单文件壁纸就是一个媒体文件，没有 project.json。
+  // ⟹ 我们可以给它造一个，让它走 video 那条已经做好的路。
+  if (['mp4', 'webm', 'gif', 'png', 'jpg'].includes(sniff.kind)) {
+    const ext = sniff.kind === 'mp4' ? 'mp4' : sniff.kind;
+    const media = path.join(targetDir, `wallpaper.${ext}`);
+    try {
+      fs.copyFileSync(binPath, media);
+      // ⚠️ 造 project.json 而不是特殊分支：那样它复用已有的媒体装载路径，不用再写一套。
+      const isImage = ['gif', 'png', 'jpg'].includes(sniff.kind);
+      fs.writeFileSync(path.join(targetDir, 'project.json'), JSON.stringify({
+        type: isImage ? 'image' : 'video',
+        file: `wallpaper.${ext}`,
+        title: `工坊物品（${sniff.label}）`,
+        _generatedBy: 'GestureWall：legacy 单文件壁纸没有 project.json，这个是我们造的',
+        _sourceFile: path.basename(binPath),
+      }, null, 2));
+
+      // ⚠️ 文件名里带 preview 的是**缩略图**，不是壁纸本体。
+      //
+      // 实测：用户下了一个 943KB 的物品，落地文件叫
+      //   1727611897_new_preview_preview.gif
+      // 画面能动但很糊 —— 因为那是工坊列表用的小图（几百像素宽），
+      // 拉到 2940px 屏幕上必然糊。
+      //
+      // 这件事必须说出来，否则用户会以为是我们的渲染差。而且它指向一个真问题：
+      // 那个物品的壁纸本体可能压根不在 legacy.bin 里（作者只上传了预览图，
+      // 或者本体在别的地方）。
+      const looksLikePreview = /preview/i.test(path.basename(binPath));
+      return {
+        ok: true,
+        label: `${sniff.label} → 已转成${isImage ? '图片' : '视频'}类`,
+        warning: looksLikePreview
+          ? `⚠️ 这个文件名里带 preview（${path.basename(binPath)}）—— 那通常是工坊的`
+            + '**缩略图**而不是壁纸本体，所以放大后会糊。这个物品可能没把本体传上来。'
+          : null,
+      };
+    } catch (error) {
+      return { ok: false, label: sniff.label, error: `转换失败：${error.message}` };
+    }
+  }
+
+  if (sniff.kind === 'pkgv') {
+    return {
+      ok: false, label: sniff.label,
+      error: '这是 WE 的私有 PKGV 归档 —— 需要 scene 渲染，暂不支持',
+      hint: 'scene 类是 WE 编辑器的私有格式。详见 scene-wallpaper-feasibility.md',
+    };
+  }
+
+  // ⚠️ 判不出来时把头几个字节给出来，别只说"不支持"。
+  // 那串十六进制能让我直接查出是什么格式，不用来回猜。
+  return {
+    ok: false, label: sniff.label,
+    error: `legacy 文件的格式认不出来：${sniff.label}`,
+    hex: sniff.hex,
+    hint: `文件在 ${binPath} —— 把上面那串开头字节发给我，我查是什么格式`,
+  };
+}
+
+ipcMain.handle('workshop-set-steam', (_event, patch) => {
+  config.we.steam = { ...(config.we.steam || {}), ...(patch || {}) };
+  writeConfig(config);
+  return { ok: true, username: config.we.steam.username || null };
+});
+
+ipcMain.handle('workshop-probe', () => {
+  const steamcmd = findSteamCmd();
+  return {
+    steamcmd,
+    installed: !!steamcmd,
+    hint: steamcmd ? null : Workshop.installHint(),
+    username: (config.we.steam && config.we.steam.username) || null,
+  };
+});
+
+// video 页面汇报播放状态。
+// ⚠️ 这是"放了但你看不见"的唯一证据：有 currentTime 在涨、有分辨率，
+// 就说明解码正常、问题在窗口层级或遮挡 —— 那和"放不了"是两种完全不同的修法。
+let videoStatus = null;
+ipcMain.on('video-status', (_event, payload) => {
+  videoStatus = payload;
+  if (payload && payload.ok === false) {
+    logEvent('video', `${payload.kind}：${payload.detail || ''}`);
+  }
+  broadcast('video-status', payload);
+});
+
+// ---------------------------------------------------------------------------
+// 诊断报告（C 层）
+// ---------------------------------------------------------------------------
+//
+// 用户点一下导出，比自然语言描述准得多。这个形状是另一个模块验证过的 ——
+// 他靠诊断报告定位了四个根因，并且明确说"比自然语言描述准得多"。
+ipcMain.handle('export-diagnostics', () => {
+  const report = {
+    v: 1,
+    at: new Date().toISOString(),
+    app: {
+      version: app.getVersion(),
+      // ⚠️ packaged 必须在最前面：它决定权限类结论是否可信
+      //（npm start 下屏幕录制/辅助功能根本不可达）。
+      packaged: app.isPackaged,
+      electron: process.versions.electron,
+      arch: process.arch,
+    },
+    wallpaper: weProject ? {
+      type: weProject.type,
+      typeLabel: weProject.typeLabel,
+      supported: weProject.supported,
+      gifScene: weProject.gifScene,
+      file: weProject.file,
+      dir: weProject.dir,
+      title: weProject.title,
+      wantsAudio: weProject.wantsAudio,
+      propertyCount: Object.keys(weProject.properties || {}).length,
+    } : null,
+    windows: {
+      // 哪些窗口活着 —— "画面没出来"时第一件要确认的事。
+      wall: !!(wallWindow && !wallWindow.isDestroyed()),
+      we: !!(weWindow && !weWindow.isDestroyed()),
+      dashboard: !!(dashboardWindow && !dashboardWindow.isDestroyed()),
+      // 摄像头搬进骨架层了,没有独立的 sensor 窗口 —— 报骨架层的状态。
+      sensor: !!(overlayWindow && !overlayWindow.isDestroyed()),
+      strategy: currentStrategy ? currentStrategy.id : null,
+      weStrategy: config.we.strategy,
+      // 实际拿到的窗口尺寸 vs 屏幕尺寸 —— 菜单栏那条缝就是这里看出来的。
+      display: screen.getPrimaryDisplay().bounds,
+      weBounds: weWindow && !weWindow.isDestroyed() ? weWindow.getBounds() : null,
+      // ⚠️ 菜单栏那条缝：覆盖到底成没成，试了几次，还差多少。
+      // 那条缝用户看得见但查不到原因，所以核对结果必须进报告。
+      menuBar: menuBarState,
+    },
+    we: { ready: weReady },
+    video: videoStatus,
+    audio: audioStatus,
+    mouse: {
+      status: mouseStatus, lastEvent: lastMouseEvent, injected: mouseInjected,
+      // ⚠️ 页面那边有没有真的收到，只能由页面自己报 —— 见下面的探针。
+      pageSaw: pageMouseSeen,
+    },
+    workshop: {
+      steamcmd: findSteamCmd(),
+      username: (config.we.steam && config.we.steam.username) || null,
+      downloading: downloading ? downloading.workshopId : null,
+    },
+    // 配置快照，但**去掉密码**。
+    config: redactConfig(config),
+    events: events.slice(-EVENT_LIMIT),
+  };
+
+  const dir = path.join(app.getPath('userData'), 'diagnostics');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `gesturewall-${Date.now()}.json`);
+  fs.writeFileSync(file, JSON.stringify(report, null, 2));
+  return { ok: true, file };
+});
+
+// ⚠️ 诊断报告是要发给别人看的，而 config 里有 Steam 密码和 Guard 码。
+// 忘了这一步就等于让用户把密码贴进聊天记录。
+function redactConfig(source) {
+  const copy = JSON.parse(JSON.stringify(source || {}));
+  if (copy.we && copy.we.steam) {
+    if (copy.we.steam.password) copy.we.steam.password = '***';
+    if (copy.we.steam.guardCode) copy.we.steam.guardCode = '***';
+  }
+  return copy;
+}
+
+ipcMain.handle('reveal-diagnostics', () => {
+  const dir = path.join(app.getPath('userData'), 'diagnostics');
+  fs.mkdirSync(dir, { recursive: true });
+  shell.openPath(dir);
+  return { ok: true, dir };
+});
+
+ipcMain.handle('we-status', () => ({
+  ...weStatus(null), audio: audioStatus, video: videoStatus,
+  mouse: {
+    status: mouseStatus, injected: mouseInjected,
+    lastEvent: lastMouseEvent, pageSaw: pageMouseSeen,
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// 鼠标转发：让真壁纸层也能收到鼠标
+// ---------------------------------------------------------------------------
+let mouseTap = null;
+let mouseStatus = null;
+// 最近一次转发的事件，进诊断报告。
+// ⚠️ 没有它，"点了没反应"分不清是：helper 没抓到 / 坐标算错 / 注入了但页面不响应。
+let lastMouseEvent = null;
+// 注入计数。⚠️ "点了没反应"现在有三种可能，而它们长得一样：
+//   ① helper 没抓到事件（转发压根没起来）
+//   ② 抓到了、坐标算错，注到窗口外
+//   ③ 注进去了，但页面不响应（比如它只听 pointerdown 而我们注的是 mouseDown）
+// 计数 + 最近一次的坐标能把 ①② 排掉，剩下的就是 ③。
+let mouseInjected = 0;
+// 页面那边实际收到了什么（we-preload 的探针报的）。
+// ⚠️ 这是分辨"注进去了但页面不响应"的唯一证据 —— 尤其
+// "mousedown 收到了但 pointerdown 没有"直接说明是事件族的问题。
+let pageMouseSeen = null;
+
+function syncMouseForward() {
+  // 只有 desktop 层需要转发 —— 普通窗口自己就能收鼠标，
+  // 再转发一次会变成**双份事件**（点一下算两下）。
+  const need = !!(weProject && config.we.mouseForward
+    && (config.we.strategy || 'desktop') === 'desktop');
+
+  if (!need) {
+    if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+    mouseStatus = null;
+    return;
+  }
+  if (mouseTap) return;
+
+  mouseTap = MouseBridge.start({
+    sourcePath: app.isPackaged
+      ? path.join(process.resourcesPath, 'native', 'GestureWallMouse.swift')
+      : path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'),
+    outDir: path.join(app.getPath('userData'), 'native'),
+    gateFinder: !!config.we.mouseGateFinder,
+    onEvent: (event) => {
+      if (!weWindow || weWindow.isDestroyed()) return;
+      const point = MouseBridge.toWindowPoint(event, weWindow.getBounds());
+      if (!point) return;   // 落在窗口外（多显示器时会）
+      const input = MouseBridge.toInputEvent(event, point);
+      if (!input) return;
+      weWindow.webContents.sendInputEvent(input);
+      mouseInjected += 1;
+      lastMouseEvent = {
+        kind: event.kind, x: point.x, y: point.y,
+        injected: input.type, at: Date.now(),
+      };
+    },
+    onStatus: (status) => {
+      mouseStatus = status;
+      broadcast('mouse-status', status);
+      if (!status.ok) console.warn('[mouse]', status.text);
+    },
+  });
+}
+
+ipcMain.handle('we-set-mouse-forward', (_event, patch) => {
+  config.we = { ...config.we, ...(patch || {}) };
+  writeConfig(config);
+  // 改了 always 要重启 helper（那是启动参数）
+  if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+  syncMouseForward();
+  broadcast('config', config);
+  return { ok: true };
+});
+
+// 切 WE 壁纸的层策略。
+//
+// ⚠️ 这个开关存在是因为那是个**真取舍**，不该由我替用户决定：
+//   desktop        菜单栏区域有内容，但收不到鼠标（点击掉流星那类交互失效）
+//   bottom-normal  能收鼠标，但菜单栏那 25px 是系统的
+ipcMain.handle('we-set-strategy', (_event, id) => {
+  if (!WALL_STRATEGIES.some((s) => s.id === id)) {
+    return { ok: false, error: `未知策略 ${id}` };
+  }
+  config.we.strategy = id;
+  writeConfig(config);
+  // 层策略是创建时定的，只能重建窗口。
+  if (weProject) {
+    destroyWEWindow();
+    weWindow = createWEWindow();
+  }
+  // ⚠️ 换策略要重算转发：desktop 需要转发，普通窗口不能转发（会变双份事件）。
+  if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+  syncMouseForward();
+  broadcast('config', config);
+  return { ok: true, strategy: id };
+});
+
+// 切音源。'netease' / 'system' / 'off'
+ipcMain.handle('we-set-audio-source', (_event, source) => {
+  if (!['netease', 'system', 'off'].includes(source)) {
+    return { ok: false, error: `未知音源 ${source}` };
+  }
+  config.we.audioSource = source;
+  writeConfig(config);
+  // 先停再起：换过滤条件要重建 SCStream。
+  if (audioTap) { audioTap.stop(); audioTap = null; }
+  syncAudioSource();
+  broadcast('config', config);
+  return { ok: true, source };
+});
+
+// 把歌曲信息喂给 WE 壁纸的四个 media 回调。
+//
+// 四个通道分开发，因为壁纸注册的是四个独立 listener，而它们的更新频率差一个量级
+// （歌名换歌才变、进度每秒都变）。合成一个通道会让壁纸每秒重跑换封面的过渡动画。
+function sendWEMedia(track) {
+  if (!weWindow || weWindow.isDestroyed()) return;
+  const wc = weWindow.webContents;
+  wc.send('we-media-properties', WE.mediaProperties(track));
+  wc.send('we-media-thumbnail', WE.mediaThumbnail(track));
+  wc.send('we-media-playback', WE.mediaPlayback(track));
+  wc.send('we-media-timeline', WE.mediaTimeline(track));
+}
+
+// 音频帧入口。采集在原生 helper 里（Electron 的 desktopCapturer 在 macOS 上不给
+// 系统音频），这里只做形状校验和转发。
+//
+// ⚠️ 静默（全 0）要能被看见：没授权拿到的就是全 0，而全 0 的画面看起来是
+// "音频响应坏了"。所以 normalizeAudioFrame 会报 silent，面板拿它显示状态。
+let audioTap = null;
+let audioStatus = null;
+
+// 启停音频采集。跟着 config.we.audioSource 走：
+//   'netease' 只抓网易云（macOS 14.4+，更早会退回全局并报 warning）
+//   'system'  全系统混音
+//   'off'     不采集（壁纸走它自己的空闲动画）
+function syncAudioSource() {
+  const want = weProject && weProject.wantsAudio && config.we.audioSource !== 'off';
+  if (!want) {
+    if (audioTap) { audioTap.stop(); audioTap = null; }
+    audioStatus = null;
+    return;
+  }
+  if (audioTap) return;   // 已经在跑
+
+  audioTap = AudioSource.start({
+    // ⚠️ 打包后 __dirname 在 asar 包里，而 asar 里的文件 swiftc 读不到（那是个
+    // 归档不是目录）。所以 helper 源码要走 extraResources 出来的 resourcesPath。
+    // 这和另一个模块的 system-bridge.js 是同一个写法（它已经踩过这条）。
+    sourcePath: app.isPackaged
+      ? path.join(process.resourcesPath, 'native', 'GestureWallAudio.swift')
+      : path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'),
+    outDir: path.join(app.getPath('userData'), 'native'),
+    bundle: config.we.audioSource === 'netease' ? AudioSource.NETEASE_BUNDLE : null,
+    // 开发模式和打包后的 .app 是两个授权身份，提示文案必须分开说。
+    packaged: app.isPackaged,
+    onFrame: pushWEAudio,
+    onStatus: (status) => {
+      audioStatus = status;
+      // ⚠️ 状态一定要送到面板。这条链失败全是静默的（没授权=柱子不动），
+      // 而"柱子不动"和"没在放歌"、"壁纸不支持音频"是同一个画面。
+      broadcast('we-audio-status', status);
+      if (!status.ok) console.warn('[audio]', status.text);
+    },
+  });
+}
+
+let lastAudioSilentAt = 0;
+function pushWEAudio(frame) {
+  if (!weWindow || weWindow.isDestroyed()) return;
+  const result = WE.normalizeAudioFrame(frame);
+  weWindow.webContents.send('we-audio', result.data);
+  if (result.silent) {
+    const now = Date.now();
+    // 别每帧都播报，那会把 IPC 灌满。
+    if (now - lastAudioSilentAt > 3000) {
+      lastAudioSilentAt = now;
+      broadcast('we-audio-status', { silent: true, reason: result.reason || 'all-zero' });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Now playing (macOS)
 // ---------------------------------------------------------------------------
 require('./nowplaying').install({
   ipcMain,
   getConfig: () => config,
-  onTrack: (track) => broadcast('track', track),
+  onTrack: (track) => {
+    broadcast('track', track);
+    // WE 壁纸走自己的四通道 media 协议，不是我们的 'track' 事件。
+    sendWEMedia(track);
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -1167,7 +2442,15 @@ require('./nowplaying').install({
 
 app.whenReady().then(() => {
   config = readConfig();
-  wallWindow = createWallWindow(config.wallStrategy);
+  // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
+  if (migrateConfig(config)) writeConfig();
+  registerWEProtocol();
+  // 上次装的 WE 壁纸还在就恢复它，否则用我们自己的三层景深。
+  if (config.we.dir && fs.existsSync(path.join(config.we.dir, 'project.json'))) {
+    setWEWallpaper(config.we.dir);
+  } else {
+    wallWindow = createWallWindow(config.wallStrategy);
+  }
   followDisplayChanges();
   openDashboard();
   // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
@@ -1204,7 +2487,12 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {});
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  // helper 是独立进程,不会因为主进程退出而自动结束 —— 留着会占住摄像头/麦克风,
-  // 而且下次启动会看到"两个 helper 在跑"。
+  // 两个 helper 都是独立进程，不会因为主进程退出而自动结束 —— 留着会占住
+  // 摄像头/麦克风/屏幕录制，而且下次启动会看到"两个 helper 在跑"。
   systemBridge.stop();
+  if (audioTap) audioTap.stop();
+  if (mouseTap) mouseTap.stop();
+  // ⚠️ 把用户原来的壁纸还回去。改了别人的系统设置不还原是很讨人嫌的行为，
+  // 而且他可能根本不知道是我们改的。
+  if (originalWallpaper) setSystemWallpaper(originalWallpaper);
 });

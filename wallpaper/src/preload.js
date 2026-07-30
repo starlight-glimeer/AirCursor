@@ -52,6 +52,31 @@ contextBridge.exposeInMainWorld('gw', {
   loadPreset: (name) => ipcRenderer.invoke('load-preset', name),
   deletePreset: (name) => ipcRenderer.invoke('delete-preset', name),
 
+  // WE 网页壁纸
+  wePick: () => ipcRenderer.invoke('we-pick'),
+  weClear: () => ipcRenderer.invoke('we-clear'),
+  weControls: () => ipcRenderer.invoke('we-controls'),
+  weStatus: () => ipcRenderer.invoke('we-status'),
+  weSetProperty: (key, value) => ipcRenderer.invoke('we-set-property', key, value),
+  weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
+  weSetStrategy: (id) => ipcRenderer.invoke('we-set-strategy', id),
+  weSetMouseForward: (patch) => ipcRenderer.invoke('we-set-mouse-forward', patch),
+
+  // 创意工坊
+  workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),
+  workshopSetSteam: (patch) => ipcRenderer.invoke('workshop-set-steam', patch),
+  workshopProbe: () => ipcRenderer.invoke('workshop-probe'),
+  workshopDetails: (input) => ipcRenderer.invoke('workshop-details', input),
+  workshopLocal: () => ipcRenderer.invoke('workshop-local'),
+  workshopLoadLocal: (dir) => ipcRenderer.invoke('workshop-load-local', dir),
+
+  // 诊断报告
+  exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
+  revealDiagnostics: () => ipcRenderer.invoke('reveal-diagnostics'),
+
+  // video 页面 → 主进程
+  sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),
+
   setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
@@ -78,5 +103,11 @@ contextBridge.exposeInMainWorld('gw', {
   onRecordingProgress: on('recording-progress'),
   onRecordingResult: on('recording-result'),
   onStartRecording: on('start-recording'),
+  onWeStatus: on('we-status'),
+  onWeAudioStatus: on('we-audio-status'),
+  onWorkshopProgress: on('workshop-progress'),
+  onMouseStatus: on('mouse-status'),
+  onVideoStatus: on('video-status'),
+  onVideoSource: on('video-source'),
   onCancelRecording: on('cancel-recording'),
 });

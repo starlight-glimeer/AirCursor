@@ -209,6 +209,46 @@
   }
   .tier.pro { background: rgba(255,180,84,.18); color: var(--warn); }
 
+  /* ---- 创意工坊：预览卡片和已下载列表 ----
+     没有预览图就没法挑壁纸，而挑不了这个功能只服务已经知道 ID 的人。 */
+  .ws-card { display: none; gap: 12px; margin-top: 10px; padding: 10px;
+             border: 1px solid var(--line); border-radius: 8px; background: #15151b; }
+  .ws-card.on { display: flex; }
+  .ws-card img { width: 160px; height: 90px; object-fit: cover; border-radius: 6px;
+                 background: #000; flex-shrink: 0; }
+  .ws-card .meta { flex: 1; min-width: 0; font-size: 12px; line-height: 1.7; }
+  .ws-card .meta b { display: block; font-size: 13px; color: var(--text);
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-card .meta .sub { color: var(--dim); font-size: 11px; }
+  .ws-card .acts { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+             background: #15151b; cursor: pointer; }
+  .ws-item:hover { border-color: rgba(255,255,255,.22); }
+  .ws-item img { width: 100%; height: 84px; object-fit: cover; display: block; background: #000; }
+  .ws-item .nm { font-size: 11px; padding: 6px 8px 2px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .ws-item .tp { font-size: 10px; color: var(--dim); padding: 0 8px 7px; }
+  .ws-item .tp.no { color: #ffb4b4; }
+
+  /* ---- WE 壁纸的自动生成控件 ----
+     和 .row2 分开：那个是 1fr/64px 两列，而这里要 标签/控件/读数 三列，
+     且控件类型不固定（滑块、下拉、勾选、文本各占中间那格）。 */
+  .we-row { display: grid; grid-template-columns: 150px 1fr 52px; gap: 10px;
+            align-items: center; padding: 4px 0; }
+  .we-row label { font-size: 12px; color: var(--dim); }
+  .we-row .val { font-family: ui-monospace, monospace; font-size: 10px;
+                 color: var(--dim); text-align: right; }
+  .we-row input[type=checkbox] { justify-self: start; }
+  .we-src { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .we-src button {
+    border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px;
+    background: #15151b; color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .we-src button:hover { border-color: rgba(255,255,255,.2); }
+  .we-src button.on { border-color: var(--accent); background: rgba(108,199,255,.12); }
+  #we-state, #we-audio-state { white-space: pre-wrap; line-height: 1.7; }
+
   /* ---- 滑块 ---- */
   .row2 { display: grid; grid-template-columns: 1fr 64px; gap: 10px; align-items: center; padding: 4px 0; }
   .row2 label { font-size: 12px; }
@@ -245,6 +285,7 @@
   <button data-tab="template" class="on">模板</button>
   <button data-tab="library">图库</button>
   <button data-tab="gesture">手势录制</button>
+  <button data-tab="we">WE 壁纸</button>
   <button data-tab="system">壁纸与音乐</button>
   <div class="spacer"></div>
   <div class="keys">
@@ -279,6 +320,120 @@
       </div>
       <div id="presets"></div>
       <p class="hint">调出满意的就存下来，可以存几套一键切换对比 —— 比用文字描述"哪里不对"准得多。<b>只存视觉参数，不动三张图。</b></p>
+    </div>
+  </section>
+
+  <!-- ============ WE 网页壁纸 ============ -->
+  <section id="tab-we">
+    <h2>Wallpaper Engine 网页壁纸</h2>
+    <p class="lead">
+      装载 Steam 创意工坊的<b>网页类</b>壁纸（<code>project.json</code> 里 <code>type: "Web"</code>）。
+      它们就是 HTML + JS，所以能直接跑；音频响应和鼠标交互都在。
+      <br>⚠️ <b>scene / video 类不支持</b> —— 那要解 WE 的私有格式。
+    </p>
+
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="we-pick" type="button">选择壁纸目录…</button>
+        <button class="act" id="we-clear" type="button">卸载，回到三层景深</button>
+      </div>
+      <div id="we-state" class="hint">未装载</div>
+    </div>
+
+    <h3>从创意工坊下载</h3>
+    <div class="card">
+      <p class="hint">
+        你的 Steam 账号买过 Wallpaper Engine，<b>工坊内容就能用</b> ——
+        那些是文件，和 WE 本体是不是 Windows 无关。
+      </p>
+      <div class="bar-row">
+        <input id="ws-id" type="text" placeholder="贴创意工坊页面链接或 ID，先看预览再决定">
+        <button class="act" id="ws-peek" type="button">看看是什么</button>
+      </div>
+
+      <!-- 预览卡片：贴链接之后先看这个再决定装不装。
+           ⚠️ 存在的理由：只给一个填 ID 的输入框等于把命令行搬进 GUI，而工坊的本质是浏览。
+           而且类型标签在这里就能看到 ⟹ scene 类可以在下载 200MB 之前就劝退。 -->
+      <div id="ws-peek-card" class="ws-card"></div>
+      <div class="we-row">
+        <label>Steam 用户名</label>
+        <input id="ws-user" type="text" placeholder="登录名，不是昵称">
+        <span></span>
+      </div>
+      <div class="we-row">
+        <label>密码</label>
+        <input id="ws-pass" type="password" placeholder="只存在本机配置里">
+        <span></span>
+      </div>
+      <div class="we-row">
+        <label>Steam Guard 码</label>
+        <input id="ws-guard" type="text" placeholder="要的时候才填，会过期">
+        <span></span>
+      </div>
+      <div id="ws-state" class="hint">—</div>
+    </div>
+
+    <h3>已下载的壁纸</h3>
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="ws-refresh-local" type="button">刷新列表</button>
+      </div>
+      <div id="ws-local" class="ws-grid"><span class="hint">还没下过东西。</span></div>
+      <p class="hint">
+        ⚠️ 需要 <b>steamcmd</b>（Valve 官方命令行工具）：<code>brew install --cask steamcmd</code>
+        <br>⚠️ Guard 码几分钟就过期 —— 报"需要验证码"时再填，然后立刻点下载。
+        <br>密码存在本机 config.json 里（明文）。<b>导诊断报告时会自动脱敏。</b>
+      </p>
+    </div>
+
+    <h3>壁纸层</h3>
+    <div class="card">
+      <div id="we-strategy" class="we-src"></div>
+      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
+      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
+      <div id="mouse-state" class="hint">—</div>
+      <p class="hint">
+        <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
+        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
+        <b>点击、拖拽、滚轮都能用</b>。
+        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b> ——
+        授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
+        （<code>npm run dist:mac</code>）。
+        <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
+        然后静默收不到任何事件。）
+        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
+        再转发一次会变成双份事件（点一下算两下）。
+      </p>
+    </div>
+
+    <h3>音源</h3>
+    <div class="card">
+      <div id="we-audio-source"></div>
+      <div id="we-audio-state" class="hint"></div>
+      <p class="hint">
+        抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
+        <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
+        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
+      </p>
+    </div>
+
+    <h3>诊断</h3>
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="diag-export" type="button">导出诊断报告</button>
+        <button class="act" id="diag-reveal" type="button">打开报告目录</button>
+      </div>
+      <div id="diag-state" class="hint">出问题时点一下，把那个 JSON 发过来。</div>
+      <p class="hint">
+        报告里有：是否打包、装载了什么类型、各窗口活没活、实际窗口尺寸 vs 屏幕尺寸、
+        视频播放位置、音频状态、最近 200 条带时间戳的事件。
+        <br>⚠️ 比文字描述准得多 —— 尤其"黑屏"这种，它能分出是没加载、还是在放但看不见。
+      </p>
+    </div>
+
+    <h3>壁纸自己的参数</h3>
+    <div class="card">
+      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
     </div>
   </section>
 
