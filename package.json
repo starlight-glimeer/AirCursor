@@ -5,7 +5,7 @@
   "author": "starlight-glimeer",
   "main": "wallpaper/src/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "bash wallpaper/scripts/check-tree.sh; electron .",
     "web": "node server.js",
     "check": "node --check electron/main.js && node --check public/pose.js && node --check public/motion.js && node --check public/tracking.js && for f in wallpaper/src/*.js; do node --check $f || exit 1; done",
     "dist:mac": "electron-builder --mac dmg",
