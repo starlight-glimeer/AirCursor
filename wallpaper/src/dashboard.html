@@ -282,11 +282,8 @@
 
 <nav>
   <div class="brand">GestureWall</div>
-  <button data-tab="template" class="on">模板</button>
-  <button data-tab="library">图库</button>
+  <button data-tab="we" class="on">创意工坊</button>
   <button data-tab="gesture">手势录制</button>
-  <button data-tab="we">WE 壁纸</button>
-  <button data-tab="system">壁纸与音乐</button>
   <div class="spacer"></div>
   <div class="keys">
     <kbd>⌃⇧W</kbd> 面板<br>
@@ -298,33 +295,9 @@
 </nav>
 
 <main>
-  <!-- ============ 模板 ============ -->
-  <section id="tab-template" class="on">
-    <h2 id="tpl-name">模板</h2>
-    <p class="lead" id="tpl-hint"></p>
-
-    <h3>当前三层</h3>
-    <div class="card" id="layers"></div>
-
-    <h3>组合方式</h3>
-    <div id="slots"></div>
-
-    <h3>景深与排布</h3>
-    <div class="card"><div id="tuning"></div></div>
-
-    <h3>排布预设</h3>
-    <div class="card">
-      <div class="bar-row">
-        <input id="preset-name" type="text" placeholder="给当前排布起个名字" maxlength="20">
-        <button class="act" id="preset-save" type="button">存为预设</button>
-      </div>
-      <div id="presets"></div>
-      <p class="hint">调出满意的就存下来，可以存几套一键切换对比 —— 比用文字描述"哪里不对"准得多。<b>只存视觉参数，不动三张图。</b></p>
-    </div>
-  </section>
 
   <!-- ============ WE 网页壁纸 ============ -->
-  <section id="tab-we">
+  <section id="tab-we" class="on">
     <h2>Wallpaper Engine 网页壁纸</h2>
     <p class="lead">
       装载 Steam 创意工坊的<b>网页类</b>壁纸（<code>project.json</code> 里 <code>type: "Web"</code>）。
@@ -437,18 +410,6 @@
     </div>
   </section>
 
-  <!-- ============ 图库 ============ -->
-  <section id="tab-library">
-    <h2>图库</h2>
-    <p class="lead">你自己准备的素材。软件不做抠图 —— 主体需要透明 PNG。</p>
-    <div class="card">
-      <button class="act primary" id="lib-add" type="button">添加图片</button>
-      <span class="hint" style="margin-left:10px">可多选</span>
-    </div>
-    <div class="gallery" id="gallery"></div>
-    <p class="hint" id="lib-empty" style="display:none">图库是空的。添加几张图，然后在「模板」里指派到三个层。</p>
-  </section>
-
   <!-- ============ 手势录制 ============ -->
   <section id="tab-gesture">
     <h2>手势</h2>
@@ -527,34 +488,6 @@
     <div class="card">
       <div id="gestureTuning"></div>
       <p class="hint">用的是 AirCursor 那套滤波器：<b>平滑强度</b>越大越稳越迟钝；<b>快速跟随</b>越大越跟手但越抖；<b>静止死区</b>是手停住的判定门槛。</p>
-    </div>
-  </section>
-
-  <!-- ============ 壁纸与音乐 ============ -->
-  <section id="tab-system">
-    <h2>壁纸与音乐</h2>
-    <p class="lead">窗口层级和音乐联动。</p>
-
-    <h3>壁纸层策略</h3>
-    <div class="card">
-      <select id="strategy"></select>
-      <p class="hint">看不见壁纸就换一个，或按 <kbd>⌃⇧L</kbd> 循环。<b>desktop</b> 是真壁纸层但收不到鼠标；<b>悬浮最上层</b>一定看得见，用来先验渲染效果。</p>
-      <p class="hint mono" id="frame-note"></p>
-    </div>
-
-    <h3>音乐</h3>
-    <div class="card">
-      <div class="toggle"><input type="checkbox" id="music"><label for="music">跟随正在播放的音乐</label></div>
-      <div class="toggle"><input type="checkbox" id="moodFromCover"><label for="moodFromCover">从封面推断氛围（配色 + 激烈程度）</label></div>
-      <div id="musicTuning"></div>
-      <div id="track" style="margin-top:10px">—</div>
-      <p class="hint">读的是 macOS 的「正在播放」，所以网易云、Apple Music、浏览器都算。需要 <span class="mono">brew install media-control</span>；没装就只是不跟随音乐，壁纸照常。</p>
-    </div>
-
-    <h3>诊断</h3>
-    <div class="card">
-      <div class="toggle"><input type="checkbox" id="showHud"><label for="showHud">壁纸上显示诊断信息</label></div>
-      <p class="hint">手骨架的开关在「手势录制」那一栏 —— 它是独立窗口，不属于壁纸。</p>
     </div>
   </section>
 </main>

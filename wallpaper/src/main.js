@@ -792,79 +792,6 @@ ipcMain.handle('set-config', (_event, patch) => {
 
 const LAYER_LABEL = { background: '背景', subject: '主体', shard: '碎片' };
 
-ipcMain.handle('pick-image', async (_event, layer) => {
-  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
-    title: `选择${LAYER_LABEL[layer] || ''}图片`,
-    properties: ['openFile'],
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
-  });
-  if (result.canceled || !result.filePaths[0]) return null;
-  config.layers[layer] = result.filePaths[0];
-  writeConfig();
-  broadcast('config', config);
-  return result.filePaths[0];
-});
-
-ipcMain.handle('clear-image', (_event, layer) => {
-  config.layers[layer] = null;
-  writeConfig();
-  broadcast('config', config);
-  return config;
-});
-
-// 从图库直接指派到某一层，不开文件对话框。
-ipcMain.handle('set-layer', (_event, layer, filePath) => {
-  if (!LAYER_LABEL[layer]) return { ok: false };
-  config.layers[layer] = filePath || null;
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-// ---------------------------------------------------------------------------
-// 图库
-// ---------------------------------------------------------------------------
-
-// 一次多选：攒素材这件事是批量的，一张一张开对话框是纯摩擦。
-ipcMain.handle('library-add', async () => {
-  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
-    title: '添加素材到图库',
-    properties: ['openFile', 'multiSelections'],
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
-  });
-  if (result.canceled) return { ok: false };
-  let items = config.library || [];
-  for (const filePath of result.filePaths) {
-    // 按文件名猜槽位：带 alpha 的 PNG 大概率是抠好的主体。猜错代价很小（用户在下拉里
-    // 改一下），而每张都要手选槽位的代价是真实的。
-    const guess = /\.png$/i.test(filePath) ? 'subject' : 'background';
-    items = Library.add(items, filePath, guess);
-  }
-  config.library = items;
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true, added: result.filePaths.length };
-});
-
-ipcMain.handle('library-remove', (_event, id) => {
-  config.library = Library.remove(config.library || [], id);
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-ipcMain.handle('library-set-slot', (_event, id, slot) => {
-  config.library = Library.setSlot(config.library || [], id, slot);
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-ipcMain.handle('set-strategy', (_event, id) => {
-  recreateWall(id);
-  return { ok: true, id };
-});
-
 ipcMain.handle('set-gestures', (_event, enabled) => {
   config.gestures.enabled = !!enabled;
   writeConfig();
@@ -894,34 +821,6 @@ function currentPreset() {
   for (const key of PRESET_KEYS) out[key] = JSON.parse(JSON.stringify(config[key]));
   return out;
 }
-
-ipcMain.handle('save-preset', (_event, name) => {
-  const label = String(name || '').trim() || `预设 ${Object.keys(config.presets || {}).length + 1}`;
-  config.presets = { ...(config.presets || {}), [label]: currentPreset() };
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true, name: label };
-});
-
-ipcMain.handle('load-preset', (_event, name) => {
-  const preset = config.presets && config.presets[name];
-  if (!preset) return { ok: false, error: 'NOT_FOUND' };
-  config = mergeConfig(config, preset);
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
-
-ipcMain.handle('delete-preset', (_event, name) => {
-  if (!config.presets || !(name in config.presets)) return { ok: false };
-  const next = { ...config.presets };
-  delete next[name];
-  // 整个替换而不是改单键：mergeConfig 是深合并，传一个缺了某键的对象删不掉它。
-  config.presets = next;
-  writeConfig();
-  broadcast('config', config);
-  return { ok: true };
-});
 
 // Gesture and music events both land here and go straight through. Main relays
 // rather than translates: whoever produces an event decides what it means, so

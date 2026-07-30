@@ -16,14 +16,8 @@ contextBridge.exposeInMainWorld('gw', {
   setConfig: (patch) => ipcRenderer.invoke('set-config', patch),
 
   // 三层图片
-  pickImage: (slot) => ipcRenderer.invoke('pick-image', slot),
-  clearImage: (slot) => ipcRenderer.invoke('clear-image', slot),
-  setLayer: (slot, filePath) => ipcRenderer.invoke('set-layer', slot, filePath),
 
   // 图库
-  libraryAdd: () => ipcRenderer.invoke('library-add'),
-  libraryRemove: (id) => ipcRenderer.invoke('library-remove', id),
-  librarySetSlot: (id, slot) => ipcRenderer.invoke('library-set-slot', id, slot),
 
   // 手势录制
   startRecording: (action) => ipcRenderer.invoke('start-recording', action),
@@ -48,9 +42,6 @@ contextBridge.exposeInMainWorld('gw', {
   onVoiceStatus: (handler) => ipcRenderer.on('voice-status', (_e, p) => handler(p)),
 
   // 预设
-  savePreset: (name) => ipcRenderer.invoke('save-preset', name),
-  loadPreset: (name) => ipcRenderer.invoke('load-preset', name),
-  deletePreset: (name) => ipcRenderer.invoke('delete-preset', name),
 
   // WE 网页壁纸
   wePick: () => ipcRenderer.invoke('we-pick'),
@@ -77,7 +68,6 @@ contextBridge.exposeInMainWorld('gw', {
   // video 页面 → 主进程
   sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),
 
-  setStrategy: (id) => ipcRenderer.invoke('set-strategy', id),
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
   testSystemAction: (id) => ipcRenderer.invoke('test-system-action', id),

@@ -129,82 +129,9 @@ const SLOT_LABEL = {
   subject: { name: '主体', hint: '抠好的人物，透明 PNG' },
   shard: { name: '碎片', hint: '壁纸的一小块' },
 };
-
-function renderLayers() {
-  const host = document.getElementById('layers');
-  host.innerHTML = '';
-  for (const slot of Lib.SLOTS) {
-    const filePath = config.layers[slot];
-    const row = el('div', 'layer-row');
-    const thumb = el('div', 'thumb');
-    if (filePath) thumb.style.backgroundImage = `url("${fileUrl(filePath)}")`;
-    const info = el('div');
-    info.append(el('span', 'nm', SLOT_LABEL[slot].name));
-    info.append(el('span', 'pth', filePath || SLOT_LABEL[slot].hint));
-    const buttons = el('div');
-    const pick = el('button', 'act', filePath ? '更换' : '选择');
-    pick.onclick = () => window.gw.pickImage(slot);
-    buttons.append(pick);
-    if (filePath) {
-      const clear = el('button', 'act danger', '清除');
-      clear.onclick = () => window.gw.clearImage(slot);
-      buttons.append(clear);
-    }
-    row.append(thumb, info, buttons);
-    host.append(row);
-  }
-}
-
-function renderSlots() {
-  const host = document.getElementById('slots');
-  host.innerHTML = '';
-  const chosen = config.slots || {};
-  const fallback = T.template(config.template).slots;
-  for (const slot of Lib.SLOTS) {
-    const wrap = el('div', 'slot');
-    const head = el('div', 'slot-head');
-    head.append(el('b', null, SLOT_LABEL[slot].name));
-    head.append(el('span', null, '表现方式'));
-    wrap.append(head);
-
-    const grid = el('div', 'modules');
-    const active = chosen[slot] || fallback[slot];
-    for (const mod of Object.values(T.MODULES[slot])) {
-      const card = el('div', `module${mod.id === active ? ' on' : ''}`);
-      card.append(el('b', null, mod.label));
-      card.append(el('span', null, mod.hint));
-      card.onclick = () => window.gw.setConfig({ slots: { [slot]: mod.id } });
-      grid.append(card);
-    }
-    wrap.append(grid);
-    host.append(wrap);
-  }
-}
-
 // 应用预设会改掉滑块背后的值，那时必须重建；普通拖动时不能重建，否则会把拖着的
 // 滑块从手指下抽走。
 let pendingPresetRefresh = false;
-
-function renderPresets() {
-  const host = document.getElementById('presets');
-  const names = Object.keys(config.presets || {});
-  host.innerHTML = '';
-  if (!names.length) {
-    host.append(el('p', 'hint', '还没有预设'));
-    return;
-  }
-  for (const name of names) {
-    const row = el('div', 'preset');
-    row.append(el('span', null, name));
-    const load = el('button', 'act', '应用');
-    load.onclick = () => { pendingPresetRefresh = true; window.gw.loadPreset(name); };
-    const remove = el('button', 'act danger', '删除');
-    remove.onclick = () => window.gw.deletePreset(name);
-    row.append(load, remove);
-    host.append(row);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // 图库分区
 // ---------------------------------------------------------------------------
@@ -214,50 +141,6 @@ const SLOT_OPTIONS = [
   { value: 'subject', label: '主体' },
   { value: 'shard', label: '碎片' },
 ];
-
-function renderGallery() {
-  const host = document.getElementById('gallery');
-  const items = config.library || [];
-  host.innerHTML = '';
-  document.getElementById('lib-empty').style.display = items.length ? 'none' : '';
-  for (const item of items) {
-    const card = el('div', `asset${item.missing ? ' missing' : ''}`);
-    const pic = el('div', 'pic');
-    if (!item.missing) pic.style.backgroundImage = `url("${fileUrl(item.path)}")`;
-    card.append(pic);
-
-    const meta = el('div', 'meta');
-    meta.append(el('div', 'nm', item.name));
-
-    const select = document.createElement('select');
-    for (const option of SLOT_OPTIONS) {
-      const node = document.createElement('option');
-      node.value = option.value;
-      node.textContent = option.label;
-      if (option.value === item.slot) node.selected = true;
-      select.append(node);
-    }
-    select.onchange = () => window.gw.librarySetSlot(item.id, select.value);
-    meta.append(select);
-
-    const row = el('div', 'row');
-    // 只给已标注槽位的素材"用作"按钮：标着"任意"时我们不知道该放哪一层，
-    // 而替用户猜会把主体塞进背景。
-    if (item.slot !== 'any' && !item.missing) {
-      const use = el('button', 'act', `用作${SLOT_LABEL[item.slot].name}`);
-      use.onclick = () => window.gw.setLayer(item.slot, item.path);
-      row.append(use);
-    }
-    const remove = el('button', 'act danger', '移除');
-    remove.onclick = () => window.gw.libraryRemove(item.id);
-    row.append(remove);
-    meta.append(row);
-
-    card.append(meta);
-    host.append(card);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // 手势分区
 // ---------------------------------------------------------------------------
@@ -689,31 +572,6 @@ function buildPreview(action, recorded) {
   }
   return wrap;
 }
-
-// ---------------------------------------------------------------------------
-// 系统分区
-// ---------------------------------------------------------------------------
-function renderStrategy() {
-  const select = document.getElementById('strategy');
-  if (!strategy || !strategy.all) return;
-  select.innerHTML = strategy.all
-    .map((s) => `<option value="${s.id}"${s.id === strategy.id ? ' selected' : ''}>${s.label}</option>`)
-    .join('');
-  select.onchange = () => window.gw.setStrategy(select.value);
-
-  const note = document.getElementById('frame-note');
-  if (!strategy.wanted || !strategy.got) { note.textContent = ''; return; }
-  const w = strategy.wanted;
-  const g = strategy.got;
-  const dy = g.y - w.y;
-  const dh = w.height - g.height;
-  if (!dy && !dh && w.width === g.width) {
-    note.innerHTML = `画面 ${g.width}×${g.height} <span class="ok">全屏 ✓</span>`;
-  } else {
-    note.innerHTML = `画面 ${g.width}×${g.height} <span class="warn">⚠️ 顶部差 ${dy}px 高度差 ${dh}px</span>`;
-  }
-}
-
 function renderToggles() {
   const bind = (id, get_, set_) => {
     const node = document.getElementById(id);
@@ -752,13 +610,11 @@ let built = false;
 
 function apply(next) {
   config = next;
-  const t = T.template(config.template);
-  document.getElementById('tpl-name').textContent = t.label;
-  document.getElementById('tpl-hint').textContent = t.hint;
-  renderLayers();
-  renderSlots();
-  renderPresets();
-  renderGallery();
+  // ⚠️ 产品形态收缩之后这里只剩两块:创意工坊 + 手势。
+  //
+  // 删掉的是模板(三层景深的参数)、图库、壁纸与音乐 —— 那三个 tab 连同它们的
+  // renderLayers / renderSlots / renderPresets / renderGallery / renderStrategy 一起走了。
+  // 三层景深的**渲染**还在(它是 WE 壁纸未装载时的底),只是不再暴露参数。
   renderGestureLead();
   renderRecordables();
   renderToggles();
@@ -768,17 +624,12 @@ function apply(next) {
   mouseForwardBox.checked = !!(config.we && config.we.mouseForward);
   mouseGateBox.checked = !!(config.we && config.we.mouseGateFinder);
   if (!built) {
-    renderSliders('tuning', TUNING);
-    renderSliders('musicTuning', MUSIC_TUNING);
     renderSliders('gestureTuning', GESTURE_TUNING);
     // 只接一次:按钮的 onclick 每次 apply 都重设是幂等的,但 onCaptureSaved 是订阅,
     // 重复订阅会让一次保存报好几遍。
     wireDiagnostics();
     refreshPointerHealth();
     built = true;
-  } else if (pendingPresetRefresh) {
-    pendingPresetRefresh = false;
-    renderSliders('tuning', TUNING);
   }
   if (!config.gestures.enabled) {
     document.getElementById('live').textContent = '手势未开启';
@@ -793,7 +644,10 @@ function refreshPointerHealth() {
 window.gw.onPointerHealth(renderPointerHealth);
 
 window.gw.onConfig(apply);
-window.gw.onStrategy((s) => { strategy = s; renderStrategy(); });
+// 壁纸层策略仍然由主进程广播（⌃⇧L 能换），只是面板不再展示它 ——
+// 那个 UI 在「壁纸与音乐」里，而那个 tab 已经砍掉。记下来是因为 renderWEStrategy
+// 还在用 `strategy` 这个变量（创意工坊那页要显示当前壁纸层）。
+window.gw.onStrategy((s) => { strategy = s; renderWEStrategy(); });
 
 window.gw.onSensorStatus((s) => {
   document.getElementById('live').textContent = s && s.text ? s.text : '—';
@@ -920,25 +774,6 @@ window.gw.onRecordingResult((r) => {
   }
   renderRecordables();
 });
-
-window.gw.onTrack((t) => {
-  const node = document.getElementById('track');
-  if (!t) {
-    node.innerHTML = '<span class="warn">读不到正在播放的音乐</span>\n没装 media-control，或当前没有在放歌';
-    return;
-  }
-  node.innerHTML = `♪ ${t.title || '?'} — ${t.artist || '?'}\n`
-    + `${t.bundleIdentifier || ''}${t.artworkData ? ' · 有封面' : ' · 无封面（氛围用默认值）'}`;
-});
-
-document.getElementById('preset-save').onclick = async () => {
-  const input = document.getElementById('preset-name');
-  await window.gw.savePreset(input.value);
-  input.value = '';
-};
-
-document.getElementById('lib-add').onclick = () => window.gw.libraryAdd();
-
 // ---------------------------------------------------------------------------
 // 控制鼠标键盘 + 录原始关键点
 // ---------------------------------------------------------------------------
