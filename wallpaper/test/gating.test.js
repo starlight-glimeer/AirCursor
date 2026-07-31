@@ -2235,4 +2235,56 @@ check('重复触发退出是幂等的（用户会连点）', () => {
     '没有防重入 ⟹ 用户点两次会跑两遍清理（而"点了没反应"时人一定会再点）');
 });
 
+
+// ⚠️ 属性状态变了必须**推**给面板。
+//
+// 实测：用户看到「⏳ 正在发 137 项属性…」一直不变 —— 而那是**过期显示**：
+// `broadcast('we-status')` 原来只在装载/失败时发，而属性发送是装载**之后**
+// 才完成的 ⟹ 面板永远停在装载那一刻的快照。
+//
+// 过期显示比没有显示更糟：它让人以为"卡在发送中"，而真实状态早就变了。
+check('属性状态变化推给面板（否则面板停在装载那一刻的快照）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('const attempt = async');
+  assert.ok(i > 0, '找不到属性发送的重试逻辑');
+  const block = src.slice(i, src.indexOf('attempt();', i));
+  // ⚠️ 数个数不够 —— 要验**成功那条路径**上有推送。
+  // 第一版写的是 `pushes >= 2`，而删掉成功路径那次推送后仍有 2 处（失败路径 + 慢重试）
+  // ⟹ 断言照样绿。**计数式断言挡不住"少了关键的那一个"。**
+  const successAt = block.indexOf("state: '已送到'");
+  assert.ok(successAt > 0, '找不到成功分支');
+  // 成功分支到它的 return 之间必须有 broadcast
+  const successBlock = block.slice(successAt, block.indexOf('return;', successAt));
+  assert.match(successBlock, /broadcast\('we-status'/,
+    '属性**发送成功**时没推状态 ⟹ 面板停在"正在发"，而那是过期显示'
+    + '（用户实测撞到：「⏳ 正在发 137 项属性…」一直不变）');
+});
+
+// ⚠️ 超时之后不能彻底放弃。
+check('属性发送超时后转低频长期重试（壁纸挂 listener 是它自己的时序）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /weSlowPropTimer/,
+    '超时后彻底放弃 ⟹ 壁纸晚挂 listener 时 137 项属性一项都进不去，'
+    + '而画面会永久缺一块（圆环/粒子/时间全靠属性驱动）');
+  // 超时本身也不能太短
+  const m = src.match(/WE_PROP_TIMEOUT_MS = (\d+)/);
+  assert.ok(m && Number(m[1]) >= 20000,
+    `高频重试只有 ${m && m[1]}ms —— 那个壁纸要加载 jquery + sakura.js + 一个被 CORS `
+    + '挡掉的天气 XHR，8 秒之内很可能还没挂上 listener');
+});
+
+// ⚠️ 两个定时器都要在卸载和退出时清掉。
+check('两个属性定时器在卸载和退出时都清掉', () => {
+  const src = codeOnly(mainSrc);
+  for (const [where, anchor] of [['destroyWEWindow', 'function destroyWEWindow'],
+    ['hardQuit', 'function hardQuit']]) {
+    const i = src.indexOf(anchor);
+    assert.ok(i > 0, `找不到 ${where}`);
+    const body = src.slice(i, i + 1600);
+    assert.match(body, /weSlowPropTimer/,
+      `${where} 里没清 weSlowPropTimer ⟹ 换壁纸后它还在给**旧壁纸**发属性`
+      + '（窗口已销毁 ⟹ 报错刷屏，或者更糟：把旧壁纸的结果报成"已送到"）');
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

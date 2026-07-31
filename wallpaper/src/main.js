@@ -1532,7 +1532,11 @@ function previewPathOf(dir, project) {
 }
 
 function destroyWEWindow() {
+  // ⚠️ 两个定时器都要清。漏掉低频那个的后果：换壁纸后它还在给**旧壁纸**发属性，
+  // 而那个窗口已经销毁 ⟹ 报错刷屏，或者更糟 —— 它成功了，然后把旧壁纸的属性
+  // 报成"已送到"，而面板显示的是新壁纸。
   if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+  if (weSlowPropTimer) { clearInterval(weSlowPropTimer); weSlowPropTimer = null; }
   if (weWindow && !weWindow.isDestroyed()) weWindow.destroy();
   weWindow = null;
   weReady = false;
@@ -1676,8 +1680,21 @@ function applyWEProperties(props, general) {
 //
 // ⚠️ 有上限：不是每个壁纸都有可配置项，无上限重试会对那些壁纸永远转下去。
 const WE_PROP_RETRY_MS = 120;
-const WE_PROP_TIMEOUT_MS = 8000;
+// ⚠️ 30 秒而不是 8 秒。
+//
+// 实测的壁纸（884307090「完美壁纸」）要加载 jquery + sakura.js + 一个被 CORS 挡掉的
+// 天气 XHR，而那个 XHR 失败前会等 —— 8 秒之内它很可能还没挂上
+// `wallpaperPropertyListener`。
+//
+// ⚠️ 而超时之后**再也不试了**，那是硬缺陷：壁纸挂 listener 是它自己的时序，
+// 我们凭什么假设它在 8 秒内完成？放弃得太早的代价是 137 项属性一项都没进去，
+// 而症状是"画面缺一大块"（圆环/粒子/时间全靠属性驱动）。
+//
+// 30 秒 × 120ms 间隔 = 250 次尝试，每次是一个极轻的 executeJavaScript
+//（只读一个全局对象），代价可以忽略。
+const WE_PROP_TIMEOUT_MS = 30000;
 let wePropTimer = null;
+let weSlowPropTimer = null;   // 超时后的低频重试（见下）
 // 属性发送的结果。⚠️ 必须记下来给面板看：
 //
 // 实测烧的一轮 —— 用户报「圆环没有、也没交互」，而面板只说"页面加载了但没报 ready"。
@@ -1696,6 +1713,7 @@ function sendWEProperties() {
   const startedAt = Date.now();
 
   if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+  if (weSlowPropTimer) { clearInterval(weSlowPropTimer); weSlowPropTimer = null; }
 
   const total = Object.keys(props).length;
   wePropState = { state: '发送中', count: total };
@@ -1710,15 +1728,42 @@ function sendWEProperties() {
       };
       console.log(`[we] ${total} 项属性已送到壁纸`
         + `（user=${result.user} general=${result.general}）`);
+      // ⚠️ 必须**推**给面板。属性发送是装载**之后**才完成的，而 broadcast('we-status')
+      // 原来只在装载/失败时发 ⟹ 面板永远停在装载那一刻的快照。
+      //
+      // 实测：用户看到「⏳ 正在发 137 项属性…」一直不变，而真实状态早就变了 ——
+      // 那是个**过期显示**，比没有显示更糟：它让人以为卡在发送中。
+      broadcast('we-status', weStatus(null));
       return;
     }
     if (Date.now() - startedAt > WE_PROP_TIMEOUT_MS) {
       if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+      // ⚠️ 高频重试停了，但**不彻底放弃** —— 换成每 5 秒试一次。
+      //
+      // 理由：壁纸挂 listener 是它自己的时序，可能被一个慢 XHR 或大 bundle 拖到
+      // 半分钟以后。彻底放弃的代价是 137 项属性一项都没进去、画面永久缺一块，
+      // 而一次尝试只是读一个全局对象 —— 那个代价不对等。
+      if (!weSlowPropTimer) {
+        weSlowPropTimer = setInterval(async () => {
+          if (!weWindow || weWindow.isDestroyed() || !weProject) {
+            clearInterval(weSlowPropTimer); weSlowPropTimer = null; return;
+          }
+          const late = await applyWEProperties(props, general);
+          if (late.applied) {
+            clearInterval(weSlowPropTimer); weSlowPropTimer = null;
+            wePropState = { state: '已送到', count: total, late: true };
+            console.log(`[we] ${total} 项属性终于送到了（超过 `
+              + `${WE_PROP_TIMEOUT_MS / 1000} 秒才挂上 listener）`);
+            broadcast('we-status', weStatus(null));
+          }
+        }, 5000);
+      }
       // ⚠️ `no-listener` 以前是**静默**的，理由是"这个壁纸没有可配置项（正常）"。
       // 那个理由错了：**有 100+ 项属性却没有 listener，才是最该报的情形** ——
       // 它意味着壁纸的脚本没跑到挂 listener 那一步，而症状是"画面缺一大块"
       // （圆环/粒子/时间全靠属性驱动），看起来像那些功能不支持。
       wePropState = { state: '发不进去', count: total, reason: result.reason };
+      // 同上：状态变了就推，否则面板停在"正在发"。
       if (result.reason === 'no-listener') {
         if (total > 0) {
           console.warn(`[we] 壁纸有 ${total} 项属性，但它没有挂 `
@@ -1730,6 +1775,7 @@ function sendWEProperties() {
       } else {
         console.warn('[we] 属性发不进去:', result.reason);
       }
+      broadcast('we-status', weStatus(null));
     }
   };
 
@@ -2710,6 +2756,13 @@ function hardQuit(from) {
     }
   };
 
+  step('停掉定时器', () => {
+    // ⚠️ 定时器不清会在退出过程中继续 fire，而它们碰的是已经拆掉的窗口
+    // ⟹ 抛异常、日志刷屏。虽然 app.exit(0) 最后会强制结束，
+    // 但"退出时报一堆错"看起来像退出失败。
+    if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+    if (weSlowPropTimer) { clearInterval(weSlowPropTimer); weSlowPropTimer = null; }
+  });
   step('注销全局快捷键', () => globalShortcut.unregisterAll());
   step('拆掉所有窗口', () => {
     for (const win of BrowserWindow.getAllWindows()) {
