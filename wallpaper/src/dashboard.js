@@ -875,6 +875,13 @@ const AUDIO_SOURCES = [
   { id: 'off', label: '关闭', hint: '不抓音频，壁纸走它自己的空闲动画' },
 ];
 
+// 当前装载的壁纸要不要音频。
+//
+// ⚠️ 用模块级变量而不是参数：`renderAudioSource` 有三个调用点（apply / 切音源 /
+// 装载壁纸后），全都改签名容易漏一个，而漏掉的那个会让提示语消失 ——
+// 那是"有时候提示、有时候不提示"，比一直不提示更难查。
+let weWantsAudio = false;
+
 function renderAudioSource() {
   const host = document.getElementById('we-audio-source');
   if (!host) return;
@@ -892,6 +899,28 @@ function renderAudioSource() {
       renderWEStatus();
     };
     host.appendChild(button);
+  }
+
+  // ⚠️ 装载了「要音频」的壁纸而音源是关，必须**主动说**。
+  //
+  // 实测：用户装载「完美壁纸」，山景背景出来了，但那个音频圆圈完全不动。
+  // 而 project.json 里 `supportsaudioprocessing: true` ⟹ 我们**知道**它要音频，
+  // 也知道音源是 'off'（默认值）—— 却什么都没说。
+  //
+  // ⟹ 那让用户去查一个不存在的 bug。而真相是"没开音源"，
+  // 加上"开了也要打包才有屏幕录制授权"这层，不主动讲清就一定会被当成坏了。
+  const note = document.getElementById('we-audio-note');
+  if (note) {
+    if (weWantsAudio && current === 'off') {
+      note.innerHTML = '⚠️ <b>这个壁纸要音频</b>（project.json 里 '
+        + '<code>supportsaudioprocessing: true</code>），而音源现在是「关」'
+        + ' ⟹ 它的音频可视化部分（频谱圆环 / 跳动的柱子）不会动。'
+        + '<br>那不是坏了。开音源要<b>屏幕录制</b>授权，而开发模式（<code>npm start</code>）'
+        + '拿不到 ⟹ 这一项只能打包版验。';
+      note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
   }
 }
 
@@ -986,6 +1015,12 @@ function renderMouseDiag(mouse) {
 // ⚠️ 这三种在画面上看起来都是"没反应"，分不开的话没法查。
 async function renderWEStatus() {
   const status = await window.gw.weStatus();
+  // ⚠️ 先记下"这个壁纸要不要音频"，再重渲染音源区 —— 那句提示依赖它。
+  // 放在 `if (!node) return` **之前**：那个 return 是为了 we-state 容器不存在时
+  // 早退，但音源提示和它没关系，卡在那里会让提示永远不出现。
+  const wasWanting = weWantsAudio;
+  weWantsAudio = !!status.wantsAudio;
+  if (wasWanting !== weWantsAudio) renderAudioSource();
   const node = document.getElementById('we-state');
   if (!node) return;
   // 菜单栏那条缝：盖住了不用说，盖不住要说清"试了几次、还差多少"。

@@ -1950,4 +1950,44 @@ check('restore-gestures.sh 保留「找不到 tag」的失败路径', () => {
     + '而这是恢复手势的救命脚本，用户会以为手势回来了');
 });
 
+
+console.log('\n  「壁纸要音频但音源关着」的提示');
+
+// ⚠️ 实测烧的一轮：用户装载「完美壁纸」，山景背景出来了，但音频圆环完全不动。
+//
+// 而 project.json 里 `supportsaudioprocessing: true` ⟹ 我们**知道**它要音频，
+// 也知道 `audioSource` 是 'off'（默认值）—— 却什么都没说。
+// ⟹ 用户去查一个不存在的 bug，而真相是"没开音源 + 开了也要打包才有授权"。
+//
+// 这一族问题（我们知道原因却不说）在本项目已经反复出现，所以要机械守卫。
+check('壁纸要音频而音源关着时，面板主动说明（否则被当成坏了）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 元素必须存在 —— 这正是上一轮 bind 那个坑（引用了被删的元素）。
+  assert.ok(html.includes('id="we-audio-note"'),
+    '缺 #we-audio-note 容器 ⟹ 提示无处可放，而代码里的判断会静默 no-op');
+  const code = codeOnly(dash);
+  assert.match(code, /weWantsAudio/,
+    '面板不知道壁纸要不要音频 ⟹ 无法区分"这壁纸本来就没有音频部分"和"音源没开"');
+  assert.match(code, /supportsaudioprocessing/,
+    '提示里没点名 project.json 的那个字段 —— 用户无法自己核对');
+  assert.match(code, /屏幕录制/,
+    '没说清开音源要屏幕录制授权 ⟹ 用户会以为点一下就能用');
+});
+
+// wantsAudio 必须真的从主进程送到面板，否则上面那条判断永远是 false。
+check('wantsAudio 从 project.json 一路送到面板', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(codeOnly(main), /wantsAudio: weProject \? weProject\.wantsAudio/,
+    'weStatus 载荷里没有 wantsAudio ⟹ 面板拿不到，提示永远不出现');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /weWantsAudio = !!status\.wantsAudio/,
+    '面板没读 status.wantsAudio ⟹ 那个变量恒为 false');
+  // ⚠️ 赋值必须在早退之前，否则 we-state 容器不存在时提示永远不出现。
+  const at = dash.indexOf('weWantsAudio = !!status.wantsAudio');
+  const ret = dash.indexOf("const node = document.getElementById('we-state')");
+  assert.ok(at > 0 && at < ret,
+    'wantsAudio 的赋值在 we-state 早退之后 ⟹ 那个 return 会让音频提示永远不出现');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
