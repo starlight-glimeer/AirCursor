@@ -1899,6 +1899,23 @@ window.addEventListener('focus', () => {
 window.gw.onWeStatus(() => renderWEStatus());
 // ⚠️ 订阅实际频谱 —— 没有它，"参数调多少"只能靠猜（我猜了三轮）。
 if (window.gw.onWeAudioFrame) window.gw.onWeAudioFrame(renderAudioFrame);
+// ⚠️ 闸门丢帧 —— 那说明有旧音源还在发。打包版没终端，只能在这里看。
+if (window.gw.onWeAudioDrop) {
+  window.gw.onWeAudioDrop((d) => {
+    const node = document.getElementById('we-audio-frame');
+    if (!node) return;
+    const extra = document.createElement('div');
+    extra.className = 'warn';
+    extra.style.marginTop = '4px';
+    extra.textContent = `⚠️ 闸门丢掉了 ${d.count} 帧：owner=${d.owner}，`
+      + `而当前音源=${d.current} —— 旧音源的 helper 还在吐数据`;
+    // 只留最后一条
+    const old = node.querySelector('.warn');
+    if (old) old.remove();
+    node.appendChild(extra);
+    node.hidden = false;
+  });
+}
 window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
 
 // ⚠️ apply() 必须最先跑，而且不能被任何东西挡住。

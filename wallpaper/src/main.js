@@ -2877,18 +2877,46 @@ function startSweepAudio() {
   const STEPS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 119];
   sweepTimer = setInterval(() => {
     if (!weWindow || weWindow.isDestroyed()) return;
+    // ⚠️ **定时器自己检查配置，不依赖外部清理。**
+    //
+    // 用户实测三轮：扫描状态在更新而画面是真采集的数据 ⟹ 定时器在跑，
+    // 但 `config.we.audioSource` 不是 'sweep'。
+    //
+    // 而清理逻辑（stopSweepAudio）看起来是全的 ——
+    // ⟹ 说明有一条我没找到的路径让它残留。**与其继续找，不如让定时器自己兜住**：
+    // 一个"只在某个配置下才该跑"的定时器，自己检查那个配置是零成本的。
+    if ((config.we && config.we.audioSource) !== 'sweep') {
+      console.warn('[audio] 扫描定时器在音源不是 sweep 时还在跑 —— 自己停掉');
+      stopSweepAudio();
+      return;
+    }
     const at = STEPS[sweepIndex % STEPS.length];
     const frame = new Array(128).fill(0);
     // 给一个明显的值 —— 0.8 在 PWCircle 里是 0.8*1.8*100 = 144px，看得清
     frame[at] = 0.8;
     // ⚠️ 走闸门（它同时负责上报）—— 三条路径都走同一个出口，
     // 那样"两个源同时发"不可能再发生。
-    sendAudioFrame(frame, 'sweep');
-    audioStatus = {
-      ok: true,
-      sweep: true,
-      text: `扫描测试：只有第 ${at} 段有值（0.8）—— 看画面上哪根柱子在动`,
-    };
+    // ⚠️ 状态行只在帧**真的发出去**时才更新。
+    //
+    // 用户实测三轮都被这里误导：扫描定时器在跑 ⟹ 状态行说"第 70 段"，
+    // 而它的帧被闸门丢了 ⟹ 画面和频谱行都是真采集的。
+    // ⟹ 状态行说"扫描在工作"，而实际上它一帧都没发出去。
+    //
+    // **那是"定时器在跑"和"它的帧被采纳"混为一谈** ——
+    // 而后者才是用户关心的。
+    const sent = sendAudioFrame(frame, 'sweep');
+    audioStatus = sent
+      ? {
+        ok: true,
+        sweep: true,
+        text: `扫描测试：只有第 ${at} 段有值（0.8）—— 看画面上哪根柱子在动`,
+      }
+      : {
+        ok: false,
+        sweep: true,
+        text: '⚠️ 扫描的帧被丢掉了 —— 当前音源不是「单段扫描」。'
+          + '点一下上面的「单段扫描（诊断）」按钮',
+      };
     broadcast('we-audio-status', audioStatus);
     sweepIndex += 1;
   }, 2000);
@@ -2905,6 +2933,12 @@ function startSynthAudio() {
   // 30fps 就够 —— 壁纸的视觉更新到不了那么快，而更高只是白烧 CPU。
   synthTimer = setInterval(() => {
     if (!weWindow || weWindow.isDestroyed()) return;
+    // ⚠️ 同上：自己检查配置，不依赖外部清理。
+    if ((config.we && config.we.audioSource) !== 'synth') {
+      console.warn('[audio] 合成音定时器在音源不是 synth 时还在跑 —— 自己停掉');
+      stopSynthAudio();
+      return;
+    }
     synthPhase += 1;
     // 造一个"像音乐"的频谱：低频强、往高频衰减，整体随时间起伏（模拟节拍）。
     //
@@ -2983,6 +3017,8 @@ function syncAudioSource() {
 }
 
 let lastAudioSilentAt = 0;
+// 被闸门丢掉的帧数，按 owner 分。⚠️ 报到面板用 —— 打包版看不到终端。
+const droppedFrames = {};
 
 // ⚠️⚠️ 发音频帧的**唯一闸门**。所有音源都必须过这里。
 //
@@ -3011,9 +3047,19 @@ function sendAudioFrame(data, owner) {
     // ⚠️ 报出来而不是静默丢 —— "切了音源但旧的还在发"是这次烧掉一整轮的原因，
     // 而它在画面上表现为"柱子莫名其妙地多"，和数据错完全分不清。
     if (!sendAudioFrame.warned || sendAudioFrame.warned !== owner) {
-      console.warn(`[audio] 丢掉 ${owner} 的帧 —— 当前音源是 ${current}`
-        + '（旧音源的 helper 还在吐数据，那会让两套数据同时画）');
+      console.warn(`[audio] 丢掉 ${owner} 的帧 —— 当前音源是 ${current}`);
       sendAudioFrame.warned = owner;
+    }
+    // ⚠️ 也报到**面板** —— 打包版没有终端，console.warn 谁都看不到。
+    //
+    // 用户实测三轮都卡在这里：他看到"扫描状态在更新"+"频谱行说全系统"，
+    // 两者矛盾，而**闸门到底看到了什么值**没人知道。
+    // ⟹ 把 owner 和 current 直接报出来，那一行就能定案。
+    droppedFrames[owner] = (droppedFrames[owner] || 0) + 1;
+    if (droppedFrames[owner] % 30 === 1) {
+      broadcast('we-audio-drop', {
+        owner, current, count: droppedFrames[owner],
+      });
     }
     return false;
   }

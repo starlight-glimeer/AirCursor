@@ -2809,4 +2809,48 @@ check('三条发帧路径都走闸门', () => {
   }
 });
 
+
+// ⚠️ "定时器在跑"不等于"它的帧被采纳"。
+//
+// 用户实测三轮都被这里误导：扫描状态行说"第 70 段"（定时器在跑），
+// 而画面和频谱行都是真采集的（它的帧被闸门丢了）。
+// ⟹ 状态行说"扫描在工作"，而它一帧都没发出去。
+check('扫描状态只在帧真的发出去时才说"在工作"', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function startSweepAudio');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /const sent = sendAudioFrame/,
+    '状态行不看发送结果 ⟹ 帧被闸门丢了它照样说"在工作"（用户被误导三轮）');
+  assert.match(fn, /扫描的帧被丢掉了|被丢掉/,
+    '帧被丢时没有专门的提示 ⟹ 用户看到的是"一切正常"');
+});
+
+// ⚠️ 只在某个配置下才该跑的定时器，自己检查那个配置。
+check('两个测试音定时器自己检查配置（不依赖外部清理）', () => {
+  const src = codeOnly(mainSrc);
+  for (const [name, want] of [['startSweepAudio', 'sweep'], ['startSynthAudio', 'synth']]) {
+    const i = src.indexOf(`function ${name}`);
+    assert.ok(i > 0, `找不到 ${name}`);
+    const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+    assert.ok(fn.includes(`!== '${want}'`),
+      `${name} 的定时器不检查 config.we.audioSource ⟹ 清理逻辑漏一条路径`
+      + '它就会一直跑（用户实测撞到：扫描定时器在音源已切走后还在发帧）');
+    assert.match(fn, /stop\w+Audio\(\)/, `${name} 自检失败时不自己停`);
+  }
+});
+
+// ⚠️ 闸门丢帧要报到**面板**，不只是 console —— 打包版没有终端。
+check('闸门丢帧报到面板（打包版看不到 console）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function sendAudioFrame');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /broadcast\('we-audio-drop'/,
+    '丢帧只写 console ⟹ 打包版里谁都看不到，而"两个音源同时发"就成了看不见的错误'
+    + '（用户为它烧掉三轮）');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /onWeAudioDrop/, '面板没订阅丢帧报告');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  assert.match(preload, /onWeAudioDrop/, 'preload 没暴露丢帧通道');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
