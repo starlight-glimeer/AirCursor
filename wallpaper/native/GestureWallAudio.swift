@@ -30,14 +30,7 @@ import Accelerate
 let BIN_COUNT = 128
 // 1024 点 FFT。取这个大小是因为 @48kHz 约 21ms 一帧，接近 60fps 的节奏；
 // 再大就会让低频波纹的触发比画面慢半拍。
-// ⚠️ 2048 而不是 1024 —— **低频要分辨率**。
-//
-// 1024 点 @48kHz 是每 bin 46.9 Hz ⟹ 40Hz 和 80Hz 落在同一个 bin，
-// 而那是鼓的整个基频范围 ⟹ 对数分箱在低频区会大量重复。
-// 2048 点是 23.4 Hz/bin，一帧 42.7ms（可接受 —— 视觉上跟得上节拍）。
-let FFT_SIZE = 2048
-// 采样率。ScreenCaptureKit 给的是 48kHz。
-let SAMPLE_RATE = 48000
+let FFT_SIZE = 1024
 
 // ⚠️ 手感参数。改它们不动逻辑，也不需要每个壁纸单独调 —— 这一层的输出（128 段）
 // 是所有壁纸共用的，WE 的音频接口就是这么设计的。
@@ -144,17 +137,7 @@ let SAMPLE_RATE = 48000
 //   柱子长度 = v × 180px ⟹ 36..200px，在 956px 高的屏幕上是合理的圆环
 //
 // ⚠️ 这个数现在**能被别人核对**：它 = 0..1 契约 ÷ 实测幅度，两边都有出处。
-// ⚠️ 0.004 是**保守起步值**，不是算准的。
-//
-// FFT 从 1024 加到 2048 之后有两个方向相反的变化：
-//   · vDSP 的幅度与窗内样本数成正比 ⟹ 幅度约 ×2
-//   · 而对数分箱让低频段覆盖更窄的频带 ⟹ 单段能量变少
-// 两者抵消多少我算不准 ⟹ 起个偏小的值（宁可柱子短，不要一上来就削顶
-// —— 削顶会让一片柱子长度相同，那个症状比"偏短"难认得多）。
-//
-// ⚠️ 而面板会**直接算出该调多少**（见 dashboard.js 的 renderAudioFrame）：
-// 它拿实测峰值和目标 1.1 一比就出来了 ⟹ 一轮收敛，不用来回试。
-let NORMALIZE: Float = 0.004
+let NORMALIZE: Float = 0.012
 let ATTACK: Float = 1.0
 let RELEASE: Float = 0.5
 let CEILING: Float = 2.0
@@ -274,71 +257,77 @@ final class Spectrum {
         // ⟹ 新的分箱分三段，目标是"每个箱子至少有一个自己的 bin"+
         //    "有用信号落在壁纸真正消费的前 76 段里"：
         //
+        //   0..19    线性一对一（FFT bin 1..20 = 47..940 Hz，鼓/低音，每箱独占一个 bin）
+        //   20..75   对数铺到 bin 170（≈7.9 kHz）—— 人声和主奏全在这段
+        //   76..127  对数铺完 170..511（7.9..24 kHz）—— 壁纸会丢掉这段，但填对的值
+        //            比填 0 好：万一别的壁纸的消费边界不是 300，它也能拿到东西
+        //
+        // 重复箱子从 38 降到 2（算过）。
         var out = [Float](repeating: 0, count: BIN_COUNT)
         let half = FFT_SIZE / 2
-        // ⚠️⚠️ **对数频率分箱 + 低频插值**。这是第三版，前两版都在数学上错了：
+        // ⚠️⚠️ **第三版（对数分箱 + 低频插值）已回退。**
         //
-        //   第一版：纯对数铺满 bin 1..512
-        //     ⟹ 38/128 个箱子读**同一个** FFT bin（低索引处 powf 增长极慢）
-        //     ⟹ 画面上一段段等长的阶梯
+        // 用户实测（2026-07-31）：「你这个修改非常非常的螺旋啊，三点方向上面是
+        // 最短的柱子，下面是最长的，不如之前的版本」。
         //
-        //   第二版：低频改成线性一对一（段 i ↔ bin 1+i）
-        //     ⟹ 不重复了，但**把音乐能量挤在头几段**：
-        //        60-250Hz（鼓和低音）只落在段 0..4，而那五段在圆周上是 3 点到 4 点
-        //     ⟹ 用户报「3 点到 6 点这个区间的柱子明显更长」
+        // 我算过原因（但**没验证**，所以只当假设记在这里）：
+        //   对数分箱下段 119 覆盖 33 个 bin、段 0 覆盖 0.09 个 bin，
+        //   而两个分支的行为不对称 —— 宽段取**平均**、窄段取**插值单点**。
+        //   音乐的高频是宽带噪声（33 个 bin 都有值 ⟹ 平均值稳定），
+        //   低频是窄带（鼓基频只占 1-2 个 bin ⟹ 单点插值忽大忽小）
+        //   ⟹ 视觉上高频段反而更长更稳。
         //
-        // ⟹ 第三版：**按对数频率铺开**（每段覆盖等比例频率），
-        // 而低频段不足一个 bin 宽时用**相邻 bin 线性插值**。
-        // 那是音频可视化的标准做法，也是唯一能同时满足两件事的：
-        //   · 每段值都不同（不重复）—— 靠插值
-        //   · 音乐能量铺满整圈 —— 靠对数
+        // ⚠️ 而更重要的是**用户说"不如之前的版本"** —— 那是可信的判据，
+        // 而我的推理已经在这个现象上错了七次。
+        // ⟹ 回到第二版，把它的已知缺点（3 点到 4 点更长）当成待改进项，
+        // 而不是用一个我没验证过的新模型去替换它。
         //
-        // 实测（用规格文件算的）：60-250Hz 从 **5 段铺到 28 段**。
-        //
-        // ⚠️ FFT 从 1024 加到 2048：低频要分辨率。
-        // 1024 点 @48kHz 是每 bin 46.9Hz ⟹ 40Hz 和 80Hz 落在同一个 bin，
-        // 而那是鼓的整个基频范围。2048 点是 23.4Hz/bin，延迟 42.7ms（可接受）。
-        let F_MIN: Float = 40.0        // 音乐能量的下界（再低是听不见的隆隆声）
-        let F_MAX: Float = 16000.0     // 上界（再高人耳不敏感、音乐里也没能量）
-        let USEFUL_BINS = 120          // PWCircle 用 arr[0..119]
-        let nyquist = Float(SAMPLE_RATE) / 2.0
-        let hzPerBin = nyquist / Float(half)
-        let ratio = F_MAX / F_MIN
+        // 这一版（第二版）的已知性质：
+        //   前 40 段线性一对一 ⟹ 不重复，但 60-250Hz 挤在段 0..4
+        //   ⟹ 圆周上 3 点到 4 点那一小片会明显更长
+        // 那是真缺点，但方向是对的（低频确实该更长）。
 
+        // ⚠️ 分箱的形状参数。
+        //
+        // USEFUL_BINS = **120**，因为 PWCircle 用的是 `arr[0..119]`（读过它的代码）。
+        // 原来写的 76 来自另一个壁纸的消费边界，那是把单个样本的约束当成了通用规则。
+        // ⚠️ 120 对两者都安全：Sonic Topography 只看前 76 段，那 76 段仍然落在
+        // 音乐能量最集中的区域；而 PWCircle 需要 120 段都有值。
+        // ⚠️ 40 而不是 20 —— 算过：20 时 (20,21)(22,23)(25,26) 这些相邻段会共用
+        // 同一个 FFT bin（10/128 重复），而那正是画面上"等长柱子"的成因。
+        // 40 时重复降到 **0**，而前 76 段仍到 4.9kHz、第 119 段到 15.9kHz，两个边界都合理。
+        let LINEAR_BINS = 40
+        let USEFUL_BINS = 120
+        // 16 kHz 对应的 FFT bin —— 音乐能量的实际上界。
+        // @48kHz / 1024 点 ⟹ 每 bin 46.9 Hz。
+        let midTop = min(half - 1, Int(16000.0 / (48000.0 / 2.0 / Float(half))))
         for i in 0..<BIN_COUNT {
-            var loHz: Float
-            var hiHz: Float
-            if i < USEFUL_BINS {
-                loHz = F_MIN * powf(ratio, Float(i) / Float(USEFUL_BINS))
-                hiHz = F_MIN * powf(ratio, Float(i + 1) / Float(USEFUL_BINS))
+            var start: Int
+            var end: Int
+            if i < LINEAR_BINS {
+                // 一对一：每个箱子独占一个 FFT bin，不可能重复。
+                start = 1 + i
+                end = start
+            } else if i < USEFUL_BINS {
+                let span = Float(USEFUL_BINS - LINEAR_BINS)
+                let base = Float(1 + LINEAR_BINS)
+                let ratio = Float(midTop) / base
+                let lo = base * powf(ratio, Float(i - LINEAR_BINS) / span)
+                let hi = base * powf(ratio, Float(i + 1 - LINEAR_BINS) / span)
+                start = max(1 + LINEAR_BINS, Int(lo))
+                end = min(half - 1, max(start, Int(hi) - 1))
             } else {
-                // 收尾段：从 F_MAX 线性铺到奈奎斯特。⚠️ 要和上面衔接上，
-                // 各算各的会让边界处出现零宽段。
-                let tail = Float(BIN_COUNT - USEFUL_BINS)
-                loHz = F_MAX + (nyquist - F_MAX) * (Float(i - USEFUL_BINS) / tail)
-                hiHz = F_MAX + (nyquist - F_MAX) * (Float(i - USEFUL_BINS + 1) / tail)
+                let span = Float(BIN_COUNT - USEFUL_BINS)
+                let base = Float(midTop)
+                let ratio = Float(half) / base
+                let lo = base * powf(ratio, Float(i - USEFUL_BINS) / span)
+                let hi = base * powf(ratio, Float(i + 1 - USEFUL_BINS) / span)
+                start = max(midTop, Int(lo))
+                end = min(half - 1, max(start, Int(hi) - 1))
             }
-            let lo = max(1.0, loHz / hzPerBin)
-            let hi = min(Float(half - 1), max(lo + 0.01, hiHz / hzPerBin))
-
-            // ⚠️ 宽度不足 1 个 bin ⟹ **插值**，而不是取整共用。
-            // 那是第一版 38/128 重复的成因，也是这一版能同时做到
-            //「不重复」和「低频铺开」的关键。
-            var mean: Float
-            if hi - lo < 1.0 {
-                let center = (lo + hi) / 2.0
-                let i0 = Int(center)
-                let frac = center - Float(i0)
-                let a = magnitudes[min(half - 1, i0)]
-                let b = magnitudes[min(half - 1, i0 + 1)]
-                mean = a + (b - a) * frac
-            } else {
-                var sum: Float = 0
-                let start = Int(lo)
-                let end = min(half - 1, max(start, Int(hi)))
-                for j in start...end { sum += magnitudes[j] }
-                mean = sum / Float(end - start + 1)
-            }
+            var sum: Float = 0
+            for j in start...end { sum += magnitudes[j] }
+            let mean = sum / Float(end - start + 1)
             // 归一化。⚠️ 用 sqrt 而不是线性：
             //
             // FFT 幅度的动态范围很大（安静段和鼓点差两个数量级），线性映射下
