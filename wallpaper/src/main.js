@@ -2825,6 +2825,46 @@ let audioFrameCount = 0;   // 抽样计数，见下面的 we-audio-frame
 //   选它 → 圆环还是没  ⟹ 问题在壁纸侧或我们的数据格式，和授权无关
 //
 // 它也是标定那两个未验常量（0.012 归一化、FFT 分组）的参照：合成音的频谱是已知的。
+// 单段扫描测试音。
+//
+// ⚠️ 这是"画面和数据矛盾"时唯一能定位的办法。
+//
+// 实测矛盾（用户 2026-07-31）：面板报的数据是「上方最长、往下递减、i>40 基本为 0」，
+// 而画面上是「上方短、下方长」—— **完全相反**。
+// 那说明画面上那些长柱子不是我们发的数据画的，或者索引到角度的映射和我算的不同。
+//
+// ⟹ 每 2 秒只让**一段**有值（0 → 20 → 40 → …），其余全 0。
+// 那样画面上会有**一根**柱子动，而它的位置直接告诉我们
+// "第 N 段画在圆周的哪个角度" —— 不用再读代码猜。
+let sweepIndex = 0;
+let sweepTimer = null;
+
+function startSweepAudio() {
+  if (sweepTimer) return;
+  const STEPS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 119];
+  sweepTimer = setInterval(() => {
+    if (!weWindow || weWindow.isDestroyed()) return;
+    const at = STEPS[sweepIndex % STEPS.length];
+    const frame = new Array(128).fill(0);
+    // 给一个明显的值 —— 0.8 在 PWCircle 里是 0.8*1.8*100 = 144px，看得清
+    frame[at] = 0.8;
+    weWindow.webContents.send('we-audio', frame);
+    audioStatus = {
+      ok: true,
+      sweep: true,
+      text: `扫描测试：只有第 ${at} 段有值（0.8）—— 看画面上哪根柱子在动`,
+    };
+    broadcast('we-audio-status', audioStatus);
+    sweepIndex += 1;
+  }, 2000);
+  console.log('[audio] 单段扫描测试已启动');
+}
+
+function stopSweepAudio() {
+  if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+  sweepIndex = 0;
+}
+
 function startSynthAudio() {
   if (synthTimer) return;
   // 30fps 就够 —— 壁纸的视觉更新到不了那么快，而更高只是白烧 CPU。
@@ -2858,6 +2898,16 @@ function stopSynthAudio() {
 }
 
 function syncAudioSource() {
+  // 单段扫描：定位"第 N 段画在哪"。
+  if (config.we.audioSource === 'sweep') {
+    if (audioTap) { audioTap.stop(); audioTap = null; }
+    stopSynthAudio();
+    if (weProject && weProject.wantsAudio) startSweepAudio();
+    else { stopSweepAudio(); audioStatus = null; }
+    return;
+  }
+  stopSweepAudio();
+
   // 合成音源单独一条路 —— 它不碰 ScreenCaptureKit，所以和授权完全无关。
   if (config.we.audioSource === 'synth') {
     if (audioTap) { audioTap.stop(); audioTap = null; }
@@ -3009,6 +3059,7 @@ function hardQuit(from) {
     if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
     if (weSlowPropTimer) { clearInterval(weSlowPropTimer); weSlowPropTimer = null; }
     stopSynthAudio();
+    stopSweepAudio();
   });
   step('注销全局快捷键', () => globalShortcut.unregisterAll());
   step('拆掉所有窗口', () => {

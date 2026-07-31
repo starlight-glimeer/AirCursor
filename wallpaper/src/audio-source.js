@@ -194,7 +194,9 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
 //
 // 这个形状我在本项目栽过：工坊那次也是"支持类型"列表重复，加了 image 之后
 // 自己的 dispatcher 拒绝自己生成的东西。⟹ 知识只能有一份。
-const SOURCES = ['netease', 'system', 'synth', 'off'];
+// 'sweep' = 单段扫描测试。每 2 秒只让一段有值，用来定位「第 N 段画在圆周哪里」——
+// 那是"画面和数据矛盾"时唯一能定位的办法（读代码猜过三轮，三轮都错）。
+const SOURCES = ['netease', 'system', 'synth', 'sweep', 'off'];
 
 function isValidSource(id) {
   return SOURCES.includes(id);
