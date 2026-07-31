@@ -1178,26 +1178,26 @@ function renderAudioFrame(frame) {
     system: '全系统', netease: '网易云', synth: '测试音', sweep: '单段扫描', off: '关闭',
   };
   const who = SRC_NAME[frame.source] || frame.source || '?';
-  // ⚠️ **直接算出 NORMALIZE 该调成多少。**
+  // ⚠️ 这里原来会算「NORMALIZE 该乘多少」——**那个参数已经不存在了**。
   //
-  // 我为幅度改了五轮，每轮都是"我猜一个值 → 用户打包 → 看效果 → 再猜"。
-  // 而那本来是**算术**：目标峰值 1.1（WE 契约：基准 0..1，响的地方到 1.2~1.5），
-  // 实测峰值已经在手上 ⟹ 新值 = 当前值 × 1.1 / 实测峰值。
+  // 音频算法现在整套抄自 WE（linux-wallpaperengine 的逆向成果），
+  // 没有"我调的参数"了 ⟹ 不该再有"帮你调参"的建议。
   //
-  // ⟹ 面板自己算出来，用户一轮就能调对，而不是陪我试五轮。
+  // 而值该长什么样是可以判断的：WE 的算法把动态压到 5 倍左右
+  //（低频 ×0.351、高频 ×1.393 的加权），所以正常音乐下**每段都该有可见的值**。
+  // ⟹ 报"形状对不对"，而不是"该调多少"。
   let advice = '';
-  if (frame.source === 'system' || frame.source === 'netease') {
-    const TARGET = 1.1;
-    if (frame.max > 0.01) {
-      const factor = TARGET / frame.max;
-      // 偏差在 ±25% 内就算对了 —— 音乐本身每首的响度都不同，
-      // 追求精确没有意义。
-      if (factor > 1.25 || factor < 0.8) {
-        advice = `<br><b>⟹ NORMALIZE 乘 ${factor.toFixed(2)}</b>`
-          + `（在 GestureWallAudio.swift 顶部；目标峰值 ${TARGET}，现在 ${frame.max}）`;
-      } else {
-        advice = '<br>✅ 幅度在合理范围（峰值接近 1，那是 WE 的契约）';
-      }
+  if ((frame.source === 'system' || frame.source === 'netease') && frame.max > 0.02) {
+    const spread = frame.max / Math.max(0.01, frame.mean);
+    if (frame.lowMean > frame.highMean * 4) {
+      advice = '<br><span class="warn">⚠️ 低频比高频大 4 倍以上 —— '
+        + 'WE 的频段加权本该把它压平（低频 ×0.351、高频 ×1.393）。'
+        + '如果画面上一片长一片没有，说明加权没生效</span>';
+    } else if (spread > 25) {
+      advice = `<br><span class="warn">⚠️ 峰值是均值的 ${spread.toFixed(0)} 倍 —— `
+        + '太尖了，正常音乐下 WE 的算法应该在 10 倍以内</span>';
+    } else {
+      advice = '<br>✅ 形状像 WE 的输出（动态压到位、低高频接近）';
     }
   }
 

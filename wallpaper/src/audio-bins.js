@@ -1,49 +1,56 @@
-// FFT 分箱边界。**这是 GestureWallAudio.swift 那段分箱的可测规格。**
+// WE 音频算法的**可测规格**。
 //
-// ⚠️ 为什么要单独一份：那段逻辑在 Swift 里，而云端跑不了 Swift ——
-// 而它**在数学上错过一次**，错法是"38 个箱子读同一个 FFT bin"，
-// 而症状是画面上一段段等长的阶梯（用户 2026-07-31 的截图）。
+// ⚠️⚠️ 这不是我设计的算法 —— 它逆向自 `linux-wallpaperengine`：
+// `src/WallpaperEngine/Audio/Drivers/Recorders/PulseAudioPlaybackRecorder.cpp`
 //
-// 那种错误纯粹是算术，本来应该在写下它的那一刻就能算出来 ——
-// ⟹ 所以把边界公式做成能跑的东西，让"每个箱子有自己的 bin"变成一条断言。
+//     for (int band = 0; band < 64; band++) {
+//         int index = band * 2;
+//         f2 = re*re + im*im;                     // 功率，不开根
+//         f1 = 0.35f * log10(f2);
+//         dest[band] = min(1.0f, f1 * (2.0f - pow(M_E, (1.0f - band/63.0f) - 0.5f)));
+//     }
+//     movetowards(current, target, 0.3f);
 //
-// ⚠️ 这不是"另一份实现"：它只算边界，不做 FFT、不做归一化、不做平滑。
-// 而守卫会核对两边的参数（LINEAR_BINS / USEFUL_BINS / 8000Hz）一致 ——
-// 两份知识漂了是这个项目反复栽的形状。
+// 为什么要一份 JS 规格：Swift 在云端跑不了，而这套算法我**猜错过八轮**
+//（对数分箱 / 线性分箱 / 插值 / sqrt / 去掉 sqrt / 各种系数）。
+// ⟹ 把它做成能跑的东西，让"和 WE 一致"变成断言而不是我的说法。
+//
+// ⚠️ 守卫会核对 Swift 和这里的每个常量一致 —— 两份知识漂了是本项目反复栽的形状。
 
-// 复刻 GestureWallAudio.swift 的分箱公式，用来在云端验数学。
-// ⚠️ 这不是"另一份实现" —— 它只做分箱边界，且守卫会核对两边的参数一致。
-// ⚠️ 默认值必须和 GestureWallAudio.swift 一致 —— 守卫会核对。
+const LOG_SCALE = 0.35;   // WE: `0.35f * log10(f2)`
+const SMOOTH = 0.3;       // WE: `movetowards(cur, target, 0.3f)`
+const BIN_COUNT = 128;
+
+// 频段加权：`2 − e^((1 − band/(N−1)) − 0.5)`
 //
-// usefulBins = **120**（不是 76）：PWCircle.js 用的是 `arr[0..119]`。
-// 原来的 76 来自另一个壁纸（Sonic Topography 重采样到 512 后丢掉 301..511），
-// 而我把那个单个样本的约束当成了通用规则。**两个壁纸的消费边界不一样。**
-function binEdges({ fftSize = 1024, binCount = 128, linearBins = 40, usefulBins = 120,
-  sampleRate = 48000, midHz = 16000 } = {}) {
-  const half = fftSize / 2;
-  const hzPerBin = sampleRate / 2 / half;
-  const midTop = Math.min(half - 1, Math.trunc(midHz / hzPerBin));
-  const out = [];
-  for (let i = 0; i < binCount; i += 1) {
-    let start; let end;
-    if (i < linearBins) {
-      start = 1 + i; end = start;
-    } else if (i < usefulBins) {
-      const span = usefulBins - linearBins;
-      const base = 1 + linearBins;
-      const ratio = midTop / base;
-      start = Math.max(base, Math.trunc(base * ratio ** ((i - linearBins) / span)));
-      end = Math.min(half - 1, Math.max(start,
-        Math.trunc(base * ratio ** ((i + 1 - linearBins) / span)) - 1));
-    } else {
-      const span = binCount - usefulBins;
-      const ratio = half / midTop;
-      start = Math.max(midTop, Math.trunc(midTop * ratio ** ((i - usefulBins) / span)));
-      end = Math.min(half - 1, Math.max(start,
-        Math.trunc(midTop * ratio ** ((i + 1 - usefulBins) / span)) - 1));
-    }
-    out.push([start, end]);
-  }
-  return { edges: out, midTop, hzPerBin };
+// ⚠️ **这是"柱子铺满整圈"的唯一原因。** 低频 ×0.351、高频 ×1.393（4 倍差距）——
+// WE 主动压低频、抬高频，抵消音乐 1/f 的天然分布。
+// 我之前没有任何加权 ⟹ 低频原样保留 ⟹ 用户报「3 点那片特别长」。
+function bandWeight(band, binCount = BIN_COUNT) {
+  const t = 1 - band / (binCount - 1);
+  return 2 - Math.E ** (t - 0.5);
 }
-module.exports = { binEdges };
+
+// 一段的输出（不含平滑）。magnitude 是 |X| = sqrt(re²+im²)。
+function bandValue(magnitude, band, binCount = BIN_COUNT) {
+  const power = magnitude * magnitude;
+  // ⚠️ power ≤ 0 时 log10 是 -inf，必须挡（WE 那边也判了 f2 > 0）
+  const v = power > 0 ? LOG_SCALE * Math.log10(power) : 0;
+  // ⚠️ WE 只 `fmin(1.0, …)` 截上界，而 log10 在功率很小时是负数
+  // ⟹ 下界也要挡，否则柱子会往反方向长
+  return Math.min(1, Math.max(0, v * bandWeight(band, binCount)));
+}
+
+// 整帧。magnitudes 是 FFT 的 |X| 数组。
+function frameValues(magnitudes, binCount = BIN_COUNT) {
+  const half = magnitudes.length;
+  const out = [];
+  for (let band = 0; band < binCount; band += 1) {
+    // ① 线性取样：band × 2（WE 64 段时是 band*2，我们 128 段同样）
+    const index = Math.min(half - 1, band * 2);
+    out.push(bandValue(magnitudes[index] || 0, band, binCount));
+  }
+  return out;
+}
+
+module.exports = { LOG_SCALE, SMOOTH, BIN_COUNT, bandWeight, bandValue, frameValues };

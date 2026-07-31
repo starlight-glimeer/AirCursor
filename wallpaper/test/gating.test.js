@@ -2900,9 +2900,14 @@ check('面板算出 NORMALIZE 该调多少（不是让用户陪着试）', () =>
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const i = dash.indexOf('function renderAudioFrame');
   const fn = dash.slice(i, dash.indexOf('\n}', i));
-  assert.match(fn, /NORMALIZE 乘/,
-    '面板不算出该调多少 ⟹ 用户要陪我一轮轮试（已经试了五轮）');
-  assert.match(fn, /TARGET/, '没有目标峰值 —— 那样"调多少"没有依据');
+  // ⚠️ 这条断言改了。原来要求面板算出「NORMALIZE 该乘多少」，
+  // 而那个参数**已经不存在** —— 音频算法整套抄自 WE，没有我调的参数了。
+  // ⟹ 现在验的是"报形状对不对"，而不是"报该调多少"。
+  assert.match(fn, /WE 的频段加权|像 WE 的输出/,
+    '面板不判断形状 ⟹ "低频比高频大 4 倍"这类症状看不出来，'
+    + '而那正是加权没生效的信号');
+  assert.match(fn, /lowMean > frame\.highMean/,
+    '没有低高频对比 —— 那是"加权生效了没有"最直接的判据');
   // ⚠️ 只对真采集给建议：测试音的幅度是我们自己定的，没有调的意义
   assert.match(fn, /'system'|'netease'/,
     '对测试音也给调参建议 —— 那些幅度是我们自己写死的，调它没意义');

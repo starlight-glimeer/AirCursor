@@ -1,20 +1,20 @@
-// FFT 分箱边界。**这一整个文件是为一个真机 bug 写的。**
+// WE 音频算法。**这一整个文件是为一串真机 bug 写的，而它们全源于同一个错误：
+// 我八轮都在自己设计这一层，而不是去看 WE 怎么做。**
 //
 //   node test/audio-bins.test.js
 //
-// 用户 2026-07-31 的截图：音频圆环的柱子长度随索引**单调递增**，还带一段段
-// 等长的阶梯 —— 那不是音乐的形状。
+// 用户 2026-07-31 点出的第一性原理：
+//   「你为什么是在针对这个壁纸做适配，这很奇怪。应该是我们不理解那个壁纸软件
+//     它的渲染原理，所以我们通过这个壁纸去反推我们的渲染器」
+//   「Linux 和 Mac 应该是很相近的……他那个逆向应该会对我们非常有帮助」
 //
-// 算出来才明白原因：原来的分箱是 `lo = powf(512, i/128)` 纯对数铺满 1..512，
-// 而低索引处它增长极慢 ⟹ **i=0..13 的 (start,end) 全是 (1,1)**，
-// 14 个箱子读同一个 FFT bin，一共 38/128 个箱子在读完全相同的 bin。
-//
-// ⚠️ 那是**纯算术错误** —— 写下它的那一刻就能算出来，而它活到了真机截图。
-// ⟹ 这个文件的存在理由：让"每个箱子有自己的 bin"从一句注释变成一条断言。
+// 他对。答案在 `linux-wallpaperengine`（逆向 WE 的开源项目）里，
+// 而我为它猜了八轮：对数分箱 / 线性分箱 / 低频插值 / sqrt / 去掉 sqrt /
+// 各种归一化系数 / 要不要平滑 / 上限取多少 —— **每一条都错**。
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { binEdges } = require('../src/audio-bins.js');
+const A = require('../src/audio-bins.js');
 
 let passed = 0;
 function check(name, fn) {
@@ -28,282 +28,154 @@ function check(name, fn) {
   }
 }
 
-console.log('\nFFT 分箱边界');
+const SWIFT = path.join(__dirname, '..', 'native', 'GestureWallAudio.swift');
+const swiftSrc = fs.readFileSync(SWIFT, 'utf8');
+const swiftCode = swiftSrc.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 
-console.log('\n  那个真机 bug 本身');
+console.log('\nWE 音频算法');
 
-// ⚠️ 这条是整个文件的核心。
-check('不同的箱子不读同一个 FFT bin（原来 38/128 读重复的）', () => {
-  const { edges } = binEdges();
-  const seen = new Map();
-  edges.forEach(([s, e], i) => {
-    const key = `${s}:${e}`;
-    if (!seen.has(key)) seen.set(key, []);
-    seen.get(key).push(i);
-  });
-  const dupes = [...seen.values()].filter((v) => v.length > 1);
-  const affected = dupes.flat().length;
-  // 允许极少量（相邻两段共用一个 bin 在边界上不可避免），但不能成片。
-  // ⚠️ 阈值是 0，不是少一点就行 —— 算过 LINEAR_BINS=40 时能做到 0。
-  // 任何重复都意味着那几根柱子的值一模一样，而那在画面上是看得见的。
-  assert.strictEqual(affected, 0,
-    `${affected}/128 个箱子在读完全相同的 FFT bin —— 它们的值必然一模一样，`
-    + `画面上就是一段段等长的柱子（原来是 38 个，用户截图见得到）。重复组：`
-    + JSON.stringify(dupes.slice(0, 3)));
+console.log('\n  五个步骤，每个都有出处');
+
+// ⚠️ 这五条对应 WE 那段代码的五行。它们**必须一起用** ——
+// 比如"功率不开根"成立是因为后面有 log10（对数已经压缩了动态范围），
+// 我之前"去掉 sqrt 又不加 log"是两头都不对。
+check('① 线性取样 band × 2（不是任何形式的分箱）', () => {
+  assert.match(swiftCode, /band \* 2/,
+    'Swift 里没有 `band * 2` —— WE 是纯线性取样，'
+    + '我猜过对数分箱、线性区+对数区、低频插值，全错');
+  // 不许再出现我那三个错误模型的痕迹
+  assert.ok(!/LINEAR_BINS|USEFUL_BINS|powf\(ratio/.test(swiftCode),
+    '还有旧分箱模型的残留（LINEAR_BINS / USEFUL_BINS / powf(ratio…)）');
 });
 
-// ⚠️ 旧公式必须报红 —— 否则这条守卫等于没有。
-check('（自检）旧的纯对数公式会被上面那条逮到', () => {
-  const half = 512;
-  const old = [];
-  for (let i = 0; i < 128; i += 1) {
-    const lo = half ** (i / 128);
-    const hi = half ** ((i + 1) / 128);
-    const s = Math.max(1, Math.trunc(lo));
-    old.push([s, Math.min(half - 1, Math.max(s, Math.trunc(hi)))]);
-  }
-  const seen = new Map();
-  old.forEach(([s, e], i) => {
-    const k = `${s}:${e}`;
-    if (!seen.has(k)) seen.set(k, []);
-    seen.get(k).push(i);
-  });
-  const affected = [...seen.values()].filter((v) => v.length > 1).flat().length;
-  assert.ok(affected >= 30,
-    `旧公式只有 ${affected} 个重复箱子 —— 那说明我对这个 bug 的分析是错的`);
+check('② 用功率（re²+im²），不是 magnitude', () => {
+  assert.match(swiftCode, /magnitude \* magnitude/,
+    '没有把 magnitude 平方回功率 —— WE 用的是 `f2 = f1*f1 + f2*f2`');
+  assert.ok(!/sqrtf\(/.test(swiftCode),
+    '还在开根 —— 那和 WE 相反（它用功率，因为后面要 log10）');
 });
 
-check('每个箱子的起点单调递增（倒退会让频率顺序乱掉）', () => {
-  const { edges } = binEdges();
-  for (let i = 1; i < edges.length; i += 1) {
-    assert.ok(edges[i][0] >= edges[i - 1][0],
-      `第 ${i} 段的起点 ${edges[i][0]} 比前一段 ${edges[i - 1][0]} 小 —— 频率顺序乱了`);
-  }
+check('③ 0.35 × log10(功率)', () => {
+  assert.match(swiftCode, /LOG_SCALE \* log10f\(power\)/,
+    '归一化不是 `0.35 * log10(功率)` —— 我曾用线性、用 sqrt，都错');
+  assert.match(swiftSrc, /let LOG_SCALE: Float = 0\.35/,
+    'LOG_SCALE 不是 0.35（WE 的 `0.35f * log10(f2)`）');
+  // ⚠️ log10(0) = -inf，必须挡
+  assert.match(swiftCode, /if power > 0\.0/,
+    'power ≤ 0 时没挡住 ⟹ log10 返回 -inf，整帧变成 NaN');
 });
 
-check('start <= end，且不越界', () => {
-  const { edges } = binEdges();
-  for (const [i, [s, e]] of edges.entries()) {
-    assert.ok(s >= 1, `第 ${i} 段起点 ${s} < 1（bin 0 是直流分量，不能用）`);
-    assert.ok(e <= 511, `第 ${i} 段终点 ${e} 越界`);
-    assert.ok(s <= e, `第 ${i} 段 start(${s}) > end(${e}) —— Swift 里那是崩溃`);
-  }
+// ⚠️ 这一条是"柱子铺满整圈"的唯一原因。
+check('④ 频段加权 2 − e^((1−band/(N−1))−0.5)', () => {
+  assert.match(swiftCode, /2\.0 - expf\(t - 0\.5\)/,
+    '没有频段加权 ⟹ 低频原样保留 ⟹ 用户报「3 点那片特别长」。'
+    + 'WE 主动压低频（×0.351）、抬高频（×1.393），那才是柱子铺满整圈的原因');
+  // 数值要和 WE 的曲线一致
+  assert.ok(Math.abs(A.bandWeight(0) - 0.351) < 0.002,
+    `band 0 的加权是 ${A.bandWeight(0).toFixed(3)}，WE 是 0.351`);
+  assert.ok(Math.abs(A.bandWeight(127) - 1.393) < 0.002,
+    `band 127 的加权是 ${A.bandWeight(127).toFixed(3)}，WE 是 1.393`);
 });
 
-console.log('\n  两个壁纸的消费边界不一样（我曾把一个的当通用）');
-
-// ⚠️ 这一节整个重写过 —— 原来断言"音乐主体落在前 76 段"，而那个 76 是**错的通用化**。
-//
-// 76 来自 Sonic Topography：它把数组重采样到 512，按 `Pe<=6/18/…/<=300` 分 8 段，
-// 而 `Pe<=300` 之后没有 else ⟹ 301..511 被丢掉 ⟹ 反推 128 段 = 前 76 段。
-//
-// 而 PWCircle.js（884307090「完美壁纸」，用户 2026-07-31 提供源码）完全不同：
-//   for(var i=0; i<120; i++){ var w1 = arr[i] ? arr[i] : 0; ... }
-// **不重采样、索引一对一、用 arr[0..119]。**
-//
-// ⟹ 我拿一个壁纸的约束推到了全体，而那让 76..119 那 44 段（约 8-16kHz）
-// 在这个壁纸上全是接近 0 的值 —— 画面上就是"一部分柱子死着"。
-check('0..119 都要有音乐频段的值（PWCircle 用 arr[0..119]）', () => {
-  const { edges, hzPerBin } = binEdges();
-  const top119 = edges[119][1] * hzPerBin;
-  assert.ok(top119 >= 12000,
-    `第 119 段只到 ${Math.round(top119)} Hz —— PWCircle 用 arr[0..119]，`
-    + '这 120 段都要落在音乐频段里，否则后面那些柱子恒为 0');
-  // 而前 76 段仍然要覆盖住音乐主体（Sonic Topography 只看那 76 段）
-  const top75 = edges[75][1] * hzPerBin;
-  assert.ok(top75 >= 2000 && top75 <= 9000,
-    `前 76 段覆盖到 ${Math.round(top75)} Hz —— 那是只看前 76 段的壁纸`
-    + '（Sonic Topography）的可用范围，人声/主奏要在里面');
+check('⑤ 两向平滑，系数 0.3', () => {
+  assert.match(swiftCode, /\* SMOOTH/,
+    '没有平滑 —— WE 是 `movetowards(cur, target, 0.3f)`');
+  assert.match(swiftSrc, /let SMOOTH: Float = 0\.3/, 'SMOOTH 不是 0.3');
+  // ⚠️ 两个方向同一个系数 —— 我之前分了 ATTACK/RELEASE 且 ATTACK=1.0（不平滑上升）
+  assert.ok(!/ATTACK|RELEASE/.test(swiftCode),
+    '还有 ATTACK/RELEASE —— WE 两个方向用同一个系数，'
+    + '而我曾让上升不插值（理由是"壁纸自己有平滑"），那和 WE 的真实行为相反。'
+    + '「颗粒粗、没有波浪感」就是那个的后果');
 });
 
-check('低频每段独占一个 bin（鼓点要有分辨率）', () => {
-  const { edges } = binEdges();
-  for (let i = 0; i < 40; i += 1) {
-    assert.strictEqual(edges[i][1] - edges[i][0], 0,
-      `第 ${i} 段宽度 ${edges[i][1] - edges[i][0] + 1} —— 低频段要一对一，`
-      + '否则鼓和低音混在一格里');
+console.log('\n  这套算法在真实数据上的效果');
+
+// ⚠️ 这些 magnitude 是从用户实测反推的（他的面板读数 ÷ 我当时的系数）。
+const REAL_MAGS = { 0: 166.7, 10: 72.3, 20: 10.0, 40: 10.2, 60: 9.8, 80: 3.2, 100: 4.0, 119: 1.4 };
+
+check('（真实数据）动态范围从 118 倍降到 5 倍以内', () => {
+  const out = {};
+  for (const [b, m] of Object.entries(REAL_MAGS)) out[b] = A.bandValue(m, Number(b));
+  const vals = Object.values(out);
+  const ratio = Math.max(...vals) / Math.min(...vals);
+  assert.ok(ratio < 8,
+    `动态范围 ${ratio.toFixed(1)} 倍 —— 我的旧算法是 118 倍（一片长一片没有），`
+    + `WE 算法应该在 5 倍左右（铺满整圈）。各段值：`
+    + Object.entries(out).map(([b, v]) => `[${b}]${v.toFixed(2)}`).join(' '));
+});
+
+check('（真实数据）每段都有可见的值（没有段趴在 0）', () => {
+  for (const [b, m] of Object.entries(REAL_MAGS)) {
+    const v = A.bandValue(m, Number(b));
+    assert.ok(v > 0.05,
+      `第 ${b} 段的值 ${v.toFixed(3)} 太小 ⟹ 那根柱子看不见（<10px）。`
+      + 'WE 的频段加权就是为了避免这个');
   }
 });
 
-console.log('\n  和 Swift 那边的参数一致（两份知识会漂）');
+console.log('\n  边界与安全');
 
-// ⚠️ 这个文件是 Swift 那段的**规格**，参数漂了它就失去意义 ——
-// 而"两份知识漂掉"是这个项目反复栽的形状（音源列表、支持类型列表）。
-check('Swift 和这里的分箱参数一致', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  assert.match(swift, /let LINEAR_BINS = 40/,
-    'Swift 的 LINEAR_BINS 不是 40 —— 算过 40 时重复箱子为 0，改小会让相邻段共用 bin');
-  assert.match(swift, /let USEFUL_BINS = 120/,
-    'Swift 的 USEFUL_BINS 不是 120 —— PWCircle 用 arr[0..119]，'
-    + '写 76 是把另一个壁纸的约束当成了通用规则');
-  assert.match(swift, /16000\.0/, 'Swift 里中频上界不是 16000 Hz');
-  assert.match(swift, /BIN_COUNT = 128/, 'Swift 的 BIN_COUNT 不是 128');
-  assert.match(swift, /FFT_SIZE = 1024/, 'Swift 的 FFT_SIZE 不是 1024');
-});
-
-console.log('\n  平滑与归一化（"不丝滑"那条）');
-
-// ⚠️ 这条的理由变了。
-//
-// 原来我以为"不丝滑"是因为上升沿不插值，于是两边都插值。而读了 PWCircle.js 才知道
-// **它自己就有平滑**：
-//     w2 = waveArr[i] - waveArr[i]*0.25;  w1 = Math.max(w1, w2);
-// 上升立刻跟上、下降每帧 ×0.75 ⟹ 我们再平滑一次就是**双重平滑**，
-// 那才是"拖泥带水"的来源。
-//
-// ⟹ 现在 ATTACK=1.0（不插值上升），RELEASE 只留一点点防 FFT 逐帧抖动。
-// 平滑交给壁纸 —— 它比我们更知道自己的帧率。
-check('平滑不和壁纸叠加（ATTACK=1.0，壁纸自己会衰减）', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(code, /prev \+ \(v - prev\) \* alpha/, '没有统一的插值写法');
-  assert.match(code, /let ATTACK: Float = 1\.0/,
-    'ATTACK 不是 1.0 ⟹ 和 PWCircle 自己的平滑叠加（它 `Math.max(w1, w2)` '
-    + '本来就让上升立刻跟上）—— 那是"拖泥带水"的来源');
-});
-
-// 手感参数要能一处调，而不是散在代码里。
-check('三个手感参数在顶部集中（改它们不该动逻辑）', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  for (const name of ['NORMALIZE', 'ATTACK', 'RELEASE']) {
-    assert.match(swift, new RegExp(`let ${name}: Float = `),
-      `${name} 不是顶部的常量 —— 手感参数要能一处调`);
+check('功率为 0 时输出 0，不是 NaN', () => {
+  assert.strictEqual(A.bandValue(0, 0), 0, 'magnitude=0 时输出不是 0');
+  for (let b = 0; b < 128; b += 17) {
+    const v = A.bandValue(0, b);
+    assert.ok(Number.isFinite(v) && v === 0, `第 ${b} 段在静音时输出 ${v}`);
   }
 });
 
-// ⚠️ sqrt：FFT 幅度的动态范围有两个数量级，线性映射要么全 0 要么全顶天。
-// ⚠️ 上限必须是**物理上限**，不能是某个壁纸的内部数字。
-//
-// 我上一版写的是 `min(1.2, …)`，理由是"PWCircle 自己 clamp 到 1.2"——
-// 那是照抄单个壁纸的实现细节，而**同一个错我已经犯过一次**
-//（把 Sonic Topography 的 76 段边界写成通用常量）。
-//
-// 用户点出了定位：「我们的产品其实是个壁纸渲染器……而不是来一个适配一个」。
-// ⟹ 判据：**如果一个数只能从"某个壁纸的源码"推出来，它就不该在这一层。**
-check('上限是物理上限，不是某个壁纸的内部数字', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(code, /let CEILING: Float/, '没有命名的上限常量');
-  assert.match(code, /min\(CEILING, max\(0\.0, v\)\)/,
-    'clamp 用了字面量而不是 CEILING —— 那通常意味着它是从某个壁纸抄来的数字');
-  // ⚠️ 1.2 是 PWCircle 的内部上限，不该出现在我们的代码里
-  assert.ok(!/min\(1\.2/.test(code),
-    'clamp 到 1.2 —— 那是 PWCircle 的实现细节（`Math.min(w1, 1.2)`），'
-    + '不是 WE 的契约。我们是渲染器，不适配单个壁纸');
+check('输出夹在 0..1（下界也要挡 —— log10 会给负数）', () => {
+  for (const m of [0, 0.001, 0.5, 1, 100, 1e6]) {
+    for (const b of [0, 63, 127]) {
+      const v = A.bandValue(m, b);
+      assert.ok(v >= 0 && v <= 1,
+        `magnitude=${m} band=${b} 输出 ${v} 越界 —— `
+        + 'log10 在功率<1 时是负数，只截上界会让柱子往反方向长');
+    }
+  }
 });
 
-// ⚠️ 这条守的是**那个错误形状本身**，不是某个具体的数。
-check('这一层没有从单个壁纸抄来的魔数', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  // 已知的、只属于某个壁纸的数字。它们出现在这里就说明又照抄了。
-  const wallpaperSpecific = [
-    ['1.2', 'PWCircle 的 `Math.min(w1, 1.2)`'],
-    ['0.75', 'PWCircle 的衰减系数 `waveArr[i]*0.25`'],
-    ['300', 'Sonic Topography 的 `Pe<=300` 消费边界'],
+check('整帧长度是 128，且不越界读 magnitudes', () => {
+  const mags = new Array(256).fill(10);
+  const out = A.frameValues(mags);
+  assert.strictEqual(out.length, 128);
+  // band*2 最大 254，而 magnitudes 只有 256 —— 刚好够
+  const short = A.frameValues(new Array(64).fill(10));
+  assert.strictEqual(short.length, 128, '短数组时长度不对');
+  assert.ok(short.every(Number.isFinite), '短数组时产生了非法值');
+});
+
+console.log('\n  和 Swift 一致（两份知识会漂）');
+
+check('Swift 和这份规格的常量一致', () => {
+  for (const [re, why] of [
+    [/let LOG_SCALE: Float = 0\.35/, 'LOG_SCALE'],
+    [/let SMOOTH: Float = 0\.3/, 'SMOOTH'],
+    [/BIN_COUNT = 128/, 'BIN_COUNT'],
+  ]) {
+    assert.match(swiftSrc, re, `${why} 和这份规格漂了`);
+  }
+});
+
+// ⚠️ 这一层不该再有"我调的参数" —— 要改只有一个理由：
+// 发现 WE 的真实行为和这里不一致，而那要有出处。
+check('这一层没有我自己设计的参数', () => {
+  const banned = [
+    ['NORMALIZE', '我猜过 0.012 / 0.0066 / 0.002 / 0.06 / 0.6，全是自己倒推的'],
+    ['CEILING', '上限是 WE 的 fmin(1.0,…)，不需要单独的常量'],
+    ['LINEAR_BINS', '旧分箱模型'],
+    ['USEFUL_BINS', '旧分箱模型（那个 76 还是从另一个壁纸抄的）'],
   ];
-  for (const [num, from] of wallpaperSpecific) {
-    // 允许出现在注释里（解释来由），不允许出现在代码里
-    const inCode = new RegExp(`[^\\w.]${num.replace('.', '\\.')}[^\\w]`).test(code);
-    assert.ok(!inCode,
-      `代码里出现了 ${num} —— 那是 ${from}，属于单个壁纸的实现细节。`
-      + '我们是渲染器：能留在这一层的数必须能从 WE 的行为或信号处理本身推出来');
+  for (const [name, why] of banned) {
+    assert.ok(!new RegExp(`let ${name}`).test(swiftCode),
+      `${name} 又回来了 —— ${why}。这一层的每个数都该有 WE 的出处`);
   }
 });
 
-// ⚠️ 这条断言**翻过来了** —— 原来要求 sqrt，而实测证明 sqrt 是问题本身。
-//
-// 用户读到的实际频谱（sqrt + NORMALIZE=0.002）：
-//   [0]0.433 [10]0.183 [20]0.28 [40]0.301 [60]0.279
-// 反推原始幅度 93.7 / 16.7 / 39.2 / 45.3 / 38.9 ⟹ **原始动态 5.6 倍**，
-// 而 sqrt 之后只剩 **2.4 倍**。
-//
-// ⟹ 用户报「柱子之间的差距不大，音乐的动感不强」就是这个。
-// sqrt(x) 的性质：x 差 4 倍 ⟹ sqrt 只差 2 倍。而音频可视化要的正是对比。
-//
-// 也算过 dB（20*log10）—— 更糟，动态压到 1.3 倍。**方向搞反了**：
-// 这一层要保留动态，不是压缩它。溢出交给壁纸（PWCircle 自己 `Math.min(w1,1.2)`）。
-check('归一化是线性的（sqrt/dB 会把音乐的动态压掉）', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(code, /var v = mean \* NORMALIZE/,
-    '归一化不是线性的 —— sqrt 把实测的 5.6 倍动态压成 2.4 倍，'
-    + '用户报"柱子差距不大、动感不强"');
-  assert.ok(!/sqrtf\(/.test(code),
-    'code 里还有 sqrtf —— 那会压掉音乐的动态对比');
-  assert.ok(!/log10/.test(code),
-    'code 里有 log10（dB）—— 算过：dB 把动态压到 1.3 倍，比 sqrt 更糟');
-});
-
-// ⚠️ 一条数值断言：拿实测数据跑一遍，确认动态没被压。
-check('（数值）实测数据经过这层之后动态不小于 4 倍', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  const m = swift.match(/let NORMALIZE: Float = ([\d.]+)/);
-  assert.ok(m, '找不到 NORMALIZE');
-  const N = Number(m[1]);
-  // 用户实测反推出的原始 FFT 幅度（NORMALIZE=0.002、sqrt 版时读到的）
-  const rawFft = [93.7, 81.6, 16.7, 39.2, 45.3, 38.9];
-  const out = rawFft.map((x) => Math.min(2.0, x * N));
-  const dynamic = Math.max(...out) / Math.min(...out);
-  assert.ok(dynamic >= 4,
-    `动态只有 ${dynamic.toFixed(1)} 倍 —— 原始信号是 5.6 倍，`
-    + '压到 4 倍以下画面上就"差距不大"了（用户实测过 2.4 倍的效果）');
-  // ⚠️ 峰值要**接近 1**，而不是"不超过 1"。
-  //
-  // 契约来自三份独立证据（jquery.audiovisualizer.js 的 `Math.min(…, 1.5)` 和
-  // `Math.min(…, 1)` 两处、PWCircle 的 `Math.min(w1, 1.2)`、Sonic Topography 不 clamp）
-  // ⟹ **基准 0..1，响的地方允许溢出到 1.2~1.5。**
-  //
-  // 我之前那个"目标 0.05..0.3"是**编的** —— 从"一根 90px 的柱子"倒推，
-  // 而那 90px 用了 range=9，实际 main.js 里是 `range.value / 5` = 1.8
-  // ⟹ 真实柱子只有我以为的 1/5，那正是用户报"短柱子太短"的原因。
-  const maxOut = Math.max(...out);
-  assert.ok(maxOut >= 0.8,
-    `常态峰值只有 ${maxOut.toFixed(2)} —— WE 契约是基准 0..1，`
-    + '峰值远低于 1 意味着所有柱子都偏短（用户报"短柱子太短"）');
-  assert.ok(maxOut <= 1.5,
-    `常态峰值 ${maxOut.toFixed(2)} 超过了契约的溢出上界 1.5`
-    + '（jquery.audiovisualizer.js 里那句"溢出部分按值1.5处理"）'
-    + ' ⟹ 日常音乐就被削顶，而削顶让一片柱子长度相同 = "螺旋感"');
-});
-
-
-console.log('\n  契约的出处要能核对');
-
-// ⚠️ 这一条守的不是某个数，是**"这个数从哪来"必须写下来**。
-//
-// 我为音频幅度改了四轮，其中三轮的依据是我自己倒推的量级 ——
-// 而那个倒推建立在一个算错的数上（`range` 我用 9，实际 main.js:329 是
-// `properties.range.value / 5` = 1.8 ⟹ 柱子长度算大了 5 倍）。
-//
-// 用户点出来：「我们的渲染器的修改就应该是通用的才对，我们现在在调节柱子
-// 这件事本身就很奇怪……我不相信他们做的这么差」。
-//
-// ⟹ 他对：**如果一个数只能靠我倒推，那它大概是错的。**
-// 而真正的契约有三份独立证据（不同作者、不同文件），那才是可核对的东西。
-check('NORMALIZE 的依据写在注释里（三份独立证据）', () => {
-  const swift = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  const i = swift.indexOf('let NORMALIZE');
-  assert.ok(i > 0, '找不到 NORMALIZE');
-  // 往上取注释块
-  const before = swift.slice(Math.max(0, i - 2600), i);
-  // 必须点名那个第三方库 —— 它是最强的证据（不知道我们存在的独立作者）
-  assert.match(before, /jquery\.audiovisualizer/,
-    'NORMALIZE 的注释里没引用 jquery.audiovisualizer.js —— '
-    + '那是"WE 会给出 >1 的值"的最强证据（第三方作者的 `Math.min(…, 1.5)` + '
-    + '注释"溢出部分按值1.5处理"）');
-  // 必须记下 range/5 这个坑，否则下次又会按 range=9 算
-  assert.match(before, /range\.value \/ 5|\/ 5/,
-    '注释里没记 `param.range = properties.range.value / 5` —— '
-    + '漏掉它会让柱子长度算大 5 倍（我犯过）');
+check('出处写在代码里（下一个人要能核对）', () => {
+  assert.match(swiftSrc, /linux-wallpaperengine/,
+    '没写出处 ⟹ 下次有人想改这些数时，无从判断它们是抄的还是猜的');
+  assert.match(swiftSrc, /PulseAudioPlaybackRecorder/,
+    '没写具体文件名 —— 出处要能定位到那几十行');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
