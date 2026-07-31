@@ -713,10 +713,25 @@ function watchRendererErrors(win, label) {
   // 这个项目为它烧过两轮:一次是 postinstall 掉了(vendor 空 → 404),一次是打包后
   // asar 读不到 wasm(MediaPipe 的 locateFile 返回相对路径,而 asarUnpack 把文件放到
   // app.asar.unpacked/,从 app.asar/ 里的相对路径到不了那儿)。
-  win.webContents.session.webRequest.onErrorOccurred({ urls: ['file:///*'] }, (details) => {
-    if (!/\.(js|wasm|tflite|data|binarypb|css|html)$/.test(details.url)) return;
-    emit(`加载失败：${details.url.split('/').slice(-2).join('/')} (${details.error})`);
-  });
+  // ⚠️ **两个协议都要监听。**只挂 `file:///*` 会漏掉 WE 壁纸的全部资源 ——
+  // 那一层走的是自定义协议 `wall://`（`WE_SCHEME`，见 registerSchemesAsPrivileged），
+  // 不是 file://。
+  //
+  // 而漏的正好是最需要看见的那类：用户报「预览图有山景背景、装载后纯黑」时，
+  // 日志里只有渲染进程那句 `Not allowed to load local resource: [object Object]`，
+  // 它不说是哪个资源、也不说为什么 —— 因为 404 通道压根没在听 wall://。
+  //
+  // 另外**图片扩展名也要收**（jpg/png/gif/webp）：壁纸的背景就是图片，
+  // 而原来的白名单只有脚本和样式 ⟹ 背景图 404 会被静默过滤掉。
+  win.webContents.session.webRequest.onErrorOccurred(
+    { urls: ['file:///*', `${WE_SCHEME}://*/*`] },
+    (details) => {
+      if (!/\.(js|wasm|tflite|data|binarypb|css|html|jpe?g|png|gif|webp|mp4|webm|ogg)$/i
+        .test(details.url.split('?')[0])) return;
+      emit(`加载失败：${decodeURIComponent(details.url.split('/').slice(-2).join('/'))}`
+        + ` (${details.error})`);
+    },
+  );
 }
 
 function openDashboard() {

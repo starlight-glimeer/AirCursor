@@ -1812,4 +1812,33 @@ check('bind 对缺失元素跳过而不是抛（一个删掉的开关不该弄�
   assert.match(codeOnly(dash), /missing\.push/, '跳过了但没记录，界面不动时查不出原因');
 });
 
+
+// ⚠️ 404 通道必须同时听 file:// 和 wall://。
+//
+// 实测的漏洞：原来只挂 `file:///*`，而 WE 壁纸整层走自定义协议 `wall://`
+//（WE_SCHEME，registerSchemesAsPrivileged 注册）⟹ **壁纸的资源加载失败全部漏掉**。
+//
+// 而漏的正好是最需要看见的那类：用户报「预览图有山景、装载后纯黑」时，
+// 日志里只有渲染进程那句 `Not allowed to load local resource: [object Object]` ——
+// 它不说是哪个资源、也不说为什么，因为 404 通道压根没在听 wall://。
+check('资源 404 通道同时听 file:// 和 wall://（只听 file 会漏掉整个壁纸层）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('onErrorOccurred');
+  assert.ok(i > 0, '404 通道不见了');
+  const block = src.slice(i, i + 400);
+  assert.match(block, /file:\/\/\/\*/, '没听 file://（骨架层的 MediaPipe 走这个）');
+  assert.match(block, /WE_SCHEME/,
+    '没听 wall:// —— WE 壁纸的资源全部走那个协议，漏掉等于壁纸层没有 404 上报');
+});
+
+// 图片扩展名：壁纸的背景就是图片，白名单漏了它 = 背景 404 被静默过滤。
+check('404 白名单含图片和视频（壁纸背景就是图片）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('onErrorOccurred');
+  const block = src.slice(i, i + 500);
+  for (const ext of ['png', 'gif', 'webm']) {
+    assert.ok(block.includes(ext), `白名单少了 ${ext} —— 那类资源 404 会被静默丢掉`);
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
