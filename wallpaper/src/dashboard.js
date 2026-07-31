@@ -32,6 +32,18 @@ for (const button of document.querySelectorAll('nav button[data-tab]')) {
     for (const s of document.querySelectorAll('main section')) s.classList.remove('on');
     button.classList.add('on');
     document.getElementById(`tab-${button.dataset.tab}`).classList.add('on');
+    // ⚠️ 切到「我的壁纸」就刷新。
+    //
+    // 用户报（2026-07-31）：「壁纸存储目录那里应该是自动刷新，不应该是每次我自己
+    // 手动点击刷新才能看到」。
+    //
+    // 他说得对，而且理由比"方便"更硬：壁纸目录是**磁盘上的东西**，
+    // 用户会在 Finder 里往里拖文件、删文件 —— 那些变化面板压根不知道。
+    // 而"切过去看看"正是他想知道"现在有什么"的时刻。
+    //
+    // ⚠️ 只在切到那个页签时扫，不做轮询：扫描要遍历磁盘（Steam 那个目录 639MB），
+    // 每隔几秒扫一次会一直占着 IO。
+    if (button.dataset.tab === 'mine') renderMine();
   };
 }
 
@@ -1861,6 +1873,18 @@ window.gw.onVideoStatus((status) => {
       + `\n${status.width}×${status.height}（有分辨率 = 解码正常；`
       + `如果你看到的是黑屏，那是层级或遮挡问题，不是播放问题）`;
   }
+});
+
+// ⚠️ 面板重新获得焦点时刷新「我的壁纸」。
+//
+// 这是**比切页签更贴合真实动作**的时机：用户点「打开」进 Finder → 拖几个壁纸进去
+// → 切回面板。那时候他期望看到新的壁纸，而不是再点一次什么东西。
+//
+// ⚠️ 只在「我的壁纸」页签是当前页时才扫 —— 否则每次切回窗口都遍历一遍磁盘
+//（Steam 那个目录 639MB），而用户可能只是回来看手势设置。
+window.addEventListener('focus', () => {
+  const mine = document.getElementById('tab-mine');
+  if (mine && mine.classList.contains('on')) renderMine();
 });
 
 window.gw.onWeStatus(() => renderWEStatus());

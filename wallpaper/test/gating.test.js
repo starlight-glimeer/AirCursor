@@ -2575,4 +2575,69 @@ check('卡片的「打开目录」不触发装载（stopPropagation）', () => {
     '没有 stopPropagation ⟹ 点「打开目录」会连带触发卡片的 onclick（装载壁纸）');
 });
 
+
+console.log('\n  页签职责 + 自动刷新');
+
+// ⚠️ 用户 2026-07-31：「已下载的壁纸、壁纸层、音源、壁纸自己的参数这些都不应该在
+// 创意工坊这个模块，应该在我的壁纸这个模块」。
+//
+// 他说得对，职责是清楚的：
+//   创意工坊 = **找**壁纸（浏览、搜索、按 ID 下载）
+//   我的壁纸 = **用**壁纸（有哪些、装哪个、怎么显示、参数、音源）
+// 而原来「创意工坊」塞了 7 块、「我的壁纸」只有 1 块。
+check('「用壁纸」的四块在「我的壁纸」页签，不在创意工坊', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const weAt = html.indexOf('id="tab-we"');
+  const mineAt = html.indexOf('id="tab-mine"');
+  assert.ok(weAt > 0 && mineAt > 0, '找不到两个页签');
+  const sectionOf = (start) => html.slice(start, html.indexOf('</section>', start));
+  const we = sectionOf(weAt);
+  const mine = sectionOf(mineAt);
+  for (const title of ['已下载的壁纸', '壁纸层', '音源', '壁纸自己的参数']) {
+    assert.ok(mine.includes(`<h3>${title}</h3>`),
+      `「${title}」不在「我的壁纸」页签 —— 那是"用壁纸"的功能`);
+    assert.ok(!we.includes(`<h3>${title}</h3>`),
+      `「${title}」还在「创意工坊」—— 那个页签只该管"找壁纸"`);
+  }
+  // 创意工坊要留下"找"相关的
+  assert.ok(we.includes('<h3>浏览创意工坊</h3>'), '创意工坊没有浏览功能了');
+});
+
+// ⚠️ 用户报：「壁纸存储目录那里应该是自动刷新，不应该是每次我自己手动点击刷新才能看到」。
+//
+// 理由比"方便"更硬：壁纸目录是**磁盘上的东西**，用户会在 Finder 里拖文件、删文件 ——
+// 那些变化面板压根不知道。
+check('切到「我的壁纸」自动刷新', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const i = dash.indexOf("button[data-tab]");
+  assert.ok(i > 0, '找不到页签切换逻辑');
+  const block = dash.slice(i, i + 900);
+  assert.match(block, /dataset\.tab === 'mine'/,
+    '切页签时不刷新「我的壁纸」⟹ 用户要手动点，而目录内容随时可能被 Finder 改');
+  assert.match(block, /renderMine\(\)/, '没调 renderMine');
+});
+
+// ⚠️ 更贴合真实动作的时机：点「打开」进 Finder → 拖文件 → 切回面板。
+check('面板重新获得焦点时刷新（从 Finder 拖完文件切回来）', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /addEventListener\('focus'/,
+    '焦点回来时不刷新 —— 而"进 Finder 拖文件再切回来"正是最需要刷新的时刻');
+  const i = dash.indexOf("addEventListener('focus'");
+  const block = dash.slice(i, i + 400);
+  // ⚠️ 必须只在那个页签是当前页时扫 —— 否则每次切回窗口都遍历磁盘
+  assert.match(block, /classList\.contains\('on'\)/,
+    '每次切回窗口都扫磁盘 —— Steam 那个目录 639MB，而用户可能只是回来看手势设置');
+});
+
+// ⚠️ 不许轮询。
+check('目录不用轮询刷新（扫描要遍历磁盘）', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // setInterval 里不该有 renderMine
+  for (const m of dash.matchAll(/setInterval\(([^)]*)/g)) {
+    assert.ok(!/renderMine/.test(m[1]),
+      '用 setInterval 轮询扫目录 ⟹ 一直占着 IO（Steam 那个目录 639MB）。'
+      + '该用事件驱动：切页签 + 焦点回来');
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -362,6 +362,66 @@
         <br>⚠️ 最多扫 2 层深、500 个 —— 再多会让面板卡住。
       </p>
     </div>
+  
+  <!-- ⚠️ 这四块是从「创意工坊」搬过来的（用户 2026-07-31）：
+       「已下载的壁纸、壁纸层、音源、壁纸自己的参数这些都不应该在创意工坊这个模块，
+         应该在我的壁纸这个模块」。
+       他说得对 —— 职责是清楚的：
+         创意工坊 = **找**壁纸（浏览、搜索、下载）
+         我的壁纸 = **用**壁纸（有哪些、装哪个、怎么显示、参数）
+       而原来「创意工坊」塞了 7 块、「我的壁纸」只有 1 块。 -->
+<h3>已下载的壁纸</h3>
+    <div class="card">
+      <div class="bar-row">
+        <button class="act" id="ws-refresh-local" type="button">刷新列表</button>
+      </div>
+      <div id="ws-local" class="ws-grid"><span class="hint">还没下过东西。</span></div>
+      <p class="hint">
+        ⚠️ 需要 <b>steamcmd</b>（Valve 官方命令行工具）：<code>brew install --cask steamcmd</code>
+        <br>⚠️ Guard 码几分钟就过期 —— 报"需要验证码"时再填，然后立刻点下载。
+        <br>密码存在本机 config.json 里（明文）。<b>导诊断报告时会自动脱敏。</b>
+      </p>
+    </div>
+
+    <h3>壁纸层</h3>
+    <div class="card">
+      <div id="we-strategy" class="we-src"></div>
+      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
+      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
+      <div id="mouse-state" class="hint">—</div>
+      <p class="hint">
+        <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
+        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
+        <b>点击、拖拽、滚轮都能用</b>。
+        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b> ——
+        授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
+        （<code>npm run dist:mac</code>）。
+        <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
+        然后静默收不到任何事件。）
+        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
+        再转发一次会变成双份事件（点一下算两下）。
+      </p>
+    </div>
+
+    <h3>音源</h3>
+    <div class="card">
+      <div id="we-audio-source"></div>
+      <div id="we-audio-state" class="hint"></div>
+      <!-- 装载了「要音频」的壁纸而音源是关时，说清"为什么那部分不动" -->
+      <div id="we-audio-note" class="hint" hidden></div>
+      <!-- ⚠️ 实际频谱值。这是调参的唯一依据 —— 在它之前只能猜。 -->
+      <div id="we-audio-frame" class="hint" style="margin-top:8px;user-select:text" hidden></div>
+      <p class="hint">
+        抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
+        <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
+        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
+      </p>
+    </div>
+
+    <h3>壁纸自己的参数</h3>
+    <div class="card">
+      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
+    </div>
   </section>
 
   <!-- ============ WE 网页壁纸 ============ -->
@@ -447,54 +507,6 @@
       <div id="ws-state" class="hint">—</div>
     </div>
 
-    <h3>已下载的壁纸</h3>
-    <div class="card">
-      <div class="bar-row">
-        <button class="act" id="ws-refresh-local" type="button">刷新列表</button>
-      </div>
-      <div id="ws-local" class="ws-grid"><span class="hint">还没下过东西。</span></div>
-      <p class="hint">
-        ⚠️ 需要 <b>steamcmd</b>（Valve 官方命令行工具）：<code>brew install --cask steamcmd</code>
-        <br>⚠️ Guard 码几分钟就过期 —— 报"需要验证码"时再填，然后立刻点下载。
-        <br>密码存在本机 config.json 里（明文）。<b>导诊断报告时会自动脱敏。</b>
-      </p>
-    </div>
-
-    <h3>壁纸层</h3>
-    <div class="card">
-      <div id="we-strategy" class="we-src"></div>
-      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
-      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
-      <div id="mouse-state" class="hint">—</div>
-      <p class="hint">
-        <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
-        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
-        <b>点击、拖拽、滚轮都能用</b>。
-        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b> ——
-        授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
-        （<code>npm run dist:mac</code>）。
-        <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
-        然后静默收不到任何事件。）
-        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
-        再转发一次会变成双份事件（点一下算两下）。
-      </p>
-    </div>
-
-    <h3>音源</h3>
-    <div class="card">
-      <div id="we-audio-source"></div>
-      <div id="we-audio-state" class="hint"></div>
-      <!-- 装载了「要音频」的壁纸而音源是关时，说清"为什么那部分不动" -->
-      <div id="we-audio-note" class="hint" hidden></div>
-      <!-- ⚠️ 实际频谱值。这是调参的唯一依据 —— 在它之前只能猜。 -->
-      <div id="we-audio-frame" class="hint" style="margin-top:8px;user-select:text" hidden></div>
-      <p class="hint">
-        抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
-        <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
-        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
-      </p>
-    </div>
-
     <h3>诊断</h3>
     <div class="card">
       <div class="bar-row">
@@ -509,11 +521,7 @@
       </p>
     </div>
 
-    <h3>壁纸自己的参数</h3>
-    <div class="card">
-      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
-    </div>
-  </section>
+    </section>
 
   <!-- ============ 手势录制 ============ -->
   <section id="tab-gesture">
