@@ -367,8 +367,12 @@ check('音频状态会广播到面板', () => {
 
 // helper 是独立进程，不杀会留下孤儿占着屏幕录制权限。
 check('退出时杀掉音频 helper', () => {
-  const idx = mainSrc.indexOf("app.on('will-quit'");
-  const block = mainSrc.slice(idx, idx + 300);
+  // ⚠️ 剥注释再切，而且切到块尾而不是固定 300 字符 ——
+  // 我在 will-quit 开头加了拆窗口的代码和一段注释，固定长度的切片就被推走了，
+  // 于是这条断言在正确代码上报红。**切片长度是个会漂的锚点。**
+  const bare = codeOnly(mainSrc);
+  const idx = bare.indexOf("app.on('will-quit'");
+  const block = bare.slice(idx, bare.indexOf('});', idx));
   assert.match(block, /audioTap/, '退出时没停 helper，会留孤儿进程占着屏幕录制');
 });
 
@@ -1653,8 +1657,10 @@ check('装载壁纸时设置系统占位壁纸', () => {
 // ⚠️ 改了用户的系统设置不还原是很讨人嫌的行为，而且他可能不知道是我们改的。
 check('退出时还原用户原来的壁纸', () => {
   assert.match(mainSrc, /originalWallpaper = readSystemWallpaper/, '没记住原来的壁纸');
-  const quit = mainSrc.slice(mainSrc.indexOf("app.on('will-quit'"));
-  assert.match(quit.slice(0, 500), /setSystemWallpaper\(originalWallpaper\)/,
+  const bareQ = codeOnly(mainSrc);
+  const quit = bareQ.slice(bareQ.indexOf("app.on('will-quit'"));
+  // ⚠️ 允许带超时参数 —— 退出路径上超时缩短到 1.5 秒（默认 8 秒会被当成卡死）。
+  assert.match(quit.slice(0, 800), /setSystemWallpaper\(originalWallpaper(, \d+)?\)/,
     '退出时没还原壁纸');
 });
 
@@ -2131,6 +2137,56 @@ check('面板把 no-listener 说成故障而不是留白', () => {
   assert.match(fn, /⌃⇧D/,
     '没告诉用户下一步去哪看 —— 而 Console 第一条报错才是真正的原因');
   assert.match(fn, /warn/, 'no-listener 没标成警告样式 ⟹ 看起来像正常状态');
+});
+
+
+console.log('\n  退出路径（"点了退出但还在跑"）');
+
+// ⚠️ 用户实测报：「点击了退出，但貌似没有真正关掉，壁纸还是正常运行，
+// 然后 app 图标那里也没有退出选项了」。
+//
+// 而这条在 AirCursor 早期就出过（aircursor-notes/pitfalls.md 第 74-87 行）：
+//   「Dock 里不像正常运行中的应用……用户感觉『没开但关不掉』」
+//   处理：「菜单栏提供『显示』和『退出』，Command+Q 也能退出」
+//
+// ⟹ 我们重演了它：整个应用**零菜单**。一个长在桌面层、没有可见窗口的壁纸应用，
+// 用户唯一的直觉入口就是 Dock 图标和菜单栏 —— 那两个都必须能退出。
+check('有应用菜单，且退出走 role: quit（Cmd+Q 和 Dock 右键都要命中）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /Menu\.setApplicationMenu/,
+    '零菜单 ⟹ 除了记住 ⌃⇧Q 没有别的出口，而这条 bug AirCursor 早期就出过');
+  assert.match(src, /role: 'quit'/,
+    "退出没用 role: 'quit' ⟹ Cmd+Q 和 Dock 右键的「退出」不一定命中");
+  // 菜单必须在 whenReady 里最先建 —— 后面任何一步抛异常都会让应用"跑着但退不掉"
+  const ready = src.indexOf('app.whenReady()');
+  const build = src.indexOf('buildAppMenu()', ready);
+  assert.ok(build > 0 && build - ready < 200,
+    '菜单不是 whenReady 里最先建的 —— 后面任何一步抛异常都会让应用跑着但退不掉');
+});
+
+// ⚠️ 退出要**看得见地在发生**。慢活放在拆窗口之后。
+check('退出时先拆窗口，再做还原这类慢活', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf("app.on('will-quit'");
+  assert.ok(i > 0, '没有 will-quit');
+  const body = src.slice(i, i + 1200);
+  const destroyAt = body.indexOf('.destroy()');
+  const restoreAt = body.indexOf('setSystemWallpaper');
+  assert.ok(destroyAt > 0,
+    'will-quit 里没有拆窗口 ⟹ 慢活期间壁纸还在动，用户以为没退成');
+  assert.ok(restoreAt > destroyAt,
+    '还原壁纸排在拆窗口之前 ⟹ 那段时间（osascript 最坏几秒）窗口还在、壁纸还在动，'
+    + '看起来就是"点了退出没反应"');
+});
+
+check('退出路径上的 osascript 超时要短（8 秒会被当成卡死）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /setSystemWallpaper\(originalWallpaper, \d+\)/,
+    '退出时用了默认超时 —— osascript 最坏 8 秒，那段时间用户会去强制退出，'
+    + '而强杀会留下 helper 进程占着摄像头/屏幕录制');
+  const m = src.match(/setSystemWallpaper\(originalWallpaper, (\d+)\)/);
+  assert.ok(m && Number(m[1]) <= 2000,
+    `退出超时 ${m && m[1]}ms 太长 —— 超过 2 秒用户就会认为程序卡死了`);
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

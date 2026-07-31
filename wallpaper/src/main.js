@@ -7,7 +7,7 @@
 //
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme,
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, Menu,
   protocol, net, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -1485,14 +1485,19 @@ function readSystemWallpaper() {
   return out || null;
 }
 
-function setSystemWallpaper(filePath) {
+// timeoutMs 可调：**退出时不该等 8 秒**。
+//
+// ⚠️ 那 8 秒是"点了退出没反应"的直接来源之一：osascript 走 System Events，
+// 而它在系统忙的时候能慢到几秒。退出路径上宁可还原失败（下次启动会再设一次），
+// 也不能让用户以为程序卡死了 —— 那会让他去强制退出，而强杀会留下 helper 进程。
+function setSystemWallpaper(filePath, timeoutMs = 8000) {
   if (!filePath || !fs.existsSync(filePath)) return false;
   // ⚠️ 路径里的引号要转义 —— 壁纸目录名是用户可控的，
   // 一个引号就能把 AppleScript 劈开（而那会静默失败）。
   const escaped = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const result = spawnSync('/usr/bin/osascript', ['-e',
     `tell application "System Events" to set picture of every desktop to "${escaped}"`],
-    { encoding: 'utf8', timeout: 8000 });
+    { encoding: 'utf8', timeout: timeoutMs });
   if (result.status !== 0) {
     // 说出来而不是静默 —— 失败的后果是切桌面时仍然闪，
     // 而那看起来像"这个修复没用"。
@@ -2654,7 +2659,72 @@ require('./nowplaying').install({
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+// 应用菜单。⚠️ 这不是装饰，它是**唯一不依赖记住快捷键的退出方式**。
+//
+// 用户实测报的：「点击了退出，但貌似没有真正关掉，壁纸还是正常运行，
+// 然后 app 图标那里也没有退出选项了」。
+//
+// 而这条 bug 在 AirCursor 早期就出过（`aircursor-notes/pitfalls.md` 第 74-87 行）：
+//
+//   「App 能打开，但 Dock 里不像正常运行中的应用……
+//     用户感觉『没开但关不掉』」
+//   处理：「菜单栏提供『显示』和『退出』，`Command+Q` 也能退出」
+//
+// ⟹ 我们重演了它：整个应用**零菜单**（`Menu.setApplicationMenu` 一次都没调），
+// 而 Electron 在没有自定义菜单时用的默认菜单里，`Cmd+Q` 会被
+// `globalShortcut` 抢走的那些键干扰，且 Dock 右键没有我们的退出项。
+//
+// ⚠️ 一个壁纸应用**必须**有正常的退出路径：它长在桌面层、没有可见窗口，
+// 用户唯一的直觉入口就是 Dock 图标和菜单栏。
+function buildAppMenu() {
+  const template = [
+    {
+      label: 'GestureWall',
+      submenu: [
+        { label: '关于 GestureWall', click: () => { openDashboard(); } },
+        { type: 'separator' },
+        { label: '设置面板', accelerator: 'CmdOrCtrl+,', click: () => { openDashboard(); } },
+        { type: 'separator' },
+        {
+          // ⚠️ 拆掉骨架层要在菜单里，不只在快捷键里 —— 它的用途是
+          // "鼠标点不动了"，而那种状态下用户大概也想不起快捷键。
+          label: '拆掉骨架层（鼠标点不动时用）',
+          click: () => { destroyOverlay(); },
+        },
+        { type: 'separator' },
+        // ⚠️ role: 'quit' 而不是自己 click: app.quit() —— role 走系统标准路径，
+        // Cmd+Q 和 Dock 右键的「退出」都会命中它。
+        { role: 'quit', label: '退出 GestureWall' },
+      ],
+    },
+    // 编辑菜单：面板里有输入框（工坊搜索、API key），没有这个 Cmd+V 粘贴不了。
+    // ⚠️ 这不是"顺手加的" —— 用户要往 API key 输入框里粘贴。
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' },
+      ],
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { label: '设置面板', click: () => { openDashboard(); } },
+        { type: 'separator' },
+        { role: 'minimize', label: '最小化' },
+        { role: 'close', label: '关闭窗口' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(() => {
+  // ⚠️ 菜单要**最先**建 —— 它是退出的兜底路径，而后面任何一步抛异常都会让
+  // 应用变成"跑着但退不掉"。先有出口，再做别的。
+  buildAppMenu();
   config = readConfig();
   // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
   if (migrateConfig(config)) writeConfig();
@@ -2735,7 +2805,20 @@ app.whenReady().then(() => {
 // Deliberately does not quit: closing the settings window is not quitting the
 // wallpaper. ⌃⇧Q is the way out.
 app.on('window-all-closed', () => {});
+// ⚠️ 退出必须**看得见地在发生**，而且不能被任何一步卡住。
+//
+// 用户实测报「点了退出但没真正关掉，壁纸还在跑」。查到两件事：
+//   ① 整个应用零菜单 ⟹ 除了记住 ⌃⇧Q 没有别的出口（已加菜单）
+//   ② `will-quit` 里 `setSystemWallpaper` 是同步 osascript，`timeout: 8000`
+//      ⟹ 最坏卡 8 秒。那段时间里窗口还在、壁纸还在动，**看起来就是"没退"**。
+//
+// ⟹ 先把可见的东西拆掉（窗口、壁纸层），再做还原这类慢活。
+// 顺序反了用户就会以为点了没用，然后再点一次 / 强制退出。
 app.on('will-quit', () => {
+  // ① 先让"还在跑"这件事立刻停止 —— 窗口没了用户才知道命令生效了。
+  for (const win of [weWindow, wallWindow, overlayWindow, dashboardWindow]) {
+    try { if (win && !win.isDestroyed()) win.destroy(); } catch { /* 已经没了 */ }
+  }
   globalShortcut.unregisterAll();
   // 两个 helper 都是独立进程，不会因为主进程退出而自动结束 —— 留着会占住
   // 摄像头/麦克风/屏幕录制，而且下次启动会看到"两个 helper 在跑"。
@@ -2744,5 +2827,6 @@ app.on('will-quit', () => {
   if (mouseTap) mouseTap.stop();
   // ⚠️ 把用户原来的壁纸还回去。改了别人的系统设置不还原是很讨人嫌的行为，
   // 而且他可能根本不知道是我们改的。
-  if (originalWallpaper) setSystemWallpaper(originalWallpaper);
+  // ⚠️ 退出路径上用 1.5 秒而不是默认的 8 秒 —— 见 setSystemWallpaper 的注释。
+  if (originalWallpaper) setSystemWallpaper(originalWallpaper, 1500);
 });
