@@ -1038,6 +1038,40 @@ function renderMouseDiag(mouse) {
 //   ready 没有 → 页面加载了但里面的 JS 没跑起来（ES module 挂了就是这样）
 //   音频不 ok  → 权限或没在放歌
 // ⚠️ 这三种在画面上看起来都是"没反应"，分不开的话没法查。
+// 属性发送状态那一行。
+//
+// ⚠️ 这是"圆环/粒子/时间显示为什么不出现"的**第一观测点**，而它以前完全不可见。
+//
+// 实测：用户报「圆环没有、也没交互」，面板只说"页面加载了但没报 ready" ——
+// 而 ready 只是个显示信号（不阻塞任何功能），真正该问的是
+// **那 100+ 项属性进去了吗**。这个壁纸的圆环、粒子、时间全由属性驱动
+// （showCircle / visual_audio_model / particles_isParticles…），属性没进去它什么都不画。
+//
+// 而主进程原来把 `no-listener` 静默吞了 ⟹「壁纸没挂 listener」和「一切正常」
+// 长得一模一样。
+function propsLine(props) {
+  if (!props) return '';
+  if (props.state === '已送到') {
+    return `\n✅ ${props.count} 项属性已送到壁纸`;
+  }
+  if (props.state === '这个壁纸没有可配置项') {
+    return '\n这个壁纸没有可配置项（正常）';
+  }
+  if (props.state === '发不进去') {
+    if (props.reason === 'no-listener') {
+      return `\n<span class="warn">⚠️ 有 ${props.count} 项属性，但壁纸没挂`
+        + ' wallpaperPropertyListener ⟹ 一项都没进去。'
+        + '它的圆环/粒子/时间都靠属性驱动，所以画面会缺一大块。'
+        + '常见原因：脚本在挂 listener 之前就抛了 —— ⌃⇧D 看 Console 第一条报错</span>';
+    }
+    return `\n<span class="warn">⚠️ 属性发不进去：${props.reason}</span>`;
+  }
+  if (props.state === '发送中') {
+    return `\n⏳ 正在发 ${props.count} 项属性…`;
+  }
+  return '';
+}
+
 async function renderWEStatus() {
   const status = await window.gw.weStatus();
   // ⚠️ 先记下"这个壁纸要不要音频"，再重渲染音源区 —— 那句提示依赖它。
@@ -1080,6 +1114,7 @@ async function renderWEStatus() {
         ? '✅ 壁纸里的脚本已经跑起来了'
         : '⏳ 页面加载了，但壁纸还没报 ready —— 如果一直这样，是里面的脚本没跑起来')
       + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频')
+      + propsLine(status.props)
       + menuBar;
   }
   renderAudioStatus(status.audio);

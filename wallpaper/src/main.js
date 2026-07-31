@@ -1531,6 +1531,7 @@ function destroyWEWindow() {
   if (weWindow && !weWindow.isDestroyed()) weWindow.destroy();
   weWindow = null;
   weReady = false;
+  wePropState = { state: '未开始', count: 0 };
 }
 
 function createWEWindow() {
@@ -1672,6 +1673,16 @@ function applyWEProperties(props, general) {
 const WE_PROP_RETRY_MS = 120;
 const WE_PROP_TIMEOUT_MS = 8000;
 let wePropTimer = null;
+// 属性发送的结果。⚠️ 必须记下来给面板看：
+//
+// 实测烧的一轮 —— 用户报「圆环没有、也没交互」，而面板只说"页面加载了但没报 ready"。
+// 而真正该问的是「那 100+ 个属性进去了吗」：这个壁纸的圆环、粒子、时间显示全部
+// 由属性驱动（`showCircle` / `visual_audio_model` / `particles_isParticles`…），
+// 属性没进去它就什么都不画。
+//
+// 而原来 `no-listener` 是**静默**的（只有非 no-listener 才 console.warn）⟹
+// "壁纸没挂 wallpaperPropertyListener" 和 "一切正常" 长得一模一样。
+let wePropState = { state: '未开始', count: 0 };
 
 function sendWEProperties() {
   if (!weWindow || weWindow.isDestroyed() || !weProject) return;
@@ -1681,17 +1692,37 @@ function sendWEProperties() {
 
   if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
 
+  const total = Object.keys(props).length;
+  wePropState = { state: '发送中', count: total };
+
   const attempt = async () => {
     const result = await applyWEProperties(props, general);
     if (result.applied) {
       if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
+      wePropState = {
+        state: '已送到', count: total,
+        user: !!result.user, general: !!result.general,
+      };
+      console.log(`[we] ${total} 项属性已送到壁纸`
+        + `（user=${result.user} general=${result.general}）`);
       return;
     }
     if (Date.now() - startedAt > WE_PROP_TIMEOUT_MS) {
       if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
-      // 说出来而不是静默放弃：'no-listener' 是"这个壁纸没有可配置项"（正常），
-      // 别的原因是真出问题了。两者在画面上都看不出来。
-      if (result.reason !== 'no-listener') {
+      // ⚠️ `no-listener` 以前是**静默**的，理由是"这个壁纸没有可配置项（正常）"。
+      // 那个理由错了：**有 100+ 项属性却没有 listener，才是最该报的情形** ——
+      // 它意味着壁纸的脚本没跑到挂 listener 那一步，而症状是"画面缺一大块"
+      // （圆环/粒子/时间全靠属性驱动），看起来像那些功能不支持。
+      wePropState = { state: '发不进去', count: total, reason: result.reason };
+      if (result.reason === 'no-listener') {
+        if (total > 0) {
+          console.warn(`[we] 壁纸有 ${total} 项属性，但它没有挂 `
+            + 'wallpaperPropertyListener ⟹ 一项都没送进去。'
+            + '常见原因：它的脚本在挂 listener 之前就抛了（⌃⇧D 看 Console）');
+        } else {
+          wePropState = { state: '这个壁纸没有可配置项', count: 0 };
+        }
+      } else {
         console.warn('[we] 属性发不进去:', result.reason);
       }
     }
@@ -1715,6 +1746,9 @@ function weStatus(error) {
     // ⚠️ ready 是"壁纸里的 JS 真的跑起来了"，不是"窗口开了"。这两件事分开报,
     // 因为白屏时它们的值不同 —— 这是唯一能区分"没加载"和"加载了但没渲染"的观测点。
     ready: weReady,
+    // 属性发送状态。⚠️ 这是"圆环/粒子为什么不出现"的第一观测点 ——
+    // 它们全部由属性驱动，属性没进去壁纸就什么都不画。
+    props: wePropState,
     audioSource: config && config.we ? config.we.audioSource : 'off',
     // 采集侧的状态（权限、是否真的按 App 过滤成功）单独一层，别和窗口状态混。
     audio: audioStatus,
@@ -1742,6 +1776,7 @@ function setWEWallpaper(dir) {
 
   weProject = loaded.project;
   weReady = false;
+  wePropState = { state: '未开始', count: 0 };
   // 两种壁纸源互斥：都钉在桌面层会互相遮挡，而"我看到的是哪个"就没法判断了。
   if (wallWindow && !wallWindow.isDestroyed()) wallWindow.destroy();
   wallWindow = null;

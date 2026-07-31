@@ -2090,4 +2090,47 @@ check('两个权限声明都在（缺了会静默拿不到授权）', () => {
   assert.ok(info.NSCameraUsageDescription, '缺摄像头声明 ⟹ 手势录制拿不到摄像头');
 });
 
+
+console.log('\n  属性发送状态（"圆环为什么不出现"的第一观测点）');
+
+// ⚠️ 实测烧的一轮：用户报「圆环没有、也没交互」，而面板只说
+// "页面加载了但壁纸还没报 ready"。
+//
+// 而 `ready` 只是个**显示信号**（`weReady` 不阻塞任何功能，我核过）——
+// 真正该问的是**那 100+ 项属性进去了吗**：这个壁纸的圆环、粒子、时间显示全部
+// 由属性驱动（showCircle / visual_audio_model / particles_isParticles…），
+// 属性没进去它什么都不画。
+//
+// 而主进程原来把 `no-listener` **静默吞掉**（只有非 no-listener 才 warn），
+// 理由是"这个壁纸没有可配置项（正常）"—— 那个理由错了：
+// **有 100+ 项属性却没有 listener，才是最该报的情形。**
+check('属性发送状态送到面板（有属性但没 listener 必须报出来）', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /props: wePropState/,
+    'weStatus 载荷里没有属性发送状态 ⟹ 面板无法区分"属性进去了"和"一项都没进"');
+  // ⚠️ 不能锚在单行上 —— 那个赋值是跨行的（对象字面量换行了），
+  // `/wePropState = \{ state: '已送到'/` 在多行代码上匹配不到。
+  // 实测：这条断言第一版就因此在正确代码上报红。
+  assert.match(main, /已送到/,
+    '成功时不记录状态 —— 那样「送到了」和「还在重试」分不清');
+  // 关键：no-listener 且有属性时必须报
+  const i = main.indexOf("result.reason === 'no-listener'");
+  assert.ok(i > 0, 'no-listener 没有单独分支 ⟹ 又会被当成「正常」静默掉');
+  const block = main.slice(i, i + 600);
+  assert.match(block, /total > 0/,
+    '没区分"有属性但没 listener"和"本来就没属性" —— 前者是故障，后者正常');
+});
+
+check('面板把 no-listener 说成故障而不是留白', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const code = codeOnly(dash);
+  assert.match(code, /function propsLine/, '面板没有属性状态那一行');
+  const i = code.indexOf('function propsLine');
+  const fn = code.slice(i, i + 1200);
+  assert.match(fn, /no-listener/, 'propsLine 没处理 no-listener —— 那是最需要说清的一种');
+  assert.match(fn, /⌃⇧D/,
+    '没告诉用户下一步去哪看 —— 而 Console 第一条报错才是真正的原因');
+  assert.match(fn, /warn/, 'no-listener 没标成警告样式 ⟹ 看起来像正常状态');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
