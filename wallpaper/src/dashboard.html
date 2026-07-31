@@ -403,6 +403,12 @@
       <div id="we-audio-note" class="hint" hidden></div>
       <!-- ⚠️ 实际频谱值。这是调参的唯一依据 —— 在它之前只能猜。 -->
       <div id="we-audio-frame" class="hint" style="margin-top:8px;user-select:text" hidden></div>
+      <!-- ⚠️ 音频/壁纸的 helper 日志。
+           原来只有「手势录制」页签底部有一个 #log，而音频的输出（FFT 自检、
+           swiftc 编译失败、丢帧报告）都往那里去 ⟹ 用户在「我的壁纸」页签里
+           找不到它，我还告诉他"在创意工坊的诊断那块"（也是错的）。
+           ⟹ 音频的东西要在音频旁边。 -->
+      <pre id="audio-log" class="log" style="margin-top:8px;max-height:120px"></pre>
       <p class="hint">
         抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
         <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，

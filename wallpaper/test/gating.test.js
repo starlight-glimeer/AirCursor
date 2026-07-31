@@ -2937,4 +2937,38 @@ check('频谱上报带尖刺量化（相邻段跳变）', () => {
   assert.match(dash, /frame\.spikes/, '面板没显示尖刺');
 });
 
+
+// ⚠️ 音频的日志要在**音频旁边**。
+//
+// 用户问「这个在哪里」，而我给的位置是错的（我说"创意工坊的诊断那块"，
+// 实际上 #log 在**手势录制**页签底部）。
+// ⟹ 音频的输出（FFT 自检、swiftc 编译失败、丢帧）跑到手势页签里去了。
+check('音频日志在音源旁边（不是手势页签）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.ok(html.includes('id="audio-log"'), '音源旁边没有日志区');
+  // 必须在「我的壁纸」页签里（音源搬过去了）
+  const mineAt = html.indexOf('id="tab-mine"');
+  const mineEnd = html.indexOf('</section>', mineAt);
+  const logAt = html.indexOf('id="audio-log"');
+  assert.ok(logAt > mineAt && logAt < mineEnd,
+    '#audio-log 不在「我的壁纸」页签里 —— 音源在那儿，日志也该在那儿');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const i = dash.indexOf('function logLine');
+  const fn = dash.slice(i, dash.indexOf('\n}', i));
+  assert.match(fn, /audio-log/, 'logLine 不写 audio-log ⟹ 那一格永远空的');
+  assert.match(fn, /'audio'|'we'|'wall'/,
+    'logLine 不按来源过滤 ⟹ 手势的日志也会灌进音频那格');
+});
+
+// ⚠️ 自检只在 helper 启动时跑一次 —— 面板后打开就错过了。
+check('面板打开时补发最后一次 FFT 自检', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /lastSelfTest/,
+    '不记住自检结果 ⟹ 面板后打开就永远看不到那一行（用户实测撞到）');
+  assert.match(main, /we-selftest/, '没有拿自检结果的 IPC');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /weSelfTest\(\)/, '面板不主动拿自检结果');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

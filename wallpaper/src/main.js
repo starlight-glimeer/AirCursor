@@ -1925,6 +1925,9 @@ ipcMain.handle('we-set-property', (_event, key, value) => {
 });
 
 // 面板要渲染配置控件，直接从 project.json 生成 —— 不给每个壁纸手写 UI。
+// 最后一次 FFT 自检的结果。⚠️ 面板打开时补发 —— 自检只在 helper 启动时跑一次。
+ipcMain.handle('we-selftest', () => ({ ok: !!lastSelfTest, test: lastSelfTest }));
+
 ipcMain.handle('we-controls', () => {
   if (!weProject) return { ok: false, controls: [] };
   const controls = WE.controlsOf(weProject.properties);
@@ -2802,6 +2805,12 @@ let audioTap = null;
 let synthTimer = null;
 let synthPhase = 0;
 let audioStatus = null;
+// 最后一次 FFT 自检的结果。
+//
+// ⚠️ 自检只在 helper 启动时跑一次，而用户可能那时候还没打开面板
+// ⟹ 那行就永远错过了。存下来，面板一打开就补发。
+// （用户实测撞到：他问"这个在哪里"，而我给的位置还是错的。）
+let lastSelfTest = null;
 let audioFrameCount = 0;   // 抽样计数，见下面的 we-audio-frame
 
 // 把频谱抽样报给面板。
@@ -3076,6 +3085,7 @@ function syncAudioSource() {
     // ⚠️ FFT 自检结果 —— 直接送到面板。
     // 那是"单段孤峰"这个现象的判据，而我为它猜错了十次。
     onSelfTest: (t) => {
+      lastSelfTest = t;
       const ok = t.segsAboveQuarter >= 2 && t.segsAboveQuarter <= 8
         && Math.abs(t.peakSeg - t.expectSeg) <= 1;
       const line = `FFT 自检（${t.tone}Hz 纯音）：峰值在第 ${t.peakSeg} 段`

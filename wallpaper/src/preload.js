@@ -105,6 +105,9 @@ contextBridge.exposeInMainWorld('gw', {
   onWeAudioFrame: on('we-audio-frame'),
   // ⚠️ 闸门丢帧的报告。打包版没有终端，这是"两个音源同时发"唯一能看见的地方。
   onWeAudioDrop: on('we-audio-drop'),
+  // ⚠️ 主动拿最后一次 FFT 自检 —— 它只在 helper 启动时跑一次，
+  // 而面板可能那时候还没打开。
+  weSelfTest: () => ipcRenderer.invoke('we-selftest'),
 
   // 在 Finder 里打开壁纸目录。⚠️ 壁纸是**文件**，而用户对文件的直觉是"去看看" ——
   // 之前面板上连路径都只是纯文本。

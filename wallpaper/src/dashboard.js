@@ -170,6 +170,23 @@ function renderGestureLead() {
 // 录制只是加一道"必须是这个手型"的门，所以固定静态。
 // 往日志窗格追一行。这是**唯一活得够久**的显示位置 —— `#live` 每帧被 sensor 状态覆盖。
 function logLine(source, message) {
+  // ⚠️ 音频/壁纸的日志也写到**音源旁边**那一格。
+  //
+  // 原来只有「手势录制」页签底部有 #log，而音频的输出（FFT 自检、
+  // swiftc 编译失败、丢帧报告）都往那里去 ⟹ 用户在「我的壁纸」页签里找不到它。
+  // 而我还告诉他"在创意工坊的诊断那块"—— 也是错的。
+  //
+  // ⟹ 音频的东西要在音频旁边。两处都写（手势页签那个是全量日志，
+  // 这个只收 audio/we/wall 的）。
+  if (source === 'audio' || source === 'we' || source === 'wall') {
+    const box = document.getElementById('audio-log');
+    if (box) {
+      const line = `[${source}] ${message}`;
+      box.textContent = `${box.textContent}${box.textContent ? '\n' : ''}${line}`
+        .split('\n').slice(-15).join('\n');
+      box.scrollTop = box.scrollHeight;
+    }
+  }
   const node = document.getElementById('log');
   if (!node) return;
   const line = `[${source}] ${message}`;
@@ -1931,6 +1948,22 @@ window.addEventListener('focus', () => {
 window.gw.onWeStatus(() => renderWEStatus());
 // ⚠️ 订阅实际频谱 —— 没有它，"参数调多少"只能靠猜（我猜了三轮）。
 if (window.gw.onWeAudioFrame) window.gw.onWeAudioFrame(renderAudioFrame);
+
+// ⚠️ 面板打开时补发最后一次 FFT 自检。
+//
+// 自检只在音频 helper 启动时跑一次，而用户可能那时候还没打开面板
+// ⟹ 那行就永远错过了（他实测撞到，还问"这个在哪里"）。
+if (window.gw.weSelfTest) {
+  window.gw.weSelfTest().then((r) => {
+    if (!r || !r.ok || !r.test) return;
+    const t = r.test;
+    const ok = t.segsAboveQuarter >= 2 && t.segsAboveQuarter <= 8
+      && Math.abs(t.peakSeg - t.expectSeg) <= 1;
+    logLine('audio', `${ok ? '✅' : '⚠️'} FFT 自检（${t.tone}Hz）：`
+      + `峰值第 ${t.peakSeg} 段（应 ${t.expectSeg}）　主瓣宽 ${t.segsAboveQuarter} 段`
+      + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`);
+  }).catch(() => {});
+}
 // ⚠️ 闸门丢帧 —— 那说明有旧音源还在发。打包版没终端，只能在这里看。
 if (window.gw.onWeAudioDrop) {
   window.gw.onWeAudioDrop((d) => {
