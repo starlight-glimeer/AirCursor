@@ -255,11 +255,55 @@ check('（数值）实测数据经过这层之后动态不小于 4 倍', () => {
   assert.ok(dynamic >= 4,
     `动态只有 ${dynamic.toFixed(1)} 倍 —— 原始信号是 5.6 倍，`
     + '压到 4 倍以下画面上就"差距不大"了（用户实测过 2.4 倍的效果）');
-  // 同时不能让常态就顶天
+  // ⚠️ 峰值要**接近 1**，而不是"不超过 1"。
+  //
+  // 契约来自三份独立证据（jquery.audiovisualizer.js 的 `Math.min(…, 1.5)` 和
+  // `Math.min(…, 1)` 两处、PWCircle 的 `Math.min(w1, 1.2)`、Sonic Topography 不 clamp）
+  // ⟹ **基准 0..1，响的地方允许溢出到 1.2~1.5。**
+  //
+  // 我之前那个"目标 0.05..0.3"是**编的** —— 从"一根 90px 的柱子"倒推，
+  // 而那 90px 用了 range=9，实际 main.js 里是 `range.value / 5` = 1.8
+  // ⟹ 真实柱子只有我以为的 1/5，那正是用户报"短柱子太短"的原因。
   const maxOut = Math.max(...out);
-  assert.ok(maxOut <= 1.0,
-    `常态最大值 ${maxOut.toFixed(2)} —— 超过 1.0 说明 NORMALIZE 太大，`
-    + '日常音乐就削顶了（削顶会让一片柱子长度相同 ⟹ 那正是"螺旋感"）');
+  assert.ok(maxOut >= 0.8,
+    `常态峰值只有 ${maxOut.toFixed(2)} —— WE 契约是基准 0..1，`
+    + '峰值远低于 1 意味着所有柱子都偏短（用户报"短柱子太短"）');
+  assert.ok(maxOut <= 1.5,
+    `常态峰值 ${maxOut.toFixed(2)} 超过了契约的溢出上界 1.5`
+    + '（jquery.audiovisualizer.js 里那句"溢出部分按值1.5处理"）'
+    + ' ⟹ 日常音乐就被削顶，而削顶让一片柱子长度相同 = "螺旋感"');
+});
+
+
+console.log('\n  契约的出处要能核对');
+
+// ⚠️ 这一条守的不是某个数，是**"这个数从哪来"必须写下来**。
+//
+// 我为音频幅度改了四轮，其中三轮的依据是我自己倒推的量级 ——
+// 而那个倒推建立在一个算错的数上（`range` 我用 9，实际 main.js:329 是
+// `properties.range.value / 5` = 1.8 ⟹ 柱子长度算大了 5 倍）。
+//
+// 用户点出来：「我们的渲染器的修改就应该是通用的才对，我们现在在调节柱子
+// 这件事本身就很奇怪……我不相信他们做的这么差」。
+//
+// ⟹ 他对：**如果一个数只能靠我倒推，那它大概是错的。**
+// 而真正的契约有三份独立证据（不同作者、不同文件），那才是可核对的东西。
+check('NORMALIZE 的依据写在注释里（三份独立证据）', () => {
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
+  const i = swift.indexOf('let NORMALIZE');
+  assert.ok(i > 0, '找不到 NORMALIZE');
+  // 往上取注释块
+  const before = swift.slice(Math.max(0, i - 2600), i);
+  // 必须点名那个第三方库 —— 它是最强的证据（不知道我们存在的独立作者）
+  assert.match(before, /jquery\.audiovisualizer/,
+    'NORMALIZE 的注释里没引用 jquery.audiovisualizer.js —— '
+    + '那是"WE 会给出 >1 的值"的最强证据（第三方作者的 `Math.min(…, 1.5)` + '
+    + '注释"溢出部分按值1.5处理"）');
+  // 必须记下 range/5 这个坑，否则下次又会按 range=9 算
+  assert.match(before, /range\.value \/ 5|\/ 5/,
+    '注释里没记 `param.range = properties.range.value / 5` —— '
+    + '漏掉它会让柱子长度算大 5 倍（我犯过）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
