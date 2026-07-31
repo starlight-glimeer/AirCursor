@@ -2389,4 +2389,64 @@ check('存量 off 迁移成 system（改默认值不影响已存配置）', () =
     + 'netease/synth 是主动选择，不许覆盖');
 });
 
+
+console.log('\n  「我的壁纸」的目录要说清扫了哪儿');
+
+// ⚠️ 用户报：面板只写「还没加自定义目录（steamcmd 那个是自动扫的）」——
+// 而"那个"是哪个路径、存不存在、找到几个，一个字都没说。
+//
+// ⟹「我的壁纸是空的」时，用户没法判断是"目录不对"还是"目录对但里面没东西"，
+// 而那两件事的下一步完全不同（改路径 vs 去下壁纸）。
+check('自动扫描的目录要显示出来（路径 + 在不在 + 找到几个）', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /scanned,/,
+    'workshop-local 没返回扫描详情 ⟹ 面板不知道扫了哪些目录');
+  const i = main.indexOf('const scanned = roots.map');
+  assert.ok(i > 0, '没有逐目录的扫描信息');
+  const block = main.slice(i, i + 400);
+  for (const [field, why] of [['exists', '目录在不在'], ['found', '找到几个壁纸'],
+    ['auto', '是自动扫的还是用户加的']]) {
+    assert.ok(block.includes(field), `扫描详情缺 ${field}（${why}）`);
+  }
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /lastScanned/, '面板没保存扫描结果 ⟹ 目录区渲染不出来');
+  const j = dash.indexOf('function renderMineDirs');
+  const fn = dash.slice(j, j + 2200);
+  assert.match(fn, /lastScanned/,
+    'renderMineDirs 没用扫描结果 —— 它只看 config.libraryDirs，'
+    + '那样自动扫的目录永远不显示（用户实测撞到）');
+  assert.match(fn, /item\.exists/, '没报"目录在不在"');
+  assert.match(fn, /item\.found/, '没报"找到几个"');
+});
+
+// 两条会撞到的约束要提前说
+check('目录为空时说清两条约束（子目录要有 project.json / 扫描上限）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const i = dash.indexOf('function renderMineDirs');
+  const fn = dash.slice(i, i + 2600);
+  assert.match(fn, /project\.json/,
+    '没说"每个子目录要有 project.json" —— 用户会直接放一堆 mp4 然后发现认不出来');
+  assert.match(fn, /500|2 层/,
+    '没说扫描上限 —— 目录里东西多时结果不全，而用户不知道被截断了');
+});
+
+// ⚠️ renderMineDirs 的函数体里不能调 renderMine（会死循环）
+check('renderMineDirs 的函数体里不调 renderMine（死循环）', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const i = dash.indexOf('function renderMineDirs');
+  const end = dash.indexOf('\n}', i);
+  const body = dash.slice(i, end);
+  // onclick 里调是允许的（那是事件回调，不是同步执行）
+  const lines = body.split('\n');
+  for (const [n, line] of lines.entries()) {
+    if (!line.includes('renderMine()')) continue;
+    // 往上找是不是在 onclick 里
+    const before = lines.slice(Math.max(0, n - 8), n).join('\n');
+    assert.ok(/onclick/.test(before),
+      `renderMineDirs 的函数体里直接调了 renderMine()（第 ${n} 行）⟹ 死循环。`
+      + '只有 onclick 回调里可以调');
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

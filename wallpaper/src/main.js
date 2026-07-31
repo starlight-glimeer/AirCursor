@@ -2231,6 +2231,23 @@ ipcMain.handle('workshop-local', () => {
     exists: (f) => fs.existsSync(f),
   });
 
+  // ⚠️ 把**扫了哪些目录**报出来，而不只是结果。
+  //
+  // 用户报：面板只写「还没加自定义目录（steamcmd 那个是自动扫的）」——
+  // 而"那个"到底是哪个路径、存不存在、找到几个，一个字都没说。
+  // ⟹ 「我的壁纸是空的」时无从判断是"目录不对"还是"目录对但里面没东西"。
+  //
+  // 每个根目录单独报：在不在、找到几个壁纸。那三件事决定用户下一步做什么。
+  const scanned = roots.map((root) => {
+    const here = dirs.filter((d) => d.startsWith(root));
+    return {
+      path: root,
+      exists: fs.existsSync(root),
+      found: here.length,
+      auto: !(config.we.libraryDirs || []).includes(root),
+    };
+  });
+
   const items = [];
   for (const dir of dirs) {
     try {
@@ -2271,8 +2288,13 @@ ipcMain.handle('workshop-local', () => {
   return {
     ok: true, items, truncated,
     roots: roots.filter((r) => fs.existsSync(r)),
-    // ⚠️ 报出"扫了哪些目录" —— 列表是空的时候，用户要知道我们找过哪儿。
+    // ⚠️ 报出"扫了哪些目录 + 在不在 + 找到几个"。
+    //
+    // 用户报：面板只写「还没加自定义目录（steamcmd 那个是自动扫的）」——
+    // 而"那个"是哪个路径、存不存在、找到几个，一个字都没说
+    // ⟹「我的壁纸是空的」时无从判断是"目录不对"还是"目录对但里面没东西"。
     scannedRoots: roots,
+    scanned,
   };
 });
 

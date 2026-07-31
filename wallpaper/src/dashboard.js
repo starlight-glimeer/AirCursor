@@ -1517,6 +1517,10 @@ async function renderMine() {
   const state = document.getElementById('mine-state');
   const grid = document.getElementById('mine-grid');
   const result = await window.gw.workshopLocal();
+  // ⚠️ 存下扫描结果，给 renderMineDirs 用 —— 那是"目录到底扫了哪儿"的唯一来源。
+  // 存下来而不是让它重扫：扫描要遍历磁盘，而它在每次增删目录后都会跑。
+  lastScanned = result.scanned || null;
+  renderMineDirs();
 
   if (!result.ok || !result.items.length) {
     grid.innerHTML = '';
@@ -1550,12 +1554,60 @@ async function renderMine() {
   }
 }
 
+// 最近一次扫描的结果（哪些目录、在不在、找到几个）。renderMine 拿到就存下来。
+//
+// ⚠️ 用模块级变量而不是每次重新扫 —— 扫描要遍历磁盘，而这个函数在
+// 每次增删目录后都会跑。
+let lastScanned = null;
+
 function renderMineDirs() {
   const host = document.getElementById('mine-dirs');
   const dirs = (config.we && config.we.libraryDirs) || [];
   host.innerHTML = '';
+
+  // ⚠️ **先显示自动扫的目录。**
+  //
+  // 用户报：面板只写「还没加自定义目录（steamcmd 那个是自动扫的）」——
+  // 而"那个"是哪个路径、存不存在、找到几个，一个字都没说。
+  // ⟹「我的壁纸是空的」时，用户没法判断是"目录不对"还是"目录对但里面没东西"，
+  // 而那两件事的下一步完全不同（改路径 vs 去下壁纸）。
+  const auto = (lastScanned || []).filter((x) => x.auto);
+  if (auto.length) {
+    const title = document.createElement('div');
+    title.className = 'hint';
+    title.style.marginBottom = '4px';
+    title.textContent = '自动扫描的目录（steamcmd 下载的壁纸在这里）：';
+    host.appendChild(title);
+    for (const item of auto) {
+      const row = document.createElement('div');
+      row.className = 'hint';
+      row.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
+        + 'margin:2px 0 2px 8px;user-select:text';
+      // 三件事一行说完：路径、在不在、找到几个。
+      const mark = item.exists
+        ? (item.found ? `✅ ${item.found} 个壁纸` : '目录在，但里面没有壁纸')
+        : '（这个目录不存在 —— 正常，装了 Steam 才会有）';
+      row.textContent = `${item.path}  ${mark}`;
+      if (item.exists && !item.found) row.style.color = 'var(--warn, #c98)';
+      host.appendChild(row);
+    }
+  }
+
+  const custom = document.createElement('div');
+  custom.className = 'hint';
+  custom.style.margin = '10px 0 4px';
+  custom.textContent = dirs.length ? '我自己加的目录：' : '还没加自定义目录。';
+  host.appendChild(custom);
+
   if (!dirs.length) {
-    host.innerHTML = '<span class="hint">还没加自定义目录（steamcmd 那个是自动扫的）。</span>';
+    const tip = document.createElement('div');
+    tip.className = 'hint';
+    tip.style.cssText = 'margin-left:8px;font-size:11px';
+    // ⚠️ 这两条约束是用户会撞到的，说在前面比让他试出来好。
+    tip.innerHTML = '⚠️ 每个<b>子目录</b>要是一个壁纸（里面有 <code>project.json</code>）'
+      + '—— 直接放一堆 mp4 是认不出来的。'
+      + '<br>⚠️ 最多扫 2 层深、500 个 —— 再多会让面板卡住。';
+    host.appendChild(tip);
     return;
   }
   for (const dir of dirs) {
@@ -1570,7 +1622,12 @@ function renderMineDirs() {
     del.textContent = '移除';
     del.onclick = async () => {
       await window.gw.workshopRemoveDir(dir);
-      renderMineDirs();
+      // ⚠️ 只调 renderMine() —— 它自己会调 renderMineDirs（并刷新 lastScanned）。
+      // 两个都调会渲染两遍，而且中间那次用的是**过期的** lastScanned。
+      //
+      // ⚠️ 这里是 onclick 里，所以 renderMine → renderMineDirs → (这个函数只是绑定
+      // 不执行) 不构成同步递归。但那是"恰好"—— 别在 renderMineDirs 的**函数体**里
+      // 调 renderMine()，那会真的死循环。
       renderMine();
     };
     row.append(label, del);
