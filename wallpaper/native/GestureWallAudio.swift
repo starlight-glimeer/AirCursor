@@ -112,7 +112,29 @@ final class Spectrum {
             input.append(contentsOf: [Float](repeating: 0, count: FFT_SIZE - input.count))
         }
         var windowed = [Float](repeating: 0, count: FFT_SIZE)
-        vDSP_vmul(input, 1, window, 1, &windowed, 1, vDSP_Length(FFT_SIZE))
+        // ⚠️⚠️ **先去直流（DC offset），再加窗。**
+        //
+        // 用户实测（2026-07-31）：「3 点方向那个柱子基本上一直都是居高不下」。
+        // 3 点方向 = 段 0，而段 0 读的是 `index = band*2 = 0` ——
+        // **FFT bin 0 是直流分量，不是频率**。它等于信号的平均值，
+        // 只要音频不完美居中它就一直有值，而且**不随音乐变化**。
+        //
+        // ⚠️ WE 那边第一步就做了这件事：
+        //     m_audioFFTbuffer[i] = (audioBuffer[i] - 128) / 128.0f
+        //                            ^^^^^^^^^^^^^^^ 它的输入是 8-bit 无符号 PCM
+        //                                            （0..255，中心 128），减 128 去偏移
+        //
+        // 我们的输入是 Float32（理论上已居中），但 ScreenCaptureKit 的混音
+        // 仍可能带偏移 —— 而 bin 0 会把它全部收下。
+        // ⟹ 显式减均值，那是零成本的，而漏掉它的症状正好是"某根柱子永远最长"。
+        var centered = [Float](repeating: 0, count: FFT_SIZE)
+        var dc: Float = 0
+        vDSP_meanv(input, 1, &dc, vDSP_Length(FFT_SIZE))
+        var negDC = -dc
+        vDSP_vsadd(input, 1, &negDC, &centered, 1, vDSP_Length(FFT_SIZE))
+        centered.withUnsafeBufferPointer { c in
+            vDSP_vmul(c.baseAddress!, 1, window, 1, &windowed, 1, vDSP_Length(FFT_SIZE))
+        }
 
         // ⚠️ 这一段的写法是被编译器警告逼出来的，而那个警告是真 bug 不是风格问题：
         //
@@ -242,11 +264,18 @@ final class Spectrum {
         let half = FFT_SIZE / 2
 
         for band in 0..<BIN_COUNT {
-            // ① **线性取样**：band × 2。
+            // ① **线性取样**：band × 2，但**跳过 bin 0**。
+            //
             // ⚠️ WE 用 64 段时取 index = band*2（覆盖 FFT bin 0..126）。
             // 我们是 128 段 ⟹ 同样的 index = band*2 覆盖 0..254，
             // 那是同一套算法的更细版本（每段一个 bin，不做任何分组）。
-            let index = min(half - 1, band * 2)
+            //
+            // ⚠️ 但 **bin 0 是直流分量，不是频率** —— 用户实测「3 点方向那个柱子
+            // 一直居高不下」，而 3 点 = 段 0 = bin 0。
+            // 上面已经去了直流，这里再 +1 是**双重保险**：
+            // 去直流靠的是"整窗均值"，而窗内的极低频（<20Hz，听不见的隆隆声）
+            // 仍会落进 bin 0/1。那些不该驱动画面。
+            let index = min(half - 1, band * 2 + 1)
 
             // ② **功率**，不开根。magnitudes 里存的已经是 |X| = sqrt(re²+im²)
             // （vDSP_zvabs 的输出），所以这里平方回去拿功率。

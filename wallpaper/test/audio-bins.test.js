@@ -178,4 +178,34 @@ check('出处写在代码里（下一个人要能核对）', () => {
     '没写具体文件名 —— 出处要能定位到那几十行');
 });
 
+
+console.log('\n  直流分量（"3 点方向一直居高不下"）');
+
+// ⚠️ 用户实测三次都报同一件事：「3 点方向那个柱子基本上一直都是居高不下」。
+//
+// 3 点方向 = 段 0，而段 0 原来读 `index = band*2 = 0`
+// ⟹ **FFT bin 0 是直流分量（DC），不是频率**。
+// 它等于信号的平均值，只要音频不完美居中它就一直有值，而且**不随音乐变化**。
+//
+// ⚠️ WE 那边第一步就处理了：`(audioBuffer[i] - 128) / 128.0f`
+//（它的输入是 8-bit 无符号 PCM，中心 128）。
+// 而我们的输入是 Float32，我以为"已经居中"就不用管 —— 那是错的：
+// ScreenCaptureKit 的混音仍可能带偏移，而 bin 0 会把它全部收下。
+check('去直流：加窗之前先减均值', () => {
+  assert.match(swiftCode, /vDSP_meanv/,
+    '没有去直流 ⟹ bin 0 收下全部偏移，症状是"某根柱子永远最长"'
+    + '（用户实测三次报同一个位置）');
+  // 顺序要对：先减均值，再加窗
+  const meanAt = swiftCode.indexOf('vDSP_meanv');
+  const windowAt = swiftCode.indexOf('vDSP_vmul');
+  assert.ok(meanAt < windowAt,
+    '去直流在加窗之后 ⟹ 窗函数已经改变了信号，均值不再是原始偏移');
+});
+
+check('段 0 不读 bin 0（那是直流不是频率）', () => {
+  assert.match(swiftCode, /band \* 2 \+ 1/,
+    '段 0 仍然读 bin 0 —— 那是直流分量。去直流是靠"整窗均值"，'
+    + '而窗内的极低频（<20Hz 听不见的隆隆声）仍会落进 bin 0/1，那些不该驱动画面');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
