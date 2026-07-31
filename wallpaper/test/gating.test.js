@@ -676,6 +676,63 @@ check('渲染进程的报错会转出来（否则这类错误只能靠猜）', (
   assert.match(main, /render-process-gone/, '崩溃没有上报');
   assert.match(dash, /onHelperLog/, '面板没有订阅日志');
   assert.ok(html.includes('id="log"'), '面板没有显示日志的地方');
+
+  const mainCode = main.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+  // ⚠️ 四条通道都要在。**我在一次合并里亲手丢过其中两条**(35d21af:取对方的 main.js
+  // 为底,补回自己两条通道的脚本第三步 assert 失败,而我只看了 `node --check` 的
+  // "语法 ✅" 就往下走)⟹ 丢了不会红、不会崩,只表现为"日志区少一类东西"。
+  //
+  // 同一次操作还把下面「四个窗口都接」「监听在装载之前」两条断言一起弄丢了,
+  // 而我当时报的是"121 条全绿" —— **守卫写在共享 check 里,取对方的文件为底就会丢。**
+  const watch = mainCode.slice(mainCode.indexOf('function watchRendererErrors'),
+    mainCode.indexOf('function openDashboard'));
+  assert.ok(watch.length > 200, 'watchRendererErrors 函数体没找到，切片失效了');
+  for (const [what, re, why] of [
+    ['render-process-gone', /render-process-gone/, '渲染进程崩了没上报'],
+    ['preload-error', /preload-error/, 'preload 挂了没上报 ⟹ window.gw 整个不存在'],
+    ['console-message 新签名', /typeof args\[1\] === 'object'/,
+      'Electron 36 起签名变成单 details 对象，只按旧签名解会**静默变哑**'
+      + '(level 是对象，`< 2` 恒 false) —— 症状是"日志区什么都不出"，和"没出错"分不开'],
+    ['资源 404', /onErrorOccurred/,
+      '`<script>` 的 404 不进 console-message，而少一个脚本 = 这一层整个不工作且不说话'],
+    ['重复折叠', /\(× \$\{n\}\)/,
+      '同一条消息刷几千行会把真问题埋掉(实测某工坊壁纸的 WebGL 报错刷了几千行)'],
+  ]) {
+    assert.match(watch, re, `watchRendererErrors 少了「${what}」—— ${why}`);
+  }
+  // ⚠️ 折叠不能变成丢弃:前几次必须照常报,否则看不到上下文。
+  //
+  // ⚠️ 这条第一版写的是 `assert.match(watch, /n > 3/)` —— 而 `n > 3` 在源码里出现
+  // **两次**(早退判断 + 后缀判断),把第一处改坏守卫依然通过。**锚在一个恰好重复的
+  // 字符串上等于没锚。**改成直接跑那段逻辑:同一条消息报 50 次,必须**至少**报出
+  // 前几次(不能全静音),也必须**远少于** 50(不能不折叠)。
+  const early = watch.match(/if \(n > (\d+)[^)]*\) return;/);
+  assert.ok(early, '折叠里没有"前 N 次照常报"的早退判断 —— 完全静音会让上下文丢失');
+  const keep = Number(early[1]);
+  assert.ok(keep >= 1 && keep <= 10,
+    `前 ${keep} 次照常报不合理:小于 1 = 第一次就被吞(看不到上下文),`
+    + '大于 10 = 刷屏本身没被压住');
+
+  // ⚠️ **四个窗口都要接。**面板窗口曾经一条都没有(只有 did-finish-load / closed),
+  // 而它的顶层抛出后果**更隐蔽**:apply() 在最后一行才调,它绑定**所有**开关。
+  const calls = [...mainCode.matchAll(/watchRendererErrors\((\w+), '(\w+)'\)/g)];
+  assert.deepStrictEqual(calls.map((m) => m[2]).sort(),
+    ['dashboard', 'overlay', 'wall', 'we'],
+    '四个窗口(壁纸层/面板/骨架层/WE)必须都接错误上报，现在只有:'
+    + calls.map((m) => m[2]).join(', '));
+
+  // ⚠️ 监听必须在 loadFile/loadURL **之前**接。装载期的错误(资源 404、preload 挂了)
+  // 正是这类失败最常见的形态，接晚了正好错过 —— 两边第一版都把某一处接在了后面。
+  const lines = mainCode.split('\n');
+  for (const [i, line] of lines.entries()) {
+    if (!/\.loadFile\(|\.loadURL\(/.test(line)) continue;
+    const recv = line.trim().match(/^(\w+)\./);
+    if (!recv) continue;
+    const before = lines.slice(Math.max(0, i - 30), i).join('\n');
+    assert.ok(new RegExp(`watchRendererErrors\\(${recv[1]},`).test(before),
+      `main.js:${i + 1} 的 ${recv[1]} 在装载前没接错误上报 —— 装载期的 404 会丢掉`);
+  }
 });
 
 // ── 已删掉的窗口不能还有代码在往它发消息 ─────────────────────────────────

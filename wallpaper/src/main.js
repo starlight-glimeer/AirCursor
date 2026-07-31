@@ -662,22 +662,60 @@ function cycleStrategy() {
 // 骨架层更糟 —— 它没有开发者工具、不在视线里，那是另一个模块注释里明说过的坑。
 function watchRendererErrors(win, label) {
   if (!win || win.isDestroyed()) return;
+  // ⚠️ 重复折叠。同一条消息刷几千行会把真问题埋掉,而日志是我们唯一的观测通道。
+  //
+  // 实测:某个工坊壁纸的 `sakura.js:657` 调了非法 WebGL 参数(画面照常),报错刷了
+  // **几千行** ⟹ 用户那次能找到真正那条 `[object Object]` 有运气成分。
+  //
+  // ⚠️ 折叠不能"丢弃":前 N 次照常报(那才看得到上下文),之后按指数间隔报一次并带上
+  // 累计次数。完全静音会让"这个错还在发生吗"变成没法回答的问题。
+  const seen = new Map();
+  const emit = (text, extra) => {
+    const n = (seen.get(text) || 0) + 1;
+    seen.set(text, n);
+    // 前 3 次照常;之后 10、100、1000… 各报一次
+    if (n > 3 && n !== 10 && n !== 100 && n !== 1000 && n % 10000 !== 0) return;
+    const suffix = n > 3 ? ` (× ${n})` : '';
+    console.error(`[${label}] ${text}${suffix}`);
+    logEvent(label, `${text}${suffix}`, extra);
+  };
+
   win.webContents.on('render-process-gone', (_e, details) => {
-    console.error(`[${label}] 渲染进程挂了：${details.reason}`);
-    logEvent(label, `渲染进程挂了：${details.reason}`);
+    emit(`渲染进程挂了：${details.reason}`);
   });
+
   win.webContents.on('preload-error', (_e, preloadPath, error) => {
-    console.error(`[${label}] preload 出错 ${preloadPath}：${error.message}`);
-    logEvent(label, `preload 出错：${error.message}`);
+    emit(`preload 出错 ${preloadPath}：${error && error.message} —— window.gw 不存在`);
   });
-  // ⚠️ console-message 是唯一能把页面里的异常捞出来的通道。
-  // level 3 = error。只报 error 和 warning，否则日志会被刷屏。
-  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+
+  // ⚠️ console-message 是把页面里的异常捞出来的主通道。
+  //
+  // ⚠️ **两种签名都要接。**Electron 36 起从 (event, level, message, line, sourceId)
+  // 变成单个 details 对象 ⟹ 只按旧签名解会**静默变哑**(level 是对象,`< 2` 恒为 false,
+  // 或者 message 恒为 undefined),而症状是"日志区什么都不出" —— 和"没出错"分不开。
+  //
+  // 这一层的全部价值就是别再静默,所以它自己尤其不能静默。
+  win.webContents.on('console-message', (...args) => {
+    const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
+    const level = d ? ({ error: 3, warning: 2 }[d.level] ?? 1) : args[1];
+    const message = d ? d.message : args[2];
+    const line = d ? d.lineNumber : args[3];
+    const sourceId = d ? d.sourceId : args[4];
+    // level 3 = error、2 = warning。只报这两级,否则日志会被刷屏。
     if (level < 2) return;
-    const where = sourceId ? `${sourceId.split('/').pop()}:${line}` : '?';
-    const text = `${message} (${where})`;
-    console.error(`[${label}] ${level === 3 ? '错误' : '警告'}：${text}`);
-    logEvent(label, text, { level });
+    const where = sourceId ? `${String(sourceId).split('/').pop()}:${line}` : '?';
+    emit(`${level === 3 ? '错误' : '警告'}：${message} (${where})`, { level });
+  });
+
+  // ⚠️ 资源 404。**`<script>` / `<link>` 的加载失败不进 console-message**,而少一个
+  // 脚本的症状就是"这一层的功能整个不工作、且什么都不说"。
+  //
+  // 这个项目为它烧过两轮:一次是 postinstall 掉了(vendor 空 → 404),一次是打包后
+  // asar 读不到 wasm(MediaPipe 的 locateFile 返回相对路径,而 asarUnpack 把文件放到
+  // app.asar.unpacked/,从 app.asar/ 里的相对路径到不了那儿)。
+  win.webContents.session.webRequest.onErrorOccurred({ urls: ['file:///*'] }, (details) => {
+    if (!/\.(js|wasm|tflite|data|binarypb|css|html)$/.test(details.url)) return;
+    emit(`加载失败：${details.url.split('/').slice(-2).join('/')} (${details.error})`);
   });
 }
 
