@@ -32,6 +32,18 @@ let BIN_COUNT = 128
 // 再大就会让低频波纹的触发比画面慢半拍。
 let FFT_SIZE = 1024
 
+// ⚠️ 这三个是**手感参数**，改它们不需要动逻辑，也不需要每个壁纸单独调 ——
+// 这一层的输出（128 段）是所有壁纸共用的，WE 的音频接口就是这么设计的。
+//
+// NORMALIZE  幅度。太小=柱子几乎不动，太大=一直顶天。配合 sqrt 使用。
+// ATTACK     上升速度（0..1）。大=跟得紧但可能显得跳，小=柔和但跟不上鼓点。
+// RELEASE    下降速度（0..1）。小=余韵长、看起来顺；大=掉得快、显得抖。
+//
+// 起始值是算出来的（sqrt 归一化下 0.012 会太小），但**手感只能真机调**。
+let NORMALIZE: Float = 0.6
+let ATTACK: Float = 0.55
+let RELEASE: Float = 0.12
+
 func emit(_ dict: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: dict),
           var line = String(data: data, encoding: .utf8) else { return }
@@ -131,24 +143,81 @@ final class Spectrum {
         // 覆盖的是最高频**（人耳最不敏感、音乐里能量也最少的那段）。
         // 这个组合大概是可接受的（有用能量本来就在低频），但**没有真机验证过**。
         // 真机上如果柱子只有左边一小片在动，先怀疑这里，不是权限。
+        // ⚠️⚠️ 这一段整个重写过一次 —— 原来那版**在数学上就是错的**。
+        //
+        // 原来是 `lo = powf(half, i/128)` 纯对数铺满 1..512。真机截图（用户 2026-07-31）
+        // 显示柱子长度随索引**单调递增**、还带一段段等长的阶梯 —— 那不是音乐的形状。
+        //
+        // 算出来才明白：低索引处 `powf(512, i/128)` 增长极慢 ——
+        //   i=0..13 的 (start,end) **全是 (1,1)**，14 个箱子读同一个 FFT bin
+        //   i=20 → (2,2)   i=40 → (7,7)   i=60 → (18,19)   i=127 → (487,511)
+        // 一共 **38 / 128 个箱子在读完全相同的 bin**，它们的值必然一模一样。
+        //
+        // 而箱子宽度从 1 单调涨到 25 ⟹ 越往后平均的 bin 越多、越接近"整体音量"
+        // ⟹ 后面的柱子更长更均匀，前面一格一格 —— **正是那张截图**。
+        //
+        // ⟹ 新的分箱分三段，目标是"每个箱子至少有一个自己的 bin"+
+        //    "有用信号落在壁纸真正消费的前 76 段里"：
+        //
+        //   0..19    线性一对一（FFT bin 1..20 = 47..940 Hz，鼓/低音，每箱独占一个 bin）
+        //   20..75   对数铺到 bin 170（≈7.9 kHz）—— 人声和主奏全在这段
+        //   76..127  对数铺完 170..511（7.9..24 kHz）—— 壁纸会丢掉这段，但填对的值
+        //            比填 0 好：万一别的壁纸的消费边界不是 300，它也能拿到东西
+        //
+        // 重复箱子从 38 降到 2（算过）。
         var out = [Float](repeating: 0, count: BIN_COUNT)
-        let half = Float(FFT_SIZE / 2)
+        let half = FFT_SIZE / 2
+        // ⚠️ 这两个数是**分箱的形状参数**，不是随手取的：
+        // LINEAR_BINS 要够大，让低频每箱独占一个 bin（否则又出现重复箱子）；
+        // USEFUL_BINS = 76 是壁纸的消费边界（`Pe<=300` 反推，见上面的注释）。
+        let LINEAR_BINS = 20
+        let USEFUL_BINS = 76
+        // 8 kHz 对应的 FFT bin。@48kHz / 1024 点 ⟹ 每 bin 46.9 Hz。
+        let midTop = min(half - 1, Int(8000.0 / (48000.0 / 2.0 / Float(half))))
         for i in 0..<BIN_COUNT {
-            let lo = powf(half, Float(i) / Float(BIN_COUNT))
-            let hi = powf(half, Float(i + 1) / Float(BIN_COUNT))
-            let start = max(1, Int(lo))
-            let end = min(FFT_SIZE / 2 - 1, max(start, Int(hi)))
+            var start: Int
+            var end: Int
+            if i < LINEAR_BINS {
+                // 一对一：每个箱子独占一个 FFT bin，不可能重复。
+                start = 1 + i
+                end = start
+            } else if i < USEFUL_BINS {
+                let span = Float(USEFUL_BINS - LINEAR_BINS)
+                let base = Float(1 + LINEAR_BINS)
+                let ratio = Float(midTop) / base
+                let lo = base * powf(ratio, Float(i - LINEAR_BINS) / span)
+                let hi = base * powf(ratio, Float(i + 1 - LINEAR_BINS) / span)
+                start = max(1 + LINEAR_BINS, Int(lo))
+                end = min(half - 1, max(start, Int(hi) - 1))
+            } else {
+                let span = Float(BIN_COUNT - USEFUL_BINS)
+                let base = Float(midTop)
+                let ratio = Float(half) / base
+                let lo = base * powf(ratio, Float(i - USEFUL_BINS) / span)
+                let hi = base * powf(ratio, Float(i + 1 - USEFUL_BINS) / span)
+                start = max(midTop, Int(lo))
+                end = min(half - 1, max(start, Int(hi) - 1))
+            }
             var sum: Float = 0
             for j in start...end { sum += magnitudes[j] }
             let mean = sum / Float(end - start + 1)
-            // 归一化到 0..1 附近。这个 0.012 是把 vDSP 的幅度量纲拉到 WE 那个量级的
-            // 系数。⚠️ 它是个**待标定的数** —— 真机上如果柱子顶天或几乎不动，调它。
-            var v = mean * 0.012
+            // 归一化。⚠️ 用 sqrt 而不是线性：
+            //
+            // FFT 幅度的动态范围很大（安静段和鼓点差两个数量级），线性映射下
+            // 要么安静时全是 0、要么鼓点时全部顶天 —— 用户报的"幅度不对"就是这个。
+            // sqrt 压缩动态范围，效果接近人耳的对数感知，也是音频可视化的常规做法。
+            var v = sqrtf(mean * NORMALIZE)
             v = min(1.0, max(0.0, v))
-            // 时间平滑：起得快、落得慢。落得慢是因为纯 FFT 每帧独立，柱子会抖成噪声；
-            // 起得快是因为鼓点的攻击要跟得上，慢了就"感觉不到节拍"。
+            // 时间平滑。⚠️ **上升沿也要平滑** ——
+            //
+            // 原来是 `v > prev ? v : prev*0.82 + v*0.18`：上升时**直接跳到新值**，
+            // 只有下降平滑 ⟹ 鼓点让柱子瞬间弹到顶，那正是用户报的"不丝滑"。
+            //
+            // 现在两个方向都插值，只是上升快、下降慢（那个不对称是对的：
+            // 攻击要跟得上节拍，释放慢一点看起来才顺）。
             let prev = smoothed[i]
-            smoothed[i] = v > prev ? v : prev * 0.82 + v * 0.18
+            let alpha: Float = v > prev ? ATTACK : RELEASE
+            smoothed[i] = prev + (v - prev) * alpha
             out[i] = smoothed[i]
         }
         return out
