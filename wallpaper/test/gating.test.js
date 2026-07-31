@@ -575,7 +575,12 @@ check('有一个不依赖鼠标的逃生开关，而且告诉了用户', () => {
   // 第一版用 `/⌃⇧X[^\n]*(拆掉|骨架)/` 匹配整个 main.js —— 而那也命中了拆掉骨架层时
   // 广播的那条日志(它同样含 ⌃⇧X 和"骨架")。于是删掉启动信息里那半句,守卫**依然通过**。
   // 我是靠反向验证发现的:两个方向都验才知道它锚在了别的东西上。
-  const banner = main.slice(main.indexOf("=== GestureWall ==="));
+  // ⚠️ 锚点不能用 `=== GestureWall ===` 这个**字面串** —— 那行现在带 build 标识
+  // (`=== GestureWall ${buildStamp()} ===`) ⟹ indexOf 返回 -1，slice(-1) 只剩一个字符，
+  // 断言就会在正确代码上报红。实测踩到过。用 'GestureWall ' 定位。
+  const bannerAt = main.indexOf("=== GestureWall");
+  assert.ok(bannerAt > 0, '找不到启动横幅 —— 那几行是出事时唯一必然可见的地方');
+  const banner = main.slice(bannerAt);
   assert.match(banner.slice(0, 400), /⌃⇧X/,
     '终端启动信息里没有 ⌃⇧X —— 出事时用户无处可查(那几行是唯一必然可见的地方)');
   assert.match(dash, /⌃⇧X/, '面板没列出这个快捷键');
@@ -1749,7 +1754,10 @@ check('⌃⇧D 能开开发者工具（有些东西只有 devtools 有：网络�
     '没有 devtools 快捷键 —— 那意味着用户看不到 404 是哪个资源、异常在哪一行');
   // 和 ⌃⇧H 同一条道理:默认关且没有开关的观测手段等于不存在。
   assert.match(html, /⌃⇧D/, '面板没列出这个快捷键，用户不会知道它存在');
-  const banner = main.slice(main.indexOf('=== GestureWall ==='));
+  // ⚠️ 同上：不能锚在字面 `=== GestureWall ===`，那行带了 build 标识。
+  const bannerAt2 = main.indexOf('=== GestureWall');
+  assert.ok(bannerAt2 > 0, '找不到启动横幅');
+  const banner = main.slice(bannerAt2);
   assert.match(banner.slice(0, 400), /⌃⇧D/, '终端启动信息里没列 ⌃⇧D');
 });
 
@@ -1988,6 +1996,63 @@ check('wantsAudio 从 project.json 一路送到面板', () => {
   const ret = dash.indexOf("const node = document.getElementById('we-state')");
   assert.ok(at > 0 && at < ret,
     'wantsAudio 的赋值在 we-state 早退之后 ⟹ 那个 return 会让音频提示永远不出现');
+});
+
+
+console.log('\n  打包与 build 标识（"我跑的是哪个版本"）');
+
+// ⚠️ 打包版**没有终端** ⟹ build 标识必须能在界面里看到。
+//
+// 这是打包来回测试的前提：「我跑的是哪个版本」如果靠记，一定会出现
+// "改了没生效"的假象 —— 而那会让人去查一个已经修好的问题。
+// 用户明确要求过：「不要让我本地测成旧版本了」。
+check('build 标识同时报版本、commit、是否打包', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function buildStamp');
+  assert.ok(i > 0, '没有 buildStamp —— 无法分辨跑的是哪个版本');
+  const fn = src.slice(i, i + 700);
+  assert.match(fn, /getVersion/, 'build 标识里没有版本号');
+  assert.match(fn, /gwCommit|GW_COMMIT/, 'build 标识里没有 commit —— 版本号不变时分辨不出来');
+  assert.match(fn, /isPackaged/,
+    'build 标识没说是否打包 —— 而那决定权限能不能拿到（npm start 拿不到）');
+});
+
+check('build 标识送到面板（打包版没有终端）', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /build: buildStamp\(\)/, 'weStatus 载荷里没有 build');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.ok(html.includes('id="build-stamp"'),
+    '缺 #build-stamp 容器 ⟹ 打包版里根本看不到版本');
+  assert.match(codeOnly(dash), /build-stamp/, '面板没渲染 build 标识');
+});
+
+// ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
+// 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
+// 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。
+check('asar 关掉（否则 MediaPipe 的 wasm 读不出来）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  assert.strictEqual(pkg.build.asar, false,
+    'asar 开着 ⟹ MediaPipe 的 locateFile 用相对路径读不到 wasm/tflite，'
+    + '症状是摄像头不启动且什么都不说');
+});
+
+check('两个 Swift helper 都进 extraResources（不然打包版拿不到它们）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const froms = (pkg.build.extraResources || []).map((r) => (typeof r === 'string' ? r : r.from));
+  for (const helper of ['GestureWallMouse.swift', 'GestureWallAudio.swift']) {
+    assert.ok(froms.some((f) => f && f.includes(helper)),
+      `${helper} 不在 extraResources ⟹ 打包版里没有它，而那两条链正是只能打包版验的`);
+  }
+});
+
+// 权限声明缺了会**静默拿不到授权**，而症状和"代码坏了"一样。
+check('两个权限声明都在（缺了会静默拿不到授权）', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const info = (pkg.build.mac && pkg.build.mac.extendInfo) || {};
+  assert.ok(info.NSScreenCaptureUsageDescription,
+    '缺屏幕录制声明 ⟹ 音频采集静默失败（macOS 不给授权对话框）');
+  assert.ok(info.NSCameraUsageDescription, '缺摄像头声明 ⟹ 手势录制拿不到摄像头');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -8,7 +8,7 @@
     "start": "bash wallpaper/scripts/check-tree.sh; electron .",
     "web": "node server.js",
     "check": "node --check electron/main.js && node --check public/pose.js && node --check public/motion.js && node --check public/tracking.js && for f in wallpaper/src/*.js; do node --check $f || exit 1; done",
-    "dist:mac": "electron-builder --mac dmg",
+    "dist:mac": "bash wallpaper/scripts/build-mac.sh",
     "test": "node wallpaper/test/run.js",
     "vendor": "bash wallpaper/scripts/fetch-vendor.sh",
     "postinstall": "bash wallpaper/scripts/fetch-vendor.sh",
@@ -20,7 +20,7 @@
   "build": {
     "appId": "com.starlightglimeer.aircursor",
     "productName": "GestureWall",
-    "asar": true,
+    "asar": false,
     "files": [
       "wallpaper/**/*",
       "public/pose.js",
@@ -58,7 +58,7 @@
         "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
         "NSSpeechRecognitionUsageDescription": "AirCursor uses speech recognition for optional local voice commands.",
         "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request.",
-      "NSScreenCaptureUsageDescription": "GestureWall captures system audio to drive the audio-reactive wallpaper."
+        "NSScreenCaptureUsageDescription": "GestureWall captures system audio to drive the audio-reactive wallpaper."
       },
       "target": [
         "dmg"

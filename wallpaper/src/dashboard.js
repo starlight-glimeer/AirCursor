@@ -1018,6 +1018,9 @@ async function renderWEStatus() {
   // ⚠️ 先记下"这个壁纸要不要音频"，再重渲染音源区 —— 那句提示依赖它。
   // 放在 `if (!node) return` **之前**：那个 return 是为了 we-state 容器不存在时
   // 早退，但音源提示和它没关系，卡在那里会让提示永远不出现。
+  // ⚠️ build 标识：打包版没有终端，这里是唯一能看到"我跑的是哪个版本"的地方。
+  const buildNode = document.getElementById('build-stamp');
+  if (buildNode && status.build) buildNode.textContent = status.build;
   const wasWanting = weWantsAudio;
   weWantsAudio = !!status.wantsAudio;
   if (wasWanting !== weWantsAudio) renderAudioSource();

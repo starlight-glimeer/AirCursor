@@ -660,6 +660,24 @@ function cycleStrategy() {
 // 后面的初始化全停（包括绑定开关），而异常本身进不了终端也进不了任何界面。
 //
 // 骨架层更糟 —— 它没有开发者工具、不在视线里，那是另一个模块注释里明说过的坑。
+// build 标识：版本 + commit + 是否打包。
+//
+// ⚠️ commit 从环境变量读，因为**打包产物里没有 .git** —— 打包时由脚本注入。
+// 读不到就显示 'dev'，而那本身就是有用的信息（说明不是正式包）。
+function buildStamp() {
+  const version = app.getVersion();
+  // ⚠️ 打包产物里没有 .git，所以 commit 由 build-mac.sh 在打包时注入进
+  // package.json 的 extraMetadata ⟹ 这里从 app 的 package.json 读。
+  // 读不到就是 'dev'（npm start 直接跑），那本身就是有用的信息。
+  let commit = process.env.GW_COMMIT || 'dev';
+  try {
+    // eslint-disable-next-line global-require
+    const meta = require(path.join(app.getAppPath(), 'package.json'));
+    if (meta && meta.gwCommit) commit = meta.gwCommit;
+  } catch { /* npm start 下读不到也正常 */ }
+  return `v${version} ${commit} ${app.isPackaged ? '打包版' : 'npm start'}`;
+}
+
 function watchRendererErrors(win, label) {
   if (!win || win.isDestroyed()) return;
   // ⚠️ 重复折叠。同一条消息刷几千行会把真问题埋掉,而日志是我们唯一的观测通道。
@@ -1685,6 +1703,10 @@ function sendWEProperties() {
 
 function weStatus(error) {
   return {
+    // ⚠️ build 标识跟着状态一起送 —— 打包版没有终端，面板是唯一能看到它的地方。
+    // 而"我跑的是哪个版本"是打包来回测试里最容易搞错、后果最大的一件事：
+    // 测了旧版本会得出"改了没生效"的结论，然后去查一个已经修好的问题。
+    build: buildStamp(),
     // 菜单栏覆盖的核对结果 —— 那条缝和壁纸装载是两件事，但用户看到的是同一块屏幕。
     menuBar: menuBarState,
     dir: weProject ? weProject.dir : null,
@@ -2662,7 +2684,15 @@ app.whenReady().then(() => {
     broadcast('config', config);
   });
 
-  console.log('\n=== GestureWall ===');
+  // ⚠️ 打包版**没有终端** —— 所以 build 标识必须能在**界面**里看到，
+  // 而不是只打在 console 里。这一步是打包来回测试的前提：
+  // 「我跑的是哪个版本」如果靠记，一定会出现"改了没生效"的假象。
+  //
+  // 版本号 + git commit + 打包与否，三样都要：
+  //   版本号   —— dmg 文件名里也有，用来核对装的是哪个包
+  //   commit   —— 唯一确定代码，版本号不变时也能分辨
+  //   打包与否 —— 决定权限能不能拿到（npm start 拿不到辅助功能/屏幕录制）
+  console.log(`\n=== GestureWall ${buildStamp()} ===`);
   console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧H 调试信息');
   console.log('  ⌃⇧D 开发者工具    ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
