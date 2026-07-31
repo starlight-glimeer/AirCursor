@@ -1904,4 +1904,50 @@ check('bind 对缺失元素跳过而不是抛（一个删掉的开关不该弄�
 // 而重复守卫的代价是改那段代码时两处都要维护、漏一处就出现"一条红一条绿"。
 // ⟹ 加守卫前先 grep 一下同名概念在不在（这次是 `onErrorOccurred`）。
 
+
+console.log('\n  脚本退出码（&& 链里静默阻断）');
+
+// ⚠️ 纯报告脚本必须显式 exit 0。
+//
+// 实测烧掉一轮：`fingerprint.sh` 末尾是 `[ "$dirty" -gt 0 ] && echo "有未提交改动"`。
+// 干净工作区（dirty=0）时那个条件为假 ⟹ **整个脚本以退出码 1 结束** ⟹
+// `npm run sync && npm start` 里的 && **阻断了 npm start**。
+//
+// 症状极度误导：所有输出都正常（vendor 就绪、指纹、上下文全打了），然后**什么都没发生**
+// —— 看起来像 Electron 起不来，而日志里一个错都没有。
+// 用户报「npm start 跑了但没反应」，我们只能靠读 package.json 的 && 链才发现。
+//
+// ⚠️ 这和我记忆里那条「退出码掩盖」是同一族：`|| echo` 让失败变成 exit 0，
+// 而这里是反的 —— 一句无害的条件判断让成功变成 exit 1。**两个方向都要防。**
+check('纯报告脚本显式 exit 0（否则 && 链会被静默阻断）', () => {
+  const dir = path.join(__dirname, '..', 'scripts');
+  const REPORTERS = ['fingerprint.sh', 'whatswrong.sh', 'diag-packaged.sh', 'restore-gestures.sh'];
+  for (const name of REPORTERS) {
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) continue;
+    const lines = fs.readFileSync(file, 'utf8').split('\n')
+      .filter((l) => l.trim() && !l.trim().startsWith('#'));
+    assert.strictEqual(lines[lines.length - 1].trim(), 'exit 0',
+      `${name} 最后一句不是 exit 0 —— 末尾命令的真假会变成退出码，`
+      + '而它一旦非 0 就会静默阻断 `xxx && npm start` 这类链');
+  }
+});
+
+// restore-gestures.sh 是恢复手势的救命脚本，它的失败必须能被看见。
+check('restore-gestures.sh 保留「找不到 tag」的失败路径', () => {
+  const file = path.join(__dirname, '..', 'scripts', 'restore-gestures.sh');
+  if (!fs.existsSync(file)) return;
+  const src = fs.readFileSync(file, 'utf8');
+  // ⚠️ 用 `lastIndexOf('exit 0')` 是错的 —— 末尾那个 exit 0 永远在最后，
+  // 所以中间插一个 exit 0 也检测不出来。第一版就这么写的，反向验证时没逮到。
+  // ⟹ 要验的是「exit 1 之前没有任何 exit 0」。
+  const failAt = src.indexOf('exit 1');
+  assert.ok(failAt > 0, '「找不到 tag」的 exit 1 不见了 —— 那会让失败报成成功');
+  const before = src.slice(0, failAt).split('\n')
+    .filter((l) => !l.trim().startsWith('#'));
+  assert.ok(!before.some((l) => /\bexit 0\b/.test(l)),
+    'exit 1 之前出现了 exit 0 ⟹ tag 找不到也会报成功，'
+    + '而这是恢复手势的救命脚本，用户会以为手势回来了');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

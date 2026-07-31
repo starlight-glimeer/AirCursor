@@ -64,4 +64,16 @@ echo "  HEAD:   $(git rev-parse --short HEAD 2>/dev/null)"
 echo "  分支:   $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 dirty=$(git status --porcelain -- wallpaper/src public 2>/dev/null | wc -l | tr -d ' ')
 echo "  未提交: $dirty 个(在 wallpaper/src 或 public)"
-[ "$dirty" -gt 0 ] && echo "  ⚠️ 有未提交改动 ⟹ 指纹反映的是磁盘,不是 HEAD"
+# ⚠️ 必须用 if，不能用 `[ ] && echo`。
+#
+# 实测踩到：干净工作区（dirty=0）时 `[ 0 -gt 0 ]` 为假 ⟹ **整个脚本以退出码 1 结束**
+# ⟹ `npm run sync && npm start` 里的 && 阻断了 npm start。
+#
+# 而症状极度误导：所有输出都正常（vendor 就绪、指纹、上下文全打了），然后**什么都没发生**
+# —— 看起来像 Electron 起不来，实际是这一行的退出码。
+# 用户报「npm start 跑了但没反应」，而日志里一个错都没有。
+if [ "$dirty" -gt 0 ]; then
+  echo "  ⚠️ 有未提交改动 ⟹ 指纹反映的是磁盘,不是 HEAD"
+fi
+# 显式成功退出：这个脚本是纯报告，不该因为最后一条判断的真假决定退出码。
+exit 0

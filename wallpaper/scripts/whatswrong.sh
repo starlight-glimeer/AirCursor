@@ -35,3 +35,11 @@ echo
 echo "=== ④ 有没有旧的 app 在抢 ==="
 ls -d /Applications/*estureWall*.app /Applications/*irCursor*.app 2>/dev/null || echo "  (没有)"
 ps aux | grep -iE 'gesturewall|aircursor' | grep -v grep | awk '{print "  跑着:",$11}' | head -3
+
+# ⚠️ 显式成功退出。这是**纯报告脚本**，退出码不该反映最后一条命令的真假 ——
+# `grep` 没匹配到、`[ ] && echo` 条件为假，都会让它以非 0 结束。
+#
+# 实测代价：fingerprint.sh 因为末尾一句 `[ "$dirty" -gt 0 ] && echo …`
+# 在干净工作区下返回 1 ⟹ `npm run sync && npm start` 里的 && **阻断了 npm start**。
+# 症状是所有输出都正常、然后什么都没发生 —— 看起来像 Electron 起不来。
+exit 0

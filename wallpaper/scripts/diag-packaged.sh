@@ -25,3 +25,11 @@ ls -dla ~/workspace/AirCursor/dist/mac-arm64/*.app 2>/dev/null || echo "  (dist 
 echo
 echo "=== ⑤ 仓库在哪个 commit ==="
 cd ~/workspace/AirCursor && git log --oneline -1 && echo "  版本: $(node -e "console.log(require('./package.json').version)")"
+
+# ⚠️ 显式成功退出。这是**纯报告脚本**，退出码不该反映最后一条命令的真假 ——
+# `grep` 没匹配到、`[ ] && echo` 条件为假，都会让它以非 0 结束。
+#
+# 实测代价：fingerprint.sh 因为末尾一句 `[ "$dirty" -gt 0 ] && echo …`
+# 在干净工作区下返回 1 ⟹ `npm run sync && npm start` 里的 && **阻断了 npm start**。
+# 症状是所有输出都正常、然后什么都没发生 —— 看起来像 Electron 起不来。
+exit 0
