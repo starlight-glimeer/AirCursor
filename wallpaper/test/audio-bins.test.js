@@ -216,13 +216,50 @@ check('这一层没有从单个壁纸抄来的魔数', () => {
   }
 });
 
-check('归一化用 sqrt 压缩动态范围（"幅度不对"那条）', () => {
+// ⚠️ 这条断言**翻过来了** —— 原来要求 sqrt，而实测证明 sqrt 是问题本身。
+//
+// 用户读到的实际频谱（sqrt + NORMALIZE=0.002）：
+//   [0]0.433 [10]0.183 [20]0.28 [40]0.301 [60]0.279
+// 反推原始幅度 93.7 / 16.7 / 39.2 / 45.3 / 38.9 ⟹ **原始动态 5.6 倍**，
+// 而 sqrt 之后只剩 **2.4 倍**。
+//
+// ⟹ 用户报「柱子之间的差距不大，音乐的动感不强」就是这个。
+// sqrt(x) 的性质：x 差 4 倍 ⟹ sqrt 只差 2 倍。而音频可视化要的正是对比。
+//
+// 也算过 dB（20*log10）—— 更糟，动态压到 1.3 倍。**方向搞反了**：
+// 这一层要保留动态，不是压缩它。溢出交给壁纸（PWCircle 自己 `Math.min(w1,1.2)`）。
+check('归一化是线性的（sqrt/dB 会把音乐的动态压掉）', () => {
   const swift = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
   const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(code, /sqrtf\(mean \* NORMALIZE\)/,
-    '线性归一化 ⟹ 安静时全是 0、鼓点时全部顶天（用户报的"幅度不对"）；'
-    + 'sqrt 接近人耳的对数感知，是音频可视化的常规做法');
+  assert.match(code, /var v = mean \* NORMALIZE/,
+    '归一化不是线性的 —— sqrt 把实测的 5.6 倍动态压成 2.4 倍，'
+    + '用户报"柱子差距不大、动感不强"');
+  assert.ok(!/sqrtf\(/.test(code),
+    'code 里还有 sqrtf —— 那会压掉音乐的动态对比');
+  assert.ok(!/log10/.test(code),
+    'code 里有 log10（dB）—— 算过：dB 把动态压到 1.3 倍，比 sqrt 更糟');
+});
+
+// ⚠️ 一条数值断言：拿实测数据跑一遍，确认动态没被压。
+check('（数值）实测数据经过这层之后动态不小于 4 倍', () => {
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
+  const m = swift.match(/let NORMALIZE: Float = ([\d.]+)/);
+  assert.ok(m, '找不到 NORMALIZE');
+  const N = Number(m[1]);
+  // 用户实测反推出的原始 FFT 幅度（NORMALIZE=0.002、sqrt 版时读到的）
+  const rawFft = [93.7, 81.6, 16.7, 39.2, 45.3, 38.9];
+  const out = rawFft.map((x) => Math.min(2.0, x * N));
+  const dynamic = Math.max(...out) / Math.min(...out);
+  assert.ok(dynamic >= 4,
+    `动态只有 ${dynamic.toFixed(1)} 倍 —— 原始信号是 5.6 倍，`
+    + '压到 4 倍以下画面上就"差距不大"了（用户实测过 2.4 倍的效果）');
+  // 同时不能让常态就顶天
+  const maxOut = Math.max(...out);
+  assert.ok(maxOut <= 1.0,
+    `常态最大值 ${maxOut.toFixed(2)} —— 超过 1.0 说明 NORMALIZE 太大，`
+    + '日常音乐就削顶了（削顶会让一片柱子长度相同 ⟹ 那正是"螺旋感"）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

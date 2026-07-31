@@ -1468,24 +1468,15 @@ function workshopCard(item, onPick) {
   tp.textContent = parts.join(' · ');
   card.appendChild(tp);
 
-  // ⚠️ 本地壁纸多一个「打开目录」——
-  // 用户要的：「我的壁纸这里要能够点开……我要能进到那个目录，看到我的壁纸文件」。
+  // ⚠️ 这里原来给每张卡片加了「📁 打开目录」——**去掉了**。
   //
-  // 只在 item.dir 存在时加（工坊卡片是远程的，没有本地目录）。
-  // ⚠️ 用 stopPropagation：卡片本身的 onclick 是"装载这个壁纸"，
-  // 点「打开目录」不该顺手把它装上。
-  if (item.dir) {
-    const open = document.createElement('button');
-    open.type = 'button';
-    open.className = 'ws-open';
-    open.textContent = '📁';
-    open.title = `在 Finder 里打开\n${item.dir}`;
-    open.onclick = (event) => {
-      event.stopPropagation();
-      window.gw.revealWallpaperDir(item.dir);
-    };
-    card.appendChild(open);
-  }
+  // 用户报（2026-07-31）：「不是每个壁纸都要显示一下目录的。就保留
+  // 我的壁纸目录：/Users/moon/Documents/GestureWall/Wallpapers 这个就行」。
+  //
+  // 他说得对：**一个入口就够**。壁纸都在同一个目录树下，进去了就能看到全部 ——
+  // 每张卡片一个按钮是把"一次操作"重复了 N 遍，而 N 张卡片上的 N 个按钮
+  // 只会让界面吵。
+  // ⟹ 打开目录的入口留在「存储目录」那块（每个根目录一个）。
 
   card.onclick = () => onPick(item);
   return card;
@@ -1756,43 +1747,7 @@ document.getElementById('mine-add-dir').onclick = async () => {
 };
 
 // 已下载的列表 —— 下过的东西要能重新装载，而不是每次重填 ID。
-async function renderLocal() {
-  const host = document.getElementById('ws-local');
-  const result = await window.gw.workshopLocal();
-  if (!result.ok || !result.items.length) {
-    host.innerHTML = '<span class="hint">还没下过东西。上面贴个链接试试。</span>';
-    return;
-  }
-  host.innerHTML = '';
-  for (const item of result.items) {
-    const card = document.createElement('div');
-    card.className = 'ws-item';
-    card.title = item.dir;
-    const img = document.createElement('img');
-    // 本地文件走 file://（自定义 protocol 只服务当前装载的那个壁纸）
-    if (item.preview) img.src = `file://${encodeURI(item.preview)}`;
-    img.onerror = () => { img.style.display = 'none'; };
-    card.appendChild(img);
-    const nm = document.createElement('div');
-    nm.className = 'nm';
-    nm.textContent = item.title || item.id;
-    card.appendChild(nm);
-    const tp = document.createElement('div');
-    tp.className = item.supported ? 'tp' : 'tp no';
-    tp.textContent = item.supported ? item.typeLabel
-      : `${item.typeLabel} · 暂不支持`;
-    card.appendChild(tp);
-    card.onclick = async () => {
-      const out = await window.gw.workshopLoadLocal(item.dir);
-      if (!out.ok) wsState.innerHTML = `<span class="warn">${out.error}</span>`;
-      renderWEStatus();
-    };
-    host.appendChild(card);
-  }
-}
 
-document.getElementById('ws-refresh-local').onclick = renderLocal;
-renderLocal();
 
 async function startDownload(id) {
   wsState.textContent = '开始…';
@@ -1800,7 +1755,6 @@ async function startDownload(id) {
   if (result.ok) {
     wsState.innerHTML = `✅ 装载成功\n${result.dir}`;
     renderWEStatus();
-    renderLocal();
     return;
   }
   let html = `<span class="warn">${result.error}</span>`;

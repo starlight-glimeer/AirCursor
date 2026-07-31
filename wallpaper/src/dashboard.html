@@ -37,18 +37,6 @@
   #launch h1 b { font-weight: 600; }
   /* build 标识：小、灰，但必须**清晰可读** —— 它是来回测试时核对版本的唯一依据，
      看不清等于没有。所以不用 .hint 的默认色，单独定一个。 */
-  /* 卡片右上角的「打开目录」。⚠️ 绝对定位在卡片内，不占布局 —— 加它不该让网格重排。 */
-  .ws-item { position: relative; }
-  .ws-open {
-    position: absolute; top: 4px; right: 4px;
-    padding: 2px 5px; font-size: 12px; line-height: 1;
-    background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.2);
-    border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity .12s;
-  }
-  /* 悬停才显示 —— 一屏几十张卡片，常驻会很吵 */
-  .ws-item:hover .ws-open { opacity: 1; }
-  .ws-open:hover { background: rgba(0,0,0,.8); }
-
   #build-stamp {
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -370,20 +358,14 @@
          创意工坊 = **找**壁纸（浏览、搜索、下载）
          我的壁纸 = **用**壁纸（有哪些、装哪个、怎么显示、参数）
        而原来「创意工坊」塞了 7 块、「我的壁纸」只有 1 块。 -->
-<h3>已下载的壁纸</h3>
-    <div class="card">
-      <div class="bar-row">
-        <button class="act" id="ws-refresh-local" type="button">刷新列表</button>
-      </div>
-      <div id="ws-local" class="ws-grid"><span class="hint">还没下过东西。</span></div>
-      <p class="hint">
-        ⚠️ 需要 <b>steamcmd</b>（Valve 官方命令行工具）：<code>brew install --cask steamcmd</code>
-        <br>⚠️ Guard 码几分钟就过期 —— 报"需要验证码"时再填，然后立刻点下载。
-        <br>密码存在本机 config.json 里（明文）。<b>导诊断报告时会自动脱敏。</b>
-      </p>
-    </div>
-
-    <h3>壁纸层</h3>
+  <!-- ⚠️ 这里原来有「已下载的壁纸」（#ws-local）—— **和上面的「我的壁纸」重复了**。
+       用户报（2026-07-31）：「我的壁纸这里，怎么又一个我的壁纸，有一个已经下载的壁纸，
+       这不是重复了吗」。
+       两者调的是同一个 workshopLocal()、显示同一批数据，只是 #ws-local 是旧版
+      （下载后的确认列表，没有筛选/排序/打开目录）。删旧留新。
+       ⟹ 那是我把四块从「创意工坊」搬过来时造成的重复：搬之前它们在两个页签里，
+       各自看起来都合理。**搬动之后要重新审有没有重复**，我漏了这一步。 -->
+<h3>壁纸层</h3>
     <div class="card">
       <div id="we-strategy" class="we-src"></div>
       <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>

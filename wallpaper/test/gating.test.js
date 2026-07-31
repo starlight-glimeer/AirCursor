@@ -2565,15 +2565,15 @@ check('每个扫描目录和每个本地壁纸都能在 Finder 打开', () => {
     + '以及"一个都没找到"时（那是最需要它的时刻）');
 });
 
-// ⚠️ 卡片上的按钮不能顺手把壁纸装上。
-check('卡片的「打开目录」不触发装载（stopPropagation）', () => {
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
-  const i = dash.indexOf("open.className = 'ws-open'");
-  assert.ok(i > 0, '卡片上没有打开目录的按钮');
-  const block = dash.slice(i, i + 500);
-  assert.match(block, /stopPropagation/,
-    '没有 stopPropagation ⟹ 点「打开目录」会连带触发卡片的 onclick（装载壁纸）');
-});
+// ⚠️ 这里原来有一条「卡片的打开目录按钮必须 stopPropagation」——**删了**。
+//
+// 用户 2026-07-31 明确否掉了那个功能：「不是每个壁纸都要显示一下目录的。
+// 就保留 我的壁纸目录：… 这个就行」。
+// ⟹ 一个入口就够；N 张卡片上的 N 个按钮只是把一次操作重复 N 遍。
+//
+// 守卫也要跟着删 —— **留着它就是在守一个已经被否掉的设计**，
+// 而那会让下一次"照守卫做"变成走回头路。
+
 
 
 console.log('\n  页签职责 + 自动刷新');
@@ -2593,7 +2593,10 @@ check('「用壁纸」的四块在「我的壁纸」页签，不在创意工坊'
   const sectionOf = (start) => html.slice(start, html.indexOf('</section>', start));
   const we = sectionOf(weAt);
   const mine = sectionOf(mineAt);
-  for (const title of ['已下载的壁纸', '壁纸层', '音源', '壁纸自己的参数']) {
+  // ⚠️ 原来这里有「已下载的壁纸」—— 那块**和「我的壁纸」的列表重复**（同一个
+  // workshopLocal()、同一批数据），用户报了之后删掉了旧的那份。
+  // ⟹ 搬动区块之后要重新审有没有重复：搬之前它们在两个页签里，各自看起来都合理。
+  for (const title of ['壁纸层', '音源', '壁纸自己的参数']) {
     assert.ok(mine.includes(`<h3>${title}</h3>`),
       `「${title}」不在「我的壁纸」页签 —— 那是"用壁纸"的功能`);
     assert.ok(!we.includes(`<h3>${title}</h3>`),
@@ -2638,6 +2641,42 @@ check('目录不用轮询刷新（扫描要遍历磁盘）', () => {
       '用 setInterval 轮询扫目录 ⟹ 一直占着 IO（Steam 那个目录 639MB）。'
       + '该用事件驱动：切页签 + 焦点回来');
   }
+});
+
+
+// ⚠️ 壁纸列表只能有一份。
+//
+// 用户报（2026-07-31）：「我的壁纸这里，怎么又一个我的壁纸，有一个已经下载的壁纸，
+// 这不是重复了吗」。
+//
+// 根因是我把四块从「创意工坊」搬到「我的壁纸」时**没审重复** ——
+// `#ws-local`（旧的"已下载"列表）和 `#mine-grid`（新的"我的壁纸"）
+// 调的是同一个 `workshopLocal()`、显示同一批数据。
+// 搬之前它们在两个页签里，各自看起来都合理。**搬动之后要重新审。**
+check('壁纸列表只有一份（搬动区块后要审重复）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // 旧的那份彻底没了
+  assert.ok(!codeOnly(dash).includes('renderLocal'),
+    'renderLocal 还在 —— 它和 renderMine 显示同一批数据（都调 workshopLocal）');
+  assert.ok(!/id="ws-local"/.test(html),
+    '#ws-local 容器还在 —— 那是重复的壁纸列表');
+  // 调 workshopLocal 的地方只能有一个渲染入口
+  const renderers = (codeOnly(dash).match(/window\.gw\.workshopLocal\(\)/g) || []).length;
+  assert.ok(renderers <= 1,
+    `有 ${renderers} 处调 workshopLocal() ⟹ 大概又出现了第二份列表`);
+});
+
+// ⚠️ 打开目录只有一个入口层级：存储目录那块，不在每张卡片上。
+check('打开目录的入口在「存储目录」，不在每张卡片上', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /revealWallpaperDir/, '没有打开目录的入口了');
+  // 卡片构造函数里不该有
+  const i = dash.indexOf('function workshopCard');
+  const card = dash.slice(i, dash.indexOf('\n}', i));
+  assert.ok(!/revealWallpaperDir/.test(card),
+    '卡片上又加了「打开目录」—— 用户明确否掉过：「不是每个壁纸都要显示一下目录的」。'
+    + '一个入口就够，N 张卡片 N 个按钮只是把一次操作重复 N 遍');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
