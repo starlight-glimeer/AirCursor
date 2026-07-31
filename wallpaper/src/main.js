@@ -396,7 +396,21 @@ const defaultConfig = {
     fps: 30,
     // 音源。ScreenCaptureKit 抓系统音频，要屏幕录制权限。
     // 'off' 时壁纸会走它自己的空闲动画（样本有 idleWaveEnabled）。
-    audioSource: 'off',
+    // 默认抓系统音频。
+    //
+    // 用户定的：「音源应该一开始就默认需要的，你这个音源面板不需要，应该是我们
+    // 默认就要音源，壁纸软件都是这样的」+「默认需要权限吧，一次授权，
+    // 后面就再也不需要了」。
+    //
+    // ⟹ 他说得对，而且这里**不会造成莫名其妙的授权框** —— 采集只在
+    // `weProject.wantsAudio` 为真时才启动（见 syncAudioSource），也就是只有装载了
+    // `supportsaudioprocessing: true` 的壁纸才会碰 ScreenCaptureKit。
+    // video / image / 不要音频的 web 壁纸压根不触发。
+    //
+    // ⚠️ 一次授权就永久有效（macOS 按 App 记），所以"默认要"的代价是一次性的，
+    // 而"默认关"的代价是每个新用户都会经历一遍"这个壁纸怎么不动" ——
+    // 而那正是本项目查了六轮的那个症状。
+    audioSource: 'system',
     // 把系统原生壁纸设成当前壁纸的静态帧。⚠️ 这不是装饰：我们的窗口在壁纸层之上，
     // 切 Space 时有一帧延迟会露出下面那层。设成一样的图就看不出来了。
     // 退出时会还原用户原来的壁纸。
@@ -499,6 +513,25 @@ function migrateConfig(cfg) {
   }
   // 老配置里没有这两个键（mergeConfig 会补上默认值，但如果用户存过 false 就不动）
   if (we.mouseForward === undefined) { we.mouseForward = true; changed = true; }
+
+  // ⚠️ 音源默认值从 'off' 改成了 'system'，而**改默认值对存量配置无效** ——
+  // `mergeConfig` 保留已存的值，所以老用户会永远停在 'off'。
+  //
+  // 这个坑我在本项目栽过一次（改了 `wallStrategy` 默认值但没迁移 ⟹ 三个症状
+  // 同时出现：菜单栏没覆盖、点击没反应、原生壁纸闪 —— 全是同一个根因）。
+  //
+  // ⚠️ 只迁移 'off'，不动别的：
+  //   'off'    —— 那是**旧的默认值**，绝大多数是"从没选过"而不是"主动关掉"
+  //   'netease' / 'synth' —— 用户主动选的，不许覆盖
+  //
+  // 代价：极少数真的主动关掉音源的人会被重新打开一次。而收益是所有从没选过的人
+  // 不用再经历"这个壁纸怎么不动"——那正是本项目查了六轮的症状。
+  if (we.audioSource === 'off') {
+    we.audioSource = 'system';
+    changed = true;
+    console.log('[config] 迁移：音源 off → system'
+      + '（默认值改了；采集只在壁纸真的要音频时才启动）');
+  }
 
   cfg.we = we;
   return changed;
@@ -2708,6 +2741,7 @@ function syncAudioSource() {
     return;
   }
   stopSynthAudio();
+
   const want = weProject && weProject.wantsAudio && config.we.audioSource !== 'off';
   if (!want) {
     if (audioTap) { audioTap.stop(); audioTap = null; }

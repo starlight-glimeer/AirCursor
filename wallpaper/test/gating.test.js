@@ -2308,10 +2308,16 @@ check('音源合法值只有一份（加一种不能只改半边）', () => {
     'audio-source.js 里没有 SOURCES 单一来源');
   // 面板的按钮必须覆盖全部合法值（少一个 = 那个音源用户点不到）
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
-  for (const id of A.SOURCES) {
+  // ⚠️ 'ask' 是**内部默认值**，不是用户可点的按钮 —— 它的语义是"还没问过"，
+  // 而问的方式是壁纸装载时的那句邀请，不是让用户在面板里选"询问"。
+  // ⟹ 它必须合法（默认值），但不该出现在按钮列表里。
+  for (const id of A.SOURCES.filter((x) => x !== 'ask')) {
     assert.ok(dash.includes(`id: '${id}'`),
       `面板没有 ${id} 这个音源按钮 ⟹ 它合法但用户点不到`);
   }
+  assert.ok(!dash.includes("{ id: 'ask'"),
+    "'ask' 出现在音源按钮列表里 —— 那是内部默认值，"
+    + '让用户去选"询问"没有意义');
 });
 
 // ⚠️ 合成音源的意义：把"壁纸能不能画"和"我们能不能拿到音频"拆开。
@@ -2332,6 +2338,55 @@ check('有免授权的合成音源（否则圆环不出现和授权问题分不�
   assert.match(code, /i >= 76/,
     '合成频谱没在代码里体现"壁纸只消费前 76 段"—— 而那正是它该用来验证的约束'
     + '（`Pe<=300` 没有 else ⟹ 512 空间的 301..511 被壁纸自己丢掉，反推到 128 段是 76）');
+});
+
+
+console.log('\n  音源默认开（用户定的产品行为）');
+
+// 用户定的：「音源应该一开始就默认需要的，你这个音源面板不需要」
+// +「默认需要权限吧，一次授权，后面就再也不需要了」。
+//
+// ⚠️ 而这不会造成莫名其妙的授权框：采集只在 `weProject.wantsAudio` 为真时启动，
+// 也就是只有装载了 `supportsaudioprocessing: true` 的壁纸才碰 ScreenCaptureKit。
+check('音源默认 system（不是 off）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('const defaultConfig');
+  const j = src.indexOf('audioSource:', i);
+  assert.ok(j > 0, '找不到默认音源');
+  const line = src.slice(j, src.indexOf('\n', j));
+  assert.match(line, /'system'/,
+    `默认音源是 ${line.trim()} —— 用户明确要求默认开，`
+    + '而"默认关"的代价是每个新用户都经历一遍"这个壁纸怎么不动"'
+    + '（本项目为那个症状查了六轮）');
+});
+
+// ⚠️ 采集必须仍然只在壁纸要音频时启动 —— 否则默认开就变成"一启动就弹授权框"。
+check('采集只在壁纸真的要音频时启动（否则默认开会乱弹授权框）', () => {
+  const src = codeOnly(mainSrc);
+  // ⚠️ 锚在 `const want =` 那一行上，不是在整个函数里搜字符串 ——
+  // `weProject.wantsAudio` 在合成音那条分支里也出现，
+  // 所以搜整段会匹配到它 ⟹ 把真采集的检查删掉，断言照样绿。实测过这个假阴性。
+  const i = src.indexOf('function syncAudioSource');
+  const fn = src.slice(i, i + 900);
+  const wantLine = fn.match(/const want = [^;]+;/);
+  assert.ok(wantLine, '找不到 `const want =` —— 真采集的启动条件变了写法');
+  assert.match(wantLine[0], /wantsAudio/,
+    '真采集的启动条件没检查 wantsAudio ⟹ 默认开之后装载任何壁纸都会弹'
+    + '屏幕录制授权框，而 video/image 壁纸压根不需要音频');
+});
+
+// ⚠️ 改默认值对存量配置无效 —— 这个坑本项目栽过（wallStrategy 那次）。
+check('存量 off 迁移成 system（改默认值不影响已存配置）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function migrateConfig');
+  const fn = src.slice(i, src.indexOf('\n}', i));
+  assert.match(fn, /audioSource === 'off'/,
+    '没迁移存量的 off ⟹ 老用户永远停在关闭状态，而改默认值对他们无效'
+    + '（mergeConfig 保留已存的值）—— 这个坑 wallStrategy 那次栽过');
+  // 只能迁 off，不许动用户主动选的
+  assert.ok(!/audioSource === 'netease'/.test(fn) && !/audioSource === 'synth'/.test(fn),
+    '迁移动了用户主动选的音源 —— off 是旧默认值（"从没选过"），'
+    + 'netease/synth 是主动选择，不许覆盖');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
