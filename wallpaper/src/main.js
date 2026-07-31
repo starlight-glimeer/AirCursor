@@ -1334,7 +1334,23 @@ function registerWEProtocol() {
     // 解析逻辑在 we-host.js 里（纯函数、可测）：越界、空路径、百分号编码这三件
     // 都会错，而每一件的症状都是白屏 —— 看起来像"这个壁纸不兼容"。
     const target = WE.resolveAsset(url.pathname, weProject.dir, weProject.file);
-    if (!target) return new Response('forbidden', { status: 403 });
+    if (!target) {
+      // ⚠️ 必须报出**是哪个路径**被拒了。
+      //
+      // 实测烧的一轮：用户的壁纸只显示花瓣和时钟、背景图不出来，日志里只有
+      // 一句 `Not allowed to load local resource: file:///[object Object]` ——
+      // 而那是渲染进程说的，它不知道我们这边拒了什么。403 静默返回 ⟹
+      // 「背景没加载」和「路径越界」和「文件真不在」三种分不清。
+      console.warn(`[we] 资源被拒：${url.pathname}（壁纸目录 ${weProject.dir}）`);
+      broadcast('helper-log', { source: 'we', message: `资源路径被拒：${url.pathname}` });
+      return new Response('forbidden', { status: 403 });
+    }
+    // 文件真的不在也要报 —— 否则和上面那种混在一起。
+    if (!fs.existsSync(target)) {
+      console.warn(`[we] 资源不存在：${url.pathname} → ${target}`);
+      broadcast('helper-log', { source: 'we', message: `资源文件不在：${url.pathname}` });
+      return new Response('not found', { status: 404 });
+    }
     // ⚠️ 必须用 pathToFileURL，不能裸拼 `file://${target}`。
     // 目录名里的 # ? % 会被当成 URL 的片段/查询/转义起点 ⟹ 路径被**静默截断**，
     // 变成 404 ⟹ 白屏，而白屏看起来像"这个壁纸不兼容"。

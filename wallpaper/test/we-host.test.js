@@ -496,4 +496,66 @@ check('没见过的类型给通用理由，不套用别人的', () => {
   assert.ok(!/Windows/.test(out), '把未知类型说成了 Windows 程序');
 });
 
+
+console.log('\n  file 类型属性（没有 value 是合法状态）');
+
+// ⚠️ 这一组的数据全部抄自**真实** project.json：工坊 884307090
+// 「Perfect Wallpaper-完美壁纸」，用户真机装载过。不是我构造的形状。
+//
+// 症状：预览图有山景背景，实际装载后纯黑 + 只剩花瓣和时钟。
+// 日志：Not allowed to load local resource: file:///[object%20Object]
+//
+// 根因：file / directory / textinput 三种类型在 project.json 里**没有 value 字段**
+//（那是"用户还没选文件"的正常状态），而原来的 userProperties 遇到
+// `value === undefined` 就 continue ⟹ 这些键根本不发给壁纸。
+//
+// 而壁纸假设它们存在且是字符串 —— 同一个文件里的 condition 就是证据：
+//   "condition": "MuiscModel.value != 0 || selectmusic.value != '' "
+const REAL_FILE_PROPS = {
+  image: { condition: 'wallpapermode.value == 1', order: 12, text: '自定义壁纸', type: 'file' },
+  selectvideo: { condition: 'wallpapermode.value == 3', fileType: 'video', order: 15, type: 'file' },
+  selectmusic: { fileType: 'video', order: 196.1, type: 'file' },
+  particles_image: { condition: 'particles_isParticles.value == true', order: 33.9, type: 'file' },
+  customdirectory: { condition: 'wallpapermode.value == 2', mode: 'fetchall', order: 13, type: 'directory' },
+  weather_CityText: { condition: 'weather_show.value == true', order: 180.23, type: 'textinput' },
+  wallpapermode: { options: [{ label: '单壁纸', value: 1 }], order: 11, type: 'combo', value: 1 },
+};
+
+check('没有 value 的 file 属性也要发出去（缺键会让壁纸的 condition 全走错）', () => {
+  const out = WE.userProperties(REAL_FILE_PROPS, {});
+  for (const key of ['image', 'selectvideo', 'selectmusic', 'particles_image']) {
+    assert.ok(key in out, `${key} 没发给壁纸 —— 壁纸读 props.${key}.value 会拿到 undefined`);
+  }
+});
+
+check('directory / textinput 同样处理（都是"还没填"的状态）', () => {
+  const out = WE.userProperties(REAL_FILE_PROPS, {});
+  assert.ok('customdirectory' in out, 'directory 类型被丢了');
+  assert.ok('weather_CityText' in out, 'textinput 类型被丢了');
+});
+
+// ⚠️ 空字符串而不是 null/undefined：壁纸拿它和 '' 比较。
+check('未设置时发空字符串（壁纸拿 .value 和 \'\' 比）', () => {
+  const out = WE.userProperties(REAL_FILE_PROPS, {});
+  assert.strictEqual(out.selectmusic.value, '', `发的是 ${JSON.stringify(out.selectmusic.value)}`);
+  // 复刻壁纸真实的那个 condition，确认它能正确求值
+  const condition = out.selectmusic.value !== '';
+  assert.strictEqual(condition, false, '"没选自定义音乐"这个状态求值错了');
+});
+
+check('用户真选了文件时用他的值，不被空字符串覆盖', () => {
+  const out = WE.userProperties(REAL_FILE_PROPS, { image: '/Users/moon/bg.jpg' });
+  assert.strictEqual(out.image.value, '/Users/moon/bg.jpg');
+});
+
+// 装饰项仍然要剔掉 —— 别为了修这个把那条一起放开。
+check('text 类型仍然被剔掉（它没有 value 也不该发）', () => {
+  const out = WE.userProperties({
+    Text_Other: { order: -1, text: '<h4>完美壁纸</h4>', type: 'text' },
+    image: { type: 'file' },
+  }, {});
+  assert.ok(!('Text_Other' in out), 'text 类型被发出去了 —— 那是纯装饰');
+  assert.ok('image' in out, 'file 类型该发');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

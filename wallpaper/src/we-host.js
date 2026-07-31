@@ -102,13 +102,38 @@ function parseProject(json) {
 //
 // 所以这个函数几乎是恒等的，只剥掉装饰项。它存在的价值不是转换，是把
 // "不要平铺"这件事变成一条有测试守着的契约。
+// 这些类型「没有 value」是合法状态（用户还没选文件/目录/没填字）,
+// 而壁纸仍然会去读 .value 并和 '' 比较 ⟹ 必须发空字符串而不是不发。
+const EMPTY_STRING_TYPES = new Set(['file', 'directory', 'textinput']);
+
 function userProperties(properties, overrides) {
   const out = {};
   for (const [key, spec] of Object.entries(properties || {})) {
     if (!spec || typeof spec !== 'object') continue;
     if (DECORATIVE_TYPES.has(spec.type)) continue;
-    const value = overrides && key in overrides ? overrides[key] : spec.value;
-    if (value === undefined) continue;
+    let value = overrides && key in overrides ? overrides[key] : spec.value;
+    // ⚠️ file / directory / textinput 类型在 project.json 里**没有 value 字段** ——
+    // 那是"用户还没选文件"的正常状态，不是数据缺损。
+    //
+    // 实测（884307090 完美壁纸的真实 project.json）：
+    //   "image":       { "type": "file", "condition": "wallpapermode.value == 1" }   ← 无 value
+    //   "selectvideo": { "type": "file", "fileType": "video" }                        ← 无 value
+    //   还有 selectmusic / particles_image / customdirectory / weather_CityText
+    //
+    // 原来这里 `value === undefined` 就 continue，于是这些键**根本不发给壁纸**。
+    // 而壁纸假设它们存在且是字符串 —— 同一个文件里的 condition 就是证据：
+    //   "condition": "MuiscModel.value != 0 || selectmusic.value != '' "
+    //                                          ↑ 拿 .value 和空字符串比
+    //
+    // ⟹ 键不存在时 `props.selectmusic.value` 读的是 undefined 的属性，
+    // 那个 condition 和所有依赖它的分支全部走错。而症状是**画面不对**
+    // （背景不加载、只剩特效层），不是报错 —— 看起来像"这个壁纸不兼容"。
+    //
+    // WE 原版发的是空字符串。⟹ 补齐成 ''，让"没选文件"这个状态可表达。
+    if (value === undefined) {
+      if (!EMPTY_STRING_TYPES.has(spec.type)) continue;
+      value = '';
+    }
     out[key] = { value };
   }
   return out;
