@@ -1,49 +1,59 @@
 // FFT 分箱边界。**这是 GestureWallAudio.swift 那段分箱的可测规格。**
 //
 // ⚠️ 为什么要单独一份：那段逻辑在 Swift 里，而云端跑不了 Swift ——
-// 而它**在数学上错过一次**，错法是"38 个箱子读同一个 FFT bin"，
-// 而症状是画面上一段段等长的阶梯（用户 2026-07-31 的截图）。
+// 而它**在数学上错过两次**：
 //
-// 那种错误纯粹是算术，本来应该在写下它的那一刻就能算出来 ——
-// ⟹ 所以把边界公式做成能跑的东西，让"每个箱子有自己的 bin"变成一条断言。
+//   第一次：纯对数铺满 1..512 ⟹ 38/128 个箱子读同一个 FFT bin
+//           症状：画面上一段段等长的阶梯
+//   第二次：低频改成线性一对一 ⟹ 不重复了，但**把音乐能量挤在头几段**
+//           症状：用户报「3 点到 6 点这个区间的柱子明显更长」
+//           （60-250Hz 的鼓和低音全落在段 0..4）
+//
+// 两次都是纯算术，本来在写下它的那一刻就能算出来。
+// ⟹ 这个文件的存在理由：让那些性质变成断言。
 //
 // ⚠️ 这不是"另一份实现"：它只算边界，不做 FFT、不做归一化、不做平滑。
-// 而守卫会核对两边的参数（LINEAR_BINS / USEFUL_BINS / 8000Hz）一致 ——
-// 两份知识漂了是这个项目反复栽的形状。
+// 而守卫会核对两边的参数一致 —— 两份知识漂了是这个项目反复栽的形状。
 
-// 复刻 GestureWallAudio.swift 的分箱公式，用来在云端验数学。
-// ⚠️ 这不是"另一份实现" —— 它只做分箱边界，且守卫会核对两边的参数一致。
-// ⚠️ 默认值必须和 GestureWallAudio.swift 一致 —— 守卫会核对。
+// 分箱边界。**对数频率 + 低频插值**，那是音频可视化的标准做法。
 //
-// usefulBins = **120**（不是 76）：PWCircle.js 用的是 `arr[0..119]`。
-// 原来的 76 来自另一个壁纸（Sonic Topography 重采样到 512 后丢掉 301..511），
-// 而我把那个单个样本的约束当成了通用规则。**两个壁纸的消费边界不一样。**
-function binEdges({ fftSize = 1024, binCount = 128, linearBins = 40, usefulBins = 120,
-  sampleRate = 48000, midHz = 16000 } = {}) {
+// 返回每段的 [lo, hi]（**浮点** bin 索引）——
+// 低频段的 lo/hi 差不足 1 个 bin，那时候用相邻 bin 线性插值，
+// 而不是"取整后共用同一个 bin"（那正是第一版 38/128 重复的成因）。
+function binEdges({ fftSize = 2048, binCount = 128, usefulBins = 120,
+  sampleRate = 48000, fMin = 40, fMax = 16000 } = {}) {
   const half = fftSize / 2;
   const hzPerBin = sampleRate / 2 / half;
-  const midTop = Math.min(half - 1, Math.trunc(midHz / hzPerBin));
   const out = [];
+  const ratio = fMax / fMin;
   for (let i = 0; i < binCount; i += 1) {
-    let start; let end;
-    if (i < linearBins) {
-      start = 1 + i; end = start;
-    } else if (i < usefulBins) {
-      const span = usefulBins - linearBins;
-      const base = 1 + linearBins;
-      const ratio = midTop / base;
-      start = Math.max(base, Math.trunc(base * ratio ** ((i - linearBins) / span)));
-      end = Math.min(half - 1, Math.max(start,
-        Math.trunc(base * ratio ** ((i + 1 - linearBins) / span)) - 1));
+    // ⚠️ 只有前 usefulBins 段按音乐频段铺，之后的收尾到奈奎斯特 ——
+    // PWCircle 用 arr[0..119]，而别的壁纸可能用满 128。
+    // ⚠️ 前 usefulBins 段按对数铺音乐频段，之后的段线性收尾到奈奎斯特。
+    // 两段要**衔接上**，不能各算各的（我第一版让段 119 的宽度变成 0.01）。
+    let loHz;
+    let hiHz;
+    if (i < usefulBins) {
+      loHz = fMin * ratio ** (i / usefulBins);
+      hiHz = fMin * ratio ** ((i + 1) / usefulBins);
     } else {
-      const span = binCount - usefulBins;
-      const ratio = half / midTop;
-      start = Math.max(midTop, Math.trunc(midTop * ratio ** ((i - usefulBins) / span)));
-      end = Math.min(half - 1, Math.max(start,
-        Math.trunc(midTop * ratio ** ((i + 1 - usefulBins) / span)) - 1));
+      // 收尾段：从 fMax 线性铺到奈奎斯特。
+      const tail = binCount - usefulBins;
+      const nyq = sampleRate / 2;
+      loHz = fMax + (nyq - fMax) * ((i - usefulBins) / tail);
+      hiHz = fMax + (nyq - fMax) * ((i - usefulBins + 1) / tail);
     }
-    out.push([start, end]);
+    out.push([
+      Math.max(1, loHz / hzPerBin),
+      Math.min(half - 1, Math.max(loHz / hzPerBin + 0.01, hiHz / hzPerBin)),
+    ]);
   }
-  return { edges: out, midTop, hzPerBin };
+  return { edges: out, hzPerBin, half };
 }
-module.exports = { binEdges };
+
+// 每段覆盖多少个整数 bin（<1 表示要插值）。
+function binWidths(opts) {
+  return binEdges(opts).edges.map(([lo, hi]) => hi - lo);
+}
+
+module.exports = { binEdges, binWidths };

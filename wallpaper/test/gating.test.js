@@ -2890,4 +2890,22 @@ check('频谱上报带峰值段（固定采样点会漏掉单段信号）', () =
     + '那是"扫描真的生效了"的直接证据');
 });
 
+
+// ⚠️ 面板要**直接算出参数该调多少**，而不是只报数字。
+//
+// 我为音频幅度改了五轮，每轮都是"我猜一个值 → 用户打包 → 看效果 → 再猜"。
+// 而那本来是**算术**：目标峰值 1.1（WE 契约），实测峰值在手上
+// ⟹ 新值 = 当前值 × 1.1 / 实测峰值。
+check('面板算出 NORMALIZE 该调多少（不是让用户陪着试）', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const i = dash.indexOf('function renderAudioFrame');
+  const fn = dash.slice(i, dash.indexOf('\n}', i));
+  assert.match(fn, /NORMALIZE 乘/,
+    '面板不算出该调多少 ⟹ 用户要陪我一轮轮试（已经试了五轮）');
+  assert.match(fn, /TARGET/, '没有目标峰值 —— 那样"调多少"没有依据');
+  // ⚠️ 只对真采集给建议：测试音的幅度是我们自己定的，没有调的意义
+  assert.match(fn, /'system'|'netease'/,
+    '对测试音也给调参建议 —— 那些幅度是我们自己写死的，调它没意义');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

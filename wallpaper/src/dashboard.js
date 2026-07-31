@@ -1178,6 +1178,29 @@ function renderAudioFrame(frame) {
     system: '全系统', netease: '网易云', synth: '测试音', sweep: '单段扫描', off: '关闭',
   };
   const who = SRC_NAME[frame.source] || frame.source || '?';
+  // ⚠️ **直接算出 NORMALIZE 该调成多少。**
+  //
+  // 我为幅度改了五轮，每轮都是"我猜一个值 → 用户打包 → 看效果 → 再猜"。
+  // 而那本来是**算术**：目标峰值 1.1（WE 契约：基准 0..1，响的地方到 1.2~1.5），
+  // 实测峰值已经在手上 ⟹ 新值 = 当前值 × 1.1 / 实测峰值。
+  //
+  // ⟹ 面板自己算出来，用户一轮就能调对，而不是陪我试五轮。
+  let advice = '';
+  if (frame.source === 'system' || frame.source === 'netease') {
+    const TARGET = 1.1;
+    if (frame.max > 0.01) {
+      const factor = TARGET / frame.max;
+      // 偏差在 ±25% 内就算对了 —— 音乐本身每首的响度都不同，
+      // 追求精确没有意义。
+      if (factor > 1.25 || factor < 0.8) {
+        advice = `<br><b>⟹ NORMALIZE 乘 ${factor.toFixed(2)}</b>`
+          + `（在 GestureWallAudio.swift 顶部；目标峰值 ${TARGET}，现在 ${frame.max}）`;
+      } else {
+        advice = '<br>✅ 幅度在合理范围（峰值接近 1，那是 WE 的契约）';
+      }
+    }
+  }
+
   node.innerHTML = `<b>实际频谱</b>（${who}，每半秒刷新）`
     + `<br>最大 ${frame.max}　平均 ${frame.mean}`
     + `　${frame.max > 1.5 ? '<span class="warn">⚠️ 顶天了，NORMALIZE 要调小</span>'
@@ -1188,7 +1211,8 @@ function renderAudioFrame(frame) {
     + `<br><span style="font-family:ui-monospace;font-size:10px">`
     + frame.samples.map((s) => (s.i === frame.peakAt
       ? `<b>[${s.i}] ${s.v}</b>` : `[${s.i}] ${s.v}`)).join('　')
-    + '</span>';
+    + '</span>'
+    + advice;
   node.hidden = false;
 }
 
