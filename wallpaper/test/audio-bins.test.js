@@ -175,14 +175,45 @@ check('三个手感参数在顶部集中（改它们不该动逻辑）', () => {
 });
 
 // ⚠️ sqrt：FFT 幅度的动态范围有两个数量级，线性映射要么全 0 要么全顶天。
-// ⚠️ PWCircle 自己 clamp 到 **1.2**（`w1 = Math.min(w1, 1.2)`）——
-// 我们 clamp 到 1.0 会白丢 17% 的动态范围。
-check('clamp 上限 1.2（PWCircle 自己就是 1.2）', () => {
+// ⚠️ 上限必须是**物理上限**，不能是某个壁纸的内部数字。
+//
+// 我上一版写的是 `min(1.2, …)`，理由是"PWCircle 自己 clamp 到 1.2"——
+// 那是照抄单个壁纸的实现细节，而**同一个错我已经犯过一次**
+//（把 Sonic Topography 的 76 段边界写成通用常量）。
+//
+// 用户点出了定位：「我们的产品其实是个壁纸渲染器……而不是来一个适配一个」。
+// ⟹ 判据：**如果一个数只能从"某个壁纸的源码"推出来，它就不该在这一层。**
+check('上限是物理上限，不是某个壁纸的内部数字', () => {
   const swift = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
   const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.match(code, /min\(1\.2, max\(0\.0, v\)\)/,
-    'clamp 到 1.0 ⟹ 白丢 17% 动态范围（PWCircle 自己 clamp 到 1.2）');
+  assert.match(code, /let CEILING: Float/, '没有命名的上限常量');
+  assert.match(code, /min\(CEILING, max\(0\.0, v\)\)/,
+    'clamp 用了字面量而不是 CEILING —— 那通常意味着它是从某个壁纸抄来的数字');
+  // ⚠️ 1.2 是 PWCircle 的内部上限，不该出现在我们的代码里
+  assert.ok(!/min\(1\.2/.test(code),
+    'clamp 到 1.2 —— 那是 PWCircle 的实现细节（`Math.min(w1, 1.2)`），'
+    + '不是 WE 的契约。我们是渲染器，不适配单个壁纸');
+});
+
+// ⚠️ 这条守的是**那个错误形状本身**，不是某个具体的数。
+check('这一层没有从单个壁纸抄来的魔数', () => {
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
+  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  // 已知的、只属于某个壁纸的数字。它们出现在这里就说明又照抄了。
+  const wallpaperSpecific = [
+    ['1.2', 'PWCircle 的 `Math.min(w1, 1.2)`'],
+    ['0.75', 'PWCircle 的衰减系数 `waveArr[i]*0.25`'],
+    ['300', 'Sonic Topography 的 `Pe<=300` 消费边界'],
+  ];
+  for (const [num, from] of wallpaperSpecific) {
+    // 允许出现在注释里（解释来由），不允许出现在代码里
+    const inCode = new RegExp(`[^\\w.]${num.replace('.', '\\.')}[^\\w]`).test(code);
+    assert.ok(!inCode,
+      `代码里出现了 ${num} —— 那是 ${from}，属于单个壁纸的实现细节。`
+      + '我们是渲染器：能留在这一层的数必须能从 WE 的行为或信号处理本身推出来');
+  }
 });
 
 check('归一化用 sqrt 压缩动态范围（"幅度不对"那条）', () => {
