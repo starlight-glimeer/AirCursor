@@ -558,4 +558,99 @@ check('text 类型仍然被剔掉（它没有 value 也不该发）', () => {
   assert.ok('image' in out, 'file 类型该发');
 });
 
+
+console.log('\n  控件名字（project.json 的 text 是 HTML）');
+
+// ⚠️ 用户装载「完美壁纸」后，面板上 137 个控件的名字**全是 `"<br"`** ——
+// 一个都分辨不出来，所以他没法自己去调那些属性。
+//
+// 根因：`text` 字段是 **HTML**，而我按"双语用斜杠分隔"写了 `.split('/')[0]`
+// ⟹ 第一个 `/` 出现在 `<br />` 里面。
+//
+// 真实样本（884307090，用户提供的壁纸文件）：
+//   "<br />多边形变换<br />Polygon<br /><small>用波峰音频效果更明显</small><br />"
+//
+// ⚠️ 这是"载荷假设必先验"的又一次：那个 project.json 68KB 一直在手边，
+// 而我按想象写了解析。
+const REAL_TEXTS = [
+  ['<br />多边形变换<br />Polygon<br /><small>用波峰音频效果更明显</small><br />', '多边形变换'],
+  ['<br />音频方向<br />Wave direction<br />', '音频方向'],
+  ['<br />圆心-X(%)<br />Center of circle-X(%)<br />', '圆心-X(%)'],
+  ['<br />圆环半径(%)<br />Circle Radius(%)<br />', '圆环半径(%)'],
+  ['<br/><h4>●  背景选项(Background Options)</h4><small>默认壁纸是…</small><br/>',
+    '●  背景选项(Background Options)'],
+];
+
+check('控件名字从 HTML 的 text 里正确取出（原来全是 "<br"）', () => {
+  for (const [text, want] of REAL_TEXTS) {
+    const out = WE.controlsOf({ k: { type: 'slider', text, value: 1 } });
+    assert.strictEqual(out[0].label, want,
+      `text=${JSON.stringify(text.slice(0, 40))}… 取出的名字是 `
+      + `${JSON.stringify(out[0].label)}，期望 ${JSON.stringify(want)}`);
+  }
+});
+
+// ⚠️ 标签要换成分隔符而不是直接删 —— `A<br/>B` 直接删会粘成 `AB`。
+check('标签换成分隔符，不是直接删（否则中英文粘一起）', () => {
+  const out = WE.controlsOf({
+    k: { type: 'slider', text: '音频幅度<br />Wave Range', value: 1 },
+  });
+  assert.strictEqual(out[0].label, '音频幅度',
+    `取出 ${JSON.stringify(out[0].label)} —— 如果是"音频幅度Wave Range"，`
+    + '说明标签被直接删掉而没换成分隔符');
+});
+
+// ⚠️ 选项的 label 是**纯文本**，斜杠是名字的一部分，不能按它切。
+check('选项名里的斜杠要留着（"向上/左" 不是双语分隔）', () => {
+  const out = WE.controlsOf({
+    k: {
+      type: 'combo',
+      text: '<br />音频方向<br />',
+      value: 1,
+      options: [
+        { label: '向上/左-Upward-Left', value: 1 },
+        { label: '向外-Outward', value: 2 },
+      ],
+    },
+  });
+  assert.strictEqual(out[0].options[0].label, '向上/左-Upward-Left',
+    `选项名被截成 ${JSON.stringify(out[0].options[0].label)} —— `
+    + '斜杠在这里是名字的一部分，不是双语分隔符');
+});
+
+// ⚠️ 两种斜杠必须分开对待 —— 这是我改 label 解析时漏掉的第二个格式。
+//
+//   `渲染精度 / Render Resolution`   ← 两侧有空格 = 双语分隔符，要切
+//   `向上/左-Upward-Left`            ← 没有空格 = 名字的一部分，不能切
+//
+// 第一版我只处理了前一种（按 `/` 切），第二版只处理后一种（完全不切）——
+// 各让一条测试报红。**两种真实格式都在样本里，而我一次只看到一种。**
+check('双语用「空格斜杠空格」分隔才切，名字里的斜杠不切', () => {
+  const bilingual = WE.controlsOf({
+    k: { type: 'slider', text: '渲染精度 / Render Resolution', value: 1 },
+  });
+  assert.strictEqual(bilingual[0].label, '渲染精度', '纯文本双语没拆开');
+
+  const slashInName = WE.controlsOf({
+    k: { type: 'slider', text: '圆心-X(%)', value: 1 },
+  });
+  assert.strictEqual(slashInName[0].label, '圆心-X(%)', '名字里的括号被吃了');
+
+  // 没有空格的斜杠不许切
+  const noSpace = WE.controlsOf({
+    k: { type: 'slider', text: '上/下方向', value: 1 },
+  });
+  assert.strictEqual(noSpace[0].label, '上/下方向',
+    `被切成 ${JSON.stringify(noSpace[0].label)} —— 没有空格的斜杠是名字的一部分`);
+});
+
+check('没有 text 时用 key 兜底（而不是空白）', () => {
+  const out = WE.controlsOf({ myKey: { type: 'slider', value: 1 } });
+  assert.strictEqual(out[0].label, 'myKey',
+    '没有 text 时名字是空的 ⟹ 面板上一行空白，用户不知道那是什么');
+  // 只有标签没有文字时也要兜底
+  const out2 = WE.controlsOf({ k2: { type: 'slider', text: '<br /><br />', value: 1 } });
+  assert.strictEqual(out2[0].label, 'k2', 'text 全是标签时没兜底');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

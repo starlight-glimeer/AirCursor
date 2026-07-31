@@ -150,6 +150,46 @@ function generalProperties(fps) {
 //
 // 这让"支持任意 WE 网页壁纸"成为可能：配置面板从 project.json 自动生成，
 // 而不是给每个壁纸手写一遍 UI。
+// 从 project.json 的 `text` 里取一个能显示的名字。
+//
+// ⚠️ `text` 是 **HTML**，不是纯文本。真实样本（884307090「完美壁纸」）：
+//
+//   "<br />多边形变换<br />Polygon<br /><small>用波峰音频效果更明显</small><br />"
+//   "<br />音频方向<br />Wave direction<br />"
+//   "<br/><h4>●  背景选项(Background Options)</h4><small>...</small><br/>"
+//
+// 我原来只写了 `.split('/')[0]` —— 那是按"双语用斜杠分隔"的假设写的，
+// 而真实数据里第一个 `/` 出现在 **`<br />`** 里面
+// ⟹ **137 个控件的名字全都变成 `"<br"`**，用户在面板上一个都分辨不出来。
+//
+// ⚠️ 这是我记忆里那条"载荷假设必先验"的又一次：`text` 的格式我从没验过。
+// 真实数据一直在手边（那个 project.json 68KB），而我按想象写了解析。
+//
+// ⟹ 现在的做法：剥掉标签 → 拿第一段有意义的中文/文字 → 兜底用 key。
+function labelOf(text, key) {
+  if (!text) return key;
+  const raw = String(text);
+  // ① 把标签换成分隔符（不是直接删 —— `A<br/>B` 删了会粘成 `AB`）
+  const plain = raw.replace(/<[^>]*>/g, '\n');
+  // ② 逐段找第一个非空的
+  const parts = plain.split('\n').map((x) => x.trim()).filter(Boolean);
+  if (!parts.length) return key;
+  // ③ 两种真实格式都要支持：
+  //
+  //   带标签的（884307090）：`<br />音频方向<br />Wave direction<br />`
+  //      ⟹ 剥标签后分成两段，取第一段
+  //   纯文本双语（另一个样本）：`渲染精度 / Render Resolution`
+  //      ⟹ 只有一段，要按 ` / ` 再拆
+  //
+  // ⚠️ 而"斜杠"只在**两侧有空格**时才是双语分隔符 ——
+  // `向上/左-Upward-Left` 里那个斜杠是名字的一部分，切了就变成"向上"。
+  // 这两种斜杠的区别是我第一版漏掉的（改完之后一条旧测试报红，
+  // 那条测的正是纯文本双语的样本）。
+  const first = parts[0];
+  const bilingual = first.split(/\s+\/\s+/);
+  return bilingual[0].trim() || first;
+}
+
 function controlsOf(properties) {
   const list = [];
   for (const [key, spec] of Object.entries(properties || {})) {
@@ -158,8 +198,7 @@ function controlsOf(properties) {
     const control = {
       key,
       type: spec.type || 'slider',
-      // text 是双语的（"音频响应强度 / Audio Intensity"），取中文那半。
-      label: String(spec.text || key).split('/')[0].trim() || key,
+      label: labelOf(spec.text, key),
       value: spec.value,
       order: Number.isFinite(spec.order) ? spec.order : 0,
     };
@@ -170,7 +209,9 @@ function controlsOf(properties) {
     }
     if (spec.type === 'combo' && Array.isArray(spec.options)) {
       control.options = spec.options.map((o) => ({
-        label: String(o.label || o.value).split('/')[0].trim(),
+        // ⚠️ 选项的 label 是纯文本（"向上/左-Upward-Left"），斜杠是名字的一部分，
+        // 不能按它切 —— 切了就变成"向上"。只剥标签。
+        label: String(o.label || o.value).replace(/<[^>]*>/g, '').trim(),
         value: o.value,
       }));
     }
