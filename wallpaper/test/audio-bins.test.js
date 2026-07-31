@@ -44,7 +44,9 @@ check('不同的箱子不读同一个 FFT bin（原来 38/128 读重复的）', 
   const dupes = [...seen.values()].filter((v) => v.length > 1);
   const affected = dupes.flat().length;
   // 允许极少量（相邻两段共用一个 bin 在边界上不可避免），但不能成片。
-  assert.ok(affected <= 4,
+  // ⚠️ 阈值是 0，不是少一点就行 —— 算过 LINEAR_BINS=40 时能做到 0。
+  // 任何重复都意味着那几根柱子的值一模一样，而那在画面上是看得见的。
+  assert.strictEqual(affected, 0,
     `${affected}/128 个箱子在读完全相同的 FFT bin —— 它们的值必然一模一样，`
     + `画面上就是一段段等长的柱子（原来是 38 个，用户截图见得到）。重复组：`
     + JSON.stringify(dupes.slice(0, 3)));
@@ -88,25 +90,35 @@ check('start <= end，且不越界', () => {
   }
 });
 
-console.log('\n  壁纸只消费前 76 段（硬约束）');
+console.log('\n  两个壁纸的消费边界不一样（我曾把一个的当通用）');
 
-// ⚠️ 这条是从壁纸 bundle 里查出来的：它把数组重采样到 512 后按
-// Pe<=6/18/35/60/95/145/210/300 分 8 段，而 `Pe<=300` **没有 else**
-// ⟹ 512 空间的 301..511 被丢掉，反推到 128 段就是只有前 76 段有用。
-check('音乐主体（人声/主奏）落在前 76 段里', () => {
+// ⚠️ 这一节整个重写过 —— 原来断言"音乐主体落在前 76 段"，而那个 76 是**错的通用化**。
+//
+// 76 来自 Sonic Topography：它把数组重采样到 512，按 `Pe<=6/18/…/<=300` 分 8 段，
+// 而 `Pe<=300` 之后没有 else ⟹ 301..511 被丢掉 ⟹ 反推 128 段 = 前 76 段。
+//
+// 而 PWCircle.js（884307090「完美壁纸」，用户 2026-07-31 提供源码）完全不同：
+//   for(var i=0; i<120; i++){ var w1 = arr[i] ? arr[i] : 0; ... }
+// **不重采样、索引一对一、用 arr[0..119]。**
+//
+// ⟹ 我拿一个壁纸的约束推到了全体，而那让 76..119 那 44 段（约 8-16kHz）
+// 在这个壁纸上全是接近 0 的值 —— 画面上就是"一部分柱子死着"。
+check('0..119 都要有音乐频段的值（PWCircle 用 arr[0..119]）', () => {
   const { edges, hzPerBin } = binEdges();
-  const topOfUseful = edges[75][1] * hzPerBin;
-  assert.ok(topOfUseful >= 6000,
-    `前 76 段只覆盖到 ${Math.round(topOfUseful)} Hz —— 人声和主奏（250-4000Hz）`
-    + '要留在这段里，否则壁纸看到的全是低频');
-  assert.ok(topOfUseful <= 12000,
-    `前 76 段覆盖到 ${Math.round(topOfUseful)} Hz —— 铺太宽会让低频分辨率不够，`
-    + '鼓点驱动不了波纹');
+  const top119 = edges[119][1] * hzPerBin;
+  assert.ok(top119 >= 12000,
+    `第 119 段只到 ${Math.round(top119)} Hz —— PWCircle 用 arr[0..119]，`
+    + '这 120 段都要落在音乐频段里，否则后面那些柱子恒为 0');
+  // 而前 76 段仍然要覆盖住音乐主体（Sonic Topography 只看那 76 段）
+  const top75 = edges[75][1] * hzPerBin;
+  assert.ok(top75 >= 2000 && top75 <= 9000,
+    `前 76 段覆盖到 ${Math.round(top75)} Hz —— 那是只看前 76 段的壁纸`
+    + '（Sonic Topography）的可用范围，人声/主奏要在里面');
 });
 
 check('低频每段独占一个 bin（鼓点要有分辨率）', () => {
   const { edges } = binEdges();
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 40; i += 1) {
     assert.strictEqual(edges[i][1] - edges[i][0], 0,
       `第 ${i} 段宽度 ${edges[i][1] - edges[i][0] + 1} —— 低频段要一对一，`
       + '否则鼓和低音混在一格里');
@@ -120,28 +132,36 @@ console.log('\n  和 Swift 那边的参数一致（两份知识会漂）');
 check('Swift 和这里的分箱参数一致', () => {
   const swift = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
-  assert.match(swift, /let LINEAR_BINS = 20/,
-    'Swift 的 LINEAR_BINS 不是 20 —— 和这份规格漂了');
-  assert.match(swift, /let USEFUL_BINS = 76/,
-    'Swift 的 USEFUL_BINS 不是 76 —— 那是壁纸的消费边界，不能随便改');
-  assert.match(swift, /8000\.0/, 'Swift 里中频上界不是 8000 Hz');
+  assert.match(swift, /let LINEAR_BINS = 40/,
+    'Swift 的 LINEAR_BINS 不是 40 —— 算过 40 时重复箱子为 0，改小会让相邻段共用 bin');
+  assert.match(swift, /let USEFUL_BINS = 120/,
+    'Swift 的 USEFUL_BINS 不是 120 —— PWCircle 用 arr[0..119]，'
+    + '写 76 是把另一个壁纸的约束当成了通用规则');
+  assert.match(swift, /16000\.0/, 'Swift 里中频上界不是 16000 Hz');
   assert.match(swift, /BIN_COUNT = 128/, 'Swift 的 BIN_COUNT 不是 128');
   assert.match(swift, /FFT_SIZE = 1024/, 'Swift 的 FFT_SIZE 不是 1024');
 });
 
 console.log('\n  平滑与归一化（"不丝滑"那条）');
 
-// ⚠️ 原来是 `v > prev ? v : prev*0.82 + v*0.18` —— **上升沿直接跳到新值**，
-// 只有下降平滑 ⟹ 鼓点让柱子瞬间弹到顶，那正是用户报的"不丝滑"。
-check('上升沿也要插值（原来直接跳到新值 = 不丝滑）', () => {
+// ⚠️ 这条的理由变了。
+//
+// 原来我以为"不丝滑"是因为上升沿不插值，于是两边都插值。而读了 PWCircle.js 才知道
+// **它自己就有平滑**：
+//     w2 = waveArr[i] - waveArr[i]*0.25;  w1 = Math.max(w1, w2);
+// 上升立刻跟上、下降每帧 ×0.75 ⟹ 我们再平滑一次就是**双重平滑**，
+// 那才是"拖泥带水"的来源。
+//
+// ⟹ 现在 ATTACK=1.0（不插值上升），RELEASE 只留一点点防 FFT 逐帧抖动。
+// 平滑交给壁纸 —— 它比我们更知道自己的帧率。
+check('平滑不和壁纸叠加（ATTACK=1.0，壁纸自己会衰减）', () => {
   const swift = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
   const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  assert.ok(!/smoothed\[i\] = v > prev \? v :/.test(code),
-    '上升时直接赋值 v ⟹ 鼓点让柱子瞬间弹到顶，那就是"不丝滑"');
-  assert.match(code, /prev \+ \(v - prev\) \* alpha/,
-    '没有统一的插值 —— 两个方向都该插值，只是快慢不同');
-  assert.match(code, /ATTACK|RELEASE/, '攻击和释放没有分开的参数');
+  assert.match(code, /prev \+ \(v - prev\) \* alpha/, '没有统一的插值写法');
+  assert.match(code, /let ATTACK: Float = 1\.0/,
+    'ATTACK 不是 1.0 ⟹ 和 PWCircle 自己的平滑叠加（它 `Math.max(w1, w2)` '
+    + '本来就让上升立刻跟上）—— 那是"拖泥带水"的来源');
 });
 
 // 手感参数要能一处调，而不是散在代码里。
@@ -155,6 +175,16 @@ check('三个手感参数在顶部集中（改它们不该动逻辑）', () => {
 });
 
 // ⚠️ sqrt：FFT 幅度的动态范围有两个数量级，线性映射要么全 0 要么全顶天。
+// ⚠️ PWCircle 自己 clamp 到 **1.2**（`w1 = Math.min(w1, 1.2)`）——
+// 我们 clamp 到 1.0 会白丢 17% 的动态范围。
+check('clamp 上限 1.2（PWCircle 自己就是 1.2）', () => {
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');
+  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(code, /min\(1\.2, max\(0\.0, v\)\)/,
+    'clamp 到 1.0 ⟹ 白丢 17% 动态范围（PWCircle 自己 clamp 到 1.2）');
+});
+
 check('归一化用 sqrt 压缩动态范围（"幅度不对"那条）', () => {
   const swift = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8');

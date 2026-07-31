@@ -13,8 +13,13 @@
 
 // 复刻 GestureWallAudio.swift 的分箱公式，用来在云端验数学。
 // ⚠️ 这不是"另一份实现" —— 它只做分箱边界，且守卫会核对两边的参数一致。
-function binEdges({ fftSize = 1024, binCount = 128, linearBins = 20, usefulBins = 76,
-  sampleRate = 48000, midHz = 8000 } = {}) {
+// ⚠️ 默认值必须和 GestureWallAudio.swift 一致 —— 守卫会核对。
+//
+// usefulBins = **120**（不是 76）：PWCircle.js 用的是 `arr[0..119]`。
+// 原来的 76 来自另一个壁纸（Sonic Topography 重采样到 512 后丢掉 301..511），
+// 而我把那个单个样本的约束当成了通用规则。**两个壁纸的消费边界不一样。**
+function binEdges({ fftSize = 1024, binCount = 128, linearBins = 40, usefulBins = 120,
+  sampleRate = 48000, midHz = 16000 } = {}) {
   const half = fftSize / 2;
   const hzPerBin = sampleRate / 2 / half;
   const midTop = Math.min(half - 1, Math.trunc(midHz / hzPerBin));
