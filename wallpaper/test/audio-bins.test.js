@@ -255,4 +255,44 @@ check('自检结果送到面板（打包版没有终端）', () => {
     '不说"这个数不对意味着什么" ⟹ 用户拿到数字也不知道下一步');
 });
 
+
+console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
+
+// ⚠️⚠️ 这一条是实测烧出来的，而且形状很典型。
+//
+// 我回退"第三版分箱"时，**连它顺带引入的 `SAMPLE_RATE` 一起删了** ——
+// 而后来加的 FFT 自检引用了那个常量
+// ⟹ `cannot find 'SAMPLE_RATE' in scope` ⟹ helper 编译失败
+// ⟹ **音频整条链不工作**，而用户看到的是"自检没输出"。
+//
+// ⚠️ 云端跑不了 swiftc，`node --check` 也查不出 Swift 的问题
+// ⟹ 那一层的错误只能靠用户打包时才暴露，一轮成本很高。
+//
+// ⟹ 用一个粗糙但有效的检查兜住最常见的一类：**全大写常量用了没定义**。
+// （Swift 里全大写是常量约定，而"删了定义留下引用"正是回退改动时的典型失误。）
+check('Swift 里全大写常量都有定义（回退改动最容易漏这个）', () => {
+  const code = swiftSrc.split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n');
+  const used = new Set([...code.matchAll(/\b([A-Z][A-Z_0-9]{2,})\b/g)].map((m) => m[1]));
+  const defined = new Set([...code.matchAll(/let ([A-Z][A-Z_0-9]+)\s*[:=]/g)].map((m) => m[1]));
+  // Swift / Darwin 自带的
+  const builtin = new Set(['FFT_FORWARD', 'FFT_INVERSE', 'M_E', 'M_PI']);
+  const missing = [...used].filter((x) => !defined.has(x) && !builtin.has(x));
+  assert.deepStrictEqual(missing, [],
+    `这些全大写标识符用了但没定义：${missing.join(', ')} ⟹ swiftc 会报 `
+    + '"cannot find X in scope"，而 helper 编译失败 = 音频整条链不工作。'
+    + '⚠️ 云端跑不了 swiftc，所以这类错误只能靠用户打包时暴露');
+});
+
+// ⚠️ 顺带守一条：helper 的编译失败要能被看见。
+check('helper 编译失败会报到面板', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'audio-source.js'), 'utf8');
+  assert.match(src, /swiftc 编译.*失败|编译.*失败/,
+    'swiftc 失败时没有专门的错误信息 ⟹ 用户只看到"音频不工作"');
+  // 要把 swiftc 的原话带出来
+  assert.match(src, /result\.stderr/,
+    '不带 swiftc 的 stderr ⟹ 只知道"编译失败"，不知道是哪一行哪个符号');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
