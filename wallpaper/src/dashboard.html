@@ -37,6 +37,18 @@
   #launch h1 b { font-weight: 600; }
   /* build 标识：小、灰，但必须**清晰可读** —— 它是来回测试时核对版本的唯一依据，
      看不清等于没有。所以不用 .hint 的默认色，单独定一个。 */
+  /* 卡片右上角的「打开目录」。⚠️ 绝对定位在卡片内，不占布局 —— 加它不该让网格重排。 */
+  .ws-item { position: relative; }
+  .ws-open {
+    position: absolute; top: 4px; right: 4px;
+    padding: 2px 5px; font-size: 12px; line-height: 1;
+    background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.2);
+    border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity .12s;
+  }
+  /* 悬停才显示 —— 一屏几十张卡片，常驻会很吵 */
+  .ws-item:hover .ws-open { opacity: 1; }
+  .ws-open:hover { background: rgba(0,0,0,.8); }
+
   #build-stamp {
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -474,6 +486,8 @@
       <div id="we-audio-state" class="hint"></div>
       <!-- 装载了「要音频」的壁纸而音源是关时，说清"为什么那部分不动" -->
       <div id="we-audio-note" class="hint" hidden></div>
+      <!-- ⚠️ 实际频谱值。这是调参的唯一依据 —— 在它之前只能猜。 -->
+      <div id="we-audio-frame" class="hint" style="margin-top:8px;user-select:text" hidden></div>
       <p class="hint">
         抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
         <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，

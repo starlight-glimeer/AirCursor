@@ -863,6 +863,22 @@ check('vendor 里的手势判定和 public/ 源头一致（改了源头不重跑
 // 用户报"我希望手势打开网易云这个加进来" —— 而 `open_netease` 早就在动作表里了
 // （system.js，4 个候选路径），只是面板上看不到。这和之前那次「三层接好、面板零入口」
 // 完全同形：每一层单独看都对，整条链没有出口，所有测试全绿。
+// ⚠️ 动态创建的 id：用 innerHTML 建出来的节点，HTML 文件里当然没有。
+//
+// 判据不是白名单，而是**能在 dashboard.js 里找到它的 innerHTML 来源** ——
+// 那样"忘了在 HTML 里加容器"仍然会被逮到，而"动态建的"不会假阳性。
+//
+// 这个盲区撞过两次（audio-yes/audio-no/audio-test、mine-open-ours），
+// 两次都是我加了动态按钮然后守卫报红。⟹ 一次解决，而不是每次加白名单。
+function dynamicIds(dashSrc) {
+  const out = new Set();
+  // innerHTML 里的 id="xxx"（模板字符串或普通字符串都行）
+  for (const m of dashSrc.matchAll(/id="([\w-]+)"/g)) out.add(m[1]);
+  // createElement 之后 .id = 'xxx'
+  for (const m of dashSrc.matchAll(/\.id = '([\w-]+)'/g)) out.add(m[1]);
+  return out;
+}
+
 check('面板渲染函数要的容器 id 在 HTML 里都存在', () => {
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
@@ -872,7 +888,9 @@ check('面板渲染函数要的容器 id 在 HTML 里都存在', () => {
     ...[...dash.matchAll(/renderActionGroup\('([\w-]+)'/g)].map((m) => m[1]),
   ]);
   assert.ok(ids.size > 10, `只解析出 ${ids.size} 个 id，正则失效了`);
-  const missing = [...ids].filter((id) => !html.includes(`id="${id}"`));
+  // ⚠️ 排除**动态创建**的（innerHTML / .id = 建出来的）—— 它们在 HTML 里当然没有。
+  const dyn = dynamicIds(dash);
+  const missing = [...ids].filter((id) => !html.includes(`id="${id}"`) && !dyn.has(id));
   assert.deepStrictEqual(missing, [],
     `这些容器在 HTML 里不存在，对应的界面会静默空白：${missing.join(', ')}`);
 });
@@ -1448,7 +1466,9 @@ check('dashboard.js 引用的 element id 在 HTML 里都存在', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const ids = [...js.matchAll(/getElementById\('([\w-]+)'\)/g)].map((m) => m[1]);
   assert.ok(ids.length > 10, `只解析出 ${ids.length} 个 id，正则失效了`);
-  const missing = [...new Set(ids)].filter((id) => !html.includes(`id="${id}"`));
+  // ⚠️ 排除动态创建的（innerHTML / .id= 建出来的）—— 见 dynamicIds 的注释。
+  const dyn2 = dynamicIds(js);
+  const missing = [...new Set(ids)].filter((id) => !html.includes(`id="${id}"`) && !dyn2.has(id));
   assert.deepStrictEqual(missing, [],
     `这些 id 在 HTML 里不存在 ⟹ 启动时抛异常、整个面板挂掉：${missing.join(', ')}`);
 });
@@ -2423,8 +2443,11 @@ check('自动扫描的目录要显示出来（路径 + 在不在 + 找到几个�
 // 两条会撞到的约束要提前说
 check('目录为空时说清两条约束（子目录要有 project.json / 扫描上限）', () => {
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // ⚠️ 切到函数结尾，不用固定长度 —— 我往这个函数里加了新代码（我的壁纸目录 +
+  // 打开按钮），2600 字符的切片就被推走了 ⟹ 断言在正确代码上报红。
+  // **切片长度是个会漂的锚点**，这轮已经栽过两次。
   const i = dash.indexOf('function renderMineDirs');
-  const fn = dash.slice(i, i + 2600);
+  const fn = dash.slice(i, dash.indexOf('\n}\n', i));
   assert.match(fn, /project\.json/,
     '没说"每个子目录要有 project.json" —— 用户会直接放一堆 mp4 然后发现认不出来');
   assert.match(fn, /500|2 层/,
@@ -2447,6 +2470,109 @@ check('renderMineDirs 的函数体里不调 renderMine（死循环）', () => {
       `renderMineDirs 的函数体里直接调了 renderMine()（第 ${n} 行）⟹ 死循环。`
       + '只有 onclick 回调里可以调');
   }
+});
+
+
+console.log('\n  实际频谱要能看见（调参的唯一依据）');
+
+// ⚠️⚠️ 这一条是三轮调参之后才加的，而它本该是第一件事。
+//
+// 我为"幅度不对/不丝滑/渲染怪"改了三轮参数（分箱、平滑、归一化、上限），
+// 而**从没看过那 128 个数长什么样** —— 每轮都从壁纸源码反推"应该是多少"，
+// 然后靠用户看截图判断对不对。
+//
+// 用户第三次说「你在干什么」。那是准确的：**没有观测的调参就是猜。**
+check('实际频谱值送到面板（否则调参只能猜）', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /we-audio-frame/,
+    '没有把实际频谱送出来 ⟹ "NORMALIZE 该调多少"只能从壁纸代码反推，'
+    + '而那是我连错三轮的做法');
+  // 必须抽样，不能每帧发（30fps × 128 个数会灌满 IPC）
+  assert.match(main, /audioFrameCount % \d+/,
+    '没有抽样 ⟹ 30fps × 128 个数会把 IPC 灌满');
+  // 形状判据：低频 vs 高频。那是"像不像音乐"的最快检查
+  assert.match(main, /lowMean/, '没报低频段均值');
+  assert.match(main, /highMean/, '没报高频段均值 —— 音乐应该低频远大于高频，'
+    + '而那是判断"分箱/加权对不对"的第一眼');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /renderAudioFrame/, '面板没渲染频谱');
+  assert.match(dash, /onWeAudioFrame/, '面板没订阅频谱通道');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.ok(html.includes('id="we-audio-frame"'), '缺容器 ⟹ 静默不显示');
+});
+
+// 面板要直接说"该往哪调"，而不是只报数字
+check('频谱面板给出可操作的判断（顶天/太小/形状不对）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const i = dash.indexOf('function renderAudioFrame');
+  const fn = dash.slice(i, i + 1800);
+  assert.match(fn, /NORMALIZE/,
+    '没说该调哪个参数 —— 报一堆数字而不说怎么办等于没报');
+  assert.match(fn, /不是音乐的形状|像音乐/,
+    '没判断形状 —— "低频>高频"是音乐的基本特征，那是最快的对错检查');
+});
+
+
+console.log('\n  标准壁纸目录 + 能在 Finder 打开');
+
+// ⚠️ 用户要的（2026-07-31）：
+// 「你的默认壁纸目录改成标准的壁纸软件的目录层级，然后我的壁纸这里要能够点开，
+//   比如 wallpaper 就是在资源管理器中打开，我要能进到那个目录，看到我的壁纸文件」
+check('有我们自己的壁纸目录，且在用户可见的位置', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function ourWallpaperDir/, '没有我们自己的壁纸目录');
+  const i = src.indexOf('function ourWallpaperDir');
+  const fn = src.slice(i, i + 300);
+  // ⚠️ 必须在 documents 而不是 userData：后者是应用私有数据的位置，
+  // Finder 里默认隐藏、用户找不到、也不该往里拖文件。
+  assert.match(fn, /getPath\('documents'\)/,
+    "壁纸目录不在 documents 下 —— userData 是应用私有数据的位置，"
+    + 'Finder 里默认隐藏，而壁纸是**用户的内容**：他要能打开、拖进去、备份');
+  assert.ok(!/getPath\('userData'\)/.test(fn),
+    '壁纸目录用了 userData —— 那是私有数据目录，用户找不到');
+});
+
+check('壁纸目录首次会建出来，且放说明文件', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function ensureOurWallpaperDir');
+  assert.ok(i > 0, '没有建目录的逻辑 ⟹ 用户点"打开"会失败');
+  const fn = src.slice(i, i + 1600);
+  assert.match(fn, /mkdirSync/, '不建目录');
+  // ⚠️ 空目录对用户是没有信息的 —— 他不知道往里放什么、什么认得出来
+  assert.match(fn, /project\.json/,
+    '说明文件里没提 project.json —— 而"放了一堆 mp4 认不出来"是这个产品'
+    + '最容易撞的墙');
+});
+
+check('每个扫描目录和每个本地壁纸都能在 Finder 打开', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /reveal-wallpaper-dir/, '没有打开目录的 IPC');
+  // ⚠️ openPath 而不是 showItemInFolder：用户说的是"进到那个目录"
+  const i = main.indexOf("ipcMain.handle('reveal-wallpaper-dir'");
+  const fn = main.slice(i, i + 700);
+  assert.match(fn, /shell\.openPath/,
+    'showItemInFolder 只是选中目录，用户要的是**进去**看文件');
+
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  assert.match(preload, /revealWallpaperDir/, 'preload 没暴露');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // 三处入口：目录列表、壁纸卡片、空状态
+  const calls = (dash.match(/revealWallpaperDir/g) || []).length;
+  assert.ok(calls >= 3,
+    `只有 ${calls} 处能打开目录 —— 该有三处：扫描到的每个目录、每张壁纸卡片、`
+    + '以及"一个都没找到"时（那是最需要它的时刻）');
+});
+
+// ⚠️ 卡片上的按钮不能顺手把壁纸装上。
+check('卡片的「打开目录」不触发装载（stopPropagation）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const i = dash.indexOf("open.className = 'ws-open'");
+  assert.ok(i > 0, '卡片上没有打开目录的按钮');
+  const block = dash.slice(i, i + 500);
+  assert.match(block, /stopPropagation/,
+    '没有 stopPropagation ⟹ 点「打开目录」会连带触发卡片的 onclick（装载壁纸）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

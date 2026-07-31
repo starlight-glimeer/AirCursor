@@ -1134,6 +1134,33 @@ async function renderWEStatus() {
   await renderWEControls();
 }
 
+// 实际频谱值。⚠️ **这是"参数该调多少"的唯一依据。**
+//
+// 我为"幅度/形状不对"改了三轮参数，而从没看过那 128 个数长什么样 ——
+// 每轮都从壁纸代码反推"应该是多少"，然后靠用户看截图判断。
+// ⟹ 有了这一行，调参从"猜"变成"读数"。
+function renderAudioFrame(frame) {
+  const node = document.getElementById('we-audio-frame');
+  if (!node || !frame) return;
+  // ⚠️ 报三件事，每件都直接对应一个可能的问题：
+  //   max        —— 顶天了没有（>1.5 说明 NORMALIZE 太大）
+  //   low/high   —— 形状对不对（音乐应该低频远大于高频）
+  //   逐段值      —— 具体哪一段不对
+  const shape = frame.lowMean > frame.highMean * 1.5 ? '✅ 低频>高频（像音乐）'
+    : (frame.highMean > frame.lowMean * 1.2
+      ? '⚠️ 高频>低频 —— 那不是音乐的形状，分箱或加权有问题'
+      : '⚠️ 低高频差不多 —— 大概是白噪声或者加权把差异抹平了');
+  node.innerHTML = `<b>实际频谱</b>（每半秒刷新）`
+    + `<br>最大 ${frame.max}　平均 ${frame.mean}`
+    + `　${frame.max > 1.5 ? '<span class="warn">⚠️ 顶天了，NORMALIZE 要调小</span>'
+      : (frame.max < 0.05 ? '<span class="warn">⚠️ 太小，NORMALIZE 要调大</span>' : '')}`
+    + `<br>低频段(0-39) ${frame.lowMean}　高频段(80-119) ${frame.highMean}　${shape}`
+    + `<br><span style="font-family:ui-monospace;font-size:10px">`
+    + frame.samples.map((s) => `[${s.i}] ${s.v}`).join('　')
+    + '</span>';
+  node.hidden = false;
+}
+
 function renderAudioStatus(audio) {
   const node = document.getElementById('we-audio-state');
   if (!node) return;
@@ -1429,6 +1456,25 @@ function workshopCard(item, onPick) {
   tp.textContent = parts.join(' · ');
   card.appendChild(tp);
 
+  // ⚠️ 本地壁纸多一个「打开目录」——
+  // 用户要的：「我的壁纸这里要能够点开……我要能进到那个目录，看到我的壁纸文件」。
+  //
+  // 只在 item.dir 存在时加（工坊卡片是远程的，没有本地目录）。
+  // ⚠️ 用 stopPropagation：卡片本身的 onclick 是"装载这个壁纸"，
+  // 点「打开目录」不该顺手把它装上。
+  if (item.dir) {
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'ws-open';
+    open.textContent = '📁';
+    open.title = `在 Finder 里打开\n${item.dir}`;
+    open.onclick = (event) => {
+      event.stopPropagation();
+      window.gw.revealWallpaperDir(item.dir);
+    };
+    card.appendChild(open);
+  }
+
   card.onclick = () => onPick(item);
   return card;
 }
@@ -1526,8 +1572,24 @@ async function renderMine() {
     grid.innerHTML = '';
     // ⚠️ 空列表时报出扫过哪些目录 —— 否则用户不知道我们找过哪儿，
     // 而他可能把壁纸放在别的地方。
-    state.innerHTML = '一个壁纸都没找到。扫过这些目录：\n'
-      + (result.scannedRoots || []).join('\n');
+    // ⚠️ "一个都没找到"是最需要"打开目录"的时刻 —— 用户要去里面放东西。
+    // 只报路径让他自己去 Finder 粘贴，那是把最后一步留给了他。
+    state.innerHTML = '一个壁纸都没找到。'
+      + '<div class="bar-row" style="margin-top:6px">'
+      + '<button class="act" id="mine-open-ours" type="button">打开我的壁纸目录</button>'
+      + '<span class="hint">把壁纸放进去（每个壁纸一个子目录，里面要有 project.json）</span>'
+      + '</div>'
+      + '<div class="hint" style="margin-top:6px">扫过这些目录：\n'
+      + (result.scannedRoots || []).join('\n') + '</div>';
+    // ⚠️ innerHTML 重建了节点 ⟹ 每次都要重新绑（绑在旧节点上等于没绑）。
+    const openOurs = document.getElementById('mine-open-ours');
+    if (openOurs) {
+      openOurs.onclick = async () => {
+        // 不传路径 = 打开我们自己的目录（主进程会顺手建出来 + 放说明文件）。
+        const out = await window.gw.revealWallpaperDir();
+        if (!out.ok) state.innerHTML = `<span class="warn">${out.error}</span>`;
+      };
+    }
     return;
   }
 
@@ -1539,6 +1601,7 @@ async function renderMine() {
   for (const item of result.items) {
     const card = workshopCard({
       ...item,
+      // ⚠️ item.dir 透传下去 —— 卡片靠它决定要不要显示「打开目录」。
       // 本地文件走 file://（自定义 protocol 只服务当前装载的那个）
       preview: item.preview ? `file://${encodeURI(item.preview)}` : null,
     }, async () => {
@@ -1565,7 +1628,32 @@ function renderMineDirs() {
   const dirs = (config.we && config.we.libraryDirs) || [];
   host.innerHTML = '';
 
-  // ⚠️ **先显示自动扫的目录。**
+  // ⚠️ **我们自己的壁纸目录放最前面，而且常驻显示。**
+  //
+  // 用户要的：「你的默认壁纸目录改成标准的壁纸软件的目录层级」+「要能够点开」。
+  // ⟹ "我的壁纸放哪"这个问题必须一眼看到答案，而不是等到"一个都没找到"时才出现。
+  window.gw.ourWallpaperDir().then((res) => {
+    if (!res || !res.ok) return;
+    const box = document.createElement('div');
+    box.className = 'bar-row';
+    box.style.cssText = 'align-items:baseline;margin-bottom:8px';
+    const label = document.createElement('span');
+    label.className = 'hint';
+    label.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
+      + 'user-select:text;flex:1';
+    label.textContent = `我的壁纸目录：${res.dir}`;
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'act';
+    open.textContent = '打开';
+    open.onclick = () => window.gw.revealWallpaperDir(res.dir);
+    box.append(label, open);
+    // ⚠️ 插到最前面而不是 append —— 这个函数是异步回调，
+    // 直接 append 会让它落在已经渲染好的目录列表后面（顺序随机）。
+    host.insertBefore(box, host.firstChild);
+  });
+
+  // ⚠️ **然后是自动扫的目录。**
   //
   // 用户报：面板只写「还没加自定义目录（steamcmd 那个是自动扫的）」——
   // 而"那个"是哪个路径、存不存在、找到几个，一个字都没说。
@@ -1580,15 +1668,29 @@ function renderMineDirs() {
     host.appendChild(title);
     for (const item of auto) {
       const row = document.createElement('div');
-      row.className = 'hint';
-      row.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
-        + 'margin:2px 0 2px 8px;user-select:text';
+      row.className = 'bar-row';
+      row.style.cssText = 'align-items:baseline;margin:2px 0 2px 8px';
+      const text = document.createElement('span');
+      text.className = 'hint';
+      text.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
+        + 'user-select:text;flex:1';
       // 三件事一行说完：路径、在不在、找到几个。
       const mark = item.exists
         ? (item.found ? `✅ ${item.found} 个壁纸` : '目录在，但里面没有壁纸')
         : '（这个目录不存在 —— 正常，装了 Steam 才会有）';
-      row.textContent = `${item.path}  ${mark}`;
-      if (item.exists && !item.found) row.style.color = 'var(--warn, #c98)';
+      text.textContent = `${item.path}  ${mark}`;
+      if (item.exists && !item.found) text.style.color = 'var(--warn, #c98)';
+      row.appendChild(text);
+      // ⚠️ **能点开。** 用户要的：「我要能进到那个目录，看到我的壁纸文件」。
+      // 只有存在的目录才给按钮 —— 打开一个不存在的目录只会弹错误。
+      if (item.exists) {
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.textContent = '打开';
+        open.title = '在 Finder 里打开这个目录';
+        open.onclick = () => window.gw.revealWallpaperDir(item.path);
+        row.appendChild(open);
+      }
       host.appendChild(row);
     }
   }
@@ -1762,6 +1864,8 @@ window.gw.onVideoStatus((status) => {
 });
 
 window.gw.onWeStatus(() => renderWEStatus());
+// ⚠️ 订阅实际频谱 —— 没有它，"参数调多少"只能靠猜（我猜了三轮）。
+if (window.gw.onWeAudioFrame) window.gw.onWeAudioFrame(renderAudioFrame);
 window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
 
 // ⚠️ apply() 必须最先跑，而且不能被任何东西挡住。

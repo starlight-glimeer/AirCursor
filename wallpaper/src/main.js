@@ -2217,9 +2217,66 @@ ipcMain.handle('workshop-browse-meta', () => ({
 // ⚠️ 判据是**目录里有 project.json**，不是"我们下载过"。用户的原话：
 // "不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸就在这里"
 // ⟹ 手动拷进去的、朋友发的、从别的机器搬来的，全都能用。
+// 我们自己的壁纸目录 —— **标准壁纸软件的层级**。
+//
+// ⚠️ 用户要的（2026-07-31）：「你的默认壁纸目录改成标准的壁纸软件的目录层级」。
+//
+// 为什么不用 userData（`~/Library/Application Support/GestureWall`）：
+// 那是**应用私有数据**的位置，Finder 里默认隐藏、用户找不到、也不该往里拖文件。
+// 而壁纸是**用户的内容** —— 他要能打开、能拖进去、能备份、能从别的机器搬过来。
+//
+// ⟹ `~/Documents/GestureWall/Wallpapers/` ——
+// Wallpaper Engine 自己也是把壁纸放在可见目录（Steam workshop content 下）。
+// 每个子目录一个壁纸，里面有 project.json，和工坊的布局完全一致。
+function ourWallpaperDir() {
+  return path.join(app.getPath('documents'), 'GestureWall', 'Wallpapers');
+}
+
+// 首次启动时建出来 + 放一个说明文件。
+//
+// ⚠️ 空目录对用户是没有信息的 —— 他不知道往里放什么、什么格式认得出来。
+// 而"放了一堆 mp4 结果认不出来"是这个产品最容易撞的墙（每个子目录要有 project.json）。
+function ensureOurWallpaperDir() {
+  const dir = ourWallpaperDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const readme = path.join(dir, '把壁纸放这里.txt');
+    if (!fs.existsSync(readme)) {
+      fs.writeFileSync(readme, [
+        'GestureWall 壁纸目录',
+        '',
+        '把壁纸放进这个目录，GestureWall 会自动扫到它们。',
+        '',
+        '⚠️ 每个壁纸是一个【子目录】，里面要有 project.json：',
+        '',
+        '  Wallpapers/',
+        '    我的动态壁纸/',
+        '      project.json      ← 必须有，它说明这是什么类型的壁纸',
+        '      index.html        ← web 类壁纸的入口',
+        '    另一个壁纸/',
+        '      project.json',
+        '      video.mp4         ← video 类壁纸的文件',
+        '',
+        '⚠️ 直接把一堆 mp4 扔进 Wallpapers/ 是认不出来的 —— 没有 project.json，',
+        '   我们不知道它是壁纸还是普通视频。',
+        '',
+        '从 Steam 创意工坊下载的壁纸不用放这里，那个目录我们会自动扫。',
+        '',
+        '扫描上限：2 层深、500 个 —— 再多会让面板卡住。',
+      ].join('\n'), 'utf8');
+    }
+    return dir;
+  } catch (error) {
+    console.warn('[wallpaper] 建壁纸目录失败:', error.message);
+    return dir;
+  }
+}
+
 ipcMain.handle('workshop-local', () => {
-  // steamcmd 的下载目录 + 用户自己加的目录。
+  // 我们自己的目录 + steamcmd 的下载目录 + 用户自己加的目录。
   const roots = [
+    // ⚠️ 我们自己的放**最前面** —— 用户自己放的壁纸应该先被看到。
+    ensureOurWallpaperDir(),
     ...Workshop.STEAM_ROOTS.map((r) =>
       path.join(r, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID)),
     ...(config.we.libraryDirs || []),
@@ -2551,6 +2608,32 @@ function redactConfig(source) {
   return copy;
 }
 
+// 在 Finder 里打开一个壁纸目录（或定位到某个壁纸）。
+//
+// ⚠️ 用户要的：「我的壁纸这里要能够点开，比如 wallpaper 就是在资源管理器中打开，
+// 我要能进到那个目录，看到我的壁纸文件」。
+//
+// ⚠️ 这不是"顺手加的便利" —— 它是这个产品缺的一环：
+// 壁纸是**文件**，而用户对文件的直觉操作是"在 Finder 里看看"。
+// 之前面板上连路径都是纯文本，复制出来还得自己去 Finder 粘贴。
+ipcMain.handle('reveal-wallpaper-dir', (_event, target) => {
+  // 没给路径 = 打开我们自己的壁纸目录（"我的壁纸放哪"这个问题的答案）。
+  const dir = target || ensureOurWallpaperDir();
+  if (!fs.existsSync(dir)) {
+    return { ok: false, error: `目录不存在：${dir}` };
+  }
+  // ⚠️ openPath 而不是 showItemInFolder：前者**进入**目录，后者只是选中它。
+  // 用户说的是"我要能进到那个目录，看到我的壁纸文件" ⟹ 要进去。
+  const problem = shell.openPath(dir);
+  // openPath 返回 Promise<string>，空字符串 = 成功。
+  return Promise.resolve(problem).then((err) => (err
+    ? { ok: false, error: err }
+    : { ok: true, dir }));
+});
+
+// 我们自己的壁纸目录路径（面板要显示它，而且要能点开）。
+ipcMain.handle('our-wallpaper-dir', () => ({ ok: true, dir: ensureOurWallpaperDir() }));
+
 ipcMain.handle('reveal-diagnostics', () => {
   const dir = path.join(app.getPath('userData'), 'diagnostics');
   fs.mkdirSync(dir, { recursive: true });
@@ -2700,6 +2783,7 @@ let audioTap = null;
 let synthTimer = null;
 let synthPhase = 0;
 let audioStatus = null;
+let audioFrameCount = 0;   // 抽样计数，见下面的 we-audio-frame
 
 // 启停音频采集。跟着 config.we.audioSource 走：
 //   'netease' 只抓网易云（macOS 14.4+，更早会退回全局并报 warning）
@@ -2799,6 +2883,28 @@ function pushWEAudio(frame) {
   if (!weWindow || weWindow.isDestroyed()) return;
   const result = WE.normalizeAudioFrame(frame);
   weWindow.webContents.send('we-audio', result.data);
+  // ⚠️ 把真实频谱抽样送到面板。**这是我早就该做的事。**
+  //
+  // 我为"幅度/形状不对"改了三轮参数，而**从没看过那 128 个数长什么样** ——
+  // 每轮都在从壁纸代码反推"应该是多少"，然后靠用户看截图判断。
+  // 用户第三次说"你在干什么" —— 那是对的。
+  //
+  // ⟹ 有了这个，"该调多少"变成算术：面板直接显示每段的实际值。
+  // 抽样而不是每帧发：那是 30fps × 128 个数，全发会把 IPC 灌满。
+  audioFrameCount += 1;
+  if (audioFrameCount % 15 === 0) {   // 每半秒一次
+    broadcast('we-audio-frame', {
+      // 只送有代表性的几段 + 统计量，而不是 128 个数 —— 面板要的是"够不够、偏哪边"。
+      samples: [0, 5, 10, 20, 40, 60, 80, 100, 119].map((i) => ({
+        i, v: Number((result.data[i] || 0).toFixed(3)),
+      })),
+      max: Number(Math.max(...result.data).toFixed(3)),
+      mean: Number((result.data.reduce((a, b) => a + b, 0) / result.data.length).toFixed(3)),
+      // 前 40 段（线性区，鼓/低音）和后面的对比 —— 形状对不对看这个
+      lowMean: Number((result.data.slice(0, 40).reduce((a, b) => a + b, 0) / 40).toFixed(3)),
+      highMean: Number((result.data.slice(80, 120).reduce((a, b) => a + b, 0) / 40).toFixed(3)),
+    });
+  }
   if (result.silent) {
     const now = Date.now();
     // 别每帧都播报，那会把 IPC 灌满。

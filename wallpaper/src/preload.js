@@ -100,6 +100,14 @@ contextBridge.exposeInMainWorld('gw', {
   onStartRecording: on('start-recording'),
   onWeStatus: on('we-status'),
   onWeAudioStatus: on('we-audio-status'),
+  // ⚠️ 实际频谱值（抽样）。这是"该把 NORMALIZE 调成多少"的唯一依据 ——
+  // 在它之前我改了三轮参数，全靠从壁纸代码反推 + 用户看截图。
+  onWeAudioFrame: on('we-audio-frame'),
+
+  // 在 Finder 里打开壁纸目录。⚠️ 壁纸是**文件**，而用户对文件的直觉是"去看看" ——
+  // 之前面板上连路径都只是纯文本。
+  revealWallpaperDir: (dir) => ipcRenderer.invoke('reveal-wallpaper-dir', dir),
+  ourWallpaperDir: () => ipcRenderer.invoke('our-wallpaper-dir'),
   onWorkshopProgress: on('workshop-progress'),
   onMouseStatus: on('mouse-status'),
   onVideoStatus: on('video-status'),
