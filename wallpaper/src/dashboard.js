@@ -1183,8 +1183,11 @@ function renderAudioFrame(frame) {
     + `　${frame.max > 1.5 ? '<span class="warn">⚠️ 顶天了，NORMALIZE 要调小</span>'
       : (frame.max < 0.05 ? '<span class="warn">⚠️ 太小，NORMALIZE 要调大</span>' : '')}`
     + `<br>低频段(0-39) ${frame.lowMean}　高频段(80-119) ${frame.highMean}　${shape}`
+    + `<br>最大值在第 <b>${frame.peakAt}</b> 段`
+    // ⚠️ 单段扫描时这个数应该跟着扫描段号走 —— 那是"扫描真的生效了"的直接证据。
     + `<br><span style="font-family:ui-monospace;font-size:10px">`
-    + frame.samples.map((s) => `[${s.i}] ${s.v}`).join('　')
+    + frame.samples.map((s) => (s.i === frame.peakAt
+      ? `<b>[${s.i}] ${s.v}</b>` : `[${s.i}] ${s.v}`)).join('　')
     + '</span>';
   node.hidden = false;
 }

@@ -2826,9 +2826,29 @@ function reportAudioFrame(data, source) {
   broadcast('we-audio-frame', {
     source: source || (config.we && config.we.audioSource) || '?',
     // 只送有代表性的几段 + 统计量，而不是 128 个数 —— 面板要的是"够不够、偏哪边"。
-    samples: [0, 5, 10, 20, 40, 60, 80, 100, 119].map((i) => ({
-      i, v: Number((arr[i] || 0).toFixed(3)),
-    })),
+    // ⚠️ 报**最大值所在的段**，而不是固定的 9 个采样点。
+    //
+    // 用户实测撞到：扫描到第 30 段时，面板显示 `[0]0 [5]0 [10]0 [20]0 [40]0 …`
+    // 全是 0 —— 因为固定采样点 [0,5,10,20,40,60,80,100,119] 里**没有 30**。
+    // 而值确实存在于第 30 段。
+    //
+    // ⟹ 那让"数据对的"看起来像"数据全 0"，而他有理由以为扫描没工作。
+    // **固定采样点在诊断单段信号时必然漏掉它。**
+    //
+    // 现在：前几个固定点（看整体形状）+ 最大值那一段（保证单段信号一定被看到）。
+    samples: (() => {
+      const fixed = [0, 10, 20, 40, 60, 80, 100, 119];
+      let peak = 0;
+      for (let i = 1; i < arr.length; i += 1) if (arr[i] > arr[peak]) peak = i;
+      const keys = fixed.includes(peak) ? fixed : [...fixed, peak].sort((a, b) => a - b);
+      return keys.map((i) => ({ i, v: Number((arr[i] || 0).toFixed(3)) }));
+    })(),
+    // 最大值在第几段 —— 单段扫描时这个数应该跟着扫描段号走。
+    peakAt: (() => {
+      let peak = 0;
+      for (let i = 1; i < arr.length; i += 1) if (arr[i] > arr[peak]) peak = i;
+      return peak;
+    })(),
     max: Number(Math.max(...arr).toFixed(3)),
     mean: Number((arr.reduce(sum, 0) / arr.length).toFixed(3)),
     // 前 40 段（线性区，鼓/低音）和后面的对比 —— 形状对不对看这个
@@ -2871,10 +2891,24 @@ function reportAudioFrame(data, source) {
 // "第 N 段画在圆周的哪个角度" —— 不用再读代码猜。
 let sweepIndex = 0;
 let sweepTimer = null;
+// ⚠️ 30fps 而不是"每 2 秒一帧" —— PWCircle 只在收到帧时重绘，
+// 发得太稀画面就静止，而静止的画面里留着的是上一个音源的残影。
+const SWEEP_FPS = 30;
 
 function startSweepAudio() {
   if (sweepTimer) return;
   const STEPS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 119];
+  // ⚠️ **30fps 连续发**，而不是每 2 秒一帧。
+  //
+  // 我第一版是每 2 秒发一帧，那有个致命缺陷：**PWCircle 只在收到帧时才重绘**
+  //（它没有 requestAnimationFrame 循环）⟹ 画面在两帧之间**完全静止**，
+  // 那时候屏幕上留着的是**最后一次真采集**的画面（一圈长短不一的柱子）。
+  //
+  // ⟹ 用户看到"很多柱子"完全合理 —— 那是残留的旧画面，而不是扫描画的。
+  // 而他有理由以为扫描没生效，因为画面确实没变。
+  //
+  // ⚠️ 这是"诊断工具自己有 bug"，比没有诊断更糟：它让人怀疑一个对的结论。
+  // 30fps 连续发 ⟹ 画面每帧都被清+重画 ⟹ **只可能有一根柱子**。
   sweepTimer = setInterval(() => {
     if (!weWindow || weWindow.isDestroyed()) return;
     // ⚠️ **定时器自己检查配置，不依赖外部清理。**
@@ -2890,7 +2924,9 @@ function startSweepAudio() {
       stopSweepAudio();
       return;
     }
-    const at = STEPS[sweepIndex % STEPS.length];
+    // 每 2 秒换一段（按时间算，不是按帧数）——
+    // 帧率和换段速度是两件事，混在一起会让"多久换一次"随帧率漂。
+    const at = STEPS[Math.floor(sweepIndex / (2 * SWEEP_FPS)) % STEPS.length];
     const frame = new Array(128).fill(0);
     // 给一个明显的值 —— 0.8 在 PWCircle 里是 0.8*1.8*100 = 144px，看得清
     frame[at] = 0.8;
@@ -2919,8 +2955,8 @@ function startSweepAudio() {
       };
     broadcast('we-audio-status', audioStatus);
     sweepIndex += 1;
-  }, 2000);
-  console.log('[audio] 单段扫描测试已启动');
+  }, 1000 / SWEEP_FPS);
+  console.log(`[audio] 单段扫描测试已启动（${SWEEP_FPS}fps，每 2 秒换一段）`);
 }
 
 function stopSweepAudio() {

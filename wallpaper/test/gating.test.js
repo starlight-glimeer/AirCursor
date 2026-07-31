@@ -2853,4 +2853,41 @@ check('闸门丢帧报到面板（打包版看不到 console）', () => {
   assert.match(preload, /onWeAudioDrop/, 'preload 没暴露丢帧通道');
 });
 
+
+// ⚠️ 诊断工具自己不能有 bug —— 那比没有诊断更糟，它让人怀疑对的结论。
+//
+// 用户为这两个缺陷又烧掉两轮：
+check('扫描以正常帧率连续发（发太稀画面会静止）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /SWEEP_FPS/,
+    '扫描没有帧率常量 —— 每 2 秒发一帧时 PWCircle 只在收到帧时重绘'
+    + '（它没有 requestAnimationFrame 循环）⟹ 画面在两帧之间**完全静止**，'
+    + '而静止画面里留着的是上一个音源的残影。用户看到"很多柱子"就是那个残影');
+  const m = src.match(/const SWEEP_FPS = (\d+)/);
+  assert.ok(m && Number(m[1]) >= 20,
+    `扫描帧率 ${m && m[1]} 太低 —— 低于 20fps 画面会看起来是静止的`);
+  // 换段要按时间算，不能按帧数
+  const i = src.indexOf('function startSweepAudio');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /SWEEP_FPS\)\s*%|\/ \(2 \* SWEEP_FPS\)/,
+    '换段按帧数算 ⟹ "多久换一次"会随帧率漂');
+});
+
+// ⚠️ 固定采样点在诊断**单段**信号时必然漏掉它。
+check('频谱上报带峰值段（固定采样点会漏掉单段信号）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /peakAt/,
+    '上报没带峰值段 ⟹ 扫描到第 30 段时，固定采样点 [0,10,20,40,60,…] 里没有 30，'
+    + '面板显示全 0 —— 而值确实存在。那让"数据对的"看起来像"数据全 0"');
+  const i = src.indexOf('samples:');
+  const block = src.slice(i, i + 600);
+  assert.match(block, /includes\(peak\)/,
+    '采样点里没有保证包含峰值段 ⟹ 单段信号可能一个采样点都命中不到');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /frame\.peakAt/,
+    '面板没显示峰值段 —— 单段扫描时那个数该跟着扫描段号走，'
+    + '那是"扫描真的生效了"的直接证据');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
