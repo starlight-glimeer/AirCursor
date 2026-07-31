@@ -2676,6 +2676,65 @@ require('./nowplaying').install({
 //
 // ⚠️ 一个壁纸应用**必须**有正常的退出路径：它长在桌面层、没有可见窗口，
 // 用户唯一的直觉入口就是 Dock 图标和菜单栏。
+// 退出。**不可阻挡，而且每一步都报出来。**
+//
+// ⚠️ 为什么不用 `app.quit()` / `role: 'quit'`：实测它们不管用 —— 用户报
+// 「菜单栏退出之后程序没有停止，壁纸还是正常运行」，而 `ps` 显示主进程
+// CPU 0.1% / 累计 1.51 秒 ⟹ **根本没走到退出逻辑**，不是卡住。
+//
+// 嫌疑是我们那两个特殊窗口（`type: 'desktop'` 的壁纸层 + `screen-saver` 层的骨架层）
+// 让 Electron 的标准退出链停在了中途。但我**没有坐实是哪一步** ——
+// ⟹ 所以不去修那条链，改成自己走完，并且**每一步都打日志**：
+// 下次如果还退不掉，日志会直接说卡在第几步，不用再猜。
+//
+// 最后一道是 `app.exit(0)`：它跳过所有 before-quit/will-quit 钩子直接结束进程。
+// ⚠️ 那是**故意的**：一个退不掉的壁纸程序会占着屏幕、摄像头、屏幕录制权限，
+// 用户唯一的出路是去终端 pkill —— 那比"退出时少还原一次系统壁纸"糟糕得多。
+let quitting = false;
+
+function hardQuit(from) {
+  if (quitting) {
+    console.log(`[quit] 已经在退出中（${from} 又触发了一次）`);
+    return;
+  }
+  quitting = true;
+  console.log(`[quit] 开始退出（来自：${from}）`);
+
+  const step = (name, fn) => {
+    try {
+      fn();
+      console.log(`[quit] ✓ ${name}`);
+    } catch (error) {
+      // ⚠️ 一步失败不能挡住后面的 —— 那正是"退不掉"的成因。
+      console.warn(`[quit] ✗ ${name}：${error && error.message}`);
+    }
+  };
+
+  step('注销全局快捷键', () => globalShortcut.unregisterAll());
+  step('拆掉所有窗口', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      // ⚠️ 用 getAllWindows() 而不是我们那四个变量 —— 漏掉任何一个窗口
+      // 都会让进程留着。destroy() 不触发 close 事件，所以不会被拦。
+      try { if (!win.isDestroyed()) win.destroy(); } catch { /* 已经没了 */ }
+    }
+  });
+  step('停掉 helper 进程', () => {
+    // 独立进程，不会跟着主进程死 —— 留着会占住摄像头/麦克风/屏幕录制。
+    systemBridge.stop();
+    if (audioTap) audioTap.stop();
+    if (mouseTap) mouseTap.stop();
+  });
+  step('还原系统壁纸', () => {
+    // ⚠️ 1.5 秒超时：osascript 默认能慢到 8 秒，而那段时间用户会以为卡死了。
+    if (originalWallpaper) setSystemWallpaper(originalWallpaper, 1500);
+  });
+
+  console.log('[quit] 结束进程');
+  // ⚠️ `app.exit(0)` 而不是 `app.quit()` —— 前者跳过所有钩子直接结束。
+  // 到这一步该做的都做完了，没有理由再给任何东西阻止退出的机会。
+  app.exit(0);
+}
+
 function buildAppMenu() {
   const template = [
     {
@@ -2692,9 +2751,18 @@ function buildAppMenu() {
           click: () => { destroyOverlay(); },
         },
         { type: 'separator' },
-        // ⚠️ role: 'quit' 而不是自己 click: app.quit() —— role 走系统标准路径，
-        // Cmd+Q 和 Dock 右键的「退出」都会命中它。
-        { role: 'quit', label: '退出 GestureWall' },
+        // ⚠️ 不用 role: 'quit'。
+        //
+        // 实测（用户报「菜单栏退出之后程序没有停止，壁纸还是正常运行」+ ps 输出）：
+        //   主进程 PID 66918 还在，CPU 0.1% / 累计 1.51 秒 ⟹ **不是卡在退出，
+        //   是根本没走到退出**。而 `GestureWallMouse-1c023582281b` 也还在跑。
+        //
+        // role: 'quit' 走的是 Electron 的标准链（before-quit → 关所有窗口 →
+        // will-quit），而我们有一个 `type: 'desktop'` 的壁纸窗口和一个盖在
+        // screen-saver 层的骨架窗口 —— 那条链上任何一步没按预期走，退出就静默停住。
+        //
+        // ⟹ 不猜它为什么停住，改成**自己控制的、可观测的**退出路径。
+        { label: '退出 GestureWall', accelerator: 'Command+Q', click: () => hardQuit('菜单') },
       ],
     },
     // 编辑菜单：面板里有输入框（工坊搜索、API key），没有这个 Cmd+V 粘贴不了。
@@ -2766,7 +2834,7 @@ app.whenReady().then(() => {
   });
   globalShortcut.register('Control+Shift+L', cycleStrategy);
   globalShortcut.register('Control+Shift+R', () => broadcast('reset-view', {}));
-  globalShortcut.register('Control+Shift+Q', () => app.quit());
+  globalShortcut.register('Control+Shift+Q', () => hardQuit('⌃⇧Q'));
   // 逃生开关:把骨架层直接拆掉。
   //
   // 这一层盖在全屏最上层,如果穿透因为任何原因失效,后果是**整个屏幕点不动** —— 用户
@@ -2814,10 +2882,16 @@ app.on('window-all-closed', () => {});
 //
 // ⟹ 先把可见的东西拆掉（窗口、壁纸层），再做还原这类慢活。
 // 顺序反了用户就会以为点了没用，然后再点一次 / 强制退出。
+// ⚠️ will-quit 现在只是**兜底** —— 正常退出走 hardQuit()（它最后 app.exit(0)，
+// 压根不会触发这里）。这条路径留给我们控制不到的退出：系统关机、macOS 强制退出、
+// 别的代码调了 app.quit()。
+//
+// ⟹ 两条路径做同一件事，所以清理逻辑要能重复执行而不出错（都是幂等的）。
 app.on('will-quit', () => {
-  // ① 先让"还在跑"这件事立刻停止 —— 窗口没了用户才知道命令生效了。
-  for (const win of [weWindow, wallWindow, overlayWindow, dashboardWindow]) {
-    try { if (win && !win.isDestroyed()) win.destroy(); } catch { /* 已经没了 */ }
+  if (quitting) return;   // hardQuit 已经清理过了
+  console.log('[quit] will-quit（不是我们主动触发的，可能是系统关机）');
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { if (!win.isDestroyed()) win.destroy(); } catch { /* 已经没了 */ }
   }
   globalShortcut.unregisterAll();
   // 两个 helper 都是独立进程，不会因为主进程退出而自动结束 —— 留着会占住

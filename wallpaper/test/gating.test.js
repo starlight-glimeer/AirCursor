@@ -2155,8 +2155,16 @@ check('有应用菜单，且退出走 role: quit（Cmd+Q 和 Dock 右键都要�
   const src = codeOnly(mainSrc);
   assert.match(src, /Menu\.setApplicationMenu/,
     '零菜单 ⟹ 除了记住 ⌃⇧Q 没有别的出口，而这条 bug AirCursor 早期就出过');
-  assert.match(src, /role: 'quit'/,
-    "退出没用 role: 'quit' ⟹ Cmd+Q 和 Dock 右键的「退出」不一定命中");
+  // ⚠️ 这条断言上一版要求 `role: 'quit'`，而**实测把它证伪了**：
+  // 用户报「菜单栏退出之后程序没有停止」，ps 显示主进程 CPU 0.1%/1.51s
+  // ⟹ 根本没走到退出逻辑。role 走 Electron 标准链，而我们那两个特殊窗口
+  //（type:'desktop' 壁纸层 + screen-saver 骨架层）让那条链停在中途。
+  //
+  // ⟹ 现在验的是"有自己控制的退出路径"而不是"用了标准 role"。
+  assert.match(src, /Command\+Q/,
+    '菜单里的退出没绑 Cmd+Q —— 那是 mac 用户的第一反应');
+  assert.match(src, /hardQuit/,
+    "退出没走自己的路径 —— role: 'quit' 实测在本项目不管用（见 hardQuit 的注释）");
   // 菜单必须在 whenReady 里最先建 —— 后面任何一步抛异常都会让应用"跑着但退不掉"
   const ready = src.indexOf('app.whenReady()');
   const build = src.indexOf('buildAppMenu()', ready);
@@ -2187,6 +2195,44 @@ check('退出路径上的 osascript 超时要短（8 秒会被当成卡死）', 
   const m = src.match(/setSystemWallpaper\(originalWallpaper, (\d+)\)/);
   assert.ok(m && Number(m[1]) <= 2000,
     `退出超时 ${m && m[1]}ms 太长 —— 超过 2 秒用户就会认为程序卡死了`);
+});
+
+
+// ⚠️ 退出的每一步都要能观测。
+//
+// 实测两轮都栽在"退不掉"上，而两轮都**看不到它卡在哪** ——
+// 第一轮我以为是慢活拖住（改了顺序），第二轮才从 ps 输出看出
+// 主进程 CPU 0.1%/累计 1.51 秒 ⟹ 根本没走到退出逻辑。
+// ⟹ 如果第一轮就有分步日志，第二轮不用猜。
+check('退出分步打日志（下次退不掉能直接看到卡在哪）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function hardQuit');
+  assert.ok(i > 0, '没有 hardQuit');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /\[quit\]/, '退出过程没有日志 ⟹ 退不掉时只能猜卡在哪');
+  // 每一步都要 try 住：一步失败不能挡住后面的，那正是"退不掉"的成因
+  assert.match(fn, /catch/,
+    '某一步抛异常会挡住后面所有清理 ⟹ 那正是"退不掉"的成因');
+  // 最后一定要 app.exit：那是不可阻挡的兜底
+  assert.match(fn, /app\.exit\(0\)/,
+    '结尾不是 app.exit(0) ⟹ 任何 before-quit/will-quit 钩子都能再次阻止退出，'
+    + '而退不掉的壁纸会占着屏幕/摄像头/屏幕录制权限');
+});
+
+check('退出用 getAllWindows() 而不是几个变量（漏一个窗口进程就留着）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function hardQuit');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /BrowserWindow\.getAllWindows\(\)/,
+    '按变量名逐个拆窗口 ⟹ 漏掉任何一个（或以后新加的）都会让进程留着');
+});
+
+check('重复触发退出是幂等的（用户会连点）', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function hardQuit');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /if \(quitting\)/,
+    '没有防重入 ⟹ 用户点两次会跑两遍清理（而"点了没反应"时人一定会再点）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
