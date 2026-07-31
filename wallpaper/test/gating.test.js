@@ -1720,4 +1720,39 @@ check('主进程模块里 if(裸变量) 的那个变量都有声明（只在特�
 // 合并时踩到:这一行原本在文件中间(约 1169 行),而它后面还有几十条 check ⟹ 报
 // 「78 项通过」而实际跑了 121 条。**报数少了不会红**,所以它看起来一直是对的,
 // 而「守卫数量」正是我们判断有没有丢守卫的依据 —— 口径错了那个判断就全废。
+
+// ⚠️ bind() 的每个 id 必须在 HTML 里真实存在。
+//
+// 实测烧的一轮：收缩成两个页签时删了 music / showHud / moodFromCover 三个开关的元素，
+// 而 renderToggles 里的 bind 调用留着 ⟹ `node.checked` 对 null 抛 TypeError。
+//
+// 后果和它的样子完全不成比例：renderToggles 是 apply() 的第三步，一抛之后
+// **后面所有初始化都不跑** —— 我的壁纸目录列表、鼠标转发勾选、筛选初始状态全空。
+// 用户看到的是「功能没反应」，而根因是一个被删掉的 UI 元素。
+//
+// 这是「删 UI 留调用」这个形状的第 N 次，所以要一条机械守卫。
+check('renderToggles 里 bind 的每个 id 都在 HTML 中存在（删 UI 留调用会打断 apply）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const ids = [...codeOnly(dash).matchAll(/bind\('([a-zA-Z]+)'/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 4, `只找到 ${ids.length} 个 bind，正则大概失效了`);
+  for (const id of ids) {
+    assert.ok(html.includes(`id="${id}"`),
+      `bind('${id}') 指向的元素不在 dashboard.html 里 —— 会抛 TypeError 并打断 apply()，`
+      + '后面所有初始化都不跑');
+  }
+});
+
+// 就算漏删了，也不该把 apply() 整条带走。
+check('bind 对缺失元素跳过而不是抛（一个删掉的开关不该弄死整个面板）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const start = dash.indexOf('const bind = (id');
+  assert.ok(start > 0, '找不到 bind');
+  const body = dash.slice(start, start + 400);
+  assert.match(body, /if \(!node\)/,
+    'bind 没有 null 检查 —— 一个被删掉的开关会打断 apply() 的其余部分');
+  // 静默跳过会变成查不出的鬼故事，必须报出来
+  assert.match(codeOnly(dash), /missing\.push/, '跳过了但没记录，界面不动时查不出原因');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

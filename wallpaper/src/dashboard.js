@@ -573,8 +573,21 @@ function buildPreview(action, recorded) {
   return wrap;
 }
 function renderToggles() {
+  // ⚠️ 元素不在就跳过，而且**说出来**。
+  //
+  // 实测烧的一轮：收缩成两个页签时删掉了 music / showHud / moodFromCover 三个开关，
+  // 但这里的 bind 调用留着 ⟹ `node.checked` 对 null 抛 TypeError。
+  //
+  // 后果和它的样子完全不成比例：renderToggles 是 apply() 的第三步，它一抛，
+  // **后面所有初始化都不跑**（我的壁纸目录列表、鼠标转发勾选、筛选初始状态…）。
+  // 用户看到的是「某个功能没反应」，而根因是一个被删掉的 UI 元素。
+  //
+  // ⟹ 静默跳过是对的（HTML 就是不该有它了），但必须报一句 ——
+  // 静默 no-op 会让「配置存了但界面不动」变成查不出的鬼故事。
+  const missing = [];
   const bind = (id, get_, set_) => {
     const node = document.getElementById(id);
+    if (!node) { missing.push(id); return; }
     node.checked = get_();
     node.onchange = () => set_(node.checked);
   };
@@ -597,10 +610,15 @@ function renderToggles() {
       state.className = 'state warn';
     }
   });
-  bind('music', () => config.music.enabled, (v) => window.gw.setConfig({ music: { enabled: v } }));
-  bind('moodFromCover', () => config.music.moodFromCover,
-    (v) => window.gw.setConfig({ music: { moodFromCover: v } }));
-  bind('showHud', () => config.debug.showHud, (v) => window.gw.setConfig({ debug: { showHud: v } }));
+  // ⚠️ 这里曾经还有三个 bind:music / moodFromCover / showHud。
+  //
+  // 收缩成两个页签时那三个开关的 HTML 元素被删了,而 bind 调用留着 ⟹
+  // `node.checked` 对 null 抛 TypeError,把 apply() 整个打断。
+  // ⟹ 删掉它们(元素本来就不该回来);上面的 missing 报告负责逮住下一次同类漏删。
+  if (missing.length) {
+    console.warn(`[dashboard] 这些开关的 HTML 元素不在了,已跳过:${missing.join(', ')}`
+      + ' —— 要么补回元素,要么删掉这里的 bind 调用');
+  }
 }
 
 // ---------------------------------------------------------------------------
