@@ -208,4 +208,51 @@ check('段 0 不读 bin 0（那是直流不是频率）', () => {
     + '而窗内的极低频（<20Hz 听不见的隆隆声）仍会落进 bin 0/1，那些不该驱动画面');
 });
 
+
+console.log('\n  FFT 自检（"单段孤峰"的判据）');
+
+// ⚠️ 用户实测三份数据（2026-07-31），尖刺全是**单段孤峰**：
+//
+//   第1份 [52]0.01→0.424 升、[53]0.424→0.048 降   ⟹ 段 52 孤峰
+//   第2份 [53]0.223→0.476 升、[54]0.476→0.098 降  ⟹ 段 53 孤峰
+//   第3份 [35]0.196→0.491 升、[36]0.491→0.145 降  ⟹ 段 35 孤峰
+//
+// 位置每次变，但都落在 2.5k-6kHz。
+//
+// ⚠️ 而单段孤峰**在物理上不可能来自真实音乐**：
+// FFT + Hann 窗的主瓣宽约 4 个 bin，而相邻段隔 2 个 bin
+// ⟹ 任何真实频率成分至少落进 2 个相邻段。
+//
+// ⟹ 那说明 FFT 这一层有问题，而三个可能（窗函数没生效 / ctoz 的 stride 错 /
+// magnitudes 被写坏）**用同一个测试就能分辨**：1kHz 纯音占几段。
+check('启动时跑 FFT 自检（1kHz 纯音）', () => {
+  assert.match(swiftSrc, /func selfTestFFT/,
+    '没有 FFT 自检 ⟹ "单段孤峰"只能靠我推理，而我为它猜错了十次');
+  assert.match(swiftCode, /selfTestFFT\(Spectrum\(\)\)/,
+    '自检没被调用 —— 定义了不调等于没有');
+});
+
+check('自检报主瓣宽度（那是判据本身）', () => {
+  const i = swiftSrc.indexOf('func selfTestFFT');
+  const fn = swiftSrc.slice(i, i + 2000);
+  assert.match(fn, /segsAboveQuarter/,
+    '自检不报主瓣宽度 ⟹ 分不清"窗函数没生效"和"频率映射错了"');
+  assert.match(fn, /peakSeg/, '不报峰值位置 —— 那是频率映射对不对的判据');
+  assert.match(fn, /expectSeg/, '不报期望位置 —— 那样"对不对"要人工算');
+  assert.match(fn, /neighbors/,
+    '不报邻域值 ⟹ 看不出主瓣的形状（单段孤峰 vs 正常的钟形）');
+});
+
+check('自检结果送到面板（打包版没有终端）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /onSelfTest/, '主进程没接自检回调');
+  const i = main.indexOf('onSelfTest');
+  const block = main.slice(i, i + 900);
+  assert.match(block, /broadcast\('helper-log'/,
+    '自检结果只写 console ⟹ 打包版里看不到（这是我这轮第五次踩这个）');
+  // 要给出判断，不只报数字
+  assert.match(block, /窗函数或 stride/,
+    '不说"这个数不对意味着什么" ⟹ 用户拿到数字也不知道下一步');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

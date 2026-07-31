@@ -135,6 +135,8 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
 
 // 启动采集。onFrame 拿 128 段数组，onStatus 拿 describeStatus 的结果。
 function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
+  // ⚠️ FFT 自检的回调。默认空函数 —— 老调用方不传也不会炸。
+  onSelfTest = () => {},
   spawnFn = spawn, runFn = spawnSync }) {
   const built = ensureHelper(sourcePath, outDir, runFn);
   if (!built.ok) {
@@ -155,6 +157,14 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
     for (const msg of messages) {
       if (msg.type === 'audio' && Array.isArray(msg.bins)) {
         onFrame(msg.bins);
+      } else if (msg.type === 'selftest') {
+        // ⚠️ FFT 自检结果 —— 那是"单段孤峰"这个现象的判据。
+        //
+        // 用户实测的尖刺全是单段孤峰，而 FFT + Hann 窗的主瓣宽约 4 个 bin
+        // ⟹ 真实音乐不可能产生单段孤峰 ⟹ FFT 这一层有问题。
+        // 自检用 1kHz 纯音直接量出主瓣宽度，比我推理靠谱
+        //（这个现象我已经猜错十次）。
+        onSelfTest(msg);
       } else if (msg.type === 'status') {
         const described = describeStatus(msg, packaged);
         if (described) onStatus(described);

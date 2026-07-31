@@ -312,6 +312,58 @@ final class Spectrum {
     }
 }
 
+// ⚠️ **FFT 自检**：喂一个已知频率的纯音，看它在频谱上占几段。
+//
+// 用户实测（2026-07-31）的尖刺全是**单段孤峰**（前后都低、只有它自己高），
+// 位置每次变但都落在 2.5k-6kHz。而那在物理上不可能来自真实音乐：
+//
+//   FFT + Hann 窗的主瓣宽约 4 个 bin，而相邻段隔 2 个 bin
+//   ⟹ 任何真实频率成分至少落进 **2 个相邻段**
+//
+// ⟹ 单段孤峰说明 FFT 这一层有问题。三个可能（都没验证）：
+//   · 窗函数没生效 ⟹ 主瓣会很窄
+//   · vDSP_ctoz 的 stride 用错 ⟹ 读到的不是连续样本
+//   · magnitudes 被写坏
+//
+// **这三个用同一个测试就能分辨**：1kHz 纯音应该占 3-4 段且峰值在 bin 21 附近。
+// ⟹ 启动时跑一次，把结果打出来。那比我继续推理有用
+//（这个现象我已经猜错十次）。
+func selfTestFFT(_ spectrum: Spectrum) {
+    let freq: Float = 1000.0
+    var tone = [Float](repeating: 0, count: FFT_SIZE)
+    for i in 0..<FFT_SIZE {
+        tone[i] = sinf(2.0 * Float.pi * freq * Float(i) / Float(SAMPLE_RATE))
+    }
+    let bins = spectrum.process(tone)
+    // 峰值段 + 它周围有几段超过峰值的 1/4（那是"主瓣宽度"的粗略度量）
+    var peak = 0
+    for i in 1..<bins.count where bins[i] > bins[peak] { peak = i }
+    let threshold = bins[peak] * 0.25
+    var wide = 0
+    for v in bins where v > threshold { wide += 1 }
+    // 1kHz 在哪一段：bin = 1000 / (24000/512) ≈ 21 ⟹ 段 = (21-1)/2 = 10
+    let expectSeg = Int((freq / (Float(SAMPLE_RATE) / 2.0 / Float(FFT_SIZE / 2)) - 1) / 2)
+    emit([
+        "type": "selftest",
+        "tone": Int(freq),
+        "peakSeg": peak,
+        "expectSeg": expectSeg,
+        "peakValue": bins[peak],
+        // ⚠️ 这个数是判据：<2 说明主瓣太窄（窗函数或 stride 有问题），
+        // 3-6 是正常的 Hann 窗主瓣
+        "segsAboveQuarter": wide,
+        "neighbors": [
+            peak >= 2 ? bins[peak - 2] : 0,
+            peak >= 1 ? bins[peak - 1] : 0,
+            bins[peak],
+            peak + 1 < bins.count ? bins[peak + 1] : 0,
+            peak + 2 < bins.count ? bins[peak + 2] : 0,
+        ],
+    ])
+}
+
+
+
 final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     private let spectrum = Spectrum()
@@ -488,6 +540,17 @@ if probeOnly {
     }
     RunLoop.main.run()
 } else {
+    // ⚠️ 启动时先跑一次 FFT 自检 —— 那比继续推理有用。
+    //
+    // 用户实测的尖刺是**单段孤峰**，而 FFT + Hann 窗的主瓣宽约 4 个 bin
+    // ⟹ 真实音乐不可能产生单段孤峰。自检用 1kHz 纯音验这一条：
+    //   segsAboveQuarter < 2  ⟹ 主瓣太窄（窗函数或 stride 有问题）
+    //   3-6                   ⟹ 正常
+    //   peakSeg != expectSeg  ⟹ 频率映射错了
+    //
+    // 输出会进 CloudWatch/终端，打包版里也会进面板的日志区。
+    selfTestFFT(Spectrum())
+
     let tap = AudioTap(targetBundle: targetBundle)
     Task { await tap.start() }
     RunLoop.main.run()

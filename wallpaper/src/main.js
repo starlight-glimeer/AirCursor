@@ -3073,6 +3073,22 @@ function syncAudioSource() {
     // 开发模式和打包后的 .app 是两个授权身份，提示文案必须分开说。
     packaged: app.isPackaged,
     onFrame: pushWEAudio,
+    // ⚠️ FFT 自检结果 —— 直接送到面板。
+    // 那是"单段孤峰"这个现象的判据，而我为它猜错了十次。
+    onSelfTest: (t) => {
+      const ok = t.segsAboveQuarter >= 2 && t.segsAboveQuarter <= 8
+        && Math.abs(t.peakSeg - t.expectSeg) <= 1;
+      const line = `FFT 自检（${t.tone}Hz 纯音）：峰值在第 ${t.peakSeg} 段`
+        + `（应该是 ${t.expectSeg}）　主瓣宽 ${t.segsAboveQuarter} 段`
+        + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`;
+      console.log(`[audio] ${ok ? '✅' : '⚠️'} ${line}`);
+      broadcast('helper-log', {
+        source: 'audio',
+        message: `${ok ? '✅' : '⚠️'} ${line}`
+          + (ok ? '' : ' ⟸ 主瓣宽度 <2 说明窗函数或 stride 有问题，'
+            + '峰值位置不对说明频率映射错了'),
+      });
+    },
     onStatus: (status) => {
       audioStatus = status;
       // ⚠️ 状态一定要送到面板。这条链失败全是静默的（没授权=柱子不动），
