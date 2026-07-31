@@ -344,7 +344,32 @@ func selfTestFFT(_ spectrum: Spectrum) {
     for i in 0..<FFT_SIZE {
         tone[i] = sinf(2.0 * Float.pi * freq * Float(i) / Float(SAMPLE_RATE))
     }
-    let bins = spectrum.process(tone)
+    // ⚠️ **跑多帧，不是一帧。**
+    //
+    // 第一版只跑一帧 ⟹ smoothed 从 0 开始只走 30% ⟹ 读到的是真实值的 0.3 倍
+    //（用户的自检结果 0.289，除以 0.3 才是真实的 0.96）。
+    // 那不影响"主瓣宽度"的判断，但**平滑的行为要多帧才看得出来** ——
+    // 如果平滑有索引错位之类的问题，单帧看不出。
+    //
+    // 20 帧 ⟹ 0.7^20 ≈ 0.0008，已经收敛到 99.9%。
+    var bins = [Float](repeating: 0, count: BIN_COUNT)
+    for _ in 0..<20 {
+        bins = spectrum.process(tone)
+    }
+
+    // ⚠️ **稳态信号下相邻段的跳变** —— 那是"单段孤峰"的直接判据。
+    //
+    // 纯音是稳态的，所以频谱应该是**光滑的钟形**：
+    // 主瓣内相邻段的差值应该是渐变的，不该出现"这段 0.9、旁边 0.05"。
+    //
+    // 如果这个数很大，说明我们的分箱/平滑在**稳态信号上**就已经产生尖刺
+    // ⟹ 那和音乐无关，是这一层的问题。
+    var maxJump: Float = 0
+    var jumpAt = 0
+    for i in 1..<bins.count {
+        let d = abs(bins[i] - bins[i - 1])
+        if d > maxJump { maxJump = d; jumpAt = i }
+    }
     // 峰值段 + 它周围有几段超过峰值的 1/4（那是"主瓣宽度"的粗略度量）
     var peak = 0
     for i in 1..<bins.count where bins[i] > bins[peak] { peak = i }
@@ -362,6 +387,10 @@ func selfTestFFT(_ spectrum: Spectrum) {
         // ⚠️ 这个数是判据：<2 说明主瓣太窄（窗函数或 stride 有问题），
         // 3-6 是正常的 Hann 窗主瓣
         "segsAboveQuarter": wide,
+        // ⚠️ 稳态信号下的最大跳变。纯音的频谱该是光滑钟形 ⟹ 这个数该很小。
+        // 如果它很大，说明分箱/平滑在稳态信号上就产生尖刺（和音乐无关）。
+        "maxJump": maxJump,
+        "jumpAt": jumpAt,
         "neighbors": [
             peak >= 2 ? bins[peak - 2] : 0,
             peak >= 1 ? bins[peak - 1] : 0,

@@ -3090,7 +3090,15 @@ function syncAudioSource() {
         && Math.abs(t.peakSeg - t.expectSeg) <= 1;
       const line = `FFT 自检（${t.tone}Hz 纯音）：峰值在第 ${t.peakSeg} 段`
         + `（应该是 ${t.expectSeg}）　主瓣宽 ${t.segsAboveQuarter} 段`
-        + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`;
+        + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`
+        // ⚠️ 稳态信号下的最大跳变 —— 那是"单段孤峰"的直接判据。
+        // 纯音的频谱该是光滑钟形，这个数该很小（<0.2）。
+        // 如果它很大，说明尖刺来自我们这一层，和音乐无关。
+        + (t.maxJump !== undefined
+          ? `\n　　稳态最大跳变 ${Number(t.maxJump).toFixed(3)}（在第 ${t.jumpAt} 段）`
+            + `${t.maxJump > 0.25 ? ' ⚠️ 纯音下就有尖刺 ⟹ 问题在分箱/平滑，不是音乐'
+              : ' ✅ 稳态信号光滑 ⟹ 尖刺来自音乐本身的瞬态'}`
+          : '');
       console.log(`[audio] ${ok ? '✅' : '⚠️'} ${line}`);
       broadcast('helper-log', {
         source: 'audio',

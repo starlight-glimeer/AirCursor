@@ -246,8 +246,11 @@ check('自检报主瓣宽度（那是判据本身）', () => {
 check('自检结果送到面板（打包版没有终端）', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   assert.match(main, /onSelfTest/, '主进程没接自检回调');
+  // ⚠️ 切到块尾，不用固定长度 —— 我往这个回调里加了"稳态跳变"的判断，
+  // 900 字符的切片就把断言要找的东西推走了 ⟹ 在正确代码上报红。
+  // **切片长度是个会漂的锚点**，这一轮我已经栽过三次。
   const i = main.indexOf('onSelfTest');
-  const block = main.slice(i, i + 900);
+  const block = main.slice(i, main.indexOf('\n    },', i));
   assert.match(block, /broadcast\('helper-log'/,
     '自检结果只写 console ⟹ 打包版里看不到（这是我这轮第五次踩这个）');
   // 要给出判断，不只报数字
@@ -293,6 +296,32 @@ check('helper 编译失败会报到面板', () => {
   // 要把 swiftc 的原话带出来
   assert.match(src, /result\.stderr/,
     '不带 swiftc 的 stderr ⟹ 只知道"编译失败"，不知道是哪一行哪个符号');
+});
+
+
+// ⚠️ 自检要跑多帧 —— 第一版只跑一帧，读到的是真实值的 0.3 倍。
+//
+// 用户的自检结果邻域是 `0.045 0.131 0.289 0.194 0.074`，
+// 而真实峰值该是 0.289/0.3 ≈ 0.96 —— 因为 smoothed 从 0 开始只走了 30%。
+//
+// 那不影响"主瓣宽度"的判断（比例不变），但**平滑的行为要多帧才看得出来**。
+check('自检跑多帧（单帧读到的是真实值的 0.3 倍）', () => {
+  const i = swiftSrc.indexOf('func selfTestFFT');
+  const fn = swiftSrc.slice(i, i + 2500);
+  assert.match(fn, /for _ in 0\.\.<\d+/,
+    '自检只跑一帧 ⟹ smoothed 从 0 开始只走 30%，而平滑的行为要多帧才看得出来');
+});
+
+// ⚠️ 稳态信号下的跳变 —— 那是"单段孤峰"最直接的判据。
+check('自检量稳态跳变（纯音的频谱该是光滑钟形）', () => {
+  const i = swiftSrc.indexOf('func selfTestFFT');
+  const fn = swiftSrc.slice(i, i + 2500);
+  assert.match(fn, /maxJump/,
+    '不量稳态跳变 ⟹ 分不清"尖刺来自我们这一层"和"来自音乐的瞬态"。'
+    + '纯音是稳态的，它的频谱该是光滑钟形 ⟹ 跳变大就说明问题在分箱/平滑');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /纯音下就有尖刺/,
+    '面板不解释那个数意味着什么 ⟹ 用户拿到数字也不知道结论');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

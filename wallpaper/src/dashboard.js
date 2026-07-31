@@ -1961,7 +1961,11 @@ if (window.gw.weSelfTest) {
       && Math.abs(t.peakSeg - t.expectSeg) <= 1;
     logLine('audio', `${ok ? '✅' : '⚠️'} FFT 自检（${t.tone}Hz）：`
       + `峰值第 ${t.peakSeg} 段（应 ${t.expectSeg}）　主瓣宽 ${t.segsAboveQuarter} 段`
-      + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`);
+      + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`
+      + (t.maxJump !== undefined
+        ? `　稳态最大跳变 ${Number(t.maxJump).toFixed(3)}(第${t.jumpAt}段)`
+          + (t.maxJump > 0.25 ? ' ⚠️纯音下就有尖刺' : ' ✅稳态光滑')
+        : ''));
   }).catch(() => {});
 }
 // ⚠️ 闸门丢帧 —— 那说明有旧音源还在发。打包版没终端，只能在这里看。
