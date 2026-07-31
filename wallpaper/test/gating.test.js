@@ -1797,6 +1797,37 @@ check('主进程模块里 if(裸变量) 的那个变量都有声明（只在特�
       + `${[...new Set(missing)].join(', ')}`);
   }
 });
+// ── 测试跑批器自己的报告不能骗人 ──────────────────────────────────────────
+//
+// ⚠️ 两件事都真的发生过:
+//
+// ① 「环境没装好」报成「有失败」—— 新 worktree 里没跑过 `npm run vendor` ⟹
+//    input/recorder 提前退出,而跑批器报「❌ 2/17 个文件有失败」。那句话会让人去找
+//    代码 bug,而真相是环境没装好(云端 agent 逮到并修了)。
+//
+// ② **警告不在最后一行** —— 第一版把警告打在前面、`✅ 其余 15 个文件全绿` 打在后面,
+//    而我们俩这一整轮都在用 `node test/run.js | tail -2` 看结果 ⟹ 那正好只看到绿的
+//    那行。和 `|| echo` 掩盖退出码是同一个形状:**结论落在视野外**。
+check('测试跑批器分得清「环境没装好」和「真失败」，且结论在最后一行', () => {
+  const run = fs.readFileSync(path.join(__dirname, 'run.js'), 'utf8');
+  const code = run.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+  // 判成败一律看退出码。用输出内容判会漏掉"根本没跑起来"(那两个文件提前 exit、
+  // 压根没打过 ✗)。
+  assert.match(code, /result\.status/,
+    '跑批器不是按退出码判成败 —— 用输出内容判会漏掉"根本没跑起来"那一类');
+  assert.match(code, /npm run vendor|Cannot find module/,
+    '跑批器没有识别「环境没装好」的判据 ⟹ 会把它报成代码失败，把人引向错误方向');
+  assert.match(code, /failed \|\| notReady \? 1 : 0/,
+    '环境没装好必须也非 0 退出 —— 否则 CI 会把"没跑"读成"通过"');
+
+  // ⚠️ 警告必须打在绿色结论**之后**。
+  const okAt = code.indexOf('个文件全绿');
+  const warnAt = code.lastIndexOf('环境没装好');
+  assert.ok(okAt > 0 && warnAt > okAt,
+    '「环境没装好」的警告打在了绿色结论之前 ⟹ `| tail -2` 只会看到那句绿的，'
+    + '而我们一整轮都在那样看结果');
+});
 
 // ⚠️ 报数必须在**所有** check 之后。
 //

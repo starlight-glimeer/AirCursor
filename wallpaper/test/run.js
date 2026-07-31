@@ -39,12 +39,17 @@ for (const file of files) {
   }
 }
 
-if (notReady) {
-  console.log(`\n⚠️ ${notReady} 个文件跑不起来（环境没装好，不是测试失败）：`
-    + `${notReadyFiles.join(', ')}\n   先跑 npm run vendor`);
-}
+// ⚠️ 顺序:先报绿的部分,**警告放最后一行**。
+//
+// 第一版把警告打在前面、`✅ 其余 15 个文件全绿` 打在后面 ⟹ 而我们俩这一整轮都在用
+// `node test/run.js | tail -2` 看结果 ⟹ **那正好只看到绿的那行**,把"环境没装好"读成
+// 通过了。和 `|| echo` 掩盖退出码是同一个形状:结论在视野外。
 console.log(failed ? `\n❌ ${failed}/${files.length} 个文件有失败\n`
-  : (notReady ? `\n✅ 其余 ${files.length - notReady} 个文件全绿\n`
+  : (notReady ? `\n✅ 其余 ${files.length - notReady} 个文件全绿`
     : `\n✅ ${files.length} 个文件全绿\n`));
 // ⚠️ 环境没装好也要非 0 退出 —— 否则 CI 会把"没跑"读成"通过"。
+if (notReady) {
+  console.log(`\n⚠️ ${notReady} 个文件跑不起来（环境没装好，不是测试失败）：`
+    + `${notReadyFiles.join(', ')}\n   先跑 npm run vendor\n`);
+}
 process.exit(failed || notReady ? 1 : 0);
