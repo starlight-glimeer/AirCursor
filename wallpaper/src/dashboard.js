@@ -1207,6 +1207,11 @@ function renderAudioFrame(frame) {
       : (frame.max < 0.05 ? '<span class="warn">⚠️ 太小，NORMALIZE 要调大</span>' : '')}`
     + `<br>低频段(0-39) ${frame.lowMean}　高频段(80-119) ${frame.highMean}　${shape}`
     + `<br>最大值在第 <b>${frame.peakAt}</b> 段`
+    // ⚠️ 尖刺 —— "很多个和周围高度差很大的柱子"的量化。
+    // 用户报那是**共性问题**（两个壁纸都有）⟹ 只能来自我们发的数据。
+    // 报出"哪几段跳变最大 + 它前后的值"，那能直接指出是哪些段不对。
+    + (frame.spikes ? `<br>平均跳变 ${frame.avgJump}　最大跳变的段：`
+      + frame.spikes.map((s) => `<b>[${s.i}]</b> ${s.prev}→${s.cur}`).join('　') : '')
     // ⚠️ 单段扫描时这个数应该跟着扫描段号走 —— 那是"扫描真的生效了"的直接证据。
     + `<br><span style="font-family:ui-monospace;font-size:10px">`
     + frame.samples.map((s) => (s.i === frame.peakAt

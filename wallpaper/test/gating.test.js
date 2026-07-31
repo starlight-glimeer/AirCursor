@@ -2913,4 +2913,28 @@ check('面板算出 NORMALIZE 该调多少（不是让用户陪着试）', () =>
     '对测试音也给调参建议 —— 那些幅度是我们自己写死的，调它没意义');
 });
 
+
+// ⚠️ 「很多个和周围高度差很大的柱子」要能量出来。
+//
+// 用户报那是**共性问题**（两个渲染代码完全不同的壁纸都有）
+// ⟹ 只能来自相同的输入：我们发的那 128 段。
+//
+// ⚠️ 而我为这个现象猜过两次（跳跃采样漏掉一半 bin、大量段撞 min(1.0) 天花板），
+// **两次都被数据推翻**。⟹ 先量出来，别继续推理。
+check('频谱上报带尖刺量化（相邻段跳变）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /spikes:/,
+    '没报尖刺 ⟹ "很多个高度差很大的柱子"只能靠用户描述，'
+    + '而我为它猜了两次都错');
+  assert.match(src, /avgJump/, '没报平均跳变 —— 那是整体连续性的判据');
+  const i = src.indexOf('spikes:');
+  const block = src.slice(i, i + 700);
+  // 要报前后值 —— 分辨"这段太高"和"旁边太低"
+  assert.match(block, /prev:/,
+    '只报跳变大小不报前后值 ⟹ 分不清是"这段异常高"还是"旁边异常低"');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /frame\.spikes/, '面板没显示尖刺');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

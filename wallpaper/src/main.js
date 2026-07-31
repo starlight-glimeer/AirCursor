@@ -2843,6 +2843,37 @@ function reportAudioFrame(data, source) {
       const keys = fixed.includes(peak) ? fixed : [...fixed, peak].sort((a, b) => a - b);
       return keys.map((i) => ({ i, v: Number((arr[i] || 0).toFixed(3)) }));
     })(),
+    // ⚠️ **相邻段的跳变** —— 那是"很多个和周围高度差很大的柱子"的量化。
+    //
+    // 用户报（2026-07-31）：「他会出现很多个明显和周围高度差很大的……
+    // 另一个壁纸里面也会有这种情况，所以这是个共性问题」。
+    //
+    // 共性 = 两个渲染代码完全不同的壁纸有同样的症状
+    // ⟹ 那只能来自相同的输入：我们发的那 128 段。
+    //
+    // ⚠️ 而我为它猜过两次（跳跃采样、撞天花板），两次都被数据推翻。
+    // ⟹ 所以这次先量出来：把"相邻段差值最大的那几个位置"报出来，
+    // 那能直接指出是哪些段的值不对，而不是让我继续推理。
+    spikes: (() => {
+      const jumps = [];
+      for (let i = 1; i < arr.length; i += 1) {
+        jumps.push({ i, d: Math.abs((arr[i] || 0) - (arr[i - 1] || 0)) });
+      }
+      jumps.sort((a, b) => b.d - a.d);
+      return jumps.slice(0, 5).map((x) => ({
+        i: x.i,
+        d: Number(x.d.toFixed(3)),
+        // 前后各一个值 —— 看是"这段太高"还是"旁边太低"
+        prev: Number((arr[x.i - 1] || 0).toFixed(3)),
+        cur: Number((arr[x.i] || 0).toFixed(3)),
+      }));
+    })(),
+    // 平均跳变 —— 整体连续性。越小越平滑。
+    avgJump: (() => {
+      let sum = 0;
+      for (let i = 1; i < arr.length; i += 1) sum += Math.abs((arr[i] || 0) - (arr[i - 1] || 0));
+      return Number((sum / Math.max(1, arr.length - 1)).toFixed(4));
+    })(),
     // 最大值在第几段 —— 单段扫描时这个数应该跟着扫描段号走。
     peakAt: (() => {
       let peak = 0;
