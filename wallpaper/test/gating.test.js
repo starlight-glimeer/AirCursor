@@ -1816,17 +1816,41 @@ check('测试跑批器分得清「环境没装好」和「真失败」，且结�
   // 压根没打过 ✗)。
   assert.match(code, /result\.status/,
     '跑批器不是按退出码判成败 —— 用输出内容判会漏掉"根本没跑起来"那一类');
-  assert.match(code, /npm run vendor|Cannot find module/,
-    '跑批器没有识别「环境没装好」的判据 ⟹ 会把它报成代码失败，把人引向错误方向');
+  // ⚠️ 必须锚在**判据常量**上，不能只搜 'npm run vendor' ——
+  // 那个字符串在 run.js 里还出现在**提示语**里（「先跑 npm run vendor」）
+  // ⟹ 把判据整个删掉，断言照样绿。实测过这个假阴性。
+  const notReadyRe = code.match(/NOT_READY\s*=\s*(\/[^\n]+\/)/);
+  assert.ok(notReadyRe,
+    '找不到 NOT_READY 判据 ⟹ 跑批器会把「环境没装好」报成代码失败，把人引向错误方向');
+  assert.match(notReadyRe[1], /vendor/,
+    'NOT_READY 判据里没有 vendor —— 那是本项目唯一见过的「跑不起来」原因');
   assert.match(code, /failed \|\| notReady \? 1 : 0/,
     '环境没装好必须也非 0 退出 —— 否则 CI 会把"没跑"读成"通过"');
 
-  // ⚠️ 警告必须打在绿色结论**之后**。
-  const okAt = code.indexOf('个文件全绿');
+  // ⚠️ **最坏的情况必须打在最后**，因为所有人（包括我们两个 agent）都在用
+  // `| tail -2` 看结果 —— 落在视野外的结论等于没报。
+  //
+  // 优先级：真失败 > 环境没装好 > 全绿。而这**不是**"警告在绿色之后"那么简单：
+  //
+  //   第一版守卫锚的是 `警告位置 > 全绿位置`。它挡住了坑①（警告在绿色之前），
+  //   但**挡不住坑②**：只把警告挪到最后 ⟹ 真失败 + 缺 vendor 同时存在时，
+  //   `tail -2` 只看到「缺 vendor」，那条真失败被推出视野 ⟹ 你去跑
+  //   npm run vendor 然后以为好了。
+  //
+  // ⚠️ **不能在这里 spawn run.js 来验行为** —— run.js 跑所有 *.test.js，
+  // **包括这个文件本身** ⟹ 无限递归。我试过，120 秒超时。
+  //
+  // ⟹ 只能用源码结构兜住。
+  // 用源码结构兜住：真失败那句必须是**最后一个** console.log。
+  const logs = [...code.matchAll(/console\.log\(/g)].map((m) => m.index);
+  const failAt = code.indexOf('个文件有失败');
+  const lastLogAt = logs[logs.length - 1];
+  assert.ok(failAt > lastLogAt,
+    '「有失败」不在最后一个 console.log 里 ⟹ 真失败 + 缺 vendor 同时存在时，'
+    + '`| tail -2` 会只看到「缺 vendor」，那条真失败被推出视野');
   const warnAt = code.lastIndexOf('环境没装好');
-  assert.ok(okAt > 0 && warnAt > okAt,
-    '「环境没装好」的警告打在了绿色结论之前 ⟹ `| tail -2` 只会看到那句绿的，'
-    + '而我们一整轮都在那样看结果');
+  assert.ok(warnAt > 0 && warnAt < failAt,
+    '「环境没装好」的警告在真失败之后 ⟹ 最坏的情况被推出视野');
 });
 
 // ⚠️ 报数必须在**所有** check 之后。

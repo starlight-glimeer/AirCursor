@@ -44,12 +44,26 @@ for (const file of files) {
 // 第一版把警告打在前面、`✅ 其余 15 个文件全绿` 打在后面 ⟹ 而我们俩这一整轮都在用
 // `node test/run.js | tail -2` 看结果 ⟹ **那正好只看到绿的那行**,把"环境没装好"读成
 // 通过了。和 `|| echo` 掩盖退出码是同一个形状:结论在视野外。
-console.log(failed ? `\n❌ ${failed}/${files.length} 个文件有失败\n`
-  : (notReady ? `\n✅ 其余 ${files.length - notReady} 个文件全绿`
-    : `\n✅ ${files.length} 个文件全绿\n`));
-// ⚠️ 环境没装好也要非 0 退出 —— 否则 CI 会把"没跑"读成"通过"。
+// ⚠️ **最坏的情况要打在最后**，因为所有人（包括我们两个 agent）都在用
+// `node test/run.js | tail -2` 看结果 —— 落在视野外的结论等于没报。
+//
+// 三种情况的优先级：真失败 > 环境没装好 > 全绿。
+//
+// 实测过的两个坑：
+//   ① 警告打在绿色结论之前 ⟹ 缺 vendor 时 `tail -2` 只看到「✅ 其余 15 个全绿」
+//   ② 只把警告挪到最后 ⟹ **两种问题同时存在**时，`tail -2` 只看到「缺 vendor」，
+//      而那条真失败被推出视野 ⟹ 你去跑 npm run vendor，然后以为好了。
+//      ⚠️ 这是最坏的组合，而它需要两个条件同时成立才暴露 —— 单独验任一种都是绿的。
 if (notReady) {
   console.log(`\n⚠️ ${notReady} 个文件跑不起来（环境没装好，不是测试失败）：`
-    + `${notReadyFiles.join(', ')}\n   先跑 npm run vendor\n`);
+    + `${notReadyFiles.join(', ')}\n   先跑 npm run vendor`);
 }
+// 真失败最后打，压在所有其它输出上面。
+console.log(failed ? `\n❌ ${failed}/${files.length} 个文件有失败\n`
+  // ⚠️ 最后这句要**自带可操作的指令**，不能依赖上面那行 ——
+  // `| tail -2` 只看得到最后一句，而"没跑"三个字不告诉人该干什么。
+  : (notReady ? `\n⚠️ ${notReady} 个文件没跑起来（先跑 npm run vendor），`
+    + `其余 ${files.length - notReady} 个全绿\n`
+    : `\n✅ ${files.length} 个文件全绿\n`));
+// ⚠️ 环境没装好也要非 0 退出 —— 否则 CI 会把"没跑"读成"通过"。
 process.exit(failed || notReady ? 1 : 0);
