@@ -2726,4 +2726,33 @@ check('分组标题渲染出来（project.json 用 text 项分段）', () => {
   assert.match(html, /\.we-group/, '分组标题没有样式 ⟹ 和普通控件混在一起看不出分段');
 });
 
+
+// ⚠️ 三个发帧的音源都要上报频谱，否则面板那行是**上一个音源的残留**。
+//
+// 用户实测撞到（2026-07-31）：他切到「单段扫描」，状态行说"只有第 40 段有值(0.8)"，
+// 而下面「实际频谱」显示 `[0]0.148 [5]0.098 [10]0.147 …`（真音频的形状）
+// ⟹ **两行自相矛盾**，他有理由以为"两个音源同时在发帧"。
+//
+// 真相：那一行压根没更新 —— 我只在真采集路径里调了上报。
+// ⟹ 那正是「过期显示比没有显示更糟」，而我在同一个功能上犯了两次
+//（上次是属性发送状态停在"正在发"）。
+check('三个音源都上报频谱（否则面板显示上一个音源的残留）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function reportAudioFrame/,
+    '频谱上报没抽成函数 ⟹ 只有一条路径会发，别的音源切过去后面板不更新');
+  // 三处调用：真采集 / 合成音 / 扫描
+  const calls = (src.match(/reportAudioFrame\(/g) || []).length;
+  assert.ok(calls >= 4,
+    `reportAudioFrame 只出现 ${calls} 次（1 定义 + 3 调用才够）——`
+    + '真采集、测试音、单段扫描都要上报');
+  // 必须带 source，否则"没更新"看不出来
+  assert.match(src, /source: source \|\|/,
+    '上报没带 source ⟹ 面板不知道那行是哪个音源的数据，'
+    + '而"没更新"就变成了看不见的错误');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /frame\.source/,
+    '面板没显示音源来源 ⟹ 两行自相矛盾时用户无从判断哪行是旧的');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

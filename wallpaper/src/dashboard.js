@@ -1168,7 +1168,17 @@ function renderAudioFrame(frame) {
     : (frame.highMean > frame.lowMean * 1.2
       ? '⚠️ 高频>低频 —— 那不是音乐的形状，分箱或加权有问题'
       : '⚠️ 低高频差不多 —— 大概是白噪声或者加权把差异抹平了');
-  node.innerHTML = `<b>实际频谱</b>（每半秒刷新）`
+  // ⚠️ 报出**这是哪个音源的数据**。
+  //
+  // 用户实测撞到：切到「单段扫描」后，状态行说"只有第 40 段有值"，
+  // 而这一行显示的是真音频的形状 ⟹ 两行自相矛盾，他有理由以为两个源同时在发。
+  // 真相是这一行**压根没更新**（我只在真采集路径里上报）。
+  // ⟹ 带上 source，那样"没更新"会立刻暴露出来。
+  const SRC_NAME = {
+    system: '全系统', netease: '网易云', synth: '测试音', sweep: '单段扫描', off: '关闭',
+  };
+  const who = SRC_NAME[frame.source] || frame.source || '?';
+  node.innerHTML = `<b>实际频谱</b>（${who}，每半秒刷新）`
     + `<br>最大 ${frame.max}　平均 ${frame.mean}`
     + `　${frame.max > 1.5 ? '<span class="warn">⚠️ 顶天了，NORMALIZE 要调小</span>'
       : (frame.max < 0.05 ? '<span class="warn">⚠️ 太小，NORMALIZE 要调大</span>' : '')}`

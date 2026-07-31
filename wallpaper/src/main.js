@@ -2804,6 +2804,39 @@ let synthPhase = 0;
 let audioStatus = null;
 let audioFrameCount = 0;   // 抽样计数，见下面的 we-audio-frame
 
+// 把频谱抽样报给面板。
+//
+// ⚠️ **三个音源都要调它。** 我原来只在真采集路径里发 ⟹ 切到扫描/测试音之后
+// 面板上那行是**切之前的残留**，不更新。
+//
+// 用户实测的后果：他切到「单段扫描」，状态行说"只有第 40 段有值(0.8)"，
+// 而下面「实际频谱」显示 `[0]0.148 [5]0.098 [10]0.147 …`（真音频的形状）
+// ⟹ **两行自相矛盾**，他有理由以为"两个音源同时在发帧"。
+//
+// 那正是我记过的「过期显示比没有显示更糟」——
+// 而我在同一个功能上又犯了一次（上次是属性状态停在"正在发"）。
+//
+// ⟹ 顺便报 source，让那行自己说清"这是哪个音源的数据"。
+function reportAudioFrame(data, source) {
+  audioFrameCount += 1;
+  if (audioFrameCount % 15 !== 0) return;   // 每半秒一次
+  const arr = Array.isArray(data) ? data : [];
+  if (!arr.length) return;
+  const sum = (a, b) => a + b;
+  broadcast('we-audio-frame', {
+    source: source || (config.we && config.we.audioSource) || '?',
+    // 只送有代表性的几段 + 统计量，而不是 128 个数 —— 面板要的是"够不够、偏哪边"。
+    samples: [0, 5, 10, 20, 40, 60, 80, 100, 119].map((i) => ({
+      i, v: Number((arr[i] || 0).toFixed(3)),
+    })),
+    max: Number(Math.max(...arr).toFixed(3)),
+    mean: Number((arr.reduce(sum, 0) / arr.length).toFixed(3)),
+    // 前 40 段（线性区，鼓/低音）和后面的对比 —— 形状对不对看这个
+    lowMean: Number((arr.slice(0, 40).reduce(sum, 0) / 40).toFixed(3)),
+    highMean: Number((arr.slice(80, 120).reduce(sum, 0) / 40).toFixed(3)),
+  });
+}
+
 // 启停音频采集。跟着 config.we.audioSource 走：
 //   'netease' 只抓网易云（macOS 14.4+，更早会退回全局并报 warning）
 //   'system'  全系统混音
@@ -2849,6 +2882,8 @@ function startSweepAudio() {
     // 给一个明显的值 —— 0.8 在 PWCircle 里是 0.8*1.8*100 = 144px，看得清
     frame[at] = 0.8;
     weWindow.webContents.send('we-audio', frame);
+    // ⚠️ 也上报 —— 否则面板那行是真采集的残留，和扫描状态自相矛盾（用户撞到过）。
+    reportAudioFrame(frame, 'sweep');
     audioStatus = {
       ok: true,
       sweep: true,
@@ -2884,6 +2919,7 @@ function startSynthAudio() {
       return Math.min(1, decay * beat * wobble);
     });
     weWindow.webContents.send('we-audio', frame);
+    reportAudioFrame(frame, 'synth');
   }, 1000 / 30);
   audioStatus = {
     ok: true,
@@ -2960,20 +2996,8 @@ function pushWEAudio(frame) {
   //
   // ⟹ 有了这个，"该调多少"变成算术：面板直接显示每段的实际值。
   // 抽样而不是每帧发：那是 30fps × 128 个数，全发会把 IPC 灌满。
-  audioFrameCount += 1;
-  if (audioFrameCount % 15 === 0) {   // 每半秒一次
-    broadcast('we-audio-frame', {
-      // 只送有代表性的几段 + 统计量，而不是 128 个数 —— 面板要的是"够不够、偏哪边"。
-      samples: [0, 5, 10, 20, 40, 60, 80, 100, 119].map((i) => ({
-        i, v: Number((result.data[i] || 0).toFixed(3)),
-      })),
-      max: Number(Math.max(...result.data).toFixed(3)),
-      mean: Number((result.data.reduce((a, b) => a + b, 0) / result.data.length).toFixed(3)),
-      // 前 40 段（线性区，鼓/低音）和后面的对比 —— 形状对不对看这个
-      lowMean: Number((result.data.slice(0, 40).reduce((a, b) => a + b, 0) / 40).toFixed(3)),
-      highMean: Number((result.data.slice(80, 120).reduce((a, b) => a + b, 0) / 40).toFixed(3)),
-    });
-  }
+  reportAudioFrame(result.data);
+
   if (result.silent) {
     const now = Date.now();
     // 别每帧都播报，那会把 IPC 灌满。
