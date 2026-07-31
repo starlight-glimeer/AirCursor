@@ -2740,11 +2740,16 @@ check('三个音源都上报频谱（否则面板显示上一个音源的残留�
   const src = codeOnly(mainSrc);
   assert.match(src, /function reportAudioFrame/,
     '频谱上报没抽成函数 ⟹ 只有一条路径会发，别的音源切过去后面板不更新');
-  // 三处调用：真采集 / 合成音 / 扫描
-  const calls = (src.match(/reportAudioFrame\(/g) || []).length;
-  assert.ok(calls >= 4,
-    `reportAudioFrame 只出现 ${calls} 次（1 定义 + 3 调用才够）——`
-    + '真采集、测试音、单段扫描都要上报');
+  // ⚠️ 这条断言改了。原来要求"3 处调用"，而现在上报**收进了闸门**
+  //（`sendAudioFrame` 里统一调）—— 那是更好的结构：
+  // 三条路径走同一个出口，上报和发送不可能不一致。
+  //
+  // ⟹ 现在验的是"上报在闸门里"，而不是"有几处调用"。
+  const gate = src.indexOf('function sendAudioFrame');
+  assert.ok(gate > 0, '没有闸门函数');
+  const gateFn = src.slice(gate, src.indexOf('\nfunction ', gate + 10));
+  assert.match(gateFn, /reportAudioFrame/,
+    '闸门里不上报 ⟹ 某条路径发了帧但面板不知道，那行就停在上一个音源的值');
   // 必须带 source，否则"没更新"看不出来
   assert.match(src, /source: source \|\|/,
     '上报没带 source ⟹ 面板不知道那行是哪个音源的数据，'
@@ -2753,6 +2758,55 @@ check('三个音源都上报频谱（否则面板显示上一个音源的残留�
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   assert.match(dash, /frame\.source/,
     '面板没显示音源来源 ⟹ 两行自相矛盾时用户无从判断哪行是旧的');
+});
+
+
+console.log('\n  音频帧的单一出口（两个源同时发过一整轮）');
+
+// ⚠️⚠️ 用户实测烧掉一整轮：切到「单段扫描」后画面上仍有一堆柱子，
+// 而面板那行在两个值之间**跳**：
+//
+//   实际频谱（**全系统**）最大 2 ⚠️顶天了   ← 真采集在报
+//   实际频谱（**单段扫描**）[119] 0.8        ← 扫描在报
+//
+// ⟹ 两个源同时在发帧。真采集的 helper 被 kill 了，但
+//   ① kill 是异步的，缓冲区里的数据仍会触发 stdout 回调
+//   ② `pushWEAudio` **压根不检查当前音源** —— helper 吐什么它就发
+//
+// ⟹ 那就是"好多柱子"：真音频的几十个非零段 + 扫描的一段，全在画。
+//
+// 根本问题是**没有单一出口**：三条路径各自 `send('we-audio')`，
+// 而"当前该由谁发"没人管。
+check('发音频帧只有一个出口（sendAudioFrame）', () => {
+  const src = codeOnly(mainSrc);
+  const sends = [...src.matchAll(/webContents\.send\('we-audio'/g)];
+  assert.strictEqual(sends.length, 1,
+    `有 ${sends.length} 处直接发 we-audio ⟹ "当前该由谁发"没人管，`
+    + '切音源后旧的还在发（用户实测：两个源同时画，柱子莫名其妙地多）');
+  assert.match(src, /function sendAudioFrame/, '没有单一出口函数');
+});
+
+check('闸门检查 owner 和当前音源一致', () => {
+  const src = codeOnly(mainSrc);
+  const i = src.indexOf('function sendAudioFrame');
+  const fn = src.slice(i, src.indexOf('\nfunction ', i + 10));
+  assert.match(fn, /config\.we\.audioSource/,
+    '闸门不看当前音源 ⟹ 等于没有闸门');
+  // 真采集有两个合法音源（system/netease），要都认
+  assert.match(fn, /'system'/, "闸门没认 'system'");
+  assert.match(fn, /'netease'/, "闸门没认 'netease' ⟹ 只抓网易云时帧会被全丢");
+  // ⚠️ 丢帧要报出来，否则"切了但旧的还在发"又变成静默问题
+  assert.match(fn, /console\.warn/,
+    '丢帧时不报 ⟹ 那正是这次烧掉一整轮的原因（画面上表现为柱子莫名其妙地多）');
+});
+
+check('三条发帧路径都走闸门', () => {
+  const src = codeOnly(mainSrc);
+  for (const owner of ["'capture'", "'sweep'", "'synth'"]) {
+    assert.ok(src.includes(`sendAudioFrame(frame, ${owner})`)
+      || src.includes(`sendAudioFrame(result.data, ${owner})`),
+    `${owner} 那条路径没走闸门 ⟹ 它切走之后还会继续发`);
+  }
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

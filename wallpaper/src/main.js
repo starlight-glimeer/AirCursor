@@ -2881,9 +2881,9 @@ function startSweepAudio() {
     const frame = new Array(128).fill(0);
     // 给一个明显的值 —— 0.8 在 PWCircle 里是 0.8*1.8*100 = 144px，看得清
     frame[at] = 0.8;
-    weWindow.webContents.send('we-audio', frame);
-    // ⚠️ 也上报 —— 否则面板那行是真采集的残留，和扫描状态自相矛盾（用户撞到过）。
-    reportAudioFrame(frame, 'sweep');
+    // ⚠️ 走闸门（它同时负责上报）—— 三条路径都走同一个出口，
+    // 那样"两个源同时发"不可能再发生。
+    sendAudioFrame(frame, 'sweep');
     audioStatus = {
       ok: true,
       sweep: true,
@@ -2918,8 +2918,7 @@ function startSynthAudio() {
       const wobble = 0.85 + 0.15 * Math.sin(synthPhase / 5 + i / 7);
       return Math.min(1, decay * beat * wobble);
     });
-    weWindow.webContents.send('we-audio', frame);
-    reportAudioFrame(frame, 'synth');
+    sendAudioFrame(frame, 'synth');
   }, 1000 / 30);
   audioStatus = {
     ok: true,
@@ -2984,10 +2983,50 @@ function syncAudioSource() {
 }
 
 let lastAudioSilentAt = 0;
+
+// ⚠️⚠️ 发音频帧的**唯一闸门**。所有音源都必须过这里。
+//
+// 用户实测（2026-07-31）：切到「单段扫描」之后画面上仍有一堆柱子，
+// 而面板那行在两个值之间跳：
+//
+//   实际频谱（**全系统**）最大 2 ⚠️顶天了   ← 真采集在报
+//   实际频谱（**单段扫描**）[119] 0.8        ← 扫描在报
+//
+// ⟹ **两个源同时在发帧。** 真采集的 helper 被 kill 了，但：
+//   ① kill 是异步的，缓冲区里的数据仍会触发 stdout 回调
+//   ② 而 `pushWEAudio` **压根不检查当前音源是什么** —— helper 吐什么它就发
+//
+// ⟹ 那就是"好多柱子"：真音频的几十个非零段 + 扫描的一段，全在画。
+//
+// ⚠️ 根本问题是**没有单一闸门**：三条路径各自 `weWindow.webContents.send('we-audio')`，
+// 而"当前该由谁发"这件事没人管。
+// ⟹ 现在所有发送都走 sendAudioFrame，它检查 owner 对不对。
+function sendAudioFrame(data, owner) {
+  if (!weWindow || weWindow.isDestroyed()) return false;
+  const current = (config.we && config.we.audioSource) || 'off';
+  // 真采集的 owner 是 'system' 或 'netease' —— 两者共用同一条路径。
+  const ok = owner === current
+    || (owner === 'capture' && (current === 'system' || current === 'netease'));
+  if (!ok) {
+    // ⚠️ 报出来而不是静默丢 —— "切了音源但旧的还在发"是这次烧掉一整轮的原因，
+    // 而它在画面上表现为"柱子莫名其妙地多"，和数据错完全分不清。
+    if (!sendAudioFrame.warned || sendAudioFrame.warned !== owner) {
+      console.warn(`[audio] 丢掉 ${owner} 的帧 —— 当前音源是 ${current}`
+        + '（旧音源的 helper 还在吐数据，那会让两套数据同时画）');
+      sendAudioFrame.warned = owner;
+    }
+    return false;
+  }
+  weWindow.webContents.send('we-audio', data);
+  reportAudioFrame(data, owner === 'capture' ? current : owner);
+  return true;
+}
+
 function pushWEAudio(frame) {
   if (!weWindow || weWindow.isDestroyed()) return;
   const result = WE.normalizeAudioFrame(frame);
-  weWindow.webContents.send('we-audio', result.data);
+  // ⚠️ 走闸门 —— 音源已经切走时这一帧会被丢掉（并报一次）。
+  if (!sendAudioFrame(result.data, 'capture')) return;
   // ⚠️ 把真实频谱抽样送到面板。**这是我早就该做的事。**
   //
   // 我为"幅度/形状不对"改了三轮参数，而**从没看过那 128 个数长什么样** ——
@@ -2996,8 +3035,6 @@ function pushWEAudio(frame) {
   //
   // ⟹ 有了这个，"该调多少"变成算术：面板直接显示每段的实际值。
   // 抽样而不是每帧发：那是 30fps × 128 个数，全发会把 IPC 灌满。
-  reportAudioFrame(result.data);
-
   if (result.silent) {
     const now = Date.now();
     // 别每帧都播报，那会把 IPC 灌满。
