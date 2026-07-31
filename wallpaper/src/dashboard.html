@@ -35,6 +35,16 @@
     margin: 0; font-size: 42px; font-weight: 300; letter-spacing: .1em;
   }
   #launch h1 b { font-weight: 600; }
+  /* build 标识：小、灰，但必须**清晰可读** —— 它是来回测试时核对版本的唯一依据，
+     看不清等于没有。所以不用 .hint 的默认色，单独定一个。 */
+  #build-stamp {
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #8a8f98;
+    margin: 2px 0 10px;
+    letter-spacing: .2px;
+    user-select: text;      /* 要能选中复制给我看 */
+  }
   #launch .sub {
     margin-top: 14px; font-size: 11px; letter-spacing: .34em;
     text-transform: uppercase; color: var(--dim);
@@ -282,8 +292,6 @@
 <div id="launch">
   <div class="wrap">
     <h1>Gesture<b>Wall</b></h1>
-    <!-- ⚠️ 打包版没有终端，这是唯一能看到"跑的是哪个版本"的地方 -->
-    <div id="build-stamp" class="hint" style="opacity:.7;font-size:11px"></div>
     <div class="sub">gesture music wallpaper</div>
     <div class="go">点击进入</div>
   </div>
@@ -291,6 +299,12 @@
 
 <nav>
   <div class="brand">GestureWall</div>
+  <!-- ⚠️ build 标识必须放在**常驻可见**的地方。
+       第一版我放进了 #launch（开屏页），而那个页会 .gone 淡出 ⟹ 看不见 ——
+       用户报「没看到任何类似 v0.9.10 … 的字样」。
+       nav 在所有 tab 下都在，这里才对。
+       打包版没有终端，这是唯一能确认"我跑的是哪个版本"的地方。 -->
+  <div id="build-stamp"></div>
   <button data-tab="we" class="on">创意工坊</button>
   <button data-tab="mine">我的壁纸</button>
   <button data-tab="gesture">手势录制</button>

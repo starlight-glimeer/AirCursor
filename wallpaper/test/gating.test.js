@@ -2027,6 +2027,41 @@ check('build 标识送到面板（打包版没有终端）', () => {
   assert.match(codeOnly(dash), /build-stamp/, '面板没渲染 build 标识');
 });
 
+// ⚠️ 这两条是用户实测烧出来的：他报「没看到任何类似 v0.9.10 … 的字样」。
+// 两个原因叠在一起，而**每一个单独都足以让标识不可见**：
+//   ① 我放进了 `#launch`（开屏页），而那个页会 `.gone` 淡出
+//   ② 我在 `renderWEStatus()` 里赋值，而那个函数不一定在启动时跑
+check('build 标识在常驻容器里（不能放开屏页 —— 那会淡出）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const at = html.indexOf('id="build-stamp"');
+  assert.ok(at > 0, '缺 #build-stamp');
+  // 找它落在哪个块里：launch 是开屏页（会淡出），nav 是常驻的。
+  const launchAt = html.indexOf('id="launch"');
+  const navAt = html.indexOf('<nav>');
+  assert.ok(navAt > 0, '找不到 nav —— 锚点变了，这条守卫要跟着改');
+  assert.ok(at > navAt,
+    'build 标识在 nav 之前 ⟹ 它大概在开屏页 #launch 里，而那个页会 .gone 淡出，'
+    + '用户实测报"没看到任何字样"');
+  if (launchAt > 0 && launchAt < navAt) {
+    const launchBlock = html.slice(launchAt, navAt);
+    assert.ok(!launchBlock.includes('id="build-stamp"'),
+      'build 标识在 #launch 里 —— 那个开屏页会淡出，标识跟着消失');
+  }
+});
+
+check('build 标识从 apply() 渲染（不依赖"恰好装载了壁纸"）', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /function renderBuildStamp/,
+    '没有独立的 renderBuildStamp —— 塞在别的函数里会跟着那个函数的时机走');
+  // apply() 是配置一到就跑的必然入口
+  const applyAt = dash.indexOf('function apply(');
+  assert.ok(applyAt > 0, '找不到 apply()');
+  const applyBody = dash.slice(applyAt, applyAt + 1500);
+  assert.match(applyBody, /renderBuildStamp\(\)/,
+    'apply() 里没调 renderBuildStamp ⟹ 标识的出现依赖别的时机，'
+    + '而"没装载壁纸时看不到版本"正是用户撞到的');
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。

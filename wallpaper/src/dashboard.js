@@ -572,6 +572,30 @@ function buildPreview(action, recorded) {
   }
   return wrap;
 }
+// build 标识（版本 + commit + 是否打包）。
+//
+// ⚠️ 这个函数踩过两个坑，都是"改了但用户看不到"：
+//
+//   ① 第一版放进 `#launch`（开屏页）—— 那个页会 `.gone` 淡出 ⟹ 看不见。
+//      用户报「没看到任何类似 v0.9.10 … 的字样」。现在在 nav 里，所有 tab 常驻。
+//   ② 第一版在 `renderWEStatus()` 里赋值 —— 而那个函数**不一定在启动时跑**
+//      （它跟着壁纸状态走）⟹ 没装载壁纸时标识是空的。
+//      现在从 `apply()` 调，那是配置一到就跑的必然入口。
+//
+// ⟹ 一句话：**核对版本用的东西，不能依赖任何"恰好发生"的时机。**
+// 而它对打包来回测试是刚需 —— 测了旧版本会得出"改了没生效"的假结论。
+async function renderBuildStamp() {
+  const node = document.getElementById('build-stamp');
+  if (!node) return;
+  try {
+    const status = await window.gw.weStatus();
+    node.textContent = (status && status.build) || '版本未知';
+  } catch {
+    // 拿不到也要说话 —— 空白会被读成"这个功能没做"。
+    node.textContent = '版本读不到';
+  }
+}
+
 function renderToggles() {
   // ⚠️ 元素不在就跳过，而且**说出来**。
   //
@@ -633,6 +657,7 @@ function apply(next) {
   // 删掉的是模板(三层景深的参数)、图库、壁纸与音乐 —— 那三个 tab 连同它们的
   // renderLayers / renderSlots / renderPresets / renderGallery / renderStrategy 一起走了。
   // 三层景深的**渲染**还在(它是 WE 壁纸未装载时的底),只是不再暴露参数。
+  renderBuildStamp();
   renderGestureLead();
   renderRecordables();
   renderToggles();
@@ -1018,9 +1043,6 @@ async function renderWEStatus() {
   // ⚠️ 先记下"这个壁纸要不要音频"，再重渲染音源区 —— 那句提示依赖它。
   // 放在 `if (!node) return` **之前**：那个 return 是为了 we-state 容器不存在时
   // 早退，但音源提示和它没关系，卡在那里会让提示永远不出现。
-  // ⚠️ build 标识：打包版没有终端，这里是唯一能看到"我跑的是哪个版本"的地方。
-  const buildNode = document.getElementById('build-stamp');
-  if (buildNode && status.build) buildNode.textContent = status.build;
   const wasWanting = weWantsAudio;
   weWantsAudio = !!status.wantsAudio;
   if (wasWanting !== weWantsAudio) renderAudioSource();
