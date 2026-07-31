@@ -364,15 +364,34 @@ func selfTestFFT(_ spectrum: Spectrum) {
     //
     // 如果这个数很大，说明我们的分箱/平滑在**稳态信号上**就已经产生尖刺
     // ⟹ 那和音乐无关，是这一层的问题。
-    var maxJump: Float = 0
-    var jumpAt = 0
-    for i in 1..<bins.count {
-        let d = abs(bins[i] - bins[i - 1])
-        if d > maxJump { maxJump = d; jumpAt = i }
-    }
     // 峰值段 + 它周围有几段超过峰值的 1/4（那是"主瓣宽度"的粗略度量）
     var peak = 0
     for i in 1..<bins.count where bins[i] > bins[peak] { peak = i }
+
+    // ⚠️ **排除主瓣附近** —— 我第一版没排除，而那让判据必然误报。
+    //
+    // 用户实测：稳态最大跳变 0.526（在第 10 段），而那正是**爬上峰值那一步**
+    //（邻域 0.151 → 0.437 → 0.963：4 段宽的钟形，相邻差值必然接近 0.5）。
+    // ⟹ 我的阈值 0.25 会把**任何正常的纯音**判成"有尖刺"。
+    //
+    // 而"尖刺"指的是**主瓣之外**出现孤立的高值 ——
+    // 纯音的频谱该是"一个 4 段宽的钟形 + 其余全部接近 0"。
+    var maxJump: Float = 0
+    var jumpAt = 0
+    for i in 1..<bins.count {
+        // 峰值 ±4 段是主瓣，它的陡峭是钟形本身，不是尖刺
+        if abs(i - peak) <= 4 { continue }
+        let d = abs(bins[i] - bins[i - 1])
+        if d > maxJump { maxJump = d; jumpAt = i }
+    }
+    // ⚠️ 顺带报主瓣外的最大值 —— 那比跳变更直接：
+    // 纯音下主瓣外该全是接近 0 的底噪，出现明显的值就是真尖刺。
+    var outsidePeak: Float = 0
+    var outsideAt = 0
+    for i in 0..<bins.count {
+        if abs(i - peak) <= 4 { continue }
+        if bins[i] > outsidePeak { outsidePeak = bins[i]; outsideAt = i }
+    }
     let threshold = bins[peak] * 0.25
     var wide = 0
     for v in bins where v > threshold { wide += 1 }
@@ -391,6 +410,10 @@ func selfTestFFT(_ spectrum: Spectrum) {
         // 如果它很大，说明分箱/平滑在稳态信号上就产生尖刺（和音乐无关）。
         "maxJump": maxJump,
         "jumpAt": jumpAt,
+        // ⚠️ 主瓣外的最大值 —— 纯音下该接近 0（只有底噪）。
+        // 它明显 > 0 就是真尖刺，而那比跳变更直接。
+        "outsidePeak": outsidePeak,
+        "outsideAt": outsideAt,
         "neighbors": [
             peak >= 2 ? bins[peak - 2] : 0,
             peak >= 1 ? bins[peak - 1] : 0,

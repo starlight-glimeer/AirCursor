@@ -2971,4 +2971,45 @@ check('面板打开时补发最后一次 FFT 自检', () => {
   assert.match(dash, /weSelfTest\(\)/, '面板不主动拿自检结果');
 });
 
+
+// ⚠️⚠️ **固定长度的切片是个会漂的锚点。** 这一轮我栽过四次。
+//
+// 形状：`src.slice(i, i + 2000)` 然后在里面 match 某个东西。
+// 而我往那个函数里加代码之后，断言要找的东西被推到切片之外
+// ⟹ **在正确的代码上报红**。
+//
+// 四次分别是：will-quit 块（300 字符）/ renderMineDirs（2600）/
+// onSelfTest 回调（900）/ selfTestFFT（2000 和 2500 各一次）。
+//
+// ⟹ 正确做法：切到**结构边界**（下一个 function / 块尾的 `\n}`），
+// 或者干脆在整个文件里 match（如果那个字符串足够独特）。
+check('测试里不用固定长度的切片（那个锚点会漂）', () => {
+  const testDir = __dirname;
+  const files = fs.readdirSync(testDir).filter((f) => f.endsWith('.test.js'));
+  const bad = [];
+  for (const file of files) {
+    const src = fs.readFileSync(path.join(testDir, file), 'utf8');
+    const lines = src.split('\n');
+    for (const [n, line] of lines.entries()) {
+      // 注释里的例子不算
+      if (line.trim().startsWith('//')) continue;
+      // `slice(x, x + 数字)` 这个形状
+      if (/\.slice\([^,)]+,\s*\w+\s*\+\s*\d{2,}\)/.test(line)) {
+        bad.push(`${file}:${n + 1}`);
+      }
+    }
+  }
+  // ⚠️ 存量有 22 处（这个形状在整个文件里都是），全改一遍风险比收益大 ——
+  // 改 22 个切片会引入新的锚点错误，而它们大多数没实际出问题。
+  //
+  // ⟹ 守卫**只挡增长**：记下当前基线，多出来的报红。
+  // 那样新写的测试会被逼着用结构边界，而存量慢慢改（碰到哪个改哪个）。
+  const BASELINE = 22;
+  assert.ok(bad.length <= BASELINE,
+    `固定长度切片从 ${BASELINE} 处涨到 ${bad.length} 处：`
+    + `${bad.slice(BASELINE).join(', ')}\n`
+    + '    ⟹ 往被切的函数里加代码就会让断言在正确代码上报红（本轮栽过四次）。\n'
+    + '    改成切到结构边界：indexOf(\'\\nfunc \', i) / indexOf(\'\\n}\', i)');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -1962,9 +1962,10 @@ if (window.gw.weSelfTest) {
     logLine('audio', `${ok ? '✅' : '⚠️'} FFT 自检（${t.tone}Hz）：`
       + `峰值第 ${t.peakSeg} 段（应 ${t.expectSeg}）　主瓣宽 ${t.segsAboveQuarter} 段`
       + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`
-      + (t.maxJump !== undefined
-        ? `　稳态最大跳变 ${Number(t.maxJump).toFixed(3)}(第${t.jumpAt}段)`
-          + (t.maxJump > 0.25 ? ' ⚠️纯音下就有尖刺' : ' ✅稳态光滑')
+      + (t.outsidePeak !== undefined
+        ? `　主瓣外最大 ${Number(t.outsidePeak).toFixed(3)}(第${t.outsideAt}段)`
+          + (t.outsidePeak > 0.2 ? ' ⚠️主瓣外有明显值⟹尖刺在分箱/平滑'
+            : ' ✅主瓣外干净⟹尖刺来自音乐瞬态')
         : ''));
   }).catch(() => {});
 }

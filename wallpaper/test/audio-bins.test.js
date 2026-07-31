@@ -233,8 +233,10 @@ check('启动时跑 FFT 自检（1kHz 纯音）', () => {
 });
 
 check('自检报主瓣宽度（那是判据本身）', () => {
+  // ⚠️ 切到函数尾，不用固定长度 —— 我往这个函数里加了两个判据，
+  // 2000 字符的切片就把断言要找的东西推走了。**这一轮我栽过四次。**
   const i = swiftSrc.indexOf('func selfTestFFT');
-  const fn = swiftSrc.slice(i, i + 2000);
+  const fn = swiftSrc.slice(i, swiftSrc.indexOf('\nfunc ', i + 10));
   assert.match(fn, /segsAboveQuarter/,
     '自检不报主瓣宽度 ⟹ 分不清"窗函数没生效"和"频率映射错了"');
   assert.match(fn, /peakSeg/, '不报峰值位置 —— 那是频率映射对不对的判据');
@@ -307,7 +309,7 @@ check('helper 编译失败会报到面板', () => {
 // 那不影响"主瓣宽度"的判断（比例不变），但**平滑的行为要多帧才看得出来**。
 check('自检跑多帧（单帧读到的是真实值的 0.3 倍）', () => {
   const i = swiftSrc.indexOf('func selfTestFFT');
-  const fn = swiftSrc.slice(i, i + 2500);
+  const fn = swiftSrc.slice(i, swiftSrc.indexOf('\nfunc ', i + 10));
   assert.match(fn, /for _ in 0\.\.<\d+/,
     '自检只跑一帧 ⟹ smoothed 从 0 开始只走 30%，而平滑的行为要多帧才看得出来');
 });
@@ -315,13 +317,17 @@ check('自检跑多帧（单帧读到的是真实值的 0.3 倍）', () => {
 // ⚠️ 稳态信号下的跳变 —— 那是"单段孤峰"最直接的判据。
 check('自检量稳态跳变（纯音的频谱该是光滑钟形）', () => {
   const i = swiftSrc.indexOf('func selfTestFFT');
-  const fn = swiftSrc.slice(i, i + 2500);
+  const fn = swiftSrc.slice(i, swiftSrc.indexOf('\nfunc ', i + 10));
   assert.match(fn, /maxJump/,
     '不量稳态跳变 ⟹ 分不清"尖刺来自我们这一层"和"来自音乐的瞬态"。'
     + '纯音是稳态的，它的频谱该是光滑钟形 ⟹ 跳变大就说明问题在分箱/平滑');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  assert.match(main, /纯音下就有尖刺/,
+  // ⚠️ 判据的文案改过一次（第一版看全局跳变，必然误报）——
+  // 断言锚在"结论"而不是某句具体的话。
+  assert.match(main, /主瓣外/,
     '面板不解释那个数意味着什么 ⟹ 用户拿到数字也不知道结论');
+  assert.match(main, /尖刺来自分箱\/平滑|尖刺来自音乐/,
+    '不给结论 ⟹ 那个数字要用户自己判断');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
