@@ -2605,7 +2605,9 @@ ipcMain.handle('we-set-strategy', (_event, id) => {
 
 // 切音源。'netease' / 'system' / 'off'
 ipcMain.handle('we-set-audio-source', (_event, source) => {
-  if (!['netease', 'system', 'off'].includes(source)) {
+  // ⚠️ 用 AudioSource.isValidSource 而不是就地写列表 —— 那个列表原来在三处重复，
+  // 而我加 'synth' 时只改了面板 ⟹ 这里把它拒了，症状是"点了没反应"。
+  if (!AudioSource.isValidSource(source)) {
     return { ok: false, error: `未知音源 ${source}` };
   }
   config.we.audioSource = source;
@@ -2636,13 +2638,76 @@ function sendWEMedia(track) {
 // ⚠️ 静默（全 0）要能被看见：没授权拿到的就是全 0，而全 0 的画面看起来是
 // "音频响应坏了"。所以 normalizeAudioFrame 会报 silent，面板拿它显示状态。
 let audioTap = null;
+// 合成测试音的状态。⚠️ 和 audioTap 放一起，而且必须在 syncAudioSource() **之前** ——
+// `let` 有暂时性死区，声明在使用之后的话，任何在模块顶层执行期到达的调用都会抛
+// ReferenceError。现在三个调用点都在函数体内所以安全，但那是"恰好"，不是设计。
+// （我这轮刚在 liftOverMenuBar 的 `want` 上栽过同一个形状。）
+let synthTimer = null;
+let synthPhase = 0;
 let audioStatus = null;
 
 // 启停音频采集。跟着 config.we.audioSource 走：
 //   'netease' 只抓网易云（macOS 14.4+，更早会退回全局并报 warning）
 //   'system'  全系统混音
 //   'off'     不采集（壁纸走它自己的空闲动画）
+// 合成测试音源。**不需要任何授权。**
+//
+// ⚠️ 为什么必须有这个：
+//
+// 用户从"圆环没有"开始查了好几轮，而根因其实很朴素 —— **那个圆环在等音频帧**，
+// 而 `audioSource` 默认 'off' ⟹ 我们一帧都不发 ⟹ 它没数据可画。
+// 配置全对（visual_audio_model=1 / showCircle=true / wavetransparency=80），
+// 属性也确认送到了（137 项 ✅），就是没有数据。
+//
+// 而真音频要**屏幕录制授权 + 打包**，那条链上任何一步没通，症状都是"圆环不出现" ——
+// 和"壁纸不兼容"、"属性没进去"、"代码有 bug"完全分不清。
+//
+// ⟹ 这个音源把「壁纸能不能画圆环」和「我们能不能拿到系统音频」**拆成两件事**：
+//   选它 → 圆环动起来  ⟹ 壁纸侧完全正常，剩下的纯粹是授权/采集问题
+//   选它 → 圆环还是没  ⟹ 问题在壁纸侧或我们的数据格式，和授权无关
+//
+// 它也是标定那两个未验常量（0.012 归一化、FFT 分组）的参照：合成音的频谱是已知的。
+function startSynthAudio() {
+  if (synthTimer) return;
+  // 30fps 就够 —— 壁纸的视觉更新到不了那么快，而更高只是白烧 CPU。
+  synthTimer = setInterval(() => {
+    if (!weWindow || weWindow.isDestroyed()) return;
+    synthPhase += 1;
+    // 造一个"像音乐"的频谱：低频强、往高频衰减，整体随时间起伏（模拟节拍）。
+    //
+    // ⚠️ 只填**前 76 段**有意义的值 —— 壁纸只消费 512 空间的 0..300，
+    // 反推到 128 段就是前 76 段（`Pe<=300` 没有 else，301..511 被它自己丢掉）。
+    // 后面填衰减到 0 的值，那样如果画面在高频区有反应，就说明我这个 76 的推断错了。
+    const beat = 0.55 + 0.45 * Math.sin(synthPhase / 9);
+    const frame = Array.from({ length: 128 }, (_, i) => {
+      if (i >= 76) return 0;
+      const decay = Math.exp(-i / 22);
+      const wobble = 0.85 + 0.15 * Math.sin(synthPhase / 5 + i / 7);
+      return Math.min(1, decay * beat * wobble);
+    });
+    weWindow.webContents.send('we-audio', frame);
+  }, 1000 / 30);
+  audioStatus = {
+    ok: true,
+    text: '合成测试音（不需要授权）—— 用来确认壁纸能不能画音频可视化',
+    synth: true,
+  };
+  console.log('[audio] 合成测试音已启动（30fps，前 76 段有值）');
+}
+
+function stopSynthAudio() {
+  if (synthTimer) { clearInterval(synthTimer); synthTimer = null; }
+}
+
 function syncAudioSource() {
+  // 合成音源单独一条路 —— 它不碰 ScreenCaptureKit，所以和授权完全无关。
+  if (config.we.audioSource === 'synth') {
+    if (audioTap) { audioTap.stop(); audioTap = null; }
+    if (weProject && weProject.wantsAudio) startSynthAudio();
+    else { stopSynthAudio(); audioStatus = null; }
+    return;
+  }
+  stopSynthAudio();
   const want = weProject && weProject.wantsAudio && config.we.audioSource !== 'off';
   if (!want) {
     if (audioTap) { audioTap.stop(); audioTap = null; }
@@ -2762,6 +2827,7 @@ function hardQuit(from) {
     // 但"退出时报一堆错"看起来像退出失败。
     if (wePropTimer) { clearInterval(wePropTimer); wePropTimer = null; }
     if (weSlowPropTimer) { clearInterval(weSlowPropTimer); weSlowPropTimer = null; }
+    stopSynthAudio();
   });
   step('注销全局快捷键', () => globalShortcut.unregisterAll());
   step('拆掉所有窗口', () => {

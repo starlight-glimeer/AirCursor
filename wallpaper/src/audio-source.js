@@ -185,6 +185,22 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
   };
 }
 
+
+// 合法音源，**单一来源**。
+//
+// ⚠️ 这个列表原来在三处重复：main.js 的校验白名单、dashboard.js 的按钮列表、
+// 还有注释。而我加第四种（'synth' 合成测试音）时只改了面板 ⟹ 校验白名单把它拒了，
+// 症状是"点了那个按钮没反应"。
+//
+// 这个形状我在本项目栽过：工坊那次也是"支持类型"列表重复，加了 image 之后
+// 自己的 dispatcher 拒绝自己生成的东西。⟹ 知识只能有一份。
+const SOURCES = ['netease', 'system', 'synth', 'off'];
+
+function isValidSource(id) {
+  return SOURCES.includes(id);
+}
+
 module.exports = {
+  SOURCES, isValidSource,
   NETEASE_BUNDLE, parseLines, describeStatus, permissionHint, ensureHelper, start,
 };

@@ -2287,4 +2287,51 @@ check('两个属性定时器在卸载和退出时都清掉', () => {
   }
 });
 
+
+// ⚠️ 音源列表只能有一份。
+//
+// 实测：我加第四种音源（'synth' 合成测试音，免授权）时只改了面板的按钮列表，
+// 而 main.js 的校验白名单 `['netease','system','off']` 把它拒了
+// ⟹ 症状是"点了那个按钮没反应"。
+//
+// 同一个形状我在工坊那边栽过：支持类型列表重复，加了 image 之后自己的 dispatcher
+// 拒绝自己生成的东西。**知识只能有一份。**
+check('音源合法值只有一份（加一种不能只改半边）', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /AudioSource\.isValidSource/,
+    'main.js 就地写了音源白名单 ⟹ 加一种音源时会漏掉这里，症状是"点了没反应"');
+  // 禁止第二份硬编码列表
+  assert.ok(!/\['netease',\s*'system'/.test(main),
+    'main.js 里还有硬编码的音源列表 —— 那就是第二份知识');
+  const A = require('../src/audio-source.js');
+  assert.ok(Array.isArray(A.SOURCES) && A.SOURCES.includes('synth'),
+    'audio-source.js 里没有 SOURCES 单一来源');
+  // 面板的按钮必须覆盖全部合法值（少一个 = 那个音源用户点不到）
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  for (const id of A.SOURCES) {
+    assert.ok(dash.includes(`id: '${id}'`),
+      `面板没有 ${id} 这个音源按钮 ⟹ 它合法但用户点不到`);
+  }
+});
+
+// ⚠️ 合成音源的意义：把"壁纸能不能画"和"我们能不能拿到音频"拆开。
+check('有免授权的合成音源（否则圆环不出现和授权问题分不清）', () => {
+  const main = codeOnly(mainSrc);
+  assert.match(main, /function startSynthAudio/,
+    '没有合成音源 ⟹「壁纸画不出圆环」和「拿不到系统音频」的症状完全一样，'
+    + '而后者要屏幕录制授权+打包，前者是代码问题');
+  // 它不能碰 ScreenCaptureKit —— 那就失去意义了
+  const i = main.indexOf('function startSynthAudio');
+  const fn = main.slice(i, main.indexOf('\nfunction ', i + 10));
+  assert.ok(!/AudioSource\.start/.test(fn),
+    '合成音源调了真采集 ⟹ 它又需要授权了，那就失去了拆分的意义');
+  // ⚠️ 前 76 段的约束要体现在**代码**里，不能只写在注释里。
+  // 第一版断言是 `/76/`，而注释里也有 76 ⟹ 把代码里的 76 改成 128，断言照样绿。
+  // 实测过这个假阴性。
+  const code = fn.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(code, /i >= 76/,
+    '合成频谱没在代码里体现"壁纸只消费前 76 段"—— 而那正是它该用来验证的约束'
+    + '（`Pe<=300` 没有 else ⟹ 512 空间的 301..511 被壁纸自己丢掉，反推到 128 段是 76）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
