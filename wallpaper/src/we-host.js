@@ -194,6 +194,36 @@ function controlsOf(properties) {
   const list = [];
   for (const [key, spec] of Object.entries(properties || {})) {
     if (!spec || typeof spec !== 'object') continue;
+    // ⚠️ `text` 类型不是"装饰"，它是**分组标题** —— 我原来一律扔掉，那是错的。
+    //
+    // 用户报（2026-07-31）：「没有看到你说的这些属性」——
+    // 而属性其实都在，问题是 **137 个控件平铺、13 组名字还重复**：
+    //   「音频样式」→ style(圆环的) 和 PWLineStyle(直线的)
+    //   「音频方向」→ direction 和 PWLineDirection
+    //   「可视化音频」→ showCircle 和 PWLineShow
+    // ⟹ 用户看到两个同名的控件，分不清哪个属于圆环。
+    //
+    // 而分组信息**一直在数据里**（真实样本 884307090）：
+    //   order=40   「●  可视化音频(Visual Audio)」
+    //   order=42   「----------完美壁纸圆环(PWCircle)----------」
+    //   order=43   「----------完美壁纸直线(PWLine)----------」
+    //   order=83   「---------爱丽丝圆环(Alice Circle)-----------」
+    // ⟹ 按 order 排序后，这些标题正好把控件分成一段一段。
+    //
+    // ⚠️ 又是"载荷假设必先验"：我把 `text` 当装饰是想当然，而作者用它做分组。
+    if (spec.type === 'text') {
+      const label = labelOf(spec.text, key);
+      // 纯分隔线（`________` / `--------`）不当标题 —— 那才是真装饰。
+      if (/^[\s_\-—=]+$/.test(label)) continue;
+      list.push({
+        key,
+        type: 'group',
+        label,
+        order: Number.isFinite(spec.order) ? spec.order : 0,
+        condition: spec.condition || null,
+      });
+      continue;
+    }
     if (DECORATIVE_TYPES.has(spec.type)) continue;
     const control = {
       key,
@@ -201,6 +231,10 @@ function controlsOf(properties) {
       label: labelOf(spec.text, key),
       value: spec.value,
       order: Number.isFinite(spec.order) ? spec.order : 0,
+      // ⚠️ condition 必须带出来 —— 见下面 evalCondition 的注释。
+      // 我原来只在 text 分支带了它，普通控件全丢了 ⟹ 165 个控件里
+      // 只有 18 个有 condition，而真实数据里带 condition 的远多于此。
+      condition: spec.condition || null,
     };
     if (spec.type === 'slider') {
       control.min = Number.isFinite(spec.min) ? spec.min : 0;
@@ -218,6 +252,83 @@ function controlsOf(properties) {
     list.push(control);
   }
   return list.sort((a, b) => a.order - b.order);
+}
+
+// 求值 project.json 的 `condition`，决定一个控件该不该显示。
+//
+// ⚠️⚠️ **这是"用户找不到属性"的根因。** 我压根没实现它。
+//
+// 用户报（2026-07-31）：「没有看到你说的这些属性」+ 他贴的面板输出里
+// 「音频样式」「音频方向」「可视化音频」各出现**两次**。
+//
+// 真实数据（884307090）：
+//   showCircle   condition: "visual_audio_model.value == 1"   ← 圆环的
+//   PWLineShow   condition: "visual_audio_model.value == 2"   ← 直线的
+//   PolygonAngle condition: "visual_audio_model.value == 1 && showSemiCircle.value == false"
+//
+// `visual_audio_model` 默认 1（圆环）⟹ PWLine 那 20 个控件**本该全部隐藏**。
+// 而我全都显示了 ⟹ 13 组同名控件 ⟹ 用户分不清哪个属于圆环，
+// 于是"看不到"那些属性 —— 它们在，但埋在一堆同名项里。
+//
+// ⚠️ 这也解释了三个分组标题（PWCircle/PWLine/敬请期待）为什么挤在 order 42/43/44：
+// 它们是**互斥**的，靠 condition 二选一，不是顺序分组。
+//
+// ## 为什么手写求值而不用 eval
+//
+// condition 是**第三方壁纸提供的字符串**。用 eval/new Function 等于让工坊里
+// 任意一个壁纸在我们的渲染进程里执行代码 —— 那和我们为了安全开着
+// contextIsolation 的努力自相矛盾。
+//
+// ⟹ 只支持真实数据里出现的形状（我统计过 884307090 的全部 condition）：
+//   `key.value == 数字`  `key.value != 数字`
+//   `key.value == true`  `key.value == false`
+//   `key.value != ''`
+//   以上用 `&&` / `||` 连接
+// 认不出来的一律**返回 true（显示）** —— 宁可多显示一个，
+// 也不要因为解析不了而把用户需要的控件藏起来。
+function evalCondition(condition, values) {
+  if (!condition) return true;
+  const text = String(condition);
+
+  // 单个比较式。返回 null 表示"看不懂"。
+  const one = (expr) => {
+    const m = expr.trim().match(/^([\w.]+)\.value\s*(==|!=)\s*(.+)$/);
+    if (!m) return null;
+    const [, key, op, rawWanted] = m;
+    const actual = values ? values[key] : undefined;
+    let wanted = rawWanted.trim();
+    // 去掉引号
+    if (/^'.*'$/.test(wanted) || /^".*"$/.test(wanted)) wanted = wanted.slice(1, -1);
+    let eq;
+    if (wanted === 'true') eq = actual === true;
+    else if (wanted === 'false') eq = actual === false;
+    else if (wanted === '') eq = actual === '' || actual == null;
+    else if (/^-?[\d.]+$/.test(wanted)) eq = Number(actual) === Number(wanted);
+    else eq = String(actual) === wanted;
+    return op === '==' ? eq : !eq;
+  };
+
+  // ⚠️ `||` 的优先级低于 `&&`，所以先按 `||` 拆。
+  // 真实数据里有 `(A && B)||(C && D)` 这种形状（PWLineBlurColor 的 condition）。
+  const orParts = text.split('||');
+  for (const orPart of orParts) {
+    const andParts = orPart.split('&&');
+    let all = true;
+    let understood = false;
+    for (const andPart of andParts) {
+      // 去掉包裹的括号
+      const cleaned = andPart.trim().replace(/^\(+/, '').replace(/\)+$/, '');
+      const r = one(cleaned);
+      if (r === null) continue;   // 看不懂的那一项跳过（不让它否掉整条）
+      understood = true;
+      if (!r) { all = false; break; }
+    }
+    // 有一条 or 分支成立就显示
+    if (understood && all) return true;
+    // 完全看不懂 ⟹ 显示（宁可多显示，不要藏掉用户要的控件）
+    if (!understood) return true;
+  }
+  return false;
 }
 
 // 校验并规整一帧音频，返回长度正好 AUDIO_BINS 的数组。
@@ -406,6 +517,7 @@ root.GestureWallWE = {
   userProperties,
   generalProperties,
   controlsOf,
+  evalCondition,
   normalizeAudioFrame,
   mediaProperties,
   mediaThumbnail,

@@ -2679,4 +2679,51 @@ check('打开目录的入口在「存储目录」，不在每张卡片上', () =
     + '一个入口就够，N 张卡片 N 个按钮只是把一次操作重复 N 遍');
 });
 
+
+console.log('\n  condition 的接线（决定用户找不找到属性）');
+
+// ⚠️ 用户报「没有看到你说的这些属性」，而根因是 condition 完全没实现 ——
+// 165 个控件全显示、13 组重名（PWCircle 和 PWLine 各有一套同名的），
+// 属性在但埋在一堆同名项里。
+//
+// ⟹ 这条守整条链：求值在 we-host（单一来源）→ 主进程调它 → 面板按结果过滤。
+check('condition 从 we-host 一路接到面板', () => {
+  const host = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8');
+  assert.match(host, /function evalCondition/, 'we-host 没有 condition 求值');
+
+  const main = codeOnly(mainSrc);
+  assert.match(main, /WE\.evalCondition/,
+    '主进程没调 evalCondition ⟹ 控件全部显示，用户在 13 组重名里找不到属性');
+  assert.match(main, /visible:/, 'we-controls 载荷里没有 visible 标记');
+
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /c\.visible !== false/,
+    '面板没按 visible 过滤 ⟹ 主进程算了但没人用');
+  // ⚠️ 面板不许自己重写一份求值 —— 那是第二份知识（本项目栽过两次）
+  assert.ok(!/function evalCondition/.test(dash),
+    '面板里重写了一份 condition 求值 —— 那是第二份知识，会和 we-host 漂');
+});
+
+// ⚠️ 改一个属性可能让别的控件出现/消失。
+check('改属性后重渲染控件（condition 依赖别的属性值）', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const i = dash.indexOf('function renderWEControls');
+  const fn = dash.slice(i, dash.indexOf('\n}', i));
+  // bool 的 onchange 里要重渲染 —— visual_audio_model 那类开关一改，整段控件都要换
+  assert.match(fn, /renderWEControls\(\)/,
+    '改属性后不重渲染 ⟹ 把「可视化音频模板」从圆环切到直线，控件列表不会跟着换');
+});
+
+// ⚠️ 分组标题要渲染出来，否则 67 个控件仍然是一片平铺。
+check('分组标题渲染出来（project.json 用 text 项分段）', () => {
+  const host = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8');
+  assert.match(host, /type: 'group'/,
+    'text 项没做成分组标题 —— 作者用它们分段'
+    + '（「----------完美壁纸圆环(PWCircle)----------」）');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /'group'/, '面板没渲染分组标题');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(html, /\.we-group/, '分组标题没有样式 ⟹ 和普通控件混在一起看不出分段');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

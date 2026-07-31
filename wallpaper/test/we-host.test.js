@@ -25,16 +25,44 @@ function check(name, fn) {
 
 // 真实样本。⚠️ 用真 project.json 而不是手写 fixture：手写的会长成我以为的样子，
 // 而这整个契约的风险恰恰在"我以为的形状和真实形状不一样"。
+// ⚠️ 真实样本。**硬编码绝对路径，所以在别人机器上会缺** ——
+// 那样相关的 check 会静默跳过（下面每个用它的 check 都判了 null）。
+// 不改成打包进仓库是因为它们是第三方作品（几十 MB，含作者的图片/视频）。
+//
+// ⚠️ 而"静默跳过"本身是个风险：测试全绿不等于验过。所以下面会打一行说明。
 const SAMPLE_DIR = '/home/moon/hackathon/壁纸/粒子效果_网易云监听';
-const sampleJSON = (() => {
+// ⚠️ 第二个样本：884307090「完美壁纸」。
+//
+// 加它是因为**它和第一个样本的形状完全不同**，而那些差异各自暴露过一个 bug：
+//   · 137 个控件（第一个只有 44）⟹ 平铺就找不到东西
+//   · 大量 condition（第一个几乎没有）⟹ 我压根没实现 condition
+//   · text 字段是 HTML（第一个是纯文本双语）⟹ label 全变成 "<br"
+//   · file 类型属性没有 value ⟹ 那些键根本没发给壁纸
+// ⟹ **一个样本证明不了兼容性。** 这条教训值得写下来。
+const SAMPLE_DIR_2 = '/home/moon/hackathon/壁纸/884307090';
+
+function readSample(dir) {
   try {
-    return JSON.parse(fs.readFileSync(path.join(SAMPLE_DIR, 'project.json'), 'utf8'));
+    return JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
   } catch {
     return null;
   }
-})();
+}
+const sampleJSON = readSample(SAMPLE_DIR);
+const sampleJSON2 = readSample(SAMPLE_DIR_2);
 
 console.log('\nwe-host.js');
+
+// ⚠️ 样本缺失要**说出来** —— 否则"全绿"会被读成"兼容性验过了"，
+// 而实际上是相关的 check 静默跳过了。
+if (!sampleJSON || !sampleJSON2) {
+  const missing = [!sampleJSON && '粒子效果_网易云监听', !sampleJSON2 && '884307090']
+    .filter(Boolean).join('、');
+  console.log(`\n  ⚠️ 真实样本缺失（${missing}）—— 用它们的 check 会跳过。`);
+  console.log('     那些 check 覆盖的是"我按想象写解析然后被真数据打脸"那一类');
+  console.log('     （137 个控件平铺 / condition 没实现 / label 全是 "<br" / file 类型没 value），');
+  console.log('     ⟹ 缺样本时本文件的全绿**不代表兼容性**。');
+}
 
 console.log('\n  project.json 解析');
 
@@ -170,8 +198,22 @@ if (!sampleJSON) {
     assert.ok(types.has('slider'), '没有 slider');
     assert.ok(types.has('bool'), '没有 bool');
     assert.ok(types.has('combo'), '没有 combo');
-    // 分隔标题不该出现在控件里
-    assert.ok(!controls.some((c) => c.key.startsWith('sep_')), 'sep_* 混进控件了');
+    // ⚠️ 这条断言改了。原来是「sep_* 不该出现」，而现在 `type: 'text'` 的项
+    // 会作为**分组标题**（`type: 'group'`）出现 —— 那是有意的：
+    //
+    // 真实样本（884307090）里作者用它们分段：
+    //   「----------完美壁纸圆环(PWCircle)----------」
+    //   「----------完美壁纸直线(PWLine)----------」
+    // 而我原来一律扔掉 ⟹ 137 个控件平铺、13 组重名 ⟹ 用户找不到属性。
+    //
+    // ⟹ 现在验的是"它们不是**可调控件**"（没有 value/min/max），而不是"不存在"。
+    for (const c of controls.filter((x) => x.key.startsWith('sep_'))) {
+      assert.strictEqual(c.type, 'group',
+        `${c.key} 的 type 是 ${c.type} —— text 项该是分组标题，不是可调控件`);
+    }
+    // 纯分隔线（`_____` / `-----`）连标题都不该算
+    assert.ok(!controls.some((c) => c.type === 'group' && /^[\s_\-—=]+$/.test(c.label)),
+      '纯分隔线被当成分组标题了 —— 那才是真装饰');
   });
 
   check('控件按 order 排序（面板的分组顺序靠它）', () => {
@@ -651,6 +693,100 @@ check('没有 text 时用 key 兜底（而不是空白）', () => {
   // 只有标签没有文字时也要兜底
   const out2 = WE.controlsOf({ k2: { type: 'slider', text: '<br /><br />', value: 1 } });
   assert.strictEqual(out2[0].label, 'k2', 'text 全是标签时没兜底');
+});
+
+
+console.log('\n  condition：决定用户能不能找到属性');
+
+// ⚠️⚠️ **这是"看不到属性"的根因。** 我压根没实现 condition。
+//
+// 用户报（2026-07-31）：「没有看到你说的这些属性」，而他贴的面板输出里
+//「音频样式」「音频方向」「可视化音频」各出现**两次**。
+//
+// 真实数据（884307090）：
+//   showCircle    condition: "visual_audio_model.value == 1"   ← 圆环那套
+//   PWLineShow    condition: "visual_audio_model.value == 2"   ← 直线那套
+//   PolygonAngle  condition: "visual_audio_model.value == 1 && showSemiCircle.value == false"
+//
+// 默认 `visual_audio_model = 1` ⟹ PWLine 那 20 个控件**本该隐藏**。
+// 而我全都显示 ⟹ 13 组重名 ⟹ 属性在，但埋在一堆同名项里找不到。
+// 实测：过滤后 165 → 67 个，重名从 13 组降到 1 组。
+
+check('condition 求值：真实数据里出现的全部形状', () => {
+  const v = {
+    visual_audio_model: 1, showSemiCircle: false, weather_show: false,
+    ColorMode: 2, selectmusic: '', MuiscModel: 0, PWLinePosition: 1,
+    BlurColorGradient: false, Test_Author: true,
+  };
+  const cases = [
+    // 数字相等/不等
+    ['visual_audio_model.value == 1', true],
+    ['visual_audio_model.value == 2', false],
+    ['MuiscModel.value != 0', false],
+    // 布尔
+    ['Test_Author.value == true', true],
+    ['showSemiCircle.value == false', true],
+    ['weather_show.value == true', false],
+    // 空字符串（file 类型"还没选"）
+    ["selectmusic.value != '' ", false],
+    // && 连接
+    ['visual_audio_model.value == 1 && showSemiCircle.value == false', true],
+    ['visual_audio_model.value == 1 && showSemiCircle.value == true', false],
+    // || 连接 + 括号（真实样本 PWLineBlurColor 的形状）
+    ["MuiscModel.value != 0 || selectmusic.value != '' ", false],
+    ['(visual_audio_model.value == 1 && ColorMode.value == 2)'
+      + '||(ColorMode.value == 2 && BlurColorGradient.value == false )', true],
+  ];
+  for (const [cond, want] of cases) {
+    assert.strictEqual(WE.evalCondition(cond, v), want,
+      `condition ${JSON.stringify(cond)} 求值成 ${!want}，期望 ${want}`);
+  }
+});
+
+// ⚠️ 认不出来的一律显示 —— 宁可多显示一个，也不要把用户要的控件藏起来。
+check('看不懂的 condition 一律显示（不许藏掉控件）', () => {
+  const weird = ['someWeirdSyntax(', 'a.value ~= 3', 'foo && bar', ''];
+  for (const c of weird) {
+    assert.strictEqual(WE.evalCondition(c, {}), true,
+      `看不懂的 condition ${JSON.stringify(c)} 被判成隐藏 —— `
+      + '宁可多显示一个，也不要因为解析不了而藏掉用户需要的控件');
+  }
+  assert.strictEqual(WE.evalCondition(null, {}), true, '没有 condition 时该显示');
+});
+
+// ⚠️ 不许用 eval —— condition 是第三方壁纸提供的字符串。
+check('condition 不用 eval（那是第三方壁纸给的字符串）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8');
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/\beval\(/.test(code),
+    'condition 用 eval 求值 ⟹ 工坊里任意壁纸能在我们的进程里执行代码，'
+    + '而那和我们为了安全开着 contextIsolation 自相矛盾');
+  assert.ok(!/new Function\(/.test(code), '同上：new Function 等于 eval');
+});
+
+// ⚠️ 真实样本上的端到端效果 —— 这条直接对应用户报的现象。
+// ⚠️ 用**第二个**样本（完美壁纸）—— 第一个（音域回响）只有 44 个控件、
+// 几乎没有 condition，压根暴露不出这个 bug。那正是"一个样本证明不了兼容性"。
+check('（真样本 884307090）过滤后重名控件降到 2 组以内', () => {
+  if (!sampleJSON2) { console.log('    （跳过：样本不在）'); return; }
+  const p = WE.parseProject(sampleJSON2);
+  const controls = WE.controlsOf(p.properties);
+  const values = {};
+  for (const c of controls) values[c.key] = c.value;
+  const visible = controls.filter((c) => WE.evalCondition(c.condition, values));
+
+  const nameCount = new Map();
+  for (const c of visible) {
+    if (c.type === 'group') continue;
+    nameCount.set(c.label, (nameCount.get(c.label) || 0) + 1);
+  }
+  const dupes = [...nameCount.entries()].filter(([, n]) => n > 1);
+  assert.ok(dupes.length <= 2,
+    `过滤后还有 ${dupes.length} 组重名控件：${dupes.map(([n]) => n).join(', ')}`
+    + ' ⟹ 用户分不清哪个属于哪套（他实测报过「音频样式」出现两次）');
+  assert.ok(visible.length < controls.length * 0.6,
+    `过滤后 ${visible.length}/${controls.length} —— 筛掉的太少，`
+    + 'condition 大概没生效（真样本应该从 165 降到 67 左右）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

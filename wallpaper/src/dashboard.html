@@ -37,6 +37,16 @@
   #launch h1 b { font-weight: 600; }
   /* build 标识：小、灰，但必须**清晰可读** —— 它是来回测试时核对版本的唯一依据，
      看不清等于没有。所以不用 .hint 的默认色，单独定一个。 */
+  /* 分组标题（project.json 里 type=text 的项）。⚠️ 不是装饰 —— 作者用它把
+     137 个控件分段（「----------完美壁纸圆环(PWCircle)----------」）。 */
+  .we-group {
+    grid-column: 1 / -1;
+    margin: 14px 0 4px; padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,.12);
+    font-size: 12px; font-weight: 600; color: #9aa0a8;
+  }
+  .we-group:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+
   #build-stamp {
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

@@ -1197,8 +1197,42 @@ async function renderWEControls() {
     return;
   }
   host.innerHTML = '';
-  for (const control of result.controls) {
-    const value = control.key in result.overrides ? result.overrides[control.key] : control.value;
+
+  // 当前值（用户改过的优先）。渲染每一行要用。
+  const values = {};
+  for (const c of result.controls) {
+    values[c.key] = c.key in result.overrides ? result.overrides[c.key] : c.value;
+  }
+
+  // ⚠️⚠️ 按 condition 过滤。**这是"看不到属性"的根因修复。**
+  //
+  // 用户报「没有看到你说的这些属性」，而他贴的面板输出里「音频样式」「音频方向」
+  //「可视化音频」各出现**两次** —— 那是 PWCircle 和 PWLine 各有一套同名控件。
+  //
+  // 真实数据：`showCircle` 的 condition 是 `visual_audio_model.value == 1`，
+  // `PWLineShow` 是 `== 2`。默认 1（圆环）⟹ PWLine 那 20 个本该隐藏。
+  // 而我全都显示了 ⟹ 13 组重名 ⟹ 属性在，但埋在一堆同名项里找不到。
+  //
+  // 过滤后：165 → 67 个，重名从 13 组降到 1 组（实测数据）。
+  // ⚠️ 过滤在**主进程**做（那边有 we-host.js，是 condition 求值的单一来源）——
+  // 面板加载不了 we-host，而在这里重写一份求值就是第二份知识，
+  // 那个形状我在本项目栽过（音源列表、支持类型列表）。
+  const visible = result.controls.filter((c) => c.visible !== false);
+
+  let lastWasGroup = false;
+  for (const control of visible) {
+    // 分组标题：project.json 里 type=text 的项。我原来把它们当装饰扔了，
+    // 而作者用它们分段（「----------完美壁纸圆环(PWCircle)----------」）。
+    if (control.type === 'group') {
+      const h = document.createElement('div');
+      h.className = 'we-group';
+      h.textContent = control.label;
+      host.appendChild(h);
+      lastWasGroup = true;
+      continue;
+    }
+    lastWasGroup = false;
+    const value = values[control.key];
     const row = document.createElement('div');
     row.className = 'we-row';
 
@@ -1210,7 +1244,12 @@ async function renderWEControls() {
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.checked = !!value;
-      input.onchange = () => window.gw.weSetProperty(control.key, input.checked);
+      input.onchange = async () => {
+        await window.gw.weSetProperty(control.key, input.checked);
+        // ⚠️ 改一个属性可能让别的控件出现/消失（condition 依赖它）——
+        // 比如把 visual_audio_model 从"圆环"改成"直线"，整段控件都要换。
+        renderWEControls();
+      };
       row.appendChild(input);
       row.appendChild(document.createElement('span'));   // 占住第三列，别让网格错位
     } else if (control.type === 'combo') {

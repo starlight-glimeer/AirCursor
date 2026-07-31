@@ -1927,10 +1927,29 @@ ipcMain.handle('we-set-property', (_event, key, value) => {
 // 面板要渲染配置控件，直接从 project.json 生成 —— 不给每个壁纸手写 UI。
 ipcMain.handle('we-controls', () => {
   if (!weProject) return { ok: false, controls: [] };
+  const controls = WE.controlsOf(weProject.properties);
+  // ⚠️ condition 在**这里**求值，不在面板里。
+  //
+  // 理由：`evalCondition` 在 we-host.js 里，而面板加载不了那个模块 ——
+  // 在面板里重写一份求值就是第二份知识，那个形状我在本项目栽过两次
+  //（音源列表、支持类型列表）。
+  //
+  // ⚠️ 而这一步**决定了用户能不能找到属性**：真实样本（884307090）有 165 个控件，
+  // 其中 PWCircle 和 PWLine 各有一套**同名**的（音频样式/音频方向/可视化音频…），
+  // 靠 `visual_audio_model.value == 1|2` 二选一。
+  // 不过滤 ⟹ 13 组重名 ⟹ 用户报「没有看到你说的这些属性」——
+  // 属性在，但埋在一堆同名项里。过滤后 165 → 67，重名降到 1 组。
+  const values = {};
+  for (const c of controls) {
+    values[c.key] = c.key in config.we.overrides ? config.we.overrides[c.key] : c.value;
+  }
   return {
     ok: true,
     title: weProject.title,
-    controls: WE.controlsOf(weProject.properties),
+    controls: controls.map((c) => ({
+      ...c,
+      visible: WE.evalCondition(c.condition, values),
+    })),
     overrides: config.we.overrides,
   };
 });

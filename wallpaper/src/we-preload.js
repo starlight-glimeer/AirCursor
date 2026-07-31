@@ -32,7 +32,23 @@ const listeners = {
 
 function register(bucket) {
   return (callback) => {
-    if (typeof callback === 'function') listeners[bucket].push(callback);
+    if (typeof callback !== 'function') return;
+    listeners[bucket].push(callback);
+    // ⚠️ 报出**注册了几个** —— 那是"多个 listener 互相干扰"的唯一观测点。
+    //
+    // 实测线索（884307090「完美壁纸」）：`PWLine.js` 和 `PWCircle.js`
+    // **各自都调了 wallpaperRegisterAudioListener**，而且两个文件定义的函数同名
+    //（都叫 `wallpaperAudioListener`，全局作用域里后者覆盖前者）。
+    //
+    // 而 PWCircle 的那个每帧会 `CTXLine.clearRect()` —— **清掉 PWLine 的画布**，
+    // 说明作者认为两者互斥（`visual_audio_model` 二选一）。
+    //
+    // ⟹ 如果 WE 原版是"只保留最后一个 listener"，那我们保留全部就会让两个都画。
+    // 而我**不确定** WE 是哪种行为 ⟹ 先把事实报出来，别猜。
+    if (listeners[bucket].length > 1) {
+      console.warn(`[we] ${bucket} 注册了 ${listeners[bucket].length} 个 listener`
+        + ` —— 名字：${listeners[bucket].map((f) => f.name || '(匿名)').join(', ')}`);
+    }
   };
 }
 
