@@ -2891,6 +2891,36 @@ function reportAudioFrame(data, source) {
     })(),
     max: Number(Math.max(...arr).toFixed(3)),
     mean: Number((arr.reduce(sum, 0) / arr.length).toFixed(3)),
+    // ⚠️ **按钟点报活跃度。** 那和用户看到的东西一一对应。
+    //
+    // 用户十几轮都在用钟表描述（「3 点到 4 点有反应」「12 点到 3 点没反应」
+    // 「3 点是很明显的分割线」），而我一直报段号和频率 ——
+    // ⟹ **两边说的不是同一种坐标**，每次都要我换算，而我换算错过好几次。
+    //
+    // PWCircle 的映射：段 i 在 (i*3)° ，canvas 的 0° 是 3 点方向、顺时针。
+    // ⟹ 段 0 = 3 点，段 30 = 6 点，段 60 = 9 点，段 90 = 12 点。
+    clock: (() => {
+      const out = [];
+      for (let h = 0; h < 12; h += 1) {
+        // 3 点是段 0，每个钟点 10 段
+        const from = h * 10;
+        const to = Math.min(arr.length, from + 10);
+        let sum = 0;
+        let peak = 0;
+        for (let i = from; i < to; i += 1) {
+          sum += arr[i] || 0;
+          if ((arr[i] || 0) > peak) peak = arr[i] || 0;
+        }
+        const hour = ((3 + h) % 12) || 12;
+        out.push({
+          h: hour,
+          seg: from,
+          mean: Number((sum / Math.max(1, to - from)).toFixed(3)),
+          peak: Number(peak.toFixed(3)),
+        });
+      }
+      return out;
+    })(),
     // 前 40 段（线性区，鼓/低音）和后面的对比 —— 形状对不对看这个
     lowMean: Number((arr.slice(0, 40).reduce(sum, 0) / 40).toFixed(3)),
     highMean: Number((arr.slice(80, 120).reduce(sum, 0) / 40).toFixed(3)),

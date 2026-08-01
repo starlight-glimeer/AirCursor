@@ -1223,6 +1223,14 @@ function renderAudioFrame(frame) {
     + `　${frame.max > 1.5 ? '<span class="warn">⚠️ 顶天了，NORMALIZE 要调小</span>'
       : (frame.max < 0.05 ? '<span class="warn">⚠️ 太小，NORMALIZE 要调大</span>' : '')}`
     + `<br>低频段(0-39) ${frame.lowMean}　高频段(80-119) ${frame.highMean}　${shape}`
+    // ⚠️ 按钟点报 —— 用户十几轮都在用钟表描述，而我一直报段号，
+    // 两边说的不是同一种坐标，每次都要换算（而我换算错过好几次）。
+    + (frame.clock ? `<br><b>按钟点</b>（你看到的位置）：<br>`
+      + `<span style="font-family:ui-monospace;font-size:10px">`
+      + frame.clock.map((c) => {
+        const dead = c.peak < 0.05 ? ' ⚠️' : '';
+        return `${c.h}点 ${c.mean}/${c.peak}${dead}`;
+      }).join('　') + '</span>' : '')
     + `<br>最大值在第 <b>${frame.peakAt}</b> 段`
     // ⚠️ 尖刺 —— "很多个和周围高度差很大的柱子"的量化。
     // 用户报那是**共性问题**（两个壁纸都有）⟹ 只能来自我们发的数据。

@@ -95,7 +95,6 @@ func emitStatus(_ state: String, _ extra: [String: Any] = [:]) {
 final class Spectrum {
     private let setup: FFTSetup
     private let log2n: vDSP_Length
-    private var window: [Float]
     private var real: [Float]
     private var imag: [Float]
     private var magnitudes: [Float]
@@ -105,10 +104,44 @@ final class Spectrum {
     init() {
         log2n = vDSP_Length(log2(Double(FFT_SIZE)))
         setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
-        window = [Float](repeating: 0, count: FFT_SIZE)
-        // Hann 窗。不加窗的话每帧边界的突变会在整个频谱上撒一层假的高频，
-        // 而高频正是流星效果的触发源 —— 会变成随机掉流星。
-        vDSP_hann_window(&window, vDSP_Length(FFT_SIZE), Int32(vDSP_HANN_NORM))
+        // ⚠️⚠️⚠️ **这里原来有一个 Hann 窗，删了。WE 没有窗函数。**
+        //
+        // 我加它的理由（原注释）是"不加窗每帧边界的突变会撒一层假的高频"——
+        // 那个说法本身是对的，是标准的 DSP 常识。**但它不是 WE 的行为**，
+        // 而"频谱好不好看"这件事上 WE 的行为才是规格。
+        //
+        // WE 的链子（`PulseAudioPlaybackRecorder.cpp`）：
+        //     m_audioFFTbuffer[i] = (audioBuffer[i] - 128) / 128.0f;
+        //     kiss_fftr(cfg, m_audioFFTbuffer, out);
+        //     ^^^^^^^^^ **中间什么都没有 == 矩形窗**
+        //
+        // 而这个差别不是"细节",它决定了整个圆环的样子。用户实测数据反推：
+        //
+        //   `0.35*log10(power)` 有一个**绝对地板**：power < 1 ⟹ 负数 ⟹ 被
+        //   `max(0, v)` 夹成 0。而频段加权是**乘法** —— 它乘不动 0。
+        //   满幅纯音的 magnitude ≈ 775 ⟹ **地板在满幅下方 58dB**。
+        //
+        //   用户段 80/100/119 的实测值 0.006/0.009/0.007 反推 magnitude = **1.02**，
+        //   地板是 1.00 ⟹ 那 62 段不是"值小"，是**恒等于 0**。
+        //
+        //   矩形窗 vs Hann 的旁瓣：-13dB/6dB每倍频  vs  -31dB/18dB每倍频。
+        //   一个 magnitude 70 的低音（用户段 1 的实测值）泄漏到 10 段之外：
+        //     矩形 1.58（**在地板之上**）   Hann 0.002（地板之下 500 倍）
+        //
+        // ⟹ **WE 的频谱能填满圆环，靠的就是矩形窗的泄漏。** 那不是缺陷，
+        //    是这套 log10 地板 + 频段加权公式赖以工作的前提：泄漏把整条谱
+        //    抬到地板之上，log10 才有东西可压缩，加权才有东西可乘。
+        //
+        // 这一个原因同时解释用户报的两个症状：
+        //   ①「12点到3点之间基本没有反应」 高段自身能量在地板下，泄漏被 Hann 掐掉
+        //   ②「柱子之间高度差很大」        Hann 出孤立窄峰 + 旁边全 0；
+        //                                矩形窗是涂抹的 ⟹ 峰周围连成片、过渡平滑
+        //
+        // ⚠️ 教训（第 11 次同一个形状）：**我又一次把"我知道的正确做法"
+        //    放进了一个"实现别人的规格"的层里。** 前十次是分箱模型、归一化系数、
+        //    `USEFUL_BINS=76`、`min(1.2,·)`。这次更隐蔽 —— 加窗不是从某个壁纸
+        //    抄来的魔数，是教科书上的对的事，所以我审了这个文件八轮都没看它一眼。
+        //    判据不变：**这一行能不能从 WE 的行为推出来？** 不能就不该在这层。
         real = [Float](repeating: 0, count: FFT_SIZE / 2)
         imag = [Float](repeating: 0, count: FFT_SIZE / 2)
         magnitudes = [Float](repeating: 0, count: FFT_SIZE / 2)
@@ -121,8 +154,7 @@ final class Spectrum {
         if input.count < FFT_SIZE {
             input.append(contentsOf: [Float](repeating: 0, count: FFT_SIZE - input.count))
         }
-        var windowed = [Float](repeating: 0, count: FFT_SIZE)
-        // ⚠️⚠️ **先去直流（DC offset），再加窗。**
+        // ⚠️⚠️ **去直流（DC offset）。**
         //
         // 用户实测（2026-07-31）：「3 点方向那个柱子基本上一直都是居高不下」。
         // 3 点方向 = 段 0，而段 0 读的是 `index = band*2 = 0` ——
@@ -137,14 +169,14 @@ final class Spectrum {
         // 我们的输入是 Float32（理论上已居中），但 ScreenCaptureKit 的混音
         // 仍可能带偏移 —— 而 bin 0 会把它全部收下。
         // ⟹ 显式减均值，那是零成本的，而漏掉它的症状正好是"某根柱子永远最长"。
+        //
+        // ⚠️ 这一步**是**能从 WE 推出来的（它的 `-128` 干的就是这件事），
+        // 所以它留着 —— 而上面那个 Hann 窗推不出来，所以删了。同一条判据。
         var centered = [Float](repeating: 0, count: FFT_SIZE)
         var dc: Float = 0
         vDSP_meanv(input, 1, &dc, vDSP_Length(FFT_SIZE))
         var negDC = -dc
         vDSP_vsadd(input, 1, &negDC, &centered, 1, vDSP_Length(FFT_SIZE))
-        centered.withUnsafeBufferPointer { c in
-            vDSP_vmul(c.baseAddress!, 1, window, 1, &windowed, 1, vDSP_Length(FFT_SIZE))
-        }
 
         // ⚠️ 这一段的写法是被编译器警告逼出来的，而那个警告是真 bug 不是风格问题：
         //
@@ -160,7 +192,7 @@ final class Spectrum {
             imag.withUnsafeMutableBufferPointer { imagBuf in
                 var split = DSPSplitComplex(realp: realBuf.baseAddress!,
                                             imagp: imagBuf.baseAddress!)
-                windowed.withUnsafeBufferPointer { ptr in
+                centered.withUnsafeBufferPointer { ptr in
                     ptr.baseAddress!.withMemoryRebound(
                         to: DSPComplex.self, capacity: FFT_SIZE / 2
                     ) { complex in
