@@ -833,7 +833,9 @@ check('不做空间平滑（相邻段差大是音乐常态，WE 也一样）', (
       + '"突兀的长"要靠降幅度解决，不是抹平频谱结构');
   }
   // 时间平滑要有（那是 WE 的 movetowards），别把两者搞混
-  assert.match(swiftCode, /smoothed\[band\] \+ \(v - smoothed\[band\]\) \* SMOOTH/,
+  // ⚠️ 锚点改了：0.9.25 起平滑从 `process()` 搬到 `tickSmooth()`
+  //（对齐 WE —— movetowards 在渲染帧率上跑，FFT 只更新 target）。
+  assert.match(swiftCode, /smoothed\[i\] \+= \(target\[i\] - smoothed\[i\]\) \* SMOOTH/,
     '时间平滑没了 —— WE 是 movetowards(cur, target, 0.3f)。'
     + '⚠️ 时间平滑（要）和空间平滑（不要）是两件事');
 });
@@ -1161,6 +1163,68 @@ check('没有"只在注释里命中"的 Swift 断言（守卫必须有判别力�
     + '    ⟹ 把代码里对应的东西删掉，断言照样绿 = 守卫没有判别力。\n'
     + '    ⟹ 改用 swiftCode（剥注释的那份）；若本意是查注释里的出处，'
     + '加进这条测试的 ALLOW 白名单');
+});
+
+// ⚠️⚠️⚠️ **平滑跑在渲染帧率（60Hz），FFT 只更新 target（43Hz）—— WE 的结构。**
+//
+// 源码依据（不是我的选择）：
+//   `WallpaperApplication.cpp:889` 在**渲染主循环**里调 `m_audioDriver->update()`
+//   而 `movetowards(…, 0.3f)` 在 `PulseAudioPlaybackRecorder::update()` 的**开头**，
+//   在 `if (!fullFrameReady) return;` **之前**：
+//
+//       void update () {
+//           pa_mainloop_iterate (…);
+//           for (int i = 0; i < 64; i++)
+//               audio64[i] = movetowards (audio64[i], m_FFTdestination64[i], 0.3f);
+//           if (!fullFrameReady) return;      ← FFT 只在有新数据时才跑
+//           … kiss_fftr … 算 m_FFTdestination64 …
+//       }
+//
+// ⟹ movetowards ≈ **60 次/秒**（渲染帧率），FFT ≈ **43 次/秒**（44100/1024）
+// ⟹ 柱子在两次 FFT 更新**之间继续插值** ⟹ 运动是连续的
+//
+// 我们原来把平滑放在 FFT 那一步 ⟹ 画面只有 43fps 且**每 23ms 一跳**
+//（PWCircle 只在收到帧时重绘）⟹ 跳变让孤峰更醒目
+//   —— 用户 0.9.24 已经说「孤峰少了、变矮了」但「还有噪点」。
+//
+// 顺带：有效平滑强度也不同。WE 每个 target 被追 60/43 ≈ 1.4 次
+// ⟹ 等效系数 1−0.7^1.4 = **0.392**，而我们原来是 0.300。
+check('平滑跑在 60fps 定时器上，不是每个 FFT 帧', () => {
+  assert.match(swiftCode, /func tickSmooth/,
+    '没有独立的 tickSmooth ⟹ 平滑还绑在 FFT 帧上 ⟹ 画面 43fps 且每 23ms 一跳');
+  assert.match(swiftCode, /func startEmitTimer/, '没有发帧定时器');
+  assert.match(swiftCode, /repeating: \.milliseconds\(16\)/,
+    '定时器不是 ~60fps（16ms）—— WE 的 movetowards 跑在渲染帧率上');
+  // ⚠️ 定时器必须被启动 —— 定义了不调等于没有，而症状是"柱子完全不动"
+  assert.match(swiftCode, /startEmitTimer\(\)\s*$/m,
+    'startEmitTimer 定义了但没调用 ⟹ 平滑和发帧都不会跑 ⟹ 柱子完全不动'
+    + '（和没授权同一个画面）');
+  // ⚠️ process() 不能再直接 emit —— 否则两条路都在发帧
+  const fnAt = swiftCode.indexOf('func process');
+  const fn = swiftCode.slice(fnAt, swiftCode.indexOf('\n    }', fnAt + 10));
+  assert.ok(!/emit\(/.test(fn),
+    'process() 里还在 emit ⟹ FFT 帧和定时器**两条路都在发** ⟹ '
+    + '帧率不确定，而平滑会被追两次（有效系数漂）');
+  // ⚠️⚠️ **线程安全**：FFT 写 target、定时器读 target 写 smoothed
+  // ⟹ 必须同一个串行 queue，否则是数据竞争（Swift 数组写非原子，可能 CoW 重分配）
+  // ⟹ 症状是"偶发乱跳/崩溃"且**时好时坏**（这个项目栽过同形状的：DSPSplitComplex 悬空指针）
+  assert.match(swiftCode, /makeTimerSource\(queue: audioQueue\)/,
+    '定时器不在 audioQueue 上 ⟹ 和 FFT 回调跨 queue 碰同一个数组 = 数据竞争');
+  assert.match(swiftCode, /sampleHandlerQueue: audioQueue/,
+    'FFT 回调不在 audioQueue 上 ⟹ 同上');
+  // ⚠️ 不能用 Timer/RunLoop —— 这个进程没有主 RunLoop 在跑（SCStream 回调驱动）
+  assert.ok(!/Timer\.scheduledTimer/.test(swiftCode),
+    '用了 Timer.scheduledTimer ⟹ 这个进程没有主 RunLoop 在跑，它压根不会触发，'
+    + '而那是完全静默的（柱子一动不动）');
+  // JS 规格要有对应实现，且数值上验证"多步插值 = 更强的等效系数"
+  assert.strictEqual(typeof A.tickSmooth, 'function', 'JS 规格没有 tickSmooth');
+  const target = new Array(64).fill(0.1);
+  target[10] = 0.9;
+  const one = A.smoothSteps(target, 1);
+  const oneFour = A.smoothSteps(target, 2);   // 60/43≈1.4，取 2 步看趋势
+  assert.ok(oneFour[10] > one[10],
+    `追 2 步(${oneFour[10].toFixed(3)}) 不比 1 步(${one[10].toFixed(3)}) 更接近 target `
+    + '⟹ tickSmooth 的实现不对（那是"两次 FFT 之间继续插值"的全部意义）');
 });
 
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');

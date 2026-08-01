@@ -145,7 +145,41 @@ function frameValues(magnitudes, bands = BANDS) {
   return mirror(one, one);
 }
 
+// ⚠️⚠️ **平滑跑在渲染帧率上（60Hz），而 FFT 只更新 target（43Hz）。**
+//
+// 那是 WE 的结构，不是我的选择：
+//   `WallpaperApplication.cpp:889` 在**渲染主循环**里调 `m_audioDriver->update()`，
+//   而 `movetowards(…, 0.3f)` 在 `PulseAudioPlaybackRecorder::update()` 的**开头**
+//   —— 在 `if (!fullFrameReady) return;` **之前**。
+//
+// ⟹ 两个频率分开：movetowards ≈ 60/秒，FFT（更新 target）≈ 43/秒
+// ⟹ 柱子在两次 FFT 更新**之间继续插值** ⟹ 运动是连续的
+//
+// 我们原来把平滑放在 FFT 那一步 ⟹ 只有 43fps 且每 23ms 一跳（不是滑动）
+// ⟹ 用户 0.9.24 仍报「还有噪点」，而跳变让孤峰更醒目。
+//
+// 顺带：有效平滑强度也不同 —— WE 每个 target 被追 60/43 ≈ 1.4 次
+// ⟹ 等效系数 1−0.7^1.4 = **0.39**，我们原来是 0.30。
+//
+// 一步平滑（相当于 WE 的一次 movetowards）。prev/target 都是 64 段。
+function tickSmooth(prev, target, coeff = SMOOTH) {
+  const out = new Array(target.length);
+  for (let i = 0; i < target.length; i += 1) {
+    const p = prev && typeof prev[i] === 'number' ? prev[i] : 0;
+    out[i] = p + (target[i] - p) * coeff;
+  }
+  return out;
+}
+
+// 平滑跑 n 步后的值 —— 用来算"两次 FFT 之间插了几步"的效果。
+function smoothSteps(target, steps, coeff = SMOOTH) {
+  let cur = new Array(target.length).fill(0);
+  for (let k = 0; k < steps; k += 1) cur = tickSmooth(cur, target, coeff);
+  return cur;
+}
+
 module.exports = {
   LOG_SCALE, SMOOTH, VDSP_SCALE, BIN_COUNT, BANDS,
   bandWeight, bandValue, channelValues, mirror, frameValues,
+  tickSmooth, smoothSteps,
 };

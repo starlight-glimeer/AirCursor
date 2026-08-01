@@ -268,8 +268,22 @@ final class Spectrum {
     private(set) var lastPeakBin = 0
     // 输入 PCM 的 RMS —— 判"柱子太长"是系统音量还是我们的实现（见 process 里的注释）
     private(set) var lastRMS: Float = 0
-    // 上一帧的结果，用来做时间平滑。
-    private var smoothed = [Float](repeating: 0, count: BIN_COUNT)
+    // ⚠️ **target 和 smoothed 分开** —— WE 的 `m_FFTdestination64` 和 `audio64`。
+    //
+    // FFT 更新 target（43 次/秒），而 `movetowards` 追 target（渲染帧率 60 次/秒）。
+    // 那两个频率在 WE 里是分开的（`update()` 里 movetowards 在 fullFrameReady
+    // 判断**之前**）⟹ 柱子在两次 FFT 之间继续插值 ⟹ 运动连续。
+    private var target = [Float](repeating: 0, count: BIN_COUNT / 2)
+    private var smoothed = [Float](repeating: 0, count: BIN_COUNT / 2)
+
+    // 追一步 target（相当于 WE 的 `movetowards(audio64[i], m_FFTdestination64[i], 0.3f)`）。
+    // ⚠️ 由 60fps 定时器调，而不是每个 FFT 帧调 —— 那是 WE 的结构。
+    func tickSmooth() -> [Float] {
+        for i in 0..<smoothed.count {
+            smoothed[i] += (target[i] - smoothed[i]) * SMOOTH
+        }
+        return smoothed
+    }
 
     init() {
         log2n = vDSP_Length(log2(Double(FFT_SIZE)))
@@ -614,22 +628,37 @@ final class Spectrum {
             // 靠的是矩形窗的泄漏把整条谱抬到地板之上（见 init 里那段注释）。
             v = min(1.0, max(0.0, v))
 
-            // ⑥ **两向平滑，系数 0.3**（WE 的 `movetowards(cur, target, 0.3f)`）。
-            // ⚠️ 我之前 ATTACK=1.0（上升不插值），理由是"PWCircle 自己有平滑"。
-            // 而 WE 原版**就是平滑的** —— 壁纸作者是对着那个行为调效果的。
-            smoothed[band] = smoothed[band] + (v - smoothed[band]) * SMOOTH
-            let value = smoothed[band]
-
-            // ⑦ 这一路（一个声道）的 64 段。**镜像拼接交给上层**。
+            // ⑥ **这里只算 target，平滑不在这里。**
             //
-            // ⚠️ 原来这里写 `out[band]` 和 `out[BIN_COUNT-1-band]` 都写同一个
-            // `value`，注释里说"分声道是锦上添花、暂时不做"。
-            // **那个判断被用户 0.9.17 的实测证伪了**：
-            //   「孤峰固定在第59段(37/60帧)」+「镜像逐段差 0.0000」
-            //   ⟹ band 63 写到段 63 和段 64（**相邻**），而它的加权是 1.393（最大）
-            //   ⟹ 9 点方向必然两根精确等高的最长柱子紧挨着 ⟹ 折线上一个尖顶
-            // ⟹ 取平均的话，那两根柱子**在数学上不可能不相等** ⟹ 必须分声道。
-            out[band] = value
+            // ⚠️⚠️⚠️ 这是 WE 源码结构决定的，不是我的选择：
+            //
+            //   `WallpaperApplication.cpp:889` 在**渲染主循环**里调
+            //   `m_audioDriver->update()`，而 `movetowards(…, 0.3f)` 就在
+            //   `PulseAudioPlaybackRecorder::update()` 的**开头**：
+            //
+            //       void update () {
+            //           pa_mainloop_iterate (…);
+            //           for (int i = 0; i < 64; i++) {          ← 每渲染帧都跑
+            //               audio64[i] = movetowards (audio64[i], m_FFTdestination64[i], 0.3f);
+            //           }
+            //           if (!fullFrameReady) return;            ← FFT 只在有新数据时跑
+            //           … kiss_fftr … 算出 m_FFTdestination64 …
+            //       }
+            //
+            // ⟹ **两个频率是分开的**：
+            //     `movetowards` = 渲染帧率 ≈ **60 次/秒**
+            //     FFT（更新 target）= 44100/1024 ≈ **43 次/秒**
+            //
+            // ⟹ 于是 WE 的柱子在两次 FFT 更新**之间继续插值** ⟹ 运动是连续的。
+            //   而我们原来把平滑放在 `process()` 里 ⟹ 只有 43 次/秒 ⟹
+            //   **每 23ms 一跳，而不是滑动** ⟹ 那让孤峰显得更醒目。
+            //
+            // ⚠️ 顺带：有效平滑强度也不同 —— WE 每个 target 被追 60/43 = 1.4 次
+            //   ⟹ 等效系数 1−0.7^1.4 = **0.39**，而我们是 0.30。
+            //
+            // ⟹ 平滑搬到 `tickSmooth()`，由 60fps 定时器驱动（见那个函数）。
+            target[band] = v
+            out[band] = v
         }
 
         return out
@@ -671,9 +700,18 @@ func selfTestFFT(_ spectrum: Spectrum) {
     // 漏改这里会让下面的 `bins[BIN_COUNT-1-i]` **越界崩溃**，
     // 而 Swift 的数组越界是 fatalError ⟹ helper 直接死 ⟹ 音频整条链没了，
     // 用户看到的是"柱子不动"（和没授权同一个画面）。
+    // ⚠️⚠️ **0.9.25 起 `process()` 返回 target（未平滑），平滑在 `tickSmooth()`。**
+    //
+    // 那是对齐 WE 的结构（movetowards 在渲染帧率上跑，FFT 只更新 target）。
+    // ⟹ 自检要**两个都跑**：process 更新 target，tickSmooth 追它。
+    //
+    // ⚠️ 漏了 tickSmooth 的话自检读到的是**未平滑的原始值** ——
+    // 那不会报错，但"平滑有没有索引错位"这个判据就失效了（它验的是 smoothed）。
+    // 而 20 帧的收敛论证（0.7^20 ≈ 0.0008）也只对 tickSmooth 成立。
     var bins = [Float](repeating: 0, count: BIN_COUNT / 2)
     for _ in 0..<20 {
-        bins = spectrum.process(tone)
+        _ = spectrum.process(tone)
+        bins = spectrum.tickSmooth()
     }
 
     // ⚠️ **稳态信号下相邻段的跳变** —— 那是"单段孤峰"的直接判据。
@@ -767,7 +805,8 @@ func selfTestFFT(_ spectrum: Spectrum) {
     // ⟹ 改成查**同一路自己跑两遍是否一致**（确定性检查）：
     //   纯音 + 同样的平滑状态 ⟹ 结果必须逐段相同。
     //   不相同 = 有未初始化的内存 / 悬空指针（那类 bug 时好时坏，最难查）。
-    let again = spectrum.process(tone)
+    _ = spectrum.process(tone)
+    let again = spectrum.tickSmooth()
     var mirrorMaxDiff: Float = 0
     var mirrorAt = 0
     for i in 0..<min(bins.count, again.count) {
@@ -868,6 +907,66 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     // 系统音量缓存（每 10 帧刷一次，见 didOutputSampleBuffer 里的注释）
     private var cachedVolume: Float = 1.0
     private var volumeTick = 0
+    // 供发帧定时器上报用的观测量（FFT 回调里更新，定时器里读）
+    private var lastBatch = 0
+    private var lastFramesPerCall = 0
+    private var emitTimer: DispatchSourceTimer?
+
+    // ⚠️⚠️ **60fps 发帧定时器 —— 对齐 WE 的渲染主循环。**
+    //
+    // WE 在 `WallpaperApplication.cpp:889` 的渲染循环里调 `m_audioDriver->update()`，
+    // 而 `movetowards` 就在那个 `update()` 的开头（在 fullFrameReady 判断**之前**）
+    // ⟹ 平滑跑在渲染帧率上（≈60Hz），FFT 只在有新数据时更新 target（≈43Hz）。
+    //
+    // ⟹ 我们照这个结构：定时器 60Hz 调 `tickSmooth()` 并发帧，
+    //    音频回调只负责算 FFT 更新 target。
+    //
+    // ⚠️ 为什么这值得做：PWCircle 只在收到帧时重绘 ⟹ 43fps 且每 23ms 一跳。
+    // 而 WE 那边 60fps 连续插值 ⟹ 柱子是**滑动**的。跳变让孤峰更醒目。
+    //
+    // ⚠️ 用 DispatchSourceTimer 而不是 Timer/RunLoop —— 这个进程没有主 RunLoop
+    // 在跑（它是 SCStream 的回调驱动），`Timer.scheduledTimer` 压根不会触发。
+    // 那种失败是完全静默的（柱子一动不动），而这个项目为"静默失败"烧过四轮。
+    // ⚠️⚠️⚠️ **定时器必须跑在和 FFT 回调同一个 queue 上。**
+    //
+    // 数据竞争：FFT 在 `gw.audio` queue 里写 `spectrum.target`，
+    // 而定时器要读它并写 `spectrum.smoothed` ——
+    // 两个不同 queue 同时碰同一个 `[Float]` = **未定义行为**。
+    //
+    // ⚠️ Swift 数组的写不是原子的（可能触发 CoW 重新分配）
+    // ⟹ 症状是"偶发的乱跳/崩溃"，而且**时好时坏**（最难查的那类）。
+    // 这个项目已经为一个同形状的问题栽过：`DSPSplitComplex` 的悬空指针，
+    // 那次的症状也是"频谱是噪声、时好时坏"。
+    //
+    // ⟹ 用同一个串行 queue ⟹ FFT 和 tickSmooth 天然互斥，零锁开销。
+    private let audioQueue = DispatchQueue(label: "gw.audio")
+
+    func startEmitTimer() {
+        let t = DispatchSource.makeTimerSource(queue: audioQueue)
+        // 60fps。⚠️ leeway 给小值 —— 抖动会直接表现为柱子运动不匀。
+        t.schedule(deadline: .now(), repeating: .milliseconds(16), leeway: .milliseconds(2))
+        t.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let one = self.spectrum.tickSmooth()
+            // 拼成 128：同一份 64 段镜像两次（WE 的 64Left/64Right 传同一个数组）
+            var bins = [Float](repeating: 0, count: BIN_COUNT)
+            let bands = BIN_COUNT / 2
+            for b in 0..<bands {
+                bins[b] = one[b]
+                bins[BIN_COUNT - 1 - b] = one[b]
+            }
+            emit([
+                "type": "audio",
+                "bins": bins.map { Double(round($0 * 10000) / 10000) },
+                "rms": Double(round(self.spectrum.lastRMS * 10000) / 10000),
+                "nth": self.lastFramesPerCall,
+                "batch": self.lastBatch,
+                "vol": Double(round(self.cachedVolume * 1000) / 1000),
+            ])
+        }
+        t.resume()
+        emitTimer = t
+    }
     private let targetBundle: String?
 
     init(targetBundle: String?) {
@@ -936,10 +1035,20 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
             config.showsCursor = false
 
             let s = SCStream(filter: filter, configuration: config, delegate: self)
-            try s.addStreamOutput(self, type: .audio,
-                                  sampleHandlerQueue: DispatchQueue(label: "gw.audio"))
+            // ⚠️ **和发帧定时器共用同一个串行 queue** —— 见 startEmitTimer 上面那段：
+            // FFT 写 target、定时器读 target 写 smoothed，跨 queue 就是数据竞争。
+            try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
             try await s.startCapture()
             stream = s
+            // ⚠️ **在 startCapture 之后启动发帧定时器。**
+            //
+            // 顺序有意义：定时器一起来就会发帧（哪怕全 0），而在 startCapture
+            // 失败的情况下我们要走 denied 分支、不该有数据流。
+            // ⟹ 放在这里 = "采集真的起来了才发帧"。
+            //
+            // ⚠️ 定时器**必须启动** —— 平滑和发帧都在它里面（0.9.25 起）。
+            // 漏了这一句的症状是"柱子完全不动"，而那和没授权同一个画面。
+            startEmitTimer()
             emitStatus("running", [
                 "filtered": filtered,
                 "bundle": targetBundle ?? NSNull(),
@@ -985,41 +1094,17 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
             framesThisCall += 1
             let chunk = Array(pending.prefix(FFT_SIZE))
             pending.removeFirst(FFT_SIZE)
-            let one = spectrum.process(chunk)
-            // 拼成 128：**同一份 64 段镜像两次**。
+            // ⚠️ **只更新 target，不发帧。** 发帧由 60fps 定时器做（见 startEmitTimer）。
             //
-            // ⚠️ 这里曾经是"左声道前半 + 右声道后半"，撤了 ——
-            // WE 的 shader uniform `g_AudioSpectrum64Left` 和 `64Right`
-            // 传的是**同一个 `recorder.audio64`**（`CPass.cpp:889-890`）
-            // ⟹ WE 的"左右"就是同一份数据。
+            // WE 的结构：`update()` 里 movetowards 在 `fullFrameReady` 判断**之前**
+            // ⟹ FFT 更新 target（43 次/秒）和 movetowards 追 target（渲染帧率
+            //    60 次/秒）是**两个频率** ⟹ 柱子在两次 FFT 之间继续插值。
             //
-            // ⚠️⚠️ 于是段 63 和段 64（相邻，band 63 加权 1.393 最大）**精确相等**，
-            // 在折线壁纸上是一个尖顶 —— 而**那个尖顶在真 WE 上也存在**。
-            // 我曾为它做分声道，那让画面离作者调好的效果**更远**，不是更近。
-            //
-            // ⚠️ "128 = 左64+右64" 这个布局本身仍是我的**推测**：
-            // WE 只有 audio16/32/64，而网页壁纸的 `wallpaperRegisterAudioListener`
-            // 收到 128 个数 —— 而 linux-wallpaperengine 的 `CWeb.cpp`
-            // **压根没接音频** ⟹ 这份逆向源码答不了那 128 段的真实格式。
-            // 支撑它的是壁纸侧的三条间接证据（`getRingArray` 从两端削、
-            // `PWLine.js:147` 的 `iv=(120-密度)/2` 从中心取、uniform 名字带 Left/Right），
-            // 而用户实测「镜像 + 64 段让画面明显变好」⟹ 暂时保留。
-            var bins = [Float](repeating: 0, count: BIN_COUNT)
-            let bands = BIN_COUNT / 2
-            for b in 0..<bands {
-                bins[b] = one[b]
-                bins[BIN_COUNT - 1 - b] = one[b]
-            }
-            emit([
-                "type": "audio",
-                "bins": bins.map { Double(round($0 * 10000) / 10000) },
-                "rms": Double(round(spectrum.lastRMS * 10000) / 10000),
-                "nth": framesThisCall,
-                "batch": samples.count,
-                // ⚠️ 报出来 —— 否则"音量乘了没生效"是静默失败，
-                // 而它的症状（柱子还是长）和没改一模一样。
-                "vol": Double(round(vol * 1000) / 1000),
-            ])
+            // ⟹ 我们原来在这里直接发帧 ⟹ 画面只有 43fps 且每 23ms 一跳，
+            //    而不是滑动 ⟹ 那让孤峰显得更醒目（用户 0.9.24 仍报"还有噪点"）。
+            _ = spectrum.process(chunk)
+            lastBatch = samples.count
+            lastFramesPerCall = framesThisCall
         }
         // 防止上游比我们快时无界堆积。
         if pending.count > FFT_SIZE * 8 { pending.removeFirst(pending.count - FFT_SIZE) }
