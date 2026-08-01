@@ -53,9 +53,19 @@ func emit(_ payload: [String: Any]) {
 // ⚠️ 弹框里显示的名字是**这个二进制的名字**（AirCursorPointer），
 //   不是主应用 —— 那是 TCC 按可执行文件记授权的必然结果。
 //   面板上那句「授权列表里找 AirCursorPointer」就是为这个写的。
+//
+// ⚠️⚠️ **先查，只有真没授权才弹**（0.9.86）。上面 ① 那句"已授权时是静默的
+//   true，不会骚扰用户"我**没实测过**，是照着"应该如此"写的。而鼠标 helper
+//   （GestureWallMouse）那边实测的结果是：用户每装载一个壁纸都被弹一次。
+//   ⟹ 不赌这个 API 的行为，自己先用纯查询判一次。
+//   这个 helper 是幂等启动的（systemBridge.startPointer），不像鼠标那个会反复
+//   重启，所以不需要 --no-ax-prompt 那套；但形状一样，一起改掉。
 let axPromptKey = "AXTrustedCheckOptionPrompt" as CFString
 let axOptions = [axPromptKey: kCFBooleanTrue as Any] as CFDictionary
-let axTrusted = AXIsProcessTrustedWithOptions(axOptions)
+var axTrusted = AXIsProcessTrusted()
+if !axTrusted {
+    axTrusted = AXIsProcessTrustedWithOptions(axOptions)
+}
 
 if !axTrusted {
     FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件不会生效。已弹出授权请求。\n".data(using: .utf8)!)

@@ -133,11 +133,21 @@ var eventsSeen = 0
 // 被门挡掉的计数。⚠️ 必须报出来：否则"没反应"和"被挡了"分不清，
 // 而那正是我上一版让用户白测一轮的原因。
 var blockedByGate = 0
+// ⚠️ 这次启动允不允许弹辅助功能授权框（0.9.86）。
+//
+// 默认**允许** —— 那是"需要用到时能弹出来让授权"该有的行为。
+// 但这个 helper **每装载一个壁纸就重启一次** ⟹ 一直没授权的话会一直弹。
+// ⟹ 上层（mouse-bridge）第一次之后传 `--no-ax-prompt` 压掉重复。
+//
+// ⚠️ 为什么判断放在上层而不是这里：进程活不过一次装载，
+//   任何"我已经问过了"的状态存在进程里都会跟着它一起死。
+var axPromptAllowed = true
 
 for arg in CommandLine.arguments.dropFirst() {
     if arg == "--gate-finder" { gateOnFinder = true }
     // 兼容旧参数名（老的 helper 二进制可能还在缓存里）
     if arg == "--always" { gateOnFinder = false }
+    if arg == "--no-ax-prompt" { axPromptAllowed = false }
 }
 
 // ⚠️⚠️⚠️ **必须先初始化 NSApplication，否则全局监听收不到任何事件。**
@@ -217,12 +227,38 @@ if monitor == nil {
 // ⟹ `AXIsProcessTrustedWithOptions` + `kAXTrustedCheckOptionPrompt: true`
 //   是 macOS **唯一**会自动弹辅助功能授权框的 API。
 //
-// ⚠️ 已授权时它是静默的 true，不会骚扰用户；
-//   而用户在系统设置里勾选之后 macOS 要求**重启进程**才生效
-//   ⟹ 我们仍然报 trusted: false，面板那句"授权后重开本应用"照旧有用。
+// ⚠️⚠️⚠️ **先查，只有真没授权才弹**（0.9.86 修）。
+//
+// 用户 2026-08-01：「我现在每点一个壁纸，他都要求我开启辅助功能，我都已经开了
+// 就不能做一个检测吗？没开的时候再问我要权限」
+//
+// **他说得对，而 0.9.76 我写的注释("已授权时它是静默的 true，不会骚扰用户")
+// 是错的** —— 我没有实测过，是照着"应该如此"写的。
+//
+// ⚠️ 真正的机制：这个 helper **每装载一个壁纸就被杀掉重启一次**
+//   （main.js `setWEWallpaper` → `syncMouseForward`，而上一个已经 stop 了）
+//   ⟹ 每次都是全新进程 ⟹ 每次都走到这一行。
+//   而 `AXIsProcessTrustedWithOptions(prompt: true)` 在**未授权**时必弹框，
+//   于是"点一个壁纸弹一次"。
+//
+// ⚠️ 而「已经开了」和「这个进程被授权」是两件事：TCC 按**可执行文件**记授权，
+//   而这个 helper 的二进制名带源码 sha256、住在 userData/native/ 或
+//   Resources/prebuilt-helpers/ ⟹ 换一次版本就是一个新路径，
+//   用户上次勾的那一项对它不算。他"已经开了"却仍然 untrusted，
+//   于是弹框——**每一次**。
+//
+// ⟹ ① 先用纯查询 `AXIsProcessTrusted()`（它从不弹框）
+//    ② 只有 false 时才用带 prompt 的版本请求一次
+//    ③ 而且**每个进程最多请求一次**（--no-ax-prompt 让上层压掉重复）
 let axPromptKey = "AXTrustedCheckOptionPrompt" as CFString
 let axOptions = [axPromptKey: kCFBooleanTrue as Any] as CFDictionary
-let trusted = AXIsProcessTrustedWithOptions(axOptions)
+var trusted = AXIsProcessTrusted()
+if !trusted && axPromptAllowed {
+    // 没授权，而且上层说这次可以问 —— 弹一次。
+    // ⚠️ 返回值仍是 false（用户当场勾选也要重启进程才生效），
+    //   面板那句"授权后重开本应用"照旧有用。
+    trusted = AXIsProcessTrustedWithOptions(axOptions)
+}
 
 emit(["type": "status", "state": "running",
       "gateOnFinder": gateOnFinder,

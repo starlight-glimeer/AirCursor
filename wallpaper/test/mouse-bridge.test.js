@@ -6,6 +6,8 @@
 // 坐标偏移（窗口通常在 (0,0)，所以不减 bounds 也测不出来，直到接第二块屏）
 // 和事件字段名（sendInputEvent 对不认识的字段静默忽略）。
 const assert = require('node:assert');
+const path = require('node:path');
+const os = require('node:os');
 const M = require('../src/mouse-bridge.js');
 
 let passed = 0;
@@ -263,6 +265,54 @@ check('鼠标 helper 初始化 NSApplication（全局监听的前提）', () => 
     '还在用裸 RunLoop.main.run() ⟹ AppKit 的启动序列没跑，事件源没挂上');
   assert.ok(!/^RunLoop\.main\.run\(\)$/m.test(code),
     '仍有裸 RunLoop.main.run() —— 它不完成 AppKit 的 finishLaunching');
+});
+
+// ⚠️⚠️⚠️ **行为测试：授权框整个应用生命周期只弹一次**（0.9.86）。
+//
+// 用户 2026-08-01：「我现在每点一个壁纸，他都要求我开启辅助功能，我都已经开了」
+//
+// 上面 gating 那几条只查了代码里有没有那些符号 —— **那不能证明它真的生效**。
+// 这条真的调两次 `start()`，看第二次的命令行参数。
+check('授权框只弹一次：第二次启动带 --no-ax-prompt', () => {
+  M.resetAxPromptForTest();
+
+  const calls = [];
+  const fakeChild = () => ({
+    stdout: { on() {} }, stderr: { on() {} }, on() {},
+    kill() {},
+  });
+  const spawnFn = (binary, args) => { calls.push(args); return fakeChild(); };
+  // ⚠️ ensureHelper 要认为二进制已存在，否则它会去跑 swiftc。
+  //   用这个测试文件自己当"源码"，产物路径指到 os.tmpdir 下一个必然不存在的名字，
+  //   然后靠 runFn 返回成功来跳过真编译。
+  const runFn = () => ({ status: 0, stdout: '', stderr: '' });
+  const opts = {
+    sourcePath: __filename,
+    outDir: path.join(os.tmpdir(), 'gw-mouse-test'),
+    onEvent() {}, onStatus() {}, spawnFn, runFn,
+  };
+
+  M.start({ ...opts });
+  M.start({ ...opts });
+  M.start({ ...opts, gateFinder: true });
+
+  assert.equal(calls.length, 3, `spawn 应该被调 3 次，实际 ${calls.length}`);
+  // ① 第一次：允许弹（不传那个参数）
+  assert.ok(!calls[0].includes('--no-ax-prompt'),
+    '第一次就压掉了授权框 ⟹ 用户永远没机会授权（这是 0.9.76 修的那个问题）');
+  // ② 第二、三次：压掉
+  assert.ok(calls[1].includes('--no-ax-prompt'),
+    '第二次没压 ⟹ 每装载一个壁纸弹一次（用户点名"非常奇怪"）');
+  assert.ok(calls[2].includes('--no-ax-prompt'), '第三次没压');
+  // ⚠️ 而 --gate-finder 不能被它挤掉 —— 两个参数是独立的
+  assert.ok(calls[2].includes('--gate-finder'),
+    '--gate-finder 丢了 ⟹ "只在桌面被聚焦时"那个开关失效');
+
+  // ⚠️ 重置之后要能重新弹 —— 那是"重开应用值得再问一次"的语义
+  M.resetAxPromptForTest();
+  M.start({ ...opts });
+  assert.ok(!calls[3].includes('--no-ax-prompt'),
+    '重置后仍然压着 ⟹ 用户重开应用也没机会再授权');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

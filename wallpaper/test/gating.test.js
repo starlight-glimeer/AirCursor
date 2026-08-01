@@ -5634,6 +5634,27 @@ check('辅助功能：主动弹授权框（不是只查询）', () => {
     // ⚠️ 那个 key 必须是 **true** —— 传 false 等于没传
     assert.match(code, /axPromptKey: kCFBooleanTrue/,
       `${rel} 的 prompt 选项不是 true ⟹ 不会弹框`);
+
+    // ⚠️⚠️⚠️ **但必须先查、只有真没授权才弹**（0.9.86）。用户 2026-08-01：
+    //   「我现在每点一个壁纸，他都要求我开启辅助功能，我都已经开了就不能做一个
+    //     检测吗？没开的时候再问我要权限，这非常奇怪好吧」
+    //
+    // **他说得对，而 0.9.76 我在这两个文件里写的注释是错的** ——
+    // 我写「它只在还没授权时弹 —— 已授权时是静默的 true，不会骚扰用户」，
+    // 而那句**没有实测过**，是照着"应该如此"写的。
+    //
+    // ⚠️ 真正的机制：`AXIsProcessTrustedWithOptions(prompt: true)` 在**未授权**时
+    //   必弹框。而"用户已经在系统设置里勾了"**不代表这个进程被授权** ——
+    //   TCC 按可执行文件记授权，helper 的二进制名带源码 sha256，
+    //   换个版本就是新路径 ⟹ 他确实开过，却仍然 untrusted ⟹ 每次启动都弹。
+    //
+    // ⟹ 判据：**先用纯查询判一次，false 才请求。**
+    assert.match(code, /= AXIsProcessTrusted\(\)/,
+      `${rel} 没有先用纯查询判一次 ⟹ 直接调带 prompt 的版本，`
+      + '未授权时每次启动必弹框（用户点名"非常奇怪"）');
+    // ⚠️ 而带 prompt 那次必须在 `if !xxx` 里面 —— 不然"先查"只是个摆设
+    assert.match(code, /if !\w+[\s\S]{0,120}?AXIsProcessTrustedWithOptions/,
+      `${rel} 的带 prompt 调用不在"没授权"的分支里 ⟹ 先查那一步白做`);
     // ⚠️⚠️ **`ready` 那次**要用带 prompt 的结果（那是"启动时请求一次"），
     //   而 **`pong` 那次是实时查询** —— 那是有意的：
     //   用户授权后重启进程，pong 要报**当前**状态，而不是启动那一刻的。
@@ -5649,6 +5670,25 @@ check('辅助功能：主动弹授权框（不是只查询）', () => {
         + ' ⟹ 该用带 prompt 那次的结果（否则代码里有两个来源，会漂）');
     }
   }
+
+  // ⚠️⚠️ **鼠标 helper 每装载一个壁纸就重启一次** ⟹ "只弹一次"的状态不能存在
+  //   helper 里（它活不过一次装载），必须存在主进程的 mouse-bridge 里。
+  const mb = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'mouse-bridge.js'), 'utf8'));
+  assert.match(mb, /let axPromptUsed = false/,
+    'mouse-bridge 没有"已经弹过了"的标志 ⟹ 每装载一个壁纸弹一次');
+  assert.match(mb, /if \(axPromptUsed\) args\.push\('--no-ax-prompt'\)/,
+    '第二次启动 helper 没传 --no-ax-prompt ⟹ 重复弹框');
+  assert.match(mb, /axPromptUsed = true/, 'axPromptUsed 从来不置 true ⟹ 那个压制永远不生效');
+  // ⚠️ Swift 那边必须真认这个参数 —— 只在 JS 侧传、Swift 不解析 = 静默无效
+  const ms = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'), 'utf8');
+  assert.match(ms, /arg == "--no-ax-prompt"/,
+    'GestureWallMouse 不解析 --no-ax-prompt ⟹ JS 侧传了也没用（静默无效）');
+  // ⚠️⚠️ 而它只该控制"弹不弹"，**纯查询照旧做** ——
+  //   否则第二次之后 trusted 永远报 false，面板会说"没授权"而实际已授权。
+  assert.match(ms, /var trusted = AXIsProcessTrusted\(\)/,
+    'GestureWallMouse 的纯查询被 --no-ax-prompt 关掉了 ⟹ 第二次之后永远报未授权');
 
   // ⚠️ GestureWallMouse 显式 import ApplicationServices ——
   //   Cocoa 会间接带上，但云端编译不了（没 swiftc）⟹ 不赌传递依赖。
