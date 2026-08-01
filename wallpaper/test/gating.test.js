@@ -5570,7 +5570,26 @@ check('预编译 helper：四个都编 / 名字规则两边一致 / swiftc 那�
   assert.match(sh, /command -v swiftc[\s\S]{0,400}?exit 0/,
     '没有 swiftc 时预编译脚本不是优雅跳过 ⟹ 打包会失败');
 
-  // ⑥ 构建脚本要调它，而且在 electron-builder **之前**
+  // ⑥⚠️ **`swiftc` 失败时要告诉用户能做什么**（0.9.80）。
+  //
+  // 走到那几处有两种原因，而用户能做的事完全不同：
+  //   · `swiftc` 不存在（普通 Mac 没有 Xcode 命令行工具）⟹ 装一下就好
+  //   · 真的编译报错 ⟹ 那是我们的 bug
+  // 而原来的消息只有 `swiftc 编译失败：<stderr>` —— 对前一种毫无意义。
+  //
+  // ⚠️⚠️ 但这次**只改字符串、不动任何判断条件** ——
+  //   上一轮我为了加这句提示把 `if (result.status !== 0)` 改成 `|| result.error`，
+  //   **把手势整个弄坏了**（用户报"摄像头没法正常使用"，只能整版回退）。
+  //   ⟹ 无条件附在消息后面。代价是"真编译错"时也会看到这句无关的话，
+  //     收益是零风险。判据：**锦上添花的东西不许碰承重代码。**
+  for (const rel of ['src/audio-source.js', 'src/mouse-bridge.js', 'src/system-bridge.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    assert.match(src, /xcode-select --install/,
+      `${rel} 的编译失败消息里没说"缺 Xcode 命令行工具怎么办"`
+      + ' ⟹ 用户看到一串 stderr 不知道能做什么');
+  }
+
+  // ⑦ 构建脚本要调它，而且在 electron-builder **之前**
   const build = fs.readFileSync(
     path.join(__dirname, '..', 'scripts', 'build-mac.sh'), 'utf8');
   // ⚠️⚠️ 锚**真正的调用行**而不是那个词 —— `electron-builder` 在这个脚本的

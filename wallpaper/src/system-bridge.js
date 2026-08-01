@@ -102,7 +102,9 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
     });
   
     if (result.status !== 0) {
-      throw new Error(result.stderr?.trim() || "swiftc 编译 AirCursorPointer 失败");
+      // ⚠️ 只改消息文本，**判断条件一行没动**（上一轮改它把手势弄坏了）。
+      throw new Error((result.stderr?.trim() || "swiftc 编译 AirCursorPointer 失败")
+        + "\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。");
     }
   
     return { helperBinary, compiled: true };
@@ -233,7 +235,9 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
     });
   
     if (result.status !== 0) {
-      throw new Error(result.stderr || `Failed to compile ${binaryName}.`);
+      // ⚠️ 同上：只改消息。
+      throw new Error((result.stderr || `Failed to compile ${binaryName}.`)
+        + "\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。");
     }
   
     return helperBinary;

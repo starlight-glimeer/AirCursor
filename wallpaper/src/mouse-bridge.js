@@ -123,7 +123,9 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
   if (result.error || result.status !== 0) {
     return {
       ok: false,
-      error: `swiftc 编译鼠标 helper 失败：${(result.stderr || result.error || '').toString().slice(0, 400)}`,
+      // ⚠️ 同 audio-source.js：只加一句提示，不动判断条件（见那边的注释）。
+      error: `swiftc 编译鼠标 helper 失败：${(result.stderr || result.error || '').toString().slice(0, 400)}`
+        + '\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。',
     };
   }
   return { ok: true, binary, cached: false };

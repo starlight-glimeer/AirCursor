@@ -152,7 +152,23 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
   if (result.error || result.status !== 0) {
     return {
       ok: false,
-      error: `swiftc 编译失败：${(result.stderr || result.error || '').toString().slice(0, 400)}`,
+      // ⚠️⚠️ 消息里带上"缺工具链怎么办"（0.9.80）。
+      //
+      // 走到这里有两种原因，而**用户能做的事完全不同**：
+      //   · `swiftc` 不存在（普通 Mac 没有 Xcode 命令行工具）⟹ 装一下就好
+      //   · 真的编译报错 ⟹ 那是我们的 bug，他做不了什么
+      // 而原来的消息是 `swiftc 编译失败：<stderr 前 400 字>` —— 对前一种
+      // 毫无意义（他不知道 swiftc 是什么，更不知道要装什么）。
+      //
+      // ⚠️⚠️ 但**这次只改字符串，不动任何判断条件** ——
+      //   上一轮我为了加这句提示把 `if (result.status !== 0)` 改成
+      //   `|| result.error`，**把手势整个弄坏了**（只能整版回退）。
+      //   ⟹ 无条件把那句话附在后面。代价是"真编译错"时也会看到它
+      //     （多一句无关的话），而收益是零风险。
+      // ⚠️ 而 0.9.75 起 helper 是**打包时预编译**的 ⟹ 正常用户根本走不到这里，
+      //   这条只在"预编译没进包"或"开发模式"时才出现。
+      error: `swiftc 编译失败：${(result.stderr || result.error || '').toString().slice(0, 400)}`
+        + '\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。',
     };
   }
   return { ok: true, binary, cached: false };
