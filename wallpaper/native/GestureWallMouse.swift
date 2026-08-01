@@ -136,6 +136,40 @@ for arg in CommandLine.arguments.dropFirst() {
     if arg == "--always" { gateOnFinder = false }
 }
 
+// ⚠️⚠️⚠️ **必须先初始化 NSApplication，否则全局监听收不到任何事件。**
+//
+// 用户 0.9.25 实测（打包版，辅助功能已授权）：
+//   「监听建立了但 3 秒内零事件 —— **已授权**，所以是别的问题」
+//
+// 那句话是我自己写的探活消息，而它把范围缩到了这里：
+//   `AXIsProcessTrusted()` = true ⟹ 授权没问题
+//   `monitor != nil`             ⟹ 注册没失败
+//   零事件                        ⟹ **事件压根没派发到我们**
+//
+// 根因：`addGlobalMonitorForEvents` 是 **AppKit** 的 API，它靠
+// `NSApplication` 的事件派发基础设施。而这个 helper 是纯命令行进程 ——
+// 从没碰过 `NSApplication.shared` ⟹ 那套基础设施没建起来
+// ⟹ 注册"成功"了但没人给它送事件。
+//
+// ⚠️ `RunLoop.main.run()` 不够：它只是让进程不退出，
+// 而 AppKit 的事件源要 NSApplication 初始化时才挂到 RunLoop 上。
+//
+// ⟹ 两件事：
+//   ① `NSApplication.shared` —— 触发初始化（读这个属性就会创建实例）
+//   ② `setActivationPolicy(.prohibited)` —— **不要 Dock 图标、不要菜单栏**。
+//      漏了它 helper 会在 Dock 里冒出一个图标（我们是后台进程，那很怪），
+//      而 `.accessory` 仍会出现在 Cmd-Tab 里 ⟹ `.prohibited` 才是纯后台。
+//
+// ⚠️ 而**顺序**有意义：必须在 addGlobalMonitorForEvents **之前**。
+// 之后再初始化的话，注册时那套基础设施还不存在。
+//
+// ⚠️ 这和音频 helper 那边踩的是**同一个形状**：
+// 我在那边写了「这个进程没有主 RunLoop 在跑，`Timer.scheduledTimer` 压根不会
+// 触发，而那种失败完全静默」—— 一样是"AppKit/Foundation 的某个设施没初始化，
+// API 静默不工作"。⟹ 纯命令行进程用 AppKit API 时，先问"它依赖什么基础设施"。
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)
+
 let monitor = NSEvent.addGlobalMonitorForEvents(matching: WATCHED) { event in
     if gateOnFinder {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
@@ -179,10 +213,25 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
         emit(["type": "status", "state": "silent",
               "trusted": AXIsProcessTrusted(),
               "message": AXIsProcessTrusted()
-                ? "监听建立了但 3 秒内零事件 —— 已授权，所以是别的问题"
+                // ⚠️ 这条消息在 0.9.25 真的出现了（用户实测），而它把范围缩到了
+                // "NSApplication 没初始化" ⟹ 0.9.27 修了那个。
+                // ⟹ 若它**又**出现，说明那个修复不对，而剩下的可能是：
+                //   ① 打包后 helper 的路径变了 ⟹ 授权给的是旧路径（这个项目栽过）
+                //   ② 事件被 gate 挡了（但那会报 gated 不是 silent）
+                //   ③ 系统层面有别的东西吃掉了事件（安全软件/远程桌面）
+                ? "监听建立了但 3 秒内零事件 —— 已授权、NSApplication 也初始化了。"
+                  + "⟹ 下一步查：辅助功能列表里授权的是不是**当前这个** .app "
+                  + "（重新打包后路径变了的话，授权还挂在旧的上面）"
                 : "监听建立了但收不到事件：**没有辅助功能授权**。"
                   + "而开发模式（npm start）下拿不到那个授权 —— 必须打包成 .app"])
     }
 }
-// RunLoop 必须跑起来，否则监听回调一次都不会触发（进程会直接退出）。
-RunLoop.main.run()
+// ⚠️ **用 `app.run()` 而不是 `RunLoop.main.run()`。**
+//
+// 两者都能让进程不退出，但 `NSApplication.run()` 还会：
+//   ① 完成 AppKit 的启动序列（`finishLaunching`）—— 事件派发要它
+//   ② 把 AppKit 的事件源接到 RunLoop 上
+//
+// ⟹ 只跑 RunLoop 的话，全局监听注册"成功"但收不到事件
+//    （用户 0.9.25 实测：已授权、monitor 非 nil、3 秒零事件）。
+app.run()

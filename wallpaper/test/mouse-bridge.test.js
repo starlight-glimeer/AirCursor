@@ -214,4 +214,55 @@ check('helper 源码不在时报错而不是抛', () => {
   assert.match(out.error, /不在/);
 });
 
+// ⚠️⚠️⚠️ **全局鼠标监听必须初始化 NSApplication，否则静默收不到事件。**
+//
+// 用户 0.9.25 实测（打包版、辅助功能已授权）：
+//   「监听建立了但 3 秒内零事件 —— **已授权**，所以是别的问题」
+//
+// 那句话是 helper 自己的探活消息，而它把范围缩到了这里：
+//   `AXIsProcessTrusted()` = true      ⟹ 授权没问题
+//   `addGlobalMonitorForEvents != nil` ⟹ 注册没失败
+//   零事件                              ⟹ **事件压根没派发到我们**
+//
+// 根因：那是 **AppKit** 的 API，靠 `NSApplication` 的事件派发基础设施。
+// 而 helper 是纯命令行进程，从没碰过 `NSApplication.shared`
+// ⟹ 基础设施没建起来 ⟹ 注册"成功"但没人送事件。
+//
+// ⚠️ `RunLoop.main.run()` 不够 —— 它只让进程不退出，
+// 而 AppKit 的事件源要 `NSApplication.run()` 的启动序列才挂到 RunLoop 上。
+//
+// ⚠️⚠️ 这和音频 helper 那边是**同一个形状**：我在那边写过
+// 「这个进程没有主 RunLoop 在跑，`Timer.scheduledTimer` 压根不会触发，
+//   而那种失败完全静默」⟹ **纯命令行进程用 AppKit API 时，
+//   先问"它依赖什么基础设施"**。这是第二次，所以做成守卫。
+check('鼠标 helper 初始化 NSApplication（全局监听的前提）', () => {
+  const fs2 = require('node:fs');
+  const path2 = require('node:path');
+  const src = fs2.readFileSync(
+    path2.join(__dirname, '..', 'native', 'GestureWallMouse.swift'), 'utf8',
+  );
+  // ⚠️ 剥注释 —— 上面那段说明里就写了这些符号，查原文会假阴性
+  //（这个项目今天已经踩了四次"注释让守卫失效"）
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+  assert.match(code, /NSApplication\.shared/,
+    '没初始化 NSApplication ⟹ addGlobalMonitorForEvents 注册"成功"但收不到事件'
+    + '（用户 0.9.25 实测：已授权、monitor 非 nil、3 秒零事件）');
+  // ⚠️ 顺序：必须在注册监听**之前**
+  const appAt = code.indexOf('NSApplication.shared');
+  const monAt = code.indexOf('addGlobalMonitorForEvents');
+  assert.ok(appAt >= 0 && monAt >= 0, '找不到锚点');
+  assert.ok(appAt < monAt,
+    'NSApplication 初始化在注册监听之后 ⟹ 注册时那套基础设施还不存在');
+  // ⚠️ 后台进程不该有 Dock 图标
+  assert.match(code, /setActivationPolicy\(\.prohibited\)/,
+    '没设 .prohibited ⟹ helper 会在 Dock 里冒出图标'
+    + '（.accessory 仍会出现在 Cmd-Tab 里，只有 .prohibited 是纯后台）');
+  // ⚠️ 事件循环要用 app.run()，不是裸 RunLoop
+  assert.match(code, /app\.run\(\)/,
+    '还在用裸 RunLoop.main.run() ⟹ AppKit 的启动序列没跑，事件源没挂上');
+  assert.ok(!/^RunLoop\.main\.run\(\)$/m.test(code),
+    '仍有裸 RunLoop.main.run() —— 它不完成 AppKit 的 finishLaunching');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
