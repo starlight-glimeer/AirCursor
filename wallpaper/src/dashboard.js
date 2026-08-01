@@ -162,8 +162,21 @@ function startAurora(canvasId, opts) {
 
   function resize() {
     dpr = window.devicePixelRatio || 1;
-    w = cv.clientWidth;
-    h = cv.clientHeight;
+    // ⚠️⚠️ **`clientWidth` 可能是 0，那时候整个动画白跑**（0.9.67）。
+    //
+    // 用户第三次报"极光看不到"，而我加的自检**那一行根本没出现在日志里**
+    // ⟹ 不是"画布是空的"，是绘制循环压根没产生可见结果。
+    // 而 `clientWidth/clientHeight` 是**布局尺寸** —— 一个 `position: fixed`
+    // 的 canvas 在某些情况下（父容器是 grid、或者 CSS 还没应用完）
+    // 拿到的是 0 ⟹ `cv.width = 0` ⟹ 画布 0×0 ⟹ 画什么都看不见，
+    // 而且**不报任何错**（往 0×0 的画布上画是合法的）。
+    //
+    // ⟹ 用 `window.innerWidth/innerHeight` 兜底：这个 canvas 是
+    //   `position: fixed; inset: 0` ⟹ 它就该是**视口大小**，
+    //   那不需要问布局。
+    // ⚠️ 而不是"取两者较大" —— 明确用视口尺寸，因为那才是它的语义。
+    w = cv.clientWidth || window.innerWidth;
+    h = cv.clientHeight || window.innerHeight;
     cv.width = Math.round(w * dpr);
     cv.height = Math.round(h * dpr);
     // ⚠️ setTransform 而不是 scale —— 后者会在每次 resize 时**累积**
@@ -253,6 +266,16 @@ function startAurora(canvasId, opts) {
     //   （它强制 GPU→CPU 回读，那正是我们刚修掉的那类开销）。
     if (!selfChecked) {
       selfChecked = true;
+      // ⚠️⚠️ **先报尺寸**，再报采样 —— 尺寸为 0 的话采样必然是 0，
+      //   而那两种情况的修法完全不同（一个是布局、一个是绘制）。
+      //   我上一版只报了采样峰值 ⟹ 就算它是 0 我也分不清是哪种。
+      if (!cv.width || !cv.height) {
+        const m = `[aurora] ${canvasId} ⚠️ 画布尺寸是 ${cv.width}×${cv.height}`
+          + `（clientWidth=${cv.clientWidth} innerWidth=${window.innerWidth}）`
+          + ' ⟹ 画什么都看不见，而且不报错';
+        console.error(m);
+        if (typeof logLine === 'function') logLine('wall', m);
+      }
       try {
         // 采中心和四个偏心点 —— 单采中心的话，正好某一帧那里是暗的会误判
         const pts = [[0.5, 0.5], [0.3, 0.34], [0.68, 0.3], [0.5, 0.62], [0.22, 0.68]];
@@ -270,8 +293,13 @@ function startAurora(canvasId, opts) {
         //   （这个项目在"日志只进 stdout"上栽过：用户报不出数字）。
         // ⚠️ `logLine(source, message)` 是**两个参数** —— 我第一版传了个对象
         //   `logLine({source, message})` ⟹ 会显示成 `[wall] undefined`（不报错）。
-        //   查了签名才发现（dashboard.js:494）。
         if (typeof logLine === 'function') logLine('wall', msg);
+        // ⚠️⚠️ **同时写到「性能」那块的固定位置**（0.9.67）。
+        // 用户第一次找这行自检时**没找到** —— 日志区只留最后 N 行，
+        // 而 FFT 自检 + `[we] 资源文件不在` 会把它冲掉。
+        // ⟹ 关键的一次性诊断要有**固定的落点**，不能只往流式日志里扔。
+        const slot = document.getElementById('bg-selfcheck');
+        if (slot) slot.textContent = msg.replace('[aurora] ', '');
       } catch (error) {
         // getImageData 在跨域污染的画布上会抛 —— 我们的画布没有外部图片，
         // 但失败也不该影响动画。
@@ -507,8 +535,16 @@ function logLine(source, message) {
     const box = document.getElementById('audio-log');
     if (box) {
       const line = `[${source}] ${message}`;
+      // ⚠️⚠️ **从 15 行提到 60**（0.9.67）。
+      // 用户报"没看到你说的那一行"，而我先怀疑是极光的 bug ——
+      // 真相是这一格**只留最后 15 行**，而 FFT 自检一次就占 6 行、
+      // `[we] 资源文件不在` 又刷了 4 行 ⟹ aurora 的自检被挤掉了。
+      // ⟹ **那是观测通道自己的缺陷**：我让用户去看一个会被冲掉的地方。
+      // ⚠️ 这个项目在"日志被刷掉/看不到"上栽过两次（一次是只进 stdout、
+      //   一次是重复消息刷屏把真问题埋了）—— 都是同一类：
+      //   **观测通道不可靠时，所有基于它的结论都不可靠。**
       box.textContent = `${box.textContent}${box.textContent ? '\n' : ''}${line}`
-        .split('\n').slice(-15).join('\n');
+        .split('\n').slice(-60).join('\n');
       box.scrollTop = box.scrollHeight;
     }
   }

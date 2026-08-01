@@ -5184,6 +5184,29 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   // ⚠️ 结果要报到**面板**，不只是 console —— 打包版没有终端
   assert.match(dash, /logLine\('wall', msg\)/,
     '自检结果只进 console ⟹ 打包版看不到（用户报不出数字）');
+  // ⚠️⚠️ **一次性诊断要有固定落点**（0.9.67）。
+  // 用户第一次找那行自检时**没找到**，而我先怀疑是极光的 bug ——
+  // 真相是日志区**只留最后 15 行**，而 FFT 自检（6 行）+
+  // `[we] 资源文件不在`（4 行）把它冲掉了。
+  // ⟹ **那是观测通道自己的缺陷**：我让用户去看一个会被冲掉的地方。
+  //   这个项目在"日志看不到"上栽过三次（只进 stdout / 重复消息刷屏 / 这次被冲掉）
+  //   ⟹ 判据：**观测通道不可靠时，所有基于它的结论都不可靠。**
+  assert.match(html2, /id="bg-selfcheck"/,
+    '自检没有固定落点 ⟹ 只往流式日志里扔，会被后面的消息冲掉');
+  assert.match(dash, /getElementById\('bg-selfcheck'\)/, '固定落点没人写');
+  const keep = Number((dash.match(/slice\(-(\d+)\)\.join\('\\n'\)/) || [])[1]);
+  assert.ok(keep >= 40,
+    `日志区只留 ${keep} 行 ⟹ FFT 自检一次占 6 行，几条消息就把别的冲掉了`);
+
+  // ⚠️⚠️ **画布尺寸为 0 要报出来**（0.9.67）。
+  // `clientWidth/clientHeight` 是**布局尺寸** —— 一个 `position: fixed` 的
+  // canvas 在父容器是 grid、或 CSS 还没应用完时可能拿到 0
+  // ⟹ `cv.width = 0` ⟹ 画布 0×0 ⟹ 画什么都看不见，**而且不报任何错**
+  //（往 0×0 的画布上画是合法的）。
+  assert.match(dash, /cv\.clientWidth \|\| window\.innerWidth/,
+    '画布尺寸没兜住 clientWidth 为 0 的情况 ⟹ 0×0 的画布，画了也看不见（不报错）');
+  assert.match(dash, /if \(!cv\.width \|\| !cv\.height\)/,
+    '自检不报"画布尺寸是 0" ⟹ 那和"画了但看不到"的修法完全不同，得分开');
 
   // ⑧⚠️ 底色画在 `html` 上而不是 `body` —— body 是 grid 容器、canvas 是它的
   //    fixed 子项，那套层叠规则在云端确认不了。搬到 html 上就不依赖它。

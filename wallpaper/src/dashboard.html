@@ -1331,6 +1331,10 @@
     <input type="range" id="bgDim" min="0" max="150" step="5" style="flex:1">
     <span id="bgDimVal" class="hint" style="font-size:11px;min-width:2.4em;text-align:right"></span>
   </div>
+  <!-- ⚠️⚠️ 自检结果的**固定落点**（0.9.67）。用户第一次找那行自检时没找到 ——
+       日志区只留最后 N 行，而 FFT 自检（6 行）+ `[we] 资源文件不在`（4 行）
+       会把它冲掉。⟹ 关键的一次性诊断要有固定位置，不能只往流式日志里扔。 -->
+  <div id="bg-selfcheck" class="state" style="margin-top:6px">等第一帧…</div>
   <p class="hint">
     手势卡 / 摄像头启动慢的时候关掉它，看是不是它的锅 ——
     那能一次分清"背景在抢 CPU"和"另有原因"。
