@@ -4313,9 +4313,32 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   // ⚠️ 帧率要降下来 —— 极光周期 11~19 秒，60fps 画它是纯浪费（常驻应用里会累积）
   assert.match(aurora, /const MIN_DT = 1000 \/ (\d+)/,
     '极光没有降帧 ⟹ 60fps 画一个周期十几秒的动画，纯浪费 CPU');
+  // ⚠️⚠️ 判据从"帧率 ≤30"改成"**总开销**"（0.9.71）。
+  //
+  // 0.9.70 我把帧率压到 20 省 CPU，而用户报「可以了，但是卡卡的」——
+  // 算了一遍：20fps 下最快那团每帧跳 12px（T=11s ax=0.34，峰值 249 px/s）
+  // ⟹ 柔光边缘每帧跳十几像素，人眼看就是"一跳一跳"。
+  // ⟹ **"卡"的主因是帧率太低，不是 CPU 不够。**
+  //
+  // ⟹ 真正该守的是**总像素吞吐**（帧率 × 画布面积），而不是帧率本身：
+  //   分辨率降一半（RES=0.5，像素数 ÷4）+ 帧率 20→40
+  //   ⟹ 0.21 G 像素/秒，比 0.9.70 的 0.42 还低一半，而每帧位移从 12px 降到 6px。
+  // ⚠️ 判据锁死单个参数会逼出错的解法 —— 这是第二次
+  //   （上一次是"不许 ctx.filter"，那条锁死了一个会让效果消失的实现）。
   const fps = Number((aurora.match(/const MIN_DT = 1000 \/ (\d+)/) || [])[1]);
-  assert.ok(fps > 0 && fps <= 30,
-    `极光帧率 ${fps} 太高 ⟹ 它的周期是 11~19 秒，20fps 就够（60 是纯浪费）`);
+  const res = Number((aurora.match(/const RES = (0?\.\d+|1)/) || [])[1]);
+  assert.ok(fps > 0 && res > 0, `读不到帧率(${fps})或分辨率倍率(${res}) ⟹ 断言失效`);
+  // 1280×820@2x 全分辨率 = 4.2M 像素；乘 RES² 是实际画布面积
+  const gpxPerSec = fps * 5 * (1280 * 2 * 820 * 2) * res * res / 1e9;
+  assert.ok(gpxPerSec <= 0.35,
+    `极光每秒 ${gpxPerSec.toFixed(2)} G 像素 ⟹ 太重（会挤死手势推理）。`
+    + `当前 ${fps}fps × RES ${res} —— 降分辨率比降帧率好，降帧率会"卡"`);
+  // ⚠️ 而帧率**不能太低** —— 那正是用户报"卡卡的"的原因
+  assert.ok(fps >= 30,
+    `极光帧率 ${fps} 太低 ⟹ 最快那团每帧跳 ${Math.round(249 / fps)}px，看起来"一跳一跳"`);
+  assert.ok(res <= 0.6,
+    `画布分辨率倍率 ${res} 太高 ⟹ 极光是大团柔光 + 强模糊，半分辨率看不出差别，`
+    + '而那能省 4 倍（省下的给帧率）');
   // ⚠️ 仍然要挂 rAF 而不是 setInterval —— rAF 在窗口不可见时自动停
   assert.match(aurora, /requestAnimationFrame\(frame\)/,
     '极光改用 setInterval 了 ⟹ 窗口不可见时不会自动停（最小化了还在烧 CPU）');
@@ -5061,9 +5084,19 @@ check('只保留深色主题；极光当主界面背景（紫调、够明显）'
   const op = Number((html.match(/--bg-aurora:\s*(\.?\d*\.?\d+)/) || [])[1]);
   assert.ok(maxA > 0 && dim > 0 && op > 0,
     `读不到三个系数（a=${maxA} dim=${dim} opacity=${op}）⟹ 断言失效`);
-  assert.ok(maxA * dim * op >= 0.2,
-    `主界面极光的实际亮度只有 ${(maxA * dim * op).toFixed(3)}`
-    + `（a ${maxA} × dim ${dim} × opacity ${op}）⟹ 看不出来（用户报过"不是很明显"）`);
+  // ⚠️⚠️ 判据从"够明显"改成"**若隐若现**"（0.9.71）。用户 2026-08-01：
+  //   「这个颜色存在感再降低一些，若隐若现还挺高级的」
+  //
+  // ⚠️ 而下界要留着 —— 六轮弯路的教训是"看不到"也可能是 bug（那次是
+  //   `const base` 被删掉、rAF 静默吞异常），而不是亮度问题。
+  //   ⟹ 上下界都守：低于 0.08 就该怀疑是 bug 而不是"设计成很淡"。
+  const lum = maxA * dim * op;
+  assert.ok(lum >= 0.08,
+    `极光亮度只有 ${lum.toFixed(3)} ⟹ 那不是"若隐若现"是"没有"。`
+    + '（而"看不到"也可能是 bug —— 0.9.63~0.9.70 那六轮就是 rAF 静默吞了异常）');
+  assert.ok(lum <= 0.35,
+    `极光亮度 ${lum.toFixed(3)} 太高 ⟹ 用户要的是"若隐若现"，`
+    + '而背景抢眼会压过卡片和文字');
 
   // ④⚠️⚠️ **色调：青蓝为主 + 一点紫**（0.9.61 推翻了 0.9.60）。
   //
@@ -5077,13 +5110,20 @@ check('只保留深色主题；极光当主界面背景（紫调、够明显）'
   const hues = [...dash.matchAll(/hue: '(\d+),(\d+),(\d+)'/g)]
     .map((m) => ({ r: +m[1], g: +m[2], b: +m[3] }));
   assert.ok(hues.length >= 4, `只读到 ${hues.length} 团光 ⟹ 断言失效`);
+  // ⚠️⚠️ **紫全去掉**（0.9.71，用户点名：「不要那个紫色了」）。
+  // 这条判据翻了三次，把过程记下来 —— 那说明"用户要什么颜色"只能问，不能推：
+  //   0.9.60 「来点紫色」⟹ 我把三团都换成紫（做过头）
+  //   0.9.61 「太紫了」  ⟹ 回到青蓝为主 + 一团紫
+  //   0.9.71 「不要那个紫色了」⟹ 全去掉
   const isPurple = (h) => h.b > 200 && h.g < 140;
-  const purple = hues.filter(isPurple).length;
-  assert.ok(purple >= 1,
-    '一团紫都没有 ⟹ 用户当初要的"来点紫色"没了');
-  assert.ok(purple <= hues.length / 2,
-    `${purple}/${hues.length} 团是紫色系 ⟹ 太紫了（用户报过）——`
-    + '"来点紫"是加一团，不是把主色换掉');
+  const purple = hues.filter(isPurple);
+  assert.deepStrictEqual(purple, [],
+    `还有 ${purple.length} 团紫色系（蓝高绿低）⟹ 用户点名不要紫`);
+  // ⚠️ 红分量高的也不行 —— "品红紫"（255,140,210）不满足上面那个判定，
+  //   但在深底上和紫的观感很接近。
+  const reddish = hues.filter((h) => h.r > h.g && h.r > 200);
+  assert.deepStrictEqual(reddish, [],
+    `有 ${reddish.length} 团偏红/品红 ⟹ 在深底上和紫的观感接近`);
   // ⚠️ 最亮那团应该是**青蓝**（主色），不是紫 —— 第一眼看到的是它。
   const brightest = [...dash.matchAll(/hue: '(\d+),(\d+),(\d+)', a: (0?\.\d+)/g)]
     .map((m) => ({ r: +m[1], g: +m[2], b: +m[3], a: +m[4] }))
@@ -5136,10 +5176,17 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   //   现在      20fps × 5 fill × 4.2M = 0.42 G 像素/秒（33%）
   //   还不够就降画布分辨率（大团柔光半分辨率看不出差别，能再省 4 倍）。
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  const fps = Number((dash.match(/const MIN_DT = 1000 \/ (\d+)/) || [])[1]);
-  assert.ok(fps > 0 && fps <= 30,
-    `极光帧率 ${fps} 太高 ⟹ 它周期 11~19 秒，20fps 够了。`
-    + '而 60fps × 5 个全画布 fill 会挤死手势推理（用户报过"不跟手了"）');
+  // ⚠️ 判据是**总像素吞吐**，不是帧率（0.9.71 改）——
+  //   0.9.70 我把帧率压到 20 省 CPU，而用户报"卡卡的"（每帧位移 12px）。
+  //   ⟹ 降**分辨率**（RES=0.5，像素数 ÷4）才是对的解法，省下的给帧率。
+  //   ⚠️ 锁死单个参数会逼出错的解法 —— 这是第二次
+  //     （上一次"不许 ctx.filter"锁死了一个会让效果消失的实现）。
+  //   ⟹ 详细的上下界在「产品外壳」那条里，这里只确认两个参数都在。
+  const fps2 = Number((dash.match(/const MIN_DT = 1000 \/ (\d+)/) || [])[1]);
+  const res2 = Number((dash.match(/const RES = (0?\.\d+|1)/) || [])[1]);
+  assert.ok(fps2 >= 30, `极光帧率 ${fps2} 太低 ⟹ 看起来"一跳一跳"（用户报过"卡卡的"）`);
+  assert.ok(res2 > 0 && res2 <= 0.6,
+    `画布分辨率倍率 ${res2} 太高 ⟹ 该靠降分辨率省开销，而不是降帧率`);
 
   // ③ 常驻的动画要降帧 + 挂 rAF（rAF 在窗口不可见时自动停）
   assert.ok(!/setInterval\([^)]*frame/.test(dash),
