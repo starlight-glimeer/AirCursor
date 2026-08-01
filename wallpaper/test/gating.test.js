@@ -5101,6 +5101,33 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   // ③ 常驻的动画要降帧 + 挂 rAF（rAF 在窗口不可见时自动停）
   assert.ok(!/setInterval\([^)]*frame/.test(dash),
     '动画用 setInterval ⟹ 窗口不可见时不会停（最小化了还在烧 CPU）');
+
+  // ④⚠️⚠️ **`will-change` 不许写在"不会变的属性"上**（0.9.64）。
+  //
+  // 用户报「背景好像是不动了嘞，流光那些效果撤掉了嘛」—— 根因是我 0.9.63 给
+  // 两个 canvas 加了 `will-change: filter`：那承诺"**filter 这个属性**会变"
+  // ⟹ 浏览器把该层当前内容渲染成**纹理缓存**，之后只对缓存重新应用 filter。
+  // 而我们变的是 **canvas 的内容**，不是 filter 的值
+  // ⟹ 缓存永不失效 ⟹ **画面冻在第一帧**，而且不报任何错。
+  //
+  // ⟹ 判据：`will-change` 只能写真的会变的那个属性。
+  //   写错的后果不是"没优化"，是**内容不更新**。
+  for (const id of ['#app-bg', '#launch-particles']) {
+    const rule = css.slice(css.indexOf(`  ${id} {`), css.indexOf('}', css.indexOf(`  ${id} {`)));
+    assert.ok(!/will-change/.test(rule),
+      `${id} 上有 will-change ⟹ 这一层的内容（canvas）会被缓存住，动画冻在第一帧`);
+  }
+
+  // ⑤ 出问题时要能**一次分清**是不是背景的锅 ⟹ 开发者模块里有开关。
+  //   （0.9.63 那次我只能靠算术推断"是极光吃了 CPU"，没有对照实验。）
+  const html2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(html2, /id="bgOn"/,
+    '开发者模块里没有背景开关 ⟹ 下次"手势卡"只能靠猜是不是背景的锅');
+  assert.match(dash, /stopAurora\('app-bg'\)/, '背景开关关不掉极光');
+  // ⚠️ 关的时候要清画布 —— 只 cancelAnimationFrame 的话最后一帧留在屏幕上，
+  //   那看起来像"关了但还在"（而那会让对照实验得出错的结论）。
+  assert.match(dash, /clearRect\(0, 0, cv\.width, cv\.height\)/,
+    '关背景时不清画布 ⟹ 最后一帧留在屏幕上，看起来像没关掉');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

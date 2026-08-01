@@ -2834,6 +2834,27 @@ async function setRotate(patch) {
 }
 
 // ⚠️ 三个控件都走 `setRotate` —— 各写一遍 patch 必然漏一个字段。
+// ⚠️ 背景开关（0.9.64）—— 排查性能问题用的，见 HTML 里那段注释。
+// ⚠️ 停的时候用 stopAurora（它会 cancelAnimationFrame）+ 清画布 ——
+//   只 cancel 不清的话最后一帧会留在屏幕上，那看起来像"关了但还在"。
+(() => {
+  const box = document.getElementById('bgOn');
+  if (!box) return;
+  box.onchange = () => {
+    const cv = document.getElementById('app-bg');
+    if (box.checked) {
+      startAurora('app-bg', { dim: 0.55 });
+    } else {
+      stopAurora('app-bg');
+      // ⚠️ 用 clearRect 而不是 style.display = 'none' —— 后者会让
+      //   `startAurora` 下次拿到的 clientWidth 是 0（那时 canvas 不在布局里）
+      //   ⟹ 画布尺寸变成 0×0，开回来是空的。
+      const ctx = cv && cv.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, cv.width, cv.height);
+    }
+  };
+})();
+
 // ╔═══════════════════════════════════════════════════════════════════════╗
 // ║  DEV-PANEL-START —— 开发者模块的开关（产品问世时整块删掉）             ║
 // ╚═══════════════════════════════════════════════════════════════════════╝
