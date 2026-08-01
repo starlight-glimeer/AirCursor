@@ -3620,4 +3620,113 @@ check('卡片右键菜单：单实例 / 会关 / 不越界 / 不被自己的监�
     '菜单里的危险项没有单独样式 ⟹ 「卸载」和「装载」长得一样，容易点错');
 });
 
+// ⚠️⚠️⚠️ **dmg 是主验证路径 —— 那是用户拿到的东西。**
+//
+// 我 0.9.37 把"直接拷 dist/mac-arm64/GestureWall.app"放成推荐，
+// 理由是"不用每次 xattr"。用户 2026-08-01 否掉了：
+//   「可是我就是应该验证 dmg 啊，最后别人拿到的也是 dmg，
+//     这样才一致性，好测试，好优化啊」
+//
+// **他是对的，而我搞错了优先级**：
+//   我优化的是**我们的往返成本**（少敲一条命令）
+//   而他要的是**测试有效性**（测的东西和别人拿到的一样）
+//
+// ⟹ 跳过 dmg 测出来的「能用」**不保证 dmg 那条路能用**。dmg 的失败模式：
+//   quarantine、符号链接/权限没保住、Gatekeeper 对 dmg 内的 .app 校验更严、
+//   拖拽时拖错地方。
+//
+// ⚠️ 而这正是这个项目栽过的形状：我曾在 `npm start` 下验鼠标转发，
+// 而它**必须打包才能验**（授权按二进制身份给）。
+// ⟹ **测的环境和用户的环境不一样，结论就不可信。**
+check('装包走 dmg（不许把"直接拷 .app"当推荐路径）', () => {
+  const sh = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'build-mac.sh'), 'utf8',
+  );
+  // ⚠️ dmg 缺失要**直接失败** —— 而不是"退回拷 .app"
+  assert.match(sh, /dist\/\*\.dmg[\s\S]{0,400}?打包失败了/,
+    'dmg 不存在时没有直接失败 ⟹ 若退回拷 .app，用户会以为验过了');
+
+  // ⚠️ 有一个自动化脚本，而它**必须真的走 dmg**（挂载+拷+解隔离），
+  // 不是偷偷拷构建产物 —— 那样"自动化"就变成"绕过"了
+  const inst = path.join(__dirname, '..', 'scripts', 'install-dmg.sh');
+  assert.ok(fs.existsSync(inst),
+    '没有 install-dmg.sh ⟹ 每次装都要手敲四步（挂载/拖/卸载/xattr），'
+    + '而那个麻烦会让人想跳过 dmg');
+  const is = fs.readFileSync(inst, 'utf8');
+  assert.match(is, /hdiutil attach/,
+    'install-dmg.sh 没挂载 dmg ⟹ 它在绕过 dmg，那就失去了意义');
+  assert.match(is, /xattr -dr com\.apple\.quarantine/,
+    'install-dmg.sh 没解隔离 ⟹ 装完打不开');
+  // ⚠️ 挂载点要从 hdiutil 的输出取，不能猜 /Volumes/<名字> ——
+  // 同名卷已挂载时 macOS 会加后缀（"GestureWall 1"）⟹ 猜的话拷错地方
+  assert.match(is, /mount-point/,
+    '挂载点是猜的（/Volumes/…）⟹ 同名卷已挂载时 macOS 会加后缀，会拷错地方');
+  // ⚠️ 必须卸载 —— 留着挂载点正是上面那个"加后缀"的成因
+  assert.match(is, /hdiutil detach/, '没卸载 dmg ⟹ 下次挂载会加后缀');
+  assert.match(is, /trap cleanup EXIT/,
+    '卸载不在 trap 里 ⟹ 中途失败就留下挂载点');
+  // ⚠️ 先删再拷 —— cp/ditto 到已存在的 .app 是**合并**，旧文件会残留
+  assert.match(is, /rm -rf "\$DEST"/,
+    '没先删旧的 ⟹ 拷贝是**合并**，旧版本的文件会残留'
+    + '（而残留的旧 helper 会被加载 ⟹ 症状是"改了没生效"）');
+  // ⚠️ 用 ditto 而不是 cp -R —— 它保留扩展属性/符号链接（Apple 推荐）。
+  //
+  // ⚠️⚠️ 断言要剥注释 —— 我第一版写 `/ditto /`，而**注释里也有那个词**
+  //（"用 ditto 而不是 cp -R"）⟹ 把命令换成 cp 之后断言照样绿。
+  // **这是今天第七次踩"注释让守卫失效"** ⟹ shell 也要剥（`#` 开头的行）。
+  const isCode = is.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+  assert.match(isCode, /^\s*ditto /m,
+    '用 cp -R 拷 .app ⟹ 某些情况下会丢符号链接目标，用 ditto');
+  // ⚠️ 旧版本在跑时要拦住 —— 否则文件被占用，症状是"装完还是旧行为"
+  assert.match(is, /pgrep -x GestureWall/,
+    '没检查旧版本在不在跑 ⟹ 文件被占用时症状是"装完还是旧行为"，'
+    + '而那和"改了没生效"分不清');
+
+  // ⚠️ 而"直接拷 .app"那条**不能是推荐** —— 它只能是"快速看一眼"
+  assert.ok(!/推荐：直接拷/.test(sh),
+    '还把"直接拷 .app"当推荐 ⟹ 那绕过了用户实际走的路径');
+  assert.match(sh, /不能当验证/,
+    '没说清"直接拷 .app 不能当验证" ⟹ 下次又会有人图省事走那条');
+});
+
+// ⚠️⚠️⚠️ **`set -e` + 命令替换里的 `ls` = 静默退出。这个项目第二次栽了。**
+//
+// 形状：`set -euo pipefail` 下
+//     DMG=$(ls -t dist/*.dmg 2>/dev/null | head -1)
+// `ls` 找不到文件返回非零 ⟹ `pipefail` 让整条管道非零 ⟹ `set -e` **立刻退出**
+// ⟹ 下面那句「❌ 没找到 dmg，往上翻输出」**永远看不到**
+// ⟹ 用户看到的是"什么都没打印、退出码 2"，而那时他最需要那句提示。
+//
+// ⚠️ 第一次是 `fingerprint.sh`：`[ "$dirty" -gt 0 ] && echo …`
+// 在干净工作区返回 1 ⟹ 整个脚本 exit 1 ⟹ `npm run sync && npm start`
+// 的 `&&` 阻断后半段。**工作区越干净越触发**，跟直觉相反。
+//
+// ⟹ 规则：`set -e` 的脚本里，命令替换里用可能失败的命令一律加 `|| true`
+//   （失败要靠**后面的 if 判空**来处理，那样错误信息才发得出去）。
+check('shell 脚本：set -e 下的 ls 赋值要有 || true（否则静默退出）', () => {
+  const dir = path.join(__dirname, '..', 'scripts');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.sh'))) {
+    const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+    const lines = raw.split('\n').filter((l) => !l.trim().startsWith('#'));
+    const hasE = lines.some((l) => /set -[a-z]*e/.test(l));
+    // ⚠️ 用 `continue` 不是 `return` —— 这是 `for…of` 循环，
+    // 而我第一版写了 `return`（那是从 forEach 版本改过来时留下的）
+    // ⟹ **第一个没开 set -e 的脚本就让整条检查提前结束**
+    // ⟹ 反向验证时守卫"没反应"，而我差点以为是判据不对。
+    // ⚠️ 那是"守卫自己有 bug"的一种：它不报错，只是**少查了东西**。
+    if (!hasE) continue;   // 没开 set -e 的脚本不受这条约束
+    lines.forEach((line, i) => {
+      // `X=$(可能失败的命令 …)` 且没有 `|| true`
+      const m = line.match(/^\s*\w+=\$\((ls|grep|find|pgrep)[^)]*\)/);
+      if (m && !/\|\|\s*true/.test(line)) bad.push(`${f}: ${line.trim().slice(0, 70)}`);
+    });
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些赋值在 set -e 下会让脚本**静默退出**：\n    ${bad.join('\n    ')}\n`
+    + '    ⟹ 命令失败 + pipefail ⟹ set -e 立刻退出 ⟹ '
+    + '后面那句友好的错误信息永远看不到\n'
+    + '    ⟹ 加 `|| true`，让"失败"靠后面的 if 判空来处理');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

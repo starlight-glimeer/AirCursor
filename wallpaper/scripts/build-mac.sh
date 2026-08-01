@@ -52,57 +52,74 @@ trap restore EXIT
 npx electron-builder --mac dmg
 
 echo ""
-echo "=== 装哪个 ==="
-# ⚠️⚠️ **优先用未打包的 .app，跳过 dmg。**
+echo "=== 装 ==="
+# ⚠️⚠️⚠️ **走 dmg 是主路径 —— 那是用户拿到的东西。**
 #
-# 用户 2026-08-01 问：「xattr -dr com.apple.quarantine 这个我在想是不是
-# 我的电脑只要操作过一次就行呢」
+# 0.9.37 我把"直接拷 .app"放成推荐，理由是"不用每次 xattr"。
+# 用户 2026-08-01 否掉了：
+#   「可是我就是应该验证 dmg 啊，最后别人拿到的也是 dmg，
+#     这样才一致性，好测试，好优化啊」
 #
-# **不是** —— `com.apple.quarantine` 是**按文件**的扩展属性，不是
-# "这台机器信任这个应用"的记录。谁打的：浏览器下载、AirDrop、
-# **以及从挂载的 dmg 里拷文件**。
-# ⟹ 每次从 dmg 拖一个新的 .app 出来，那个新文件就带着 quarantine
-# ⟹ 上次清的是上次那个 .app，和新的无关。
+# **他是对的，而我的取舍搞错了优先级**：
+#   我优化的是**我们的往返成本**（少敲一条命令）
+#   而他要的是**测试有效性**（测的东西和别人拿到的一样）
+# ⟹ 两者冲突时测试有效性优先 —— 因为跳过 dmg 测出来的「能用」
+#   **不保证 dmg 那条路能用**，而 dmg 有它自己的失败模式：
+#     · quarantine（我们知道的那个）
+#     · dmg 里的符号链接/权限没保住
+#     · Gatekeeper 对 dmg 内的 .app 校验更严
+#     · 拖拽时拖到了别处
 #
-# ⚠️ 但**不经过 dmg 就不会被打** ⟹ electron-builder 同时产出
-# `dist/mac-arm64/GestureWall.app`（未打包），直接从那里 cp 就干净。
-# ⟹ 那样每次装新版**不用再 xattr**（本地开发的场景）。
+# ⚠️ 而这正是这个项目栽过的形状：我曾在 `npm start` 下验鼠标转发，
+# 而它**必须打包才能验**（授权是按二进制身份给的）。
+# ⟹ **测的环境和用户的环境不一样，结论就不可信。**
 #
-# ⚠️ dmg 仍然保留 —— 它是给别人的（发给同事/自己另一台机器时要它）。
-APP=$(ls -td dist/mac*/GestureWall.app 2>/dev/null | head -1)
-DMG=$(ls -t dist/*.dmg 2>/dev/null | head -1)
+# ⟹ dmg 回到主路径。而"每次都要 xattr"那个麻烦用**一条命令**解决
+#   （合并三步），不是靠换路径绕开。
+# ⚠️⚠️ **`|| true` 不能省** —— `set -euo pipefail` 下 `ls` 找不到文件返回非零，
+# `pipefail` 让整条管道非零 ⟹ `set -e` **在赋值后立刻退出**
+# ⟹ 下面那句「打包失败了，往上翻 electron-builder 的输出」**永远看不到**，
+#    用户只看到"什么都没打印、退出码 2" —— 而那时他最需要那句提示。
+#
+# ⚠️ 这个项目为同一个形状栽过：`fingerprint.sh` 里
+# `[ "$dirty" -gt 0 ] && echo …` 在干净工作区返回 1 ⟹ 整个脚本 exit 1
+# ⟹ `npm run sync && npm start` 的 `&&` 阻断后半段（**工作区越干净越触发**）。
+DMG=$(ls -t dist/*.dmg 2>/dev/null | head -1 || true)
+APP=$(ls -td dist/mac*/GestureWall.app 2>/dev/null | head -1 || true)
 
-if [ -z "$APP" ] && [ -z "$DMG" ]; then
-  echo "  ❌ dist/ 下既没有 .app 也没有 .dmg —— 打包失败了，往上翻 electron-builder 的输出"
+if [ -z "$DMG" ]; then
+  echo "  ❌ dist/ 下没有 .dmg —— 打包失败了，往上翻 electron-builder 的输出"
   exit 1
 fi
 
 echo ""
+echo "  $DMG"
+echo "  时间: $(date -r "$DMG" '+%H:%M:%S')"
+echo ""
 echo "--- ① 退掉旧的（如果在跑）：⌃⇧Q ---"
 echo "    否则新装的和旧的会抢壁纸层。"
 echo ""
+echo "--- ② 一条命令装完（挂载 → 覆盖 → 卸载 → 解隔离）---"
+echo ""
+echo "  bash wallpaper/scripts/install-dmg.sh"
+echo ""
+echo "    ⚠️ 它走的就是**用户拿到 dmg 之后的那条路** —— 只是把"
+echo "       「拖进应用程序 + xattr」自动化了，没有跳过任何一步。"
+echo ""
+echo "--- ②' 或者手动（和别人拿到的完全一样）---"
+echo ""
+echo "  open \"$DMG\"          # 拖 GestureWall 进「应用程序」"
+echo "  xattr -dr com.apple.quarantine /Applications/GestureWall.app"
+echo ""
+echo "    ⚠️ xattr 这步**每次都要** —— 那个属性是从 dmg 拷出来时打上的，"
+echo "       按文件算，不是「这台机器信任过一次就行」。"
+echo "       不做的症状是「打不开」/「来自身份不明的开发者」。"
+echo ""
 
 if [ -n "$APP" ]; then
-  echo "--- ② 装（推荐：直接拷，**不用 xattr**）---"
-  echo ""
-  echo "  rm -rf /Applications/GestureWall.app && cp -R \"$APP\" /Applications/"
-  echo ""
-  echo "    时间: $(date -r "$APP" '+%H:%M:%S')"
-  echo "    ⚠️ 为什么不用 xattr：quarantine 是**从 dmg 拷出来时**被打上的，"
-  echo "       直接 cp 构建产物不经过那一步 ⟹ 没有那个属性。"
-  echo ""
-fi
-
-if [ -n "$DMG" ]; then
-  echo "--- ②' 或者走 dmg（发给别人时用这个）---"
-  echo ""
-  echo "  open \"$DMG\"      # 拖进「应用程序」"
-  echo "  xattr -dr com.apple.quarantine /Applications/GestureWall.app"
-  echo ""
-  echo "    时间: $(date -r "$DMG" '+%H:%M:%S')"
-  echo "    ⚠️ 走 dmg **每次都要** xattr —— 那个属性是按文件打的，"
-  echo "       不是「这台机器信任过一次就行」。不做的症状是「打不开」/"
-  echo "       「来自身份不明的开发者」，而那看起来像我们的包坏了。"
+  echo "--- ⚠️ 未打包的 .app 也在（$APP）---"
+  echo "    只在「想跳过 dmg 快速看一眼」时用，**不能当验证**："
+  echo "    它绕过了 dmg 那条路，而用户拿到的是 dmg。"
   echo ""
 fi
 
