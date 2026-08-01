@@ -5900,6 +5900,28 @@ check('应用图标接进打包了', () => {
 
   // ⚠️ iconset 要留在仓库里 —— build-mac.sh 在真机上用 iconutil 从它重生成，
   //   因为"手写的 icns 真机认不认"我在 Linux 上验不了。
+  // ⚠️⚠️ **归档的生成脚本必须真能跑出仓库里那个 png**。
+  //   否则脚本和产物会漂：脚本改了没重跑、或者脚本引用的是 /tmp 下的临时文件，
+  //   下次谁想改图标会得到一张完全不同的图，而**没有任何东西报错**。
+  //   ⟹ 只查 import 链闭合（三个脚本都在 build/ 里、互相引用的是仓库内文件名）。
+  //   ⚠️ 真跑一遍要 numpy + 分钟级耗时，不适合放进这个套件。
+  const bd = path.join(__dirname, '..', 'build');
+  for (const f of ['_icon-gen.py', '_icon-curtain.py', '_icon-build.py']) {
+    assert.ok(fs.existsSync(path.join(bd, f)),
+      `build/${f} 不在 ⟹ 图标没法重新生成（而 png 是改不动的死产物）`);
+  }
+  assert.match(fs.readFileSync(path.join(bd, '_icon-build.py'), 'utf8'),
+    /exec\(open\('_icon-curtain\.py'\)/,
+    '_icon-build.py 引用的不是仓库里的 _icon-curtain.py ⟹ 在仓库里跑不起来');
+  assert.match(fs.readFileSync(path.join(bd, '_icon-curtain.py'), 'utf8'),
+    /exec\(open\('_icon-gen\.py'\)/,
+    '_icon-curtain.py 引用的不是仓库里的 _icon-gen.py ⟹ 在仓库里跑不起来');
+  // ⚠️ 超采样必须是 4× —— 预览时会降到 2 提速，而**那个值漂到产物里就是永久的锯齿**
+  assert.match(fs.readFileSync(path.join(bd, '_icon-gen.py'), 'utf8'), /^SS = 4\b/m,
+    '_icon-gen.py 的超采样不是 4× ⟹ 出图有锯齿（调预览速度时降过，别漂回来）');
+  assert.ok(fs.existsSync(path.join(bd, 'icon-source-1024.png')),
+    'build/icon-source-1024.png 不在 ⟹ 没有可比对的源图');
+
   const iconset = path.join(__dirname, '..', 'build', 'icon.iconset');
   assert.ok(fs.existsSync(iconset), '没有 icon.iconset ⟹ 真机上没法用 iconutil 重生成');
   assert.equal(fs.readdirSync(iconset).filter((f) => f.endsWith('.png')).length, 10,

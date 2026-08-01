@@ -1,4 +1,4 @@
-exec(open('gen.py').read())
+exec(open('_icon-gen.py').read())
 import numpy as np, math, random
 from PIL import Image, ImageDraw, ImageFilter
 B = BOX
