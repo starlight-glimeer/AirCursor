@@ -563,10 +563,21 @@ const TYPE_TAGS_QUERY = [
 //
 // ⚠️ 默认只勾 Everyone（OWE 也这么做）—— 浏览工坊时默认不该出现成人内容，
 // 而"默认全开然后让用户自己关"在这件事上是错的默认值。
+// ⚠️⚠️ 标签文案用**年龄段**，不描述内容（0.9.53）。用户 2026-08-01：
+//   「年龄这里应该是隐晦一些，直接承认内容太露骨了，写年龄吧，这个三个分级」
+//
+// 原来是「全年龄 / 轻度不适宜 / 成人内容」—— 后两个在**描述内容是什么**，
+// 而这是一个会被别人看到屏幕的桌面软件 ⟹ 那两个词本身就是要避免的东西。
+// ⟹ 换成分级式的年龄门槛（和电影分级、App Store 那套一致）：
+//   用户看得懂"13+ / 18+"是什么意思，而屏幕上不出现任何内容描述。
+//
+// ⚠️ `id` 一个字都不能改 —— 那是发给 Steam 的 requiredtags，
+// **区分大小写而且写错会返回空结果且不报错**（看起来像"这个分级下没东西"）。
+// ⟹ 改的只有 label。
 const AGE_TAGS_QUERY = [
   { id: 'Everyone', label: '全年龄', defaultOn: true },
-  { id: 'Questionable', label: '轻度不适宜', defaultOn: false },
-  { id: 'Mature', label: '成人内容', defaultOn: false },
+  { id: 'Questionable', label: '13+', defaultOn: false },
+  { id: 'Mature', label: '18+', defaultOn: false },
 ];
 
 

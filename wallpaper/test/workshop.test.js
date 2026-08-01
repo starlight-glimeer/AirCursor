@@ -671,6 +671,29 @@ check('年龄分级用 Steam API 认的那套命名', () => {
 });
 
 // ⚠️ "默认全开然后让用户自己关"在这件事上是错的默认值。
+// ⚠️⚠️ **年龄标签的 label 用年龄段，不描述内容**（0.9.53）。
+// 用户 2026-08-01：「年龄这里应该是隐晦一些，直接承认内容太露骨了，写年龄吧，
+// 这个三个分级」
+//
+// 原来是「全年龄 / 轻度不适宜 / 成人内容」—— 后两个在**描述内容是什么**，
+// 而这是一个会被别人看到屏幕的桌面软件 ⟹ 那两个词本身就是要避免的东西。
+check('年龄标签用年龄段，label 里不出现内容描述', () => {
+  const labels = S.AGE_TAGS_QUERY.map((t) => t.label);
+  assert.deepStrictEqual(labels, ['全年龄', '13+', '18+']);
+  // ⚠️ 反向锁住那两个词 —— 改回去不报错，而"屏幕上出现内容描述"
+  //   正是用户要避免的那件事。
+  for (const bad of ['成人', '露骨', '裸', '不适宜', '色']) {
+    assert.ok(!labels.some((l) => l.includes(bad)),
+      `年龄标签里出现了内容描述「${bad}」⟹ 用年龄段（13+/18+），别描述内容`);
+  }
+  // ⚠️⚠️ 而 `id` 一个字都不能改 —— 那是发给 Steam 的 requiredtags，
+  //   **区分大小写而且写错会返回空结果且不报错**（看起来像"这个分级下没东西"）。
+  //   改 label 时顺手"统一一下" id 是很自然的手滑 ⟹ 守住。
+  assert.deepStrictEqual(S.AGE_TAGS_QUERY.map((t) => t.id),
+    ['Everyone', 'Questionable', 'Mature'],
+    '年龄标签的 id 被改了 ⟹ 那是发给 Steam 的原文，写错会静默返回空结果');
+});
+
 check('默认只勾全年龄（浏览时不该出现成人内容）', () => {
   const defaults = S.defaultTags();
   assert.deepStrictEqual(defaults, ['Everyone']);

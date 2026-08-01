@@ -1179,9 +1179,15 @@ check('我的壁纸按"有 project.json"判定，不按"我们下载过"', () =>
 // 不支持的类型**不隐藏** —— 用户明确说过"预览图是可以看到的吧"。
 check('不支持的类型仍然显示（只标出来，不隐藏）', () => {
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
-  const card = dash.slice(dash.indexOf('function workshopCard'),
-    dash.indexOf('async function runBrowse'));
-  assert.match(card, /放不了/, '不支持的类型没标出来');
+  const card = codeOnly(dash).slice(codeOnly(dash).indexOf('function workshopCard'),
+    codeOnly(dash).indexOf('async function runBrowse'));
+  // ⚠️⚠️ 这条断言的意图是**"不支持的类型有标记"**，不是"用了某个具体的词"。
+  // 原来写的是 `/放不了/`，而 0.9.53 用户让把文案换成「暂不支持」
+  //（「放不了」听起来像坏了，而这是我们还没做）⟹ 断言本该报红。
+  // 它**没报**，因为读的是原文而我在原处留了一句解释注释、里面就有"放不了"
+  // ⟹ 第 9 次"注释骗过守卫"（假阴性方向）。⟹ 走 codeOnly + 锚到那个三元表达式。
+  assert.match(card, /item\.supported \? item\.type : `\$\{item\.type\}·[^`]+`/,
+    '不支持的类型没在卡片上标出来 ⟹ 用户点下去才知道');
   assert.ok(!/return null|continue/.test(card), '卡片渲染里有跳过逻辑 —— 那会隐藏壁纸');
 });
 
@@ -4480,6 +4486,17 @@ check('诊断都在开发者模块里，不散在功能页上', () => {
 // ⚠️⚠️ **创意工坊的筛选/排序**（0.9.52 修了两个 bug）。
 check('工坊：排序按钮的选中状态会更新 / 多选取并集 / 没有分辨率组', () => {
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ⚠️⚠️ 措辞：**「暂不支持」而不是「放不了」**（0.9.53，用户点名）。
+  // 「放不了」听起来像"坏了/不行"，而这是**我们还没做**（scene 类要另一套渲染管线）
+  // ⟹ 说清是谁的限制，而且留出"以后会有"的余地。
+  // ⚠️ 两处都要（筛选按钮 + 卡片），而且**反向**锁住旧词 —— 改回去不报错。
+  assert.ok(!/放不了/.test(dash),
+    '又用回「放不了」⟹ 那听起来像坏了，而这是我们还没做（用户点名改成「暂不支持」）');
+  assert.match(dash, /\$\{t\.label\}（暂不支持）/,
+    '筛选按钮上不支持的类型没标「暂不支持」');
+  assert.match(dash, /\$\{item\.type\}·暂不支持/,
+    '卡片上不支持的类型没标「暂不支持」');
 
   // ①⚠️⚠️ 用户 2026-08-01 报：「你的几个标签及其热门 最新发布这些只有近期热门
   //    一直显示选中的状态，点其他的也能生效，但是 ui 的设计还是近期热门有个蓝框选中」

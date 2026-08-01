@@ -1848,9 +1848,14 @@ function renderBrowseControls(meta) {
       b.className = browse.tags.includes(t.id) ? 'on' : '';
       // ⚠️ 类型那组标出能不能跑 —— 那样点进去之前就知道，
       // 而不是筛出一屏全是"放不了"。
+      // ⚠️ 「暂不支持」而不是「放不了」（0.9.53，用户点名）——
+      // 「放不了」听起来像"坏了/不行"，而这是**我们还没做**（scene 类要另一套
+      // 渲染管线）。措辞要说清是谁的限制，而且留出"以后会有"的余地。
       b.textContent = t.supported === false && group.id === 'type'
-        ? `${t.label}（放不了）` : t.label;
-      // 成人内容那两项给个提示，免得误点
+        ? `${t.label}（暂不支持）` : t.label;
+      // ⚠️ 高分级那两项（13+/18+）给个提示，免得误点。
+      // ⚠️ title 写「默认不勾」而不是描述内容 —— 和 label 用年龄段是同一个理由
+      //（用户 0.9.53：「年龄这里应该是隐晦一些…写年龄吧」）。
       if (group.id === 'age' && !t.defaultOn) b.title = '默认不勾';
       b.onclick = () => {
         browse.tags = browse.tags.includes(t.id)
@@ -1949,7 +1954,8 @@ function workshopCard(item, onPick, onMenu) {
   const tp = document.createElement('div');
   tp.className = item.supported ? 'tp' : 'tp no';
   const parts = [];
-  if (item.type) parts.push(item.supported ? item.type : `${item.type}·放不了`);
+  // ⚠️ 同上：「暂不支持」不是「放不了」。
+  if (item.type) parts.push(item.supported ? item.type : `${item.type}·暂不支持`);
   else parts.push('类型未标');
   if (item.subscriptions) parts.push(`${item.subscriptions} 订阅`);
   if (item.sizeBytes) parts.push(W_FORMAT(item.sizeBytes));
