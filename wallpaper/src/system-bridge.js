@@ -319,19 +319,38 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
   }
 
   return {
+    // ⚠️⚠️⚠️ **start() 什么都不做了**（0.9.82）。用户 2026-08-01：
+    //   「第一次打开的时候，他会弹一个要辅助功能…一开始那个明显是很不需要的，
+    //     就问我要了，这应该是不可取的」
+    //
+    // **他说得对。** 原来这里无条件 `startPointerHelper()`，而那个 helper
+    // 一启动就调 `AXIsProcessTrustedWithOptions`（0.9.76 加的，会弹授权框）
+    // ⟹ **应用一打开就要辅助功能**，而那时用户什么都没做。
+    //
+    // ⚠️ 而 pointer helper 是给**手势的鼠标控制**用的 —— 用户没开手势时
+    //   它一个事件都不会发。为一个可选功能在启动时要权限是纯副作用。
+    //
+    // ⚠️⚠️ **而这个错下面那段注释里就写着** —— 语音当初因为"启动时抢麦克风、
+    //   把用户正在听的音乐音轨切了"被改成按需，而鼠标 helper 犯的是**同一个错**，
+    //   只是它的代价（弹一个授权框）没有音乐被打断那么刺眼，所以一直留着。
+    //   ⟹ 判据：**启动时不碰任何需要授权的东西。** 每一条都改成按需。
+    //
+    // ⚠️ 语音**不在启动时拿**（历史原因，见上）：
+    //   用户报告每次打开这个产品，正在听的音乐音轨就变了。推断得对 —— helper
+    //   一启动就占用麦克风，而 macOS 上进程抢占音频输入会触发输入设备切换。
     start() {
+      // 有意为空 —— 两个 helper 都改成按需了（startPointer / startVoice）。
+    },
+    // ⚠️ 新增（0.9.82）：手势真的要用鼠标控制时才拉起它。
+    startPointer() {
+      if (pointerHelper && !pointerHelper.killed) return { ok: true, already: true };
       try {
         startPointerHelper();
+        return { ok: true };
       } catch (error) {
         setPointerHealth({ state: 'start-failed', detail: `启动失败:${error.message}`, lastError: error.message });
+        return { ok: false, error: error.message };
       }
-      // ⚠️ 语音**不在启动时拿**。
-      //
-      // 用户报告:每次打开这个产品,正在听的音乐音轨就变了。推断得对 —— helper 一启动就
-      // 占用麦克风,而 macOS 上进程抢占音频输入会触发输入设备切换,连带影响正在播放的
-      // 音频路由。而语音是个可选功能,为它在启动时无条件抢麦克风是纯粹的副作用。
-      //
-      // 所以改成按需:用户在面板上打开语音才启动。
     },
     startVoice() {
       if (voiceHelper && !voiceHelper.killed) return { ok: true, already: true };

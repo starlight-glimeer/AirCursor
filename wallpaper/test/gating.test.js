@@ -5807,4 +5807,58 @@ check('README 和代码对得上（壁纸目录 / 预编译 / Gatekeeper / helpe
     'README 没说"授权后要重开应用" ⟹ macOS 的授权对已经在跑的进程不生效');
 });
 
+// ⚠️⚠️⚠️ **启动时不碰任何需要授权的东西**（0.9.82）。用户 2026-08-01：
+//   「第一次打开的时候，他会弹一个要辅助功能，然后后面我打开一个壁纸软件，
+//     它也会我要辅助功能，那不就重复了吗？…一开始那个明显是很不需要的，
+//     就问我要了，这应该是不可取的」
+//
+// **他说得对。** `systemBridge.start()` 原来无条件拉起 `AirCursorPointer`，
+// 而它一启动就调 `AXIsProcessTrustedWithOptions`（0.9.76 加的，会弹框）
+// ⟹ **应用一打开就要辅助功能**，而那时用户什么都没做。
+// 而那个 helper 是给**手势控制鼠标**用的（`config.controlCursor`，**默认关**）
+// ⟹ 绝大多数用户永远不需要它。
+//
+// ⚠️⚠️ **而这个错在同一个文件的注释里就写着** —— 语音当初因为"启动时抢麦克风、
+//   把用户正在听的音乐音轨切了"被改成按需，而鼠标 helper 犯的是**同一个错**，
+//   只是它的代价（弹一个框）没有音乐被打断那么刺眼，所以一直留着。
+//   ⟹ 判据：**每一条需要授权的链都必须按需启动，一条都不许在 whenReady 里。**
+check('启动时不碰需要授权的东西（每条链都按需）', () => {
+  const src = codeOnly(mainSrc);
+  const bridge = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+
+  // ① `start()` 里不许拉 pointer helper
+  const startFn = bridge.slice(bridge.indexOf('    start() {'),
+    bridge.indexOf('startPointer()'));
+  assert.ok(!/startPointerHelper\(\)/.test(startFn),
+    'systemBridge.start() 又在拉 pointer helper ⟹ 应用一打开就弹辅助功能授权框，'
+    + '而那时用户什么都没做（用户点名"这应该是不可取的"）');
+
+  // ② 必须有按需的入口，而且它要幂等（每帧都会调）
+  assert.match(bridge, /startPointer\(\) \{/, '没有按需启动 pointer helper 的入口');
+  assert.match(bridge, /startPointer\(\) \{[\s\S]{0,200}?if \(pointerHelper && !pointerHelper\.killed\) return/,
+    'startPointer 不幂等 ⟹ 它在每帧的手势回调里被调，会反复 spawn');
+
+  // ③ 真正用到的地方（手势要控制鼠标时）才调它
+  assert.match(src, /config\.controlCursor\) \{[\s\S]{0,200}?systemBridge\.startPointer\(\)/,
+    '手势控制鼠标那一支没有按需拉起 helper ⟹ 要么启动时拉（弹框太早）'
+    + '、要么永远不拉（功能是死的）');
+
+  // ④⚠️ whenReady 里**不许**出现别的"会要授权"的无条件调用。
+  //    ⚠️ 三条链都该是条件化的：
+  //      · 骨架层/摄像头 —— `config.gestures.enabled`
+  //      · 音频采集     —— `weProject.wantsAudio && audioSource !== 'off'`
+  //      · pointer      —— `config.controlCursor`（这次修的）
+  const ready = src.slice(src.indexOf('app.whenReady()'),
+    src.indexOf("app.on('window-all-closed'"));
+  assert.ok(ready.length > 400, '切不出 whenReady ⟹ 断言失效');
+  for (const bad of ['startPointerHelper(', 'startVoice(', 'mouseTap.start(']) {
+    assert.ok(!ready.includes(bad),
+      `whenReady 里有 ${bad} ⟹ 那会在启动时要授权，而用户还没做任何事`);
+  }
+  // 骨架层要判 gestures.enabled（它开摄像头）
+  assert.match(src, /function syncOverlayVisibility\(\)[\s\S]{0,200}?config\.gestures\.enabled/,
+    '骨架层不判 gestures.enabled ⟹ 启动就开摄像头（菜单栏绿点 + 授权框）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

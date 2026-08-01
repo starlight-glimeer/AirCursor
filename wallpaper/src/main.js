@@ -1387,6 +1387,12 @@ ipcMain.on('gesture', (_event, payload) => {
   // 默认关着,由 config.controlCursor 开。理由不是保守:一开摄像头就抢走鼠标会让人没法
   // 用电脑去关掉它 —— 那是个能把自己锁在外面的开关。
   if (payload && payload.action === 'pointer' && config.controlCursor) {
+    // ⚠️⚠️ **在这里才拉起 pointer helper**（0.9.82）——
+    // 它一启动就弹辅助功能授权框，而在这一刻用户是**真的在用手势控制鼠标**
+    // ⟹ 那时问他要权限是合理的（用户原话：「点壁纸的时候问我要辅助功能，
+    //   这是很正常的操作，就是他需要的」）。
+    // ⚠️ `startPointer()` 自己幂等（已经在跑就直接返回）⟹ 每帧调它没问题。
+    systemBridge.startPointer();
     const display = screen.getPrimaryDisplay().bounds;
     systemBridge.send({
       type: 'move',
@@ -4413,8 +4419,18 @@ app.whenReady().then(() => {
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.
-  // 投递层最后启动:它要现场编译 Swift,失败不该拖住窗口出现。start() 自己带 try/catch,
-  // 因为 AirCursor 上这里抛出去会让 pointerHelper 永远 undefined 而且不报错。
+  // ⚠️⚠️ `start()` 现在什么都不做（0.9.82）—— 两个 helper 都改成按需了。
+  //
+  // 用户 2026-08-01：「第一次打开的时候，他会弹一个要辅助功能…
+  //   一开始那个明显是很不需要的，就问我要了，这应该是不可取的」
+  //
+  // 原来这里会拉起 `AirCursorPointer`，而它一启动就弹辅助功能授权框
+  // ⟹ **应用一打开就要权限**，而那时用户什么都没做。
+  // 而那个 helper 是给**手势控制鼠标**用的（`config.controlCursor`，默认关）
+  // ⟹ 绝大多数用户永远不需要它。
+  //
+  // ⟹ 判据：**启动时不碰任何需要授权的东西。**
+  //   留着这一行调用是为了以后 start() 里若要做无副作用的初始化有地方放。
   systemBridge.start();
 
   globalShortcut.register('Control+Shift+W', openDashboard);
