@@ -646,9 +646,10 @@ console.log('\n  筛选分组（年龄分级那一套）');
 
 // ⚠️ 工坊的筛选**全部走 requiredtags**，没有独立参数 —— 类型、年龄、分辨率、主题
 // 都是标签。不知道这点的话会去找 `maturity=` 那种参数，而那不存在。
-check('四组筛选都在，且都用 requiredtags 机制', () => {
+// ⚠️ 0.9.52：四组 → **三组**（分辨率那组删了，用户点名「用处不大」）。
+check('三组筛选都在，且都用 requiredtags 机制', () => {
   const ids = S.FILTER_GROUPS.map((g) => g.id);
-  assert.deepStrictEqual(ids, ['type', 'age', 'resolution', 'genre']);
+  assert.deepStrictEqual(ids, ['type', 'age', 'genre']);
   for (const g of S.FILTER_GROUPS) {
     assert.ok(g.tags.length > 0, `${g.id} 组是空的`);
     assert.ok(g.label, `${g.id} 组没有中文标签`);
@@ -677,15 +678,41 @@ check('默认只勾全年龄（浏览时不该出现成人内容）', () => {
 });
 
 // requiredtags 区分大小写，而这几组的原文都不是简单的首字母大写
-//（'Sci-Fi' 带连字符、'Pixel art' 只有首词大写、'1920 x 1080' 带空格）
+//（'Sci-Fi' 带连字符、'Pixel art' 只有首词大写）
 // ⟹ 逐个核对比"写个正则"可靠。
+// ⚠️ 0.9.52 去掉了分辨率那两条（'1920 x 1080' / 'Ultrawide Standard'）——
+//   整组筛选删了（用户：「分辨率这个分类不需要，用处不大」），
+//   连 RESOLUTION_TAGS_QUERY 的定义和 export 一起删的。
 check('标签用 Steam 的原文（大小写和空格都不能改）', () => {
   const genres = S.GENRE_TAGS_QUERY.map((t) => t.id);
   assert.ok(genres.includes('Sci-Fi'), 'Sci-Fi 的连字符写法不对');
   assert.ok(genres.includes('Pixel art'), 'Pixel art 只有首词大写');
-  const res = S.RESOLUTION_TAGS_QUERY.map((t) => t.id);
-  assert.ok(res.includes('1920 x 1080'), '分辨率标签的空格写法不对');
-  assert.ok(res.includes('Ultrawide Standard'));
+  // ⚠️ 而"删掉的东西不许留引用"要有守卫 —— 我删定义时**漏了 export**，
+  //   那会让 `root.GestureWallWorkshop = { …, RESOLUTION_TAGS_QUERY, … }`
+  //   抛 ReferenceError（整个模块加载失败 ⟹ 工坊页全白）。
+  assert.strictEqual(S.RESOLUTION_TAGS_QUERY, undefined,
+    'RESOLUTION_TAGS_QUERY 又回来了 —— 分辨率那组删了，留着就是死代码');
+  assert.ok(!(S.FILTER_GROUPS || []).some((g) => g.id === 'resolution'),
+    '分辨率筛选组又回来了（用户点名删掉）');
+});
+
+// ⚠️⚠️ 多选取**并集**（用户 2026-08-01：「应该允许多选，这样就是取并集，
+// 比如说年龄我选择了全年龄和轻度不适宜，那就是这两种的我都要看」）。
+//
+// 参数名叫 requiredtags ⟹ Steam 默认 AND。而一个壁纸不可能同时是
+// 「全年龄」和「轻度不适宜」⟹ 多选必然零结果，看起来像"这个筛选下没东西"。
+// ⚠️ 这条**没能实测**（这台机器没有 Steam API key），用户侧第一次多选就能验。
+check('多个标签取并集（match_all_tags=false）', () => {
+  const two = S.browseParams({ key: 'K', tags: ['Everyone', 'Questionable'] });
+  assert.strictEqual(two.get('match_all_tags'), 'false',
+    '多选标签时没发 match_all_tags=false ⟹ Steam 按 AND 算，必然零结果');
+  // ⚠️ 单个标签下 AND/OR 等价 ⟹ 不发那个参数（少一个出错面：
+  //    如果参数名错了，Steam 可能整个请求报错而不是忽略它）
+  const one = S.browseParams({ key: 'K', tags: ['Everyone'] });
+  assert.strictEqual(one.get('match_all_tags'), null,
+    '单个标签也发 match_all_tags ⟹ 多一个没必要的出错面');
+  const none = S.browseParams({ key: 'K', tags: [] });
+  assert.strictEqual(none.get('match_all_tags'), null);
 });
 
 // 四组的标签混在一个 requiredtags 数组里传 —— 那是 Steam 的机制。

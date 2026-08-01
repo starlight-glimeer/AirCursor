@@ -1810,7 +1810,21 @@ function renderBrowseControls(meta) {
     b.type = 'button';
     b.className = s.id === browse.sort ? 'on' : '';
     b.textContent = s.label;
-    b.onclick = () => { browse.sort = s.id; browse.page = 1; runBrowse(); };
+    b.onclick = () => {
+      browse.sort = s.id;
+      browse.page = 1;
+      // ⚠️⚠️ **必须重渲染这一排** —— 用户 2026-08-01 报：
+      //   「你的几个标签及其热门 最新发布这些只有近期热门一直显示选中的状态，
+      //     点其他的也能生效，但是 ui 的设计还是近期热门有个蓝框选中」
+      //
+      // 根因：`b.className = s.id === browse.sort ? 'on' : ''` 是在**渲染时**
+      // 算的，而 onclick 只改了 browse.sort + 调 runBrowse()（那只重画网格）
+      // ⟹ 按钮的 class 永远停在第一次渲染时的样子。
+      // ⚠️ 下面筛选组那组 onclick **有** renderBrowseControls(meta)，所以标签的
+      //   蓝框是对的 —— 同一个文件里两处写法不一致，而只有一处是坏的。
+      renderBrowseControls(meta);
+      runBrowse();
+    };
     sortHost.appendChild(b);
   }
 

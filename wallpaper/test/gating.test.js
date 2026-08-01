@@ -4418,4 +4418,89 @@ check('设置弹窗：齿轮入口 / 目录行和开发者选项都在里面 / �
     '「装载壁纸后，这里会按它的 project.json 自动生成」又回来了（用户点名删掉）');
 });
 
+// ⚠️⚠️ **诊断全部收进设置弹窗的开发者模块**（0.9.52）。用户 2026-08-01：
+//   工坊那五行（标题/路径/⏳ready/这个壁纸要音频/✅N 项属性已送到）「删掉」
+//   +「最后是诊断{{导出诊断报告…}}这个也收到设置的弹窗里」
+//   +「手势那块的诊断也收到设置的弹窗界面」
+//
+// ⚠️ 上一轮搬东西时三条旧守卫在正确代码上报红（断言写的是"当时那个位置"），
+// 而这一轮搬了三块**一条都没红** —— 那正说明没人守这些。这一节补上。
+check('诊断都在开发者模块里，不散在功能页上', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  const ds = html.indexOf('DEV-PANEL-START');
+  const de = html.indexOf('DEV-PANEL-END');
+  assert.ok(ds > 0 && de > ds, '找不到 DEV-PANEL marker');
+
+  // ①⚠️⚠️ 这三块必须在 marker 之间 —— 散在外面的话"撤掉开发者模块"会留下
+  //    孤儿元素，而 JS 里那些 getElementById 拿到 null 就是 null.onclick 崩溃
+  //   （这个项目为"删 UI 留调用"栽过三次）。
+  for (const [name, id] of [
+    ['壁纸状态', 'we-state'],
+    ['导出诊断报告', 'diag-export'],
+    ['打开报告目录', 'diag-reveal'],
+    ['骨架几何（手势诊断）', 'overlay-geom'],
+    ['心跳（手势诊断）', 'heartbeat'],
+    ['匹配诊断（手势诊断）', 'match-probe'],
+  ]) {
+    const at = html.indexOf(`id="${id}"`);
+    assert.ok(at > 0, `${name}（#${id}）不见了 —— 那是出问题时唯一的观测手段`);
+    assert.ok(at > ds && at < de,
+      `${name}（#${id}）不在开发者模块里 ⟹ 它又常驻在功能页上了（用户点名收进设置）`);
+  }
+
+  // ②⚠️ 而那三块**不许出现在功能页的 section 里** —— 只查 marker 位置不够：
+  //   HTML 里同一个 id 出现两次的话，上面那条查到的可能是模块里那份，
+  //   而功能页上还留着一份（重复显示，而且 getElementById 只拿到第一个）。
+  for (const id of ['we-state', 'diag-export', 'overlay-geom']) {
+    const n = (html.match(new RegExp(`id="${id}"`, 'g')) || []).length;
+    assert.strictEqual(n, 1, `#${id} 在 HTML 里有 ${n} 份 ⟹ 重复显示，而且只有第一份会被绑上`);
+  }
+
+  // ③ 工坊页只剩"找壁纸"：不许再有壁纸状态和诊断
+  const weAt = html.indexOf('id="tab-we"');
+  const weSection = html.slice(weAt, html.indexOf('</section>', weAt));
+  assert.ok(!weSection.includes('<h3>诊断</h3>'),
+    '创意工坊页又有「诊断」小节 ⟹ 那一页只该管"找壁纸"');
+  // 手势页同理
+  const gesAt = html.indexOf('id="tab-gesture"');
+  const gesSection = html.slice(gesAt, html.indexOf('</section>', gesAt));
+  assert.ok(!gesSection.includes('<h3>诊断</h3>'),
+    '手势页又有「诊断」小节 ⟹ 用户点名收进设置弹窗');
+
+  // ④⚠️ 搬完之后 JS 里的引用要都还在（"搬完点了没反应"是这次搬动的头号风险）。
+  //   ⚠️ 光查 HTML 有这个 id 不够 —— 元素在但没人绑，按钮就是死的。
+  for (const id of ['diag-export', 'diag-reveal']) {
+    assert.match(dash, new RegExp(`getElementById\\('${id}'\\)`),
+      `#${id} 搬过去之后 JS 里没人绑 ⟹ 按钮点了没反应`);
+  }
+});
+
+// ⚠️⚠️ **创意工坊的筛选/排序**（0.9.52 修了两个 bug）。
+check('工坊：排序按钮的选中状态会更新 / 多选取并集 / 没有分辨率组', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ①⚠️⚠️ 用户 2026-08-01 报：「你的几个标签及其热门 最新发布这些只有近期热门
+  //    一直显示选中的状态，点其他的也能生效，但是 ui 的设计还是近期热门有个蓝框选中」
+  //
+  // 根因：`className = s.id === browse.sort ? 'on' : ''` 在**渲染时**算，
+  // 而 onclick 只改了 browse.sort + runBrowse()（那只重画网格）
+  // ⟹ 按钮的 class 停在第一次渲染的样子。
+  // ⚠️ 锚到**排序那个 onclick 的函数体**（切到 sortHost 那段），不查全文 ——
+  //   下面筛选组的 onclick 里也有 renderBrowseControls(meta)，
+  //   查全文的话把排序那处删掉也不报（锚点撞名，这个项目已经栽过 6 次）。
+  const sortBlock = dash.slice(dash.indexOf("const sortHost = document.getElementById('br-sorts')"),
+    dash.indexOf("const host = document.getElementById('br-filters')"));
+  assert.ok(sortBlock.length > 200, '切不出排序按钮那段 ⟹ 下面的断言失效');
+  assert.match(sortBlock, /browse\.sort = s\.id/, '排序按钮不改 browse.sort');
+  assert.match(sortBlock, /renderBrowseControls\(meta\)/,
+    '排序按钮点了不重渲染这一排 ⟹ 蓝框永远停在初始那个（用户报的原始症状）');
+
+  // ② 筛选组那边本来就有，别改坏了
+  const filterBlock = dash.slice(dash.indexOf("const host = document.getElementById('br-filters')"));
+  assert.match(filterBlock.slice(0, 1600), /renderBrowseControls\(meta\)/,
+    '筛选标签点了不重渲染 ⟹ 蓝框不跟着变');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

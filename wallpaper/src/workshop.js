@@ -569,18 +569,6 @@ const AGE_TAGS_QUERY = [
   { id: 'Mature', label: '成人内容', defaultOn: false },
 ];
 
-// 分辨率。⚠️ 这些是 Steam 的原文，不是我起的名。
-const RESOLUTION_TAGS_QUERY = [
-  { id: 'Standard Definition', label: '标准清晰度' },
-  { id: '1280 x 720', label: '720p' },
-  { id: '1920 x 1080', label: '1080p' },
-  { id: '2560 x 1440', label: '1440p' },
-  { id: '3840 x 2160', label: '4K' },
-  { id: 'Ultrawide Standard', label: '带鱼屏' },
-  { id: 'Dual Monitor', label: '双屏' },
-  { id: 'Triple Monitor', label: '三屏' },
-  { id: 'Portrait', label: '竖屏' },
-];
 
 // 主题。真样本用的就是这一套（那个壁纸的 tags 是 ["Sci-Fi"]）。
 const GENRE_TAGS_QUERY = [
@@ -614,7 +602,12 @@ const GENRE_TAGS_QUERY = [
 const FILTER_GROUPS = [
   { id: 'type', label: '类型', tags: TYPE_TAGS_QUERY },
   { id: 'age', label: '年龄分级', tags: AGE_TAGS_QUERY },
-  { id: 'resolution', label: '分辨率', tags: RESOLUTION_TAGS_QUERY },
+  // ⚠️ 这里原来有「分辨率」组（RESOLUTION_TAGS_QUERY）—— 0.9.52 删了。
+  // 用户 2026-08-01：「分辨率这个分类不需要，用处不大」
+  // 他说得对：工坊壁纸的分辨率标签和"能不能在我的屏幕上好看"关系很弱
+  //（网页/场景类是矢量的，视频类会被拉伸），而它占了一整行筛选。
+  // ⚠️ RESOLUTION_TAGS_QUERY 的定义也删了 —— 留着就是死代码，
+  //   而下一个人会以为它还在用（本项目在"删 UI 留调用"上栽过三次）。
   { id: 'genre', label: '主题', tags: GENRE_TAGS_QUERY },
 ];
 
@@ -645,6 +638,23 @@ function browseParams({ key, query, sort, tags, page, perPage }) {
   params.set('return_metadata', 'true');
   if (hasText) params.set('search_text', query.trim());
   (tags || []).forEach((tag, i) => params.set(`requiredtags[${i}]`, tag));
+  // ⚠️⚠️ **多个标签取并集（OR）而不是交集（AND）**。用户 2026-08-01：
+  //   「之后是选中逻辑，应该允许多选，这样就是取并集，比如说年龄我选择了
+  //     全年龄和轻度不适宜，那就是这两种的我都要看」
+  //
+  // 参数名就叫 `requiredtags` —— Steam 默认把它们当**全部满足**（AND）。
+  // 而一个壁纸不可能同时是「全年龄」和「轻度不适宜」，也不可能同时是
+  // 「视频」和「网页」⟹ 多选两项**必然零结果**，而那看起来像"这个筛选下没东西"。
+  //
+  // `match_all_tags=false` 把它变成 OR。
+  //
+  // ⚠️⚠️ **这条我没能实测** —— 这台机器没有 Steam API key（工坊查询要 key），
+  // 所以我只能按 IPublishedFileService/QueryFiles 的参数表写。
+  // ⟹ 用户侧第一次多选就能验：勾「全年龄」+「轻度不适宜」，
+  //    出结果 = 生效；零结果 = 这个参数名不对，要换写法。
+  // ⚠️ 只在**多个**标签时发 —— 单个标签下 AND/OR 等价，而少发一个参数
+  //   就少一个出错面（如果这个参数名错了，Steam 可能整个请求报错而不是忽略它）。
+  if ((tags || []).length > 1) params.set('match_all_tags', 'false');
   return params;
 }
 
@@ -675,7 +685,6 @@ root.GestureWallWorkshop = {
   SORT_ORDERS,
   TYPE_TAGS_QUERY,
   AGE_TAGS_QUERY,
-  RESOLUTION_TAGS_QUERY,
   GENRE_TAGS_QUERY,
   FILTER_GROUPS,
   defaultTags,
