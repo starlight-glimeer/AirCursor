@@ -4292,4 +4292,52 @@ check('轮播 UI：摘要行开弹窗 / 分钟小时 / 横滑预览 / 网格不�
     '网格没标"在播放列表里" ⟹ 右键加进去之后当场没有反馈');
 });
 
+// ⚠️⚠️ **目录行合成一行**（0.9.50）。用户 2026-08-01：
+//   「{{扫存储目录里所有含 project.json 的壁纸…}}这句话删掉，然后
+//     我的壁纸目录：… / 打开 / 换目录… / 6 个壁纸，其中 4 个能跑
+//     这个应该一行，现在是两行」
+check('目录行：一行装完 / 计数不写死 0 / 状态行只报异常', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① 那句讲实现的 lead 不许回来（它说的是我们怎么扫，而用户在这一页要挑壁纸）
+  assert.ok(!/扫存储目录里所有含/.test(html.replace(/<!--[\s\S]*?-->/g, '')),
+    '「扫存储目录里所有含 project.json…」那句 lead 又回来了（用户点名删掉）');
+
+  // ② 计数必须画在**目录行**里，不能再写回 mine-state（那会变成第二行）
+  assert.match(dash, /个能跑/, '计数那句不见了');
+  // ⚠️⚠️ 锚**完整的赋值形状**，不是变量名。
+  // 第一版写的是 `/lastMineCount/`（只查名字在不在这个切片里）——
+  // 而把渲染条件改成 `if (false)` 之后那个名字**还在**（声明、注释、别的引用）
+  // ⟹ 计数不画了但守卫照样绿（反向验证第 2 条：报红 0）。
+  // 这是"锚点太弱"的第 6 次 ⟹ 判据：断言要锚到**产生效果的那一句**。
+  const dirFn = dash.slice(dash.indexOf('function renderMineDirs'));
+  assert.match(dirFn.slice(0, 3000),
+    /if \(lastMineCount\) \{[\s\S]{0,200}?countEl\.textContent = `\$\{lastMineCount\.total\}/,
+    '计数没画进目录行 ⟹ 它还在 mine-state 里，那就是第二行（用户点名要一行）');
+  assert.match(dirFn.slice(0, 3000), /box\.append\(countEl\)/,
+    '计数那一截没 append 进目录行的容器 ⟹ 建了但不显示（本项目第七次"做了但看不到"）');
+  assert.ok(!/state\.textContent = `\$\{result\.items\.length\} 个壁纸/.test(dash),
+    '计数又写回 mine-state ⟹ 目录行和计数会变成两行');
+
+  // ③⚠️⚠️ 赋值必须在 renderMineDirs() **之前** —— 它读这个变量来画那一截。
+  //    放后面的话第一次渲染没有计数，要等下一次刷新才出现（不报错，只是"少了点东西"）。
+  const mineFn = dash.slice(dash.indexOf('async function renderMine()'),
+    dash.indexOf('// ⚠️ mine-state 现在只用来报'));
+  assert.ok(mineFn.indexOf('lastMineCount = {') < mineFn.indexOf('renderMineDirs()'),
+    'lastMineCount 在 renderMineDirs() 之后才赋值 ⟹ 第一次渲染看不到计数');
+
+  // ④⚠️ 空列表那支也要设计数 —— 不设的话会沿用上一次的数字，
+  //    显示一个不存在的计数（比显示 0 更糟：它看起来是对的）。
+  assert.match(dash, /total: \(result\.ok && result\.items\) \? result\.items\.length : 0/,
+    '计数没兜住 result.ok 为假的情况 ⟹ 扫描失败时沿用上一次的数字');
+  // ⚠️ 但**初值**必须是 null 而不是 0 —— "还没扫"和"0 个壁纸"是两件事
+  assert.match(dash, /let lastMineCount = null/,
+    'lastMineCount 初值不是 null ⟹ 还没扫完就显示"0 个"，看起来像目录是空的');
+
+  // ⑤ 按钮文案（用户点名叫「更换目录」）
+  assert.match(dash, /change\.textContent = '更换目录'/,
+    '「更换目录」按钮改名了 ⟹ 用户点名要这个文案');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

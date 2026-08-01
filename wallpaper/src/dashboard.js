@@ -2076,6 +2076,22 @@ async function renderMine() {
   // ⚠️ 存下扫描结果，给 renderMineDirs 用 —— 那是"目录到底扫了哪儿"的唯一来源。
   // 存下来而不是让它重扫：扫描要遍历磁盘，而它在每次增删目录后都会跑。
   lastScanned = result.scanned || null;
+
+  // ⚠️⚠️ 计数并进**目录行**（0.9.50）。用户 2026-08-01：
+  //   「我的壁纸目录：… / 打开 / 换目录… / 6 个壁纸，其中 4 个能跑
+  //     这个应该一行，现在是两行」
+  // 他说得对：那两行说的是同一件事（这个目录里有什么）。
+  //
+  // ⚠️ 必须在 renderMineDirs() **之前**赋值 —— 它读这个变量来画那一截。
+  //   放后面的话第一次渲染没有计数，要等下一次刷新才出现。
+  // ⚠️ 空列表那支（下面的 early return）**也要**设 —— 不设的话
+  //   "0 个壁纸"会沿用上一次的计数，显示一个不存在的数字。
+  lastMineCount = {
+    total: (result.ok && result.items) ? result.items.length : 0,
+    usable: (result.ok && result.items)
+      ? result.items.filter((i) => i.supported).length : 0,
+    truncated: !!result.truncated,
+  };
   renderMineDirs();
 
   // ⚠️⚠️ **存下壁纸清单给轮播用**（0.9.49）。轮播的摘要行和弹窗要显示
@@ -2112,9 +2128,9 @@ async function renderMine() {
     return;
   }
 
-  const usable = result.items.filter((i) => i.supported).length;
-  state.textContent = `${result.items.length} 个壁纸，其中 ${usable} 个能跑`
-    + (result.truncated ? '（超过 500 个，只列了前 500）' : '');
+  // ⚠️ mine-state 现在只用来报**异常**（换目录的提示、删除失败、一个都没找到）。
+  //   正常情况下它是空的 —— 计数搬到目录行了，状态行不该在没事时还占一行。
+  state.textContent = '';
 
   grid.innerHTML = '';
   for (const item of result.items) {
@@ -2566,6 +2582,11 @@ let lastScanned = null;
 // 会让"正在放"的判断和网格上的蓝框对不上。
 let lastWallpapers = [];
 
+// ⚠️ 「N 个，M 个能跑」的计数（0.9.50）—— 画在**目录行**里（用户点名要一行）。
+// ⚠️ 初值 null 而不是 {total:0,usable:0}：那样"还没扫"会显示成"0 个"，
+// 而"0 个壁纸"和"还没扫"是两件事（写 0 会让人以为目录是空的）。
+let lastMineCount = null;
+
 function renderMineDirs() {
   const host = document.getElementById('mine-dirs');
   const dirs = (config.we && config.we.libraryDirs) || [];
@@ -2585,6 +2606,16 @@ function renderMineDirs() {
     label.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
       + 'user-select:text;flex:1';
     label.textContent = `我的壁纸目录：${res.dir}`;
+
+    // 计数：和路径同一行，跟在按钮后面。⚠️ 还没扫完时不显示（而不是显示 0）——
+    // "0 个壁纸"和"还没扫"是两件事，而写 0 会让人以为目录是空的。
+    const countEl = document.createElement('span');
+    countEl.className = 'hint';
+    countEl.style.cssText = 'font-size:11px;white-space:nowrap';
+    if (lastMineCount) {
+      countEl.textContent = `${lastMineCount.total} 个，${lastMineCount.usable} 个能跑`
+        + (lastMineCount.truncated ? '（超 500，只列前 500）' : '');
+    }
     // ⚠️⚠️ **全部操作都在这一行**（0.9.31）。
     //
     // 用户 2026-08-01：「这个刷新和加一个壁纸目录应该和我们的
@@ -2601,7 +2632,8 @@ function renderMineDirs() {
     const change = document.createElement('button');
     change.type = 'button';
     change.className = 'act';
-    change.textContent = '换目录…';
+    // ⚠️ 用户点名叫「更换目录」（原来是「换目录…」）
+    change.textContent = '更换目录';
     // ⚠️ title 里说清"不搬文件" —— 用户选的就是这个行为，
     // 而不说的话他会以为壁纸跟着走了（然后发现列表空了以为坏了）。
     change.title = '换成别的目录。⚠️ 只改指向，**不会搬文件** ——'
@@ -2651,6 +2683,7 @@ function renderMineDirs() {
     // 每隔几秒扫一次会一直占着 IO。
     box.append(label, open, change);
     if (!isDefault) box.append(reset);
+    box.append(countEl);
     // ⚠️ 插到最前面而不是 append —— 这个函数是异步回调，
     // 直接 append 会让它落在已经渲染好的目录列表后面（顺序随机）。
     host.insertBefore(box, host.firstChild);
