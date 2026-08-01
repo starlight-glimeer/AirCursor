@@ -5195,7 +5195,13 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   assert.match(dash, /slider\.oninput = /,
     '强度滑杆用 change ⟹ 松手才变，找一个合适值要试很多次');
   // ⚠️ 改强度要**重启**极光（那些 alpha 是在 startAurora 里闭包捕获的）
-  assert.match(dash, /function restart\(\)[\s\S]{0,300}?startAurora\('app-bg', \{ dim: bgDim \}\)/,
+  // ⚠️ 切到 restart 的函数体里，不用固定长度窗口 ——
+  //   0.9.69 在它们之间插了个探针（十几行）⟹ 300 字符的窗口撑破，
+  //   断言在正确代码上报红（**固定长度切片第 12 次**）。
+  const rsAt = dash.indexOf('function restart()');
+  assert.ok(rsAt > 0, '找不到 restart()');
+  const rsFn = dash.slice(rsAt, dash.indexOf('\n  }', rsAt) + 4);
+  assert.match(rsFn, /startAurora\('app-bg', \{ dim: bgDim/,
     '改强度时不重启极光 ⟹ dim 是闭包捕获的，拖滑杆没有任何效果');
 
   // ⑦⚠️⚠️ **画布自检**（0.9.66）。用户第三次报"极光看不到 / 和黑底没啥区别"，
@@ -5238,6 +5244,31 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
     '画布尺寸没兜住 clientWidth 为 0 的情况 ⟹ 0×0 的画布，画了也看不见（不报错）');
   assert.match(dash, /if \(!cv\.width \|\| !cv\.height\)/,
     '自检不报"画布尺寸是 0" ⟹ 那和"画了但看不到"的修法完全不同，得分开');
+
+  // ⚠️⚠️⚠️ **诊断模式 + 元素几何**（0.9.69）。
+  //
+  // 用户第五次报"极光没有"，而我这五轮换的是：亮度 → dim → opacity →
+  // 模糊位置 → 底色层级 —— **每一轮都在赌某个环节，而没有一次直接量过
+  // "这个 canvas 到底可见吗"**。
+  //
+  // ⟹ 两个不可能失败的探针：
+  //   · 诊断模式：**不透明地**画三条粗色带 + 会动的黑方块
+  //     ⟹ 看到 = canvas 可见（问题在亮度/混色）；看不到 = canvas 整个不可见
+  //   · 元素几何：`getBoundingClientRect` + `getComputedStyle` +
+  //     `elementFromPoint`（中心点最上层是谁 = 盖住它的东西）
+  //     ⟹ 完全不经过绘制，是"元素可见性"的直接答案
+  //
+  // ⟹ 判据：**同一个现象换了三种解释都没修好，就该量"承重前提"本身**
+  //    （这里是"canvas 可见吗"），而不是继续换第四种解释。
+  assert.match(html2, /id="bgLoud"/,
+    '没有诊断模式 ⟹ "canvas 不可见"和"亮度太低"分不清，只能一轮轮赌');
+  assert.match(dash, /if \(loud\) \{/, '诊断模式没接上绘制');
+  assert.match(dash, /fillRect\(0, \(h \/ 3\) \* i, w, h \/ 3\)/,
+    '诊断模式画的不是不透明色块 ⟹ 那就还是在赌亮度');
+  assert.match(html2, /id="bg-geom"/,
+    '没有元素几何探针 ⟹ z-index/尺寸/遮挡只能靠推理（我这五轮就是这样）');
+  assert.match(dash, /elementFromPoint\(/,
+    '没查"中心点最上层是谁" ⟹ 那是"被谁盖住"的唯一直接答案');
 
   // ⑧⚠️ 底色画在 `html` 上而不是 `body` —— body 是 grid 容器、canvas 是它的
   //    fixed 子项，那套层叠规则在云端确认不了。搬到 html 上就不依赖它。

@@ -106,6 +106,16 @@ function startAurora(canvasId, opts) {
   const ctx = cv.getContext('2d');
   if (!ctx) return;   // 安静放弃：背景是装饰，不该拖垮整个面板
   const dim = (opts && opts.dim) || 1;
+  // ⚠️⚠️⚠️ **诊断模式**（0.9.69）。用户第五次报"没有"，而我五轮里换了
+  // 亮度/dim/opacity/模糊位置/底色层级 —— 每一轮都在赌某个环节。
+  //
+  // ⟹ 停止赌。这个开关让极光**不透明地**画（纯色大块 + 一行文字），
+  //   那把问题一刀切成两半：
+  //     看到色块 ⟹ canvas 是可见的 ⟹ 问题在亮度/混色（继续调那边）
+  //     看不到   ⟹ **canvas 整个不可见** ⟹ 问题在层级/尺寸/遮挡
+  //                （那时候调亮度一万年也没用 —— 正是我这五轮做的事）
+  // ⚠️ 它由开发者选项里的复选框控制，默认关。
+  const loud = !!(opts && opts.loud);
 
   // 五团光。颜色刻意都偏冷（青/蓝/紫）+ 一点洋红提亮 ——
   // 和面板的 --accent (#6cc7ff) 同一个色系，不是随机好看的颜色。
@@ -238,6 +248,25 @@ function startAurora(canvasId, opts) {
     //     **而不是再动模糊**。
     // ⚠️ 半径要乘 dpr —— ctx.filter 的单位是**设备像素**（CSS 那个是 CSS 像素，
     //   我搬过去时照抄了数字，那也是一处等价性错误）。
+    // ⚠️ 诊断模式：**不模糊、不混色、不透明** —— 只要 canvas 可见就一定看得到。
+    if (loud) {
+      ctx.filter = 'none';
+      ctx.globalCompositeOperation = 'source-over';
+      // 三条粗色带 + 一个会动的方块（动的那个证明 rAF 在跑）
+      const bands = ['#ff3b6b', '#3bff9e', '#3b9eff'];
+      for (let i = 0; i < 3; i += 1) {
+        ctx.fillStyle = bands[i];
+        ctx.fillRect(0, (h / 3) * i, w, h / 3);
+      }
+      ctx.fillStyle = '#000';
+      const px = ((t * 120) % Math.max(1, w - 60));
+      ctx.fillRect(px, h / 2 - 30, 60, 60);
+      ctx.fillStyle = '#fff';
+      ctx.font = '20px -apple-system, sans-serif';
+      ctx.fillText(`${canvasId} ${cv.width}x${cv.height} dpr=${dpr} t=${t.toFixed(1)}s`, 20, 40);
+      auroraRAF[canvasId] = requestAnimationFrame(frame);
+      return;
+    }
     ctx.filter = `blur(${Math.round(Math.min(w, h) * 0.16 * dpr)}px)`;
     //
     // 用户 2026-08-01 报「手势的部分，不跟手了，卡卡的」+「开启摄像头，
@@ -2967,13 +2996,40 @@ async function setRotate(patch) {
   const slider = document.getElementById('bgDim');
   const readout = document.getElementById('bgDimVal');
 
+  const loudBox = document.getElementById('bgLoud');
+
+  // ⚠️⚠️ **不依赖 canvas 绘制的对照**（0.9.69）。
+  // 诊断模式如果也看不到，下一个问题是"canvas 元素本身在不在、多大、被谁盖"。
+  // ⟹ 直接量 `getBoundingClientRect()` + `getComputedStyle()` 并写到面板上。
+  //   那不经过任何绘制，是"元素可见性"的直接答案。
+  // ⚠️ 这三个数是我这五轮一直在赌但从没量过的东西 ——
+  //   我改了 z-index、grid-area、body 背景，全靠推理。
+  (() => {
+    const cv = document.getElementById('app-bg');
+    const slot = document.getElementById('bg-geom');
+    if (!cv || !slot) return;
+    const r = cv.getBoundingClientRect();
+    const cs = getComputedStyle(cv);
+    // 谁在这个 canvas 的中心点最上面 —— 那就是"盖住它的东西"
+    const hit = document.elementFromPoint(Math.round(r.width / 2), Math.round(r.height / 2));
+    slot.textContent = `元素 ${Math.round(r.width)}×${Math.round(r.height)}`
+      + ` @(${Math.round(r.x)},${Math.round(r.y)})`
+      + `  display=${cs.display} opacity=${cs.opacity} z=${cs.zIndex}`
+      + `  filter=${cs.filter}`
+      + `\n中心点最上层的元素：<${hit ? hit.tagName.toLowerCase() : '?'}`
+      + `${hit && hit.id ? ' #' + hit.id : ''}`
+      + `${hit && hit.className && typeof hit.className === 'string' ? ' .' + hit.className.split(' ')[0] : ''}>`;
+  })();
+
   function restart() {
     stopAurora('app-bg');
     const cv = document.getElementById('app-bg');
     const ctx = cv && cv.getContext('2d');
     if (ctx) ctx.clearRect(0, 0, cv.width, cv.height);
-    if (box.checked) startAurora('app-bg', { dim: bgDim });
+    if (box.checked) startAurora('app-bg', { dim: bgDim, loud: !!(loudBox && loudBox.checked) });
   }
+
+  if (loudBox) loudBox.onchange = restart;
 
   if (slider) {
     slider.value = String(Math.round(bgDim * 100));
@@ -2990,7 +3046,7 @@ async function setRotate(patch) {
   box.onchange = () => {
     const cv = document.getElementById('app-bg');
     if (box.checked) {
-      startAurora('app-bg', { dim: bgDim });
+      startAurora('app-bg', { dim: bgDim, loud: !!(loudBox && loudBox.checked) });
     } else {
       stopAurora('app-bg');
       // ⚠️ 用 clearRect 而不是 style.display = 'none' —— 后者会让
