@@ -160,7 +160,15 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
         // 真 WE 预览图反解的 magnitude 是 1.2-2.0，我们 2.8-12（差 12dB），
         // 而 12dB = 音量差 4 倍 ⟹ 完全可能是作者录预览图时音量小。
         // ⟹ 不量出 RMS 就改幅度，等于又一次凭猜调系数。
-        onFrame(msg.bins, typeof msg.rms === 'number' ? msg.rms : undefined);
+        onFrame(msg.bins, {
+          rms: typeof msg.rms === 'number' ? msg.rms : undefined,
+          // ⚠️ 这一次回调里的第几帧 + 这批采样数 —— 判平滑节奏稳不稳。
+          // `nth >= 2` 说明一次回调连发多帧，两帧间隔几微秒
+          // ⟹ movetowards 连做多次而时间没走 ⟹ 平滑速度随批大小漂，
+          // 而 PWCircle 只在收帧时重绘 ⟹ 前面那些帧被覆盖 = 等效跳帧。
+          nth: typeof msg.nth === 'number' ? msg.nth : undefined,
+          batch: typeof msg.batch === 'number' ? msg.batch : undefined,
+        });
       } else if (msg.type === 'selftest') {
         // ⚠️ FFT 自检结果 —— 现在的判据是**峰值位置 + 泄漏衰减 + 镜像**。
         //

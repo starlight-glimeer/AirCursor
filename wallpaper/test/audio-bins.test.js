@@ -740,6 +740,74 @@ check('MODULES.md 的音频契约和代码一致', () => {
     'MODULES.md 写着"不加窗函数"，而代码里有 vDSP_hann_window');
 });
 
+// ⚠️⚠️⚠️ **「柱子突兀的长」和「整体太长」是同一个根因 —— 这条是算术。**
+//
+// 用户 0.9.15：「还是会有一些柱子突兀的长」。而他 0.9.14 的读数里
+// 最大跳变 `[23] 0.736→0.367` = 相邻段差 **0.37**，看起来像尖刺 bug。
+//
+// 算一下就不是：
+//   相邻段隔 stride 2 = 2 个 FFT bin = **94Hz**（48kHz/1024）
+//   音乐里相邻 94Hz 的能量差 2 倍是常态（一个泛音峰的边缘）
+//   ⟹ **WE 也是 stride 2，所以它一样有这种落差**
+//
+// 差别只在幅度：真 WE 的 0.045 vs 0.02 = 8px vs 4px（看不出）；
+//              我们 0.736 vs 0.367 = 132px vs 66px（一眼看出）
+//
+// ⚠️ 而 PWCircle 自己的平滑是**时间**平滑（`w1 = max(arr[i], waveArr[i]*0.75)`，
+// 让柱子下落变慢），**不会让相邻柱子接近** ⟹ "加空间平滑"是错的方向，
+// 那会把真实的频谱结构抹掉，而那正是我们要传递的信息。
+//
+// ⟹ 守卫：**这一层不许有空间平滑**（相邻段互相平均/模糊）。
+check('不做空间平滑（相邻段差大是音乐常态，WE 也一样）', () => {
+  // 相邻段互相平均的典型写法
+  const bad = [
+    [/out\[band - 1\]|out\[band \+ 1\]/, '读了相邻段的输出 —— 那是空间平滑'],
+    [/magnitudes\[index - 1\].*magnitudes\[index \+ 1\]/s, '把相邻 bin 平均了'],
+    [/\bblur\b|smoothSpatial|neighborAvg/i, '有空间平滑/模糊的痕迹'],
+  ];
+  for (const [re, why] of bad) {
+    assert.ok(!re.test(swiftCode),
+      `${why}。相邻段隔 94Hz，差 2 倍是音乐常态（WE 也是 stride 2）⟹ `
+      + '"突兀的长"要靠降幅度解决，不是抹平频谱结构');
+  }
+  // 时间平滑要有（那是 WE 的 movetowards），别把两者搞混
+  assert.match(swiftCode, /smoothed\[band\] \+ \(v - smoothed\[band\]\) \* SMOOTH/,
+    '时间平滑没了 —— WE 是 movetowards(cur, target, 0.3f)。'
+    + '⚠️ 时间平滑（要）和空间平滑（不要）是两件事');
+});
+
+// ⚠️ 帧节奏观测 —— 判"突兀"的第二个候选：push 模型的批大小抖动。
+//
+// WE 是 **pull** 模型（渲染循环主动读音频缓冲）⟹ 每渲染帧平滑一次、节奏恒定。
+// 我们是 **push**（`while pending.count >= FFT_SIZE` 有多少发多少）
+// ⟹ 一次回调带来 3000 采样就连发 2 帧，两帧间隔**几微秒**
+// ⟹ `movetowards` 连做 2 次而时间没走 ⟹ 平滑速度随批大小漂，
+//    且前面那些帧被 PWCircle 的重绘覆盖 = 等效跳帧。
+//
+// ⚠️ **这是推理，先量后改**（上一轮"没量就改"被推翻十一次的教训）。
+check('报帧节奏（判 push 模型的批大小抖动）', () => {
+  assert.match(swiftSrc, /framesThisCall/, 'Swift 没数一次回调发几帧');
+  assert.match(swiftSrc, /"nth"/, '数了但没发出来 —— 算了不发等于没有');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /\bframeRhythm\b/, '主进程没统计帧节奏');
+  // ⚠️ 必须统计**分布**而不是记最后一个值 ——
+  // "最后一次是 1" 和 "平均 1.02" 是完全不同的结论，
+  // 而我这一轮已经因为"面板显示的是上一个音源的残留"误判过一次。
+  // ⚠️ 锚在**代码**上而不是整个文件 —— 我第一版用 `/multiPct/` 查整个 main.js，
+  // 而那个词也出现在**注释**里 ⟹ 把字段改名成 `lastNth` 后断言照样绿。
+  // 教训：**注释会让守卫假阴性**（这一轮我已经因为"字符串在提示语里也出现"栽过一次）。
+  // ⟹ 查"字段定义"这个形状：`multiPct:` 后面跟表达式。
+  assert.match(main, /multiPct:\s*Number\(/,
+    '没统计"发多帧的比例" —— 只记最后一个值分不出节奏稳不稳'
+    + '（"最后一次是 1"和"平均 1.02"是完全不同的结论）');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /\bmultiPct\b/, '面板没显示 ⟹ 用户看不到 = 等于没测');
+  // 两个方向的结论都要在面板上，包括"不是这个原因"
+  assert.match(dash, /不是这个原因/,
+    '面板只说了"节奏不稳"没说"节奏稳 ⟹ 不是这个原因" ⟹ '
+    + '那种情况用户拿不到"这条假设作废"的结论');
+});
+
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
 
 // ⚠️⚠️ 这一条是实测烧出来的，而且形状很典型。

@@ -2949,6 +2949,15 @@ function reportAudioFrame(data, source) {
     //   RMS 0.03-0.1（−30..−20dBFS）= 正常听感 ⟹ 我们的实现偏大
     //   RMS 0.3+（−10dBFS 以上）    = 音量开得很大 ⟹ 不是实现问题
     inputRMS: Number(lastInputRMS.toFixed(4)),
+    // ⚠️ 帧节奏 —— 判"柱子突兀的长"是不是 push 模型的批大小抖动。
+    //   multiPct ≈ 0  ⟹ 一次回调只发一帧 ⟹ 节奏稳 ⟹ **这条假设作废，别改**
+    //   multiPct 明显 >0 ⟹ 连发多帧，间隔几微秒 ⟹ 平滑速度随批大小漂
+    rhythm: frameRhythm.total > 0 ? {
+      multiPct: Number((frameRhythm.multi / frameRhythm.total * 100).toFixed(1)),
+      max: frameRhythm.max,
+      batchAvg: Math.round(frameRhythm.batchSum / frameRhythm.total),
+      batchMax: frameRhythm.batchMax,
+    } : undefined,
     inputDbfs: lastInputRMS > 0 ? Number((20 * Math.log10(lastInputRMS)).toFixed(1)) : -99,
     dynRange: (() => {
       const front = arr.slice(0, 64).filter((v) => v > 0);
@@ -3266,6 +3275,8 @@ function syncAudioSource() {
 let lastAudioSilentAt = 0;
 // 最近一帧输入 PCM 的 RMS（判"柱子太长"是音量还是实现，见 pushWEAudio）
 let lastInputRMS = 0;
+// 帧节奏统计（判"突兀的柱子"是不是 push 模型的批大小抖动造成的）
+let frameRhythm = { total: 0, multi: 0, max: 0, batchSum: 0, batchMax: 0 };
 // 被闸门丢掉的帧数，按 owner 分。⚠️ 报到面板用 —— 打包版看不到终端。
 const droppedFrames = {};
 
@@ -3317,12 +3328,27 @@ function sendAudioFrame(data, owner) {
   return true;
 }
 
-function pushWEAudio(frame, rms) {
+function pushWEAudio(frame, meta) {
   if (!weWindow || weWindow.isDestroyed()) return;
   // ⚠️ 输入 PCM 的 RMS —— 判"柱子太长"是系统音量还是我们的实现。
   // 真 WE 预览图反解 magnitude 1.2-2.0，我们 2.8-12（差 12dB = 音量差 4 倍）
   // ⟹ 不量 RMS 就改幅度 = 又一次凭猜调系数。
-  if (typeof rms === 'number') lastInputRMS = rms;
+  //
+  // ⚠️ 第二个参数从裸 rms 改成了对象 —— 因为"柱子突兀的长"有两个候选原因，
+  // 而它们需要不同的观测：整体幅度看 RMS，单帧尖刺看**帧节奏**。
+  if (meta && typeof meta.rms === 'number') lastInputRMS = meta.rms;
+  if (meta && typeof meta.nth === 'number') {
+    // ⚠️ 统计分布而不是记最后一个值 —— 一次回调发几帧是**变化的**，
+    // 而"最后一次是 1"和"平均 1.02"是完全不同的结论。
+    // 我这一轮已经因为"面板显示的是上一个音源的残留"误判过一次。
+    frameRhythm.total += 1;
+    if (meta.nth >= 2) frameRhythm.multi += 1;
+    if (meta.nth > frameRhythm.max) frameRhythm.max = meta.nth;
+    if (typeof meta.batch === 'number') {
+      frameRhythm.batchSum += meta.batch;
+      if (meta.batch > frameRhythm.batchMax) frameRhythm.batchMax = meta.batch;
+    }
+  }
   const result = WE.normalizeAudioFrame(frame);
   // ⚠️ 走闸门 —— 音源已经切走时这一帧会被丢掉（并报一次）。
   if (!sendAudioFrame(result.data, 'capture')) return;

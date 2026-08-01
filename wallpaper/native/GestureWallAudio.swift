@@ -771,7 +771,27 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
         guard type == .audio, buffer.isValid else { return }
         guard let samples = pcm(from: buffer) else { return }
         pending.append(contentsOf: samples)
+        // ⚠️⚠️⚠️ **一次回调发几帧？那决定平滑的节奏稳不稳。**
+        //
+        // 用户 0.9.15 反馈「还是会有一些柱子突兀的长」，而他 0.9.14 的读数里
+        // 最大跳变是 `[23] 0.736→0.367` —— **相邻段差 0.37**，
+        // 在圆环上就是"一根特别长的挨着一根短的"。
+        //
+        // ⚠️ 一个待验的实现差异：
+        //   WE 是 **pull** 模型（渲染循环主动读音频缓冲）⟹ 每渲染帧平滑一次、节奏恒定
+        //   我们是 **push** 模型（`while pending.count >= FFT_SIZE` 有多少发多少）
+        //     ⟹ 一次回调带来 3000 采样就连发 2 帧，两帧间隔**几微秒**
+        //     ⟹ `movetowards` 连做 2 次而时间上没走 ⟹ 平滑速度随批大小漂
+        //     ⟹ 而 PWCircle 只在收到帧时重绘 ⟹ 第一帧被第二帧覆盖 = 等效跳帧
+        //
+        // ⚠️⚠️ **但这是推理，不是观测。** 上一轮的教训就是"没量就改"被推翻十一次，
+        // 而 VDSP_SCALE 是唯一先量后改的、一量就精确命中 2.00。
+        // ⟹ 先报出来：一次回调发几帧、帧间隔多少毫秒。
+        //    若 framesPerCall 恒等于 1 ⟹ 这条假设作废，别改
+        //    若经常 ≥2 ⟹ 节奏确实不稳，而修法是**攒够就发一帧、多的留着**
+        var framesThisCall = 0
         while pending.count >= FFT_SIZE {
+            framesThisCall += 1
             let chunk = Array(pending.prefix(FFT_SIZE))
             pending.removeFirst(FFT_SIZE)
             let bins = spectrum.process(chunk)
@@ -781,6 +801,10 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
                 "type": "audio",
                 "bins": bins.map { Double(round($0 * 10000) / 10000) },
                 "rms": Double(round(spectrum.lastRMS * 10000) / 10000),
+                // ⚠️ 这一次回调里这是第几帧 —— 判平滑节奏稳不稳（见上面那段）
+                "nth": framesThisCall,
+                // 这一批采样有多少个（决定能切出几帧）
+                "batch": samples.count,
             ])
         }
         // 防止上游比我们快时无界堆积。
