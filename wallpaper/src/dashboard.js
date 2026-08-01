@@ -175,6 +175,8 @@ function startAurora(canvasId, opts) {
   // ⚠️ 用 rAF 给的时间戳而不是 Date.now() —— 前者和帧对齐（动画不会跳），
   // 而且第一帧的值我们拿它当基准，不依赖任何外部时钟。
   let t0 = null;
+  // ⚠️ 每个 canvas 各一个 —— 共用的话第二个就不自检了。
+  let selfChecked = false;
   // ⚠️⚠️ **降帧到 ~20fps**（0.9.63）。极光的周期是 11~19 秒 ——
   // 那是"慢到看不出在动"的东西，60fps 画它是纯浪费（而这个应用常驻，
   // 浪费会一直累积，和手势推理抢 CPU）。
@@ -239,6 +241,43 @@ function startAurora(canvasId, opts) {
     // clearRect 也会带着 filter 跑（clearRect 不受 filter 影响，但 composite
     // 会影响后续任何绘制）。这是"下一帧莫名变样"那类 bug 的来源。
     ctx.globalCompositeOperation = 'source-over';
+
+    // ⚠️⚠️ **自检**（0.9.66）—— 用户报了三轮"极光看不到"，而我调了三轮参数
+    // 都没效果 ⟹ 那本身就是"参数不是原因"的证据。
+    //
+    // ⟹ 直接**采样画完的画布**，报出"canvas 里到底有没有东西"。
+    //   那一下把问题切成两半：
+    //     canvas 里有值、屏幕上看不到 ⟹ **层级/遮挡/opacity 的问题**
+    //     canvas 里就是全 0        ⟹ **绘制本身没跑**（尺寸为 0、混色错、被清掉）
+    // ⚠️ 只在**第一次绘制后**采一次 —— 每帧 getImageData 是很贵的
+    //   （它强制 GPU→CPU 回读，那正是我们刚修掉的那类开销）。
+    if (!selfChecked) {
+      selfChecked = true;
+      try {
+        // 采中心和四个偏心点 —— 单采中心的话，正好某一帧那里是暗的会误判
+        const pts = [[0.5, 0.5], [0.3, 0.34], [0.68, 0.3], [0.5, 0.62], [0.22, 0.68]];
+        let peak = 0;
+        for (const [fx, fy] of pts) {
+          const d = ctx.getImageData(Math.round(w * fx * dpr), Math.round(h * fy * dpr), 1, 1).data;
+          peak = Math.max(peak, d[0], d[1], d[2]);
+        }
+        const msg = `[aurora] ${canvasId} 自检：画布 ${cv.width}×${cv.height}`
+          + ` dpr=${dpr} dim=${dim} 采样峰值=${peak}/255`
+          + (peak < 8 ? '  ⚠️ 画布几乎是空的 ⟹ 绘制没跑（不是"不明显"）'
+            : '  ✅ 画布里有内容 ⟹ 看不到就是层级/遮挡问题');
+        console.log(msg);
+        // ⚠️ 也送到面板的日志区 —— 打包版没有终端，控制台看不到
+        //   （这个项目在"日志只进 stdout"上栽过：用户报不出数字）。
+        // ⚠️ `logLine(source, message)` 是**两个参数** —— 我第一版传了个对象
+        //   `logLine({source, message})` ⟹ 会显示成 `[wall] undefined`（不报错）。
+        //   查了签名才发现（dashboard.js:494）。
+        if (typeof logLine === 'function') logLine('wall', msg);
+      } catch (error) {
+        // getImageData 在跨域污染的画布上会抛 —— 我们的画布没有外部图片，
+        // 但失败也不该影响动画。
+        console.warn('[aurora] 自检失败：', error.message);
+      }
+    }
 
     auroraRAF[canvasId] = requestAnimationFrame(frame);
   }

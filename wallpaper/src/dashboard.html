@@ -82,10 +82,26 @@
      ⚠️ 换掉的理由不只是"像 WE"：940px 宽的窗口里，左栏 176 + 右侧详情 340
      ⟹ 网格只剩 ~420px（两列卡片）。而**壁纸墙的价值就在于一眼看到很多张**。
      ⟹ 顶部 tab 条只占 44px 高，横向 940px 全留给"网格 + 详情"。 */
+  /* ⚠️⚠️ **底色画在 `html` 上，不是 `body`**（0.9.66）。
+     用户报了三轮"极光看不到 / 和黑底没啥区别"，而我调了三轮参数都没效果
+     ⟹ 那本身就是"参数不是原因"的证据。
+
+     怀疑点：`body` 的背景 + `#app-bg` 是它的子元素 + `display: grid`。
+     ⚠️ CSS 的绘制顺序里 body 的背景在它自己的子元素**之下**，理论上不该盖住
+        canvas；但**根元素的背景传播**这条规则会让事情变复杂 ——
+        body 是 grid 容器、canvas 是 fixed 定位、还有 z-index 掺和。
+     ⟹ 不去赌那套规则怎么解释：**底色搬到 html 上**，
+        body 本身透明 ⟹ canvas 一定画在底色之上，不依赖任何一条微妙的规则。
+     ⚠️ 而且 `#app-bg` 从 body 的子元素里"逻辑上"移出去了
+        （fixed 本来就脱离布局，但它仍是 grid 的一个子项 ——
+         `grid-template-rows: auto 1fr` 的第一行本该是 nav。
+         那也是一个我没法在云端确认的隐患）⟹ 顺手给它 `grid-area: 1/1`，
+        让它不占额外的行。 */
+  html { background: var(--bg); }
   body {
     margin: 0; height: 100vh; overflow: hidden;
     display: grid; grid-template-rows: auto 1fr;
-    background: var(--bg); color: var(--text);
+    background: transparent; color: var(--text);
     font: 400 13px/1.65 -apple-system, "PingFang SC", sans-serif;
   }
 
@@ -100,6 +116,9 @@
   #app-bg {
     position: fixed; inset: 0; width: 100%; height: 100%;
     z-index: 0; pointer-events: none; display: block;
+    /* ⚠️ 它是 body（grid 容器）的子项 ⟹ 会占掉 `auto 1fr` 的第一行。
+       fixed 定位本该让它脱离布局，但显式写上更保险（云端确认不了）。 */
+    grid-area: 1 / 1;
     opacity: var(--bg-aurora);
     /* ⚠️⚠️ **模糊在这里做，不在 canvas 里**（0.9.63）。
        用户报「手势不跟手了，卡卡的」+「开摄像头也好慢」，根因是

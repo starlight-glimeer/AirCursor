@@ -5166,6 +5166,31 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   // ⚠️ 改强度要**重启**极光（那些 alpha 是在 startAurora 里闭包捕获的）
   assert.match(dash, /function restart\(\)[\s\S]{0,300}?startAurora\('app-bg', \{ dim: bgDim \}\)/,
     '改强度时不重启极光 ⟹ dim 是闭包捕获的，拖滑杆没有任何效果');
+
+  // ⑦⚠️⚠️ **画布自检**（0.9.66）。用户第三次报"极光看不到 / 和黑底没啥区别"，
+  // 而我调了三轮参数（blobs 的 a → dim → opacity）都没效果
+  // ⟹ **那本身就是"参数不是原因"的证据**，而我还在继续调参。
+  //
+  // ⟹ 直接采样画完的画布，把问题切成两半：
+  //     画布里有值、屏幕上看不到 ⟹ 层级/遮挡/opacity 的问题
+  //     画布里就是全 0        ⟹ 绘制本身没跑（尺寸为 0、混色错、被清掉）
+  // ⟹ 判据：**同一个现象调了三轮参数没动，就该停下来量"东西在不在"**，
+  //    而不是接着调第四轮。
+  assert.match(dash, /getImageData\(/,
+    '极光没有画布自检 ⟹ "画布是空的"和"画了但看不到"分不清，只能来回调参');
+  // ⚠️ 只采一次 —— 每帧 getImageData 强制 GPU→CPU 回读，那正是刚修掉的那类开销
+  assert.match(dash, /if \(!selfChecked\)[\s\S]{0,80}?selfChecked = true/,
+    '自检没有"只跑一次"的标记 ⟹ 每帧 getImageData 会拖慢渲染');
+  // ⚠️ 结果要报到**面板**，不只是 console —— 打包版没有终端
+  assert.match(dash, /logLine\('wall', msg\)/,
+    '自检结果只进 console ⟹ 打包版看不到（用户报不出数字）');
+
+  // ⑧⚠️ 底色画在 `html` 上而不是 `body` —— body 是 grid 容器、canvas 是它的
+  //    fixed 子项，那套层叠规则在云端确认不了。搬到 html 上就不依赖它。
+  assert.match(html2, /html \{ background: var\(--bg\); \}/,
+    '底色又画在 body 上 ⟹ 和 canvas 是父子关系，层叠顺序依赖一堆微妙规则');
+  assert.match(html2, /body \{[\s\S]{0,200}?background: transparent/,
+    'body 的背景不是 transparent ⟹ 它可能盖住底下的极光 canvas');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
