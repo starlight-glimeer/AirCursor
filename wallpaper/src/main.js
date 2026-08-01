@@ -8,7 +8,7 @@
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
 const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, Menu,
-  protocol, net, shell } = require('electron');
+  protocol, net, shell, Tray, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 // spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
@@ -828,6 +828,11 @@ function watchRendererErrors(win, label) {
 function openDashboard() {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.show();
+    // ⚠️⚠️ `app.dock.hide()` 之后（0.9.46）光靠 focus() **不够** ——
+    // accessory 策略下的应用不是"常规应用"，macOS 不会把它的窗口带到前台
+    // ⟹ 症状是点了菜单栏图标，窗口在别的窗口后面，看起来像"没反应"。
+    // `app.focus({steal:true})` 才会真的抢焦点。
+    app.focus({ steal: true });
     dashboardWindow.focus();
     return;
   }
@@ -837,7 +842,26 @@ function openDashboard() {
     minWidth: 780,
     minHeight: 560,
     title: 'GestureWall',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#141418' : '#f4f4f6',
+    // ⚠️⚠️ **深色标题栏**（0.9.46）。用户 2026-08-01 报：
+    //   「wall 这块是用的 Mac 原生的那个条一个白条，因为我是浅色主题吗？
+    //     但是我们整体是深色主题，他就不是一个整体，你懂吗？
+    //     我们完全就没有设计出一个很完整的一个产品，给我的感觉就像是终端」
+    //
+    // 根因：原来没设 titleBarStyle ⟹ 用系统默认标题栏，而它跟**系统主题**走。
+    // 用户是浅色主题 ⟹ 白条压在我们 #101014 的深色面板上，两截。
+    //
+    // `hiddenInset` = 标题栏透明、红绿灯按钮内缩、内容延伸到顶部
+    // ⟹ 顶部那条由**我们的 CSS** 画（dashboard.html 里 body 的 padding-top
+    //    给红绿灯让位）。这样它必然和面板同色，因为就是同一块。
+    //
+    // ⚠️ 不用 `frame: false` —— 那会连红绿灯一起没有，我们就得自己画三个按钮，
+    // 而"自己画的关闭按钮"是另一个能出 bug 的地方（而且这个项目刚因为
+    // 关窗口行为被用户报过问题）。`hiddenInset` 保留原生按钮和拖拽。
+    titleBarStyle: 'hiddenInset',
+    // ⚠️ backgroundColor 不能再跟 nativeTheme 走 —— 面板 CSS 是**写死深色**的
+    // （`color-scheme: dark` + `--bg: #101014`）。跟着系统给浅色的后果：
+    // 窗口出现的那一瞬间闪一下白（CSS 还没生效），而那正是"像终端"的感觉来源之一。
+    backgroundColor: '#101014',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -853,6 +877,11 @@ function openDashboard() {
     // Deliberately reports the *wall's* frame, not the settings window's — the
     // settings window has no business being fullscreen.
     sendStrategy(dashboardWindow, currentStrategy, wallWindow);
+  });
+  // ⚠️ 新建的窗口也要抢焦点 —— 同上，dock.hide() 之后不会自动到前台。
+  dashboardWindow.once('ready-to-show', () => {
+    app.focus({ steal: true });
+    dashboardWindow.show();
   });
   dashboardWindow.on('closed', () => { dashboardWindow = null; });
 }
@@ -4072,6 +4101,12 @@ function hardQuit(from) {
     stopSweepAudio();
   });
   step('注销全局快捷键', () => globalShortcut.unregisterAll());
+  step('拆掉菜单栏图标', () => {
+    // ⚠️ 托盘不拆的话它会在退出过程中一直挂在菜单栏上 —— 而"图标还在"
+    // 正是用户判断"退没退"的依据（这次加托盘就是为了给他这个凭证）。
+    // ⟹ 它必须是**最先**消失的东西，和"先拆可见的、再做慢活"同一个道理。
+    if (tray) { tray.destroy(); tray = null; }
+  });
   step('拆掉所有窗口', () => {
     for (const win of BrowserWindow.getAllWindows()) {
       // ⚠️ 用 getAllWindows() 而不是我们那四个变量 —— 漏掉任何一个窗口
@@ -4154,6 +4189,22 @@ app.whenReady().then(() => {
   // ⚠️ 菜单要**最先**建 —— 它是退出的兜底路径，而后面任何一步抛异常都会让
   // 应用变成"跑着但退不掉"。先有出口，再做别的。
   buildAppMenu();
+  // ⚠️ 托盘紧跟菜单建 —— 它和菜单一样是"退出的可见出口"，
+  // 后面任何一步抛异常都不该让应用变成"跑着但没有入口"。
+  buildTray();
+  // ⚠️⚠️ 撤掉 Dock 图标（0.9.46）。用户报的"小圆点没了以为退出了"从根上消掉：
+  // 常驻壁纸应用住菜单栏，不该在 Dock 里占一格。
+  //
+  // ⚠️ 必须在 buildTray **之后** —— accessory 策略下如果没有任何托盘/窗口，
+  // 应用就完全不可见了。顺序反了而 buildTray 又失败（图标读不到）的话，
+  // 那就是一个既没 Dock 也没菜单栏的隐形进程，只能强制退出。
+  // ⟹ 所以这里查 tray 是否真建出来了，没建就保留 Dock 图标当兜底。
+  if (tray) {
+    app.dock.hide();
+    console.log('[dock] 已隐藏 Dock 图标（常驻在菜单栏）');
+  } else {
+    console.error('[dock] ⚠️ 托盘没建起来 ⟹ 保留 Dock 图标，否则应用会完全不可见');
+  }
   config = readConfig();
   // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
   if (migrateConfig(config)) writeConfig();
@@ -4170,8 +4221,28 @@ app.whenReady().then(() => {
   // 放前面的话第一次切换会从列表开头开始（症状：重启后壁纸跳到第一个）。
   syncRotate();
   openDashboard();
-  // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
-  syncOverlayVisibility();
+  // ⚠️⚠️ **骨架层要等启动页放完再建**（0.9.46）。用户 2026-08-01 报：
+  //   「如果我把那个摄像头默认是开启状态，我刚看到我那个登录界面啥都没点的时候，
+  //     我都能看到我手的骨架吧」
+  //
+  // 根因：骨架层是 `alwaysOnTop: 'screen-saver'` 的独立窗口（那是它的设计 ——
+  // 见 ensureOverlay 的注释，它必须盖过一切，否则在最需要它的时刻被挡住），
+  // 而启动页只是面板窗口里的一个 div ⟹ 骨架必然压在启动页上。
+  //
+  // ⟹ 这不是"层级设错了"，是**时序**：启动页那 2.3 秒里骨架没有任何用途
+  //   （用户还没进主界面，更不可能在录手势），而它出现在那里破坏的正是
+  //   "第一眼看到的是什么"。
+  //
+  // ⚠️ 2600ms 对齐 dashboard.js 里 `setTimeout(enterApp, 2300)` + 淡出 .5s 的一半。
+  //    早了会在淡出过程中闪进来，晚了手势会有一段"开着但没骨架"的空窗
+  //    （而那正是这个项目最怕的形状：功能是活的但用户以为死了）。
+  // ⚠️ 用 setTimeout 而不是等面板发信号：面板 JS 挂了的话信号永远不来
+  //    ⟹ 手势永久不可用，而那比"骨架早出现 2 秒"糟得多。
+  //    定时器最坏情况只是早一点，不会永久失效。
+  setTimeout(() => {
+    // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
+    syncOverlayVisibility();
+  }, 2600);
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.
@@ -4235,8 +4306,68 @@ app.whenReady().then(() => {
   console.log('  ⌃⇧D 开发者工具    ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
 
+// ⚠️⚠️ **菜单栏图标**（0.9.46）。用户 2026-08-01 报：
+//   「我点那个关闭吗？他其实不会关闭，但是下面那个应用图片里面的 App 图标
+//     已经没有下面的小圆圈了，就是代表正在运行吗？已经没有了，
+//     我得再点一下那个小件才会出现，然后我通过下面这个点退出」
+//
+// 那个行为**是我们故意的**（`window-all-closed` 空函数：关设置窗口 ≠ 退出壁纸），
+// 但它缺了后半截：关掉窗口之后**没有任何可见的入口**。
+//   · Dock 圆点消失 = macOS 判定进程没窗口了 ⟹ 用户合理地以为它退了
+//   · 而壁纸还在跑 ⟹ 下一次他会去点 Dock 图标 / 强制退出
+//
+// ⟹ 一个常驻壁纸应用应该住在**菜单栏**，不是 Dock。加托盘之后：
+//   · 关窗口后菜单栏那个图标就是"它还在跑"的可见凭证
+//   · 点它 = 打开面板；右键 = 有「退出 GestureWall」
+//   · 顺便把 Dock 图标撤掉（LSUIElement）—— 那才是"常驻工具"该有的样子，
+//     而且从根上消掉了"圆点在不在"这个误导源。
+//
+// ⚠️ 图标必须是 `template` 命名（trayTemplate@2x.png）—— macOS 只用它的 alpha
+// 自己上色，深浅主题都对。不带 Template 后缀的话浅色菜单栏上是黑图标、
+// 深色菜单栏上还是黑图标 ⟹ 看不见。而"看不见的托盘图标"和没有托盘一样。
+let tray = null;
+
+function trayImage() {
+  // ⚠️⚠️ 用 `__dirname` 而不是 `app.getAppPath()`。
+  // 第一版我写的是 getAppPath()，**是错的**：入口是 `wallpaper/src/main.js`
+  // （package.json 的 `main`）⟹ getAppPath() 返回**仓库根**，而 assets 在
+  // `wallpaper/assets` ⟹ 拼出来的路径不存在 ⟹ createFromPath 静默返回空 image
+  // ⟹ 菜单栏什么都没有，日志一片正常。（这个项目第七次同形状。）
+  // `__dirname` 是 `<app>/wallpaper/src`，往上一级就是 `wallpaper/`，两种运行方式都对。
+  const file = path.join(__dirname, '..', 'assets', 'trayTemplate@2x.png');
+  const img = nativeImage.createFromPath(file);
+  // ⚠️⚠️ **必须查空**。createFromPath 读不到文件时**不抛异常**，返回一个空 image
+  // ⟹ Tray 建出来了、`isEmpty()` 是 true、菜单栏上什么都没有，而日志一片正常。
+  // 这就是这个项目栽过六次的形状（注册成功但功能是死的）。
+  if (img.isEmpty()) {
+    console.error(`[tray] ⚠️ 图标读不到：${file} —— 菜单栏会是空的`);
+    return null;
+  }
+  img.setTemplateImage(true);
+  return img;
+}
+
+function buildTray() {
+  if (tray) return;
+  const img = trayImage();
+  if (!img) return;   // 没图标就不建 —— 一个看不见的托盘比没有更糟（点不到还占位）
+  tray = new Tray(img);
+  tray.setToolTip('GestureWall');
+  const menu = Menu.buildFromTemplate([
+    { label: '打开 GestureWall', click: () => openDashboard() },
+    { type: 'separator' },
+    // ⚠️ 走 hardQuit 而不是 app.quit() —— 后者实测不管用（见 hardQuit 的注释）。
+    { label: '退出 GestureWall', click: () => hardQuit('托盘菜单') },
+  ]);
+  // ⚠️ 不用 setContextMenu —— 那样**左键**也弹菜单，而左键该直接开面板
+  // （用户报的路径就是"我得再点一下才会出现"，多一层菜单是多一步）。
+  tray.on('click', () => openDashboard());
+  tray.on('right-click', () => tray.popUpContextMenu(menu));
+  console.log('[tray] 菜单栏图标已建');
+}
+
 // Deliberately does not quit: closing the settings window is not quitting the
-// wallpaper. ⌃⇧Q is the way out.
+// wallpaper. 菜单栏图标 / ⌃⇧Q 是出口。
 app.on('window-all-closed', () => {});
 // ⚠️ 退出必须**看得见地在发生**，而且不能被任何一步卡住。
 //

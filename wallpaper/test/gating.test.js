@@ -4054,4 +4054,76 @@ check('壁纸墙卡片：定位上下文 / 放不了要常显 / \\n 要有 pre-w
     '工坊空态没有"三个条件都不成立"的兜底 ⟹ 会叫没搜索词的用户去换搜索词');
 });
 
+// ⚠️⚠️ **产品外壳（0.9.46）**。用户 2026-08-01 报的四件事，根因都不是逻辑错，
+// 是"没有产品外壳"：
+//   ①「wall 这块是用的 Mac 原生的那个条一个白条…他就不是一个整体」
+//   ②「我点那个关闭他其实不会关闭，但是 App 图标已经没有下面的小圆圈了」
+//   ③「登录界面我们这个只是覆盖了一层什么效果都没有」
+//   ④「摄像头默认开启，登录界面啥都没点就能看到我手的骨架」
+// 这一节守住那四条的修复，重点是**成对的东西**（改一个不改另一个不报错）。
+check('产品外壳：深色标题栏 / 菜单栏图标 / 启动页粒子 / 骨架不压启动页', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const main = codeOnly(mainSrc);
+
+  // ① hiddenInset 和给红绿灯让位的 padding 是**成对**的。
+  //    只设 titleBarStyle：红绿灯压在 brand 上。
+  //    只留 padding：白留一块。两个都不报错。
+  const hasInset = /titleBarStyle:\s*'hiddenInset'/.test(main);
+  assert.ok(hasInset, '面板没设 titleBarStyle: hiddenInset ⟹ 用系统标题栏，浅色主题下是白条');
+  assert.match(html, /nav\s*\{[\s\S]{0,400}?padding:\s*42px/,
+    'nav 顶部没给红绿灯让位（hiddenInset 下按钮会压在 brand 上）');
+  assert.match(html, /main\s*\{[^}]*padding:\s*42px/,
+    'main 顶部没给标题栏让位 ⟹ 第一块卡片落在可拖拽区，点它没反应');
+  // backgroundColor 不能再跟 nativeTheme 走（CSS 是写死深色的）
+  const dashWin = main.slice(main.indexOf('dashboardWindow = new BrowserWindow'));
+  assert.ok(!/backgroundColor:\s*nativeTheme/.test(dashWin.slice(0, 900)),
+    '面板 backgroundColor 跟 nativeTheme 走 ⟹ 浅色主题下开窗闪一下白');
+
+  // ② 托盘：图标文件要真存在（读不到时 nativeImage 静默返回空 image）
+  const icon = path.join(__dirname, '..', 'assets', 'trayTemplate@2x.png');
+  assert.ok(fs.existsSync(icon), `托盘图标不存在：${icon} ⟹ 菜单栏会是空的`);
+  // ⚠️ 文件名必须带 Template —— 否则 macOS 不按主题上色，深色菜单栏上看不见
+  assert.match(path.basename(icon), /Template/,
+    '托盘图标文件名不带 Template ⟹ macOS 不自动上色，某个主题下看不见');
+  assert.match(main, /new Tray\(/, '没建 Tray ⟹ 关掉窗口后应用没有任何可见入口');
+  assert.match(main, /img\.isEmpty\(\)/,
+    '没查 nativeImage.isEmpty() ⟹ 图标读不到时静默变成空托盘（本项目第七次同形状）');
+  // ⚠️ dock.hide() 必须在确认 tray 建成之后 —— 否则可能既没 Dock 也没菜单栏
+  assert.match(main, /if\s*\(tray\)\s*\{[\s\S]{0,120}?app\.dock\.hide\(\)/,
+    'dock.hide() 没有"托盘建成了吗"的前置判断 ⟹ 托盘失败时应用完全不可见');
+  // dock.hide() 之后光 focus() 不够
+  assert.match(main, /app\.focus\(\{\s*steal:\s*true\s*\}\)/,
+    'dock.hide() 之后没有 app.focus({steal:true}) ⟹ 点菜单栏图标窗口不到前台');
+  assert.match(main, /tray\.destroy\(\)/,
+    '退出时没拆托盘 ⟹ 图标留在菜单栏上，而它正是用户判断"退没退"的凭证');
+
+  // ③ 启动页粒子：canvas 存在、有 dpr 缩放、退出时停 RAF
+  assert.match(html, /id="launch-particles"/, '启动页没有粒子 canvas');
+  assert.match(dash, /devicePixelRatio/,
+    '粒子 canvas 没按 devicePixelRatio 缩放 ⟹ Retina 上是模糊的一团');
+  assert.match(dash, /cv\.width\s*=/,
+    '没显式设 canvas.width ⟹ 默认 300×150，只画在左上角一小块');
+  // ⚠️⚠️ 锚 `cancelAnimationFrame(launchRAF)` 而不是光锚函数名 ——
+  // dashboard.js:610 **早就有**一个 `cancelAnimationFrame(handle)`（别的动画用的）
+  // ⟹ 只锚函数名的话，把粒子那处删掉守卫**照样绿**（反向验证第 9 条：报红 0）。
+  // 这是"锚点撞名"的第 3 次（前两次 `spikes:` 和 `getElementById('audioFollow')`），
+  // 前两次撞的是注释/字符串，这次撞的是**别处真实存在的同名调用** —— 更难看出来。
+  assert.match(dash, /cancelAnimationFrame\(launchRAF\)/,
+    '进主界面后没停粒子的 requestAnimationFrame ⟹ 常驻应用里白烧 CPU');
+
+  // ④ 三个时长必须**成对递增**：CSS 进度条 < JS 自动进入 < 骨架层出现。
+  //    任何一个单独改都不报错，症状分别是"条走完还卡着"/"条没走完就切了"/
+  //    "骨架压在启动页上"或"手势开着但没骨架"。
+  const cssMs = Number((html.match(/animation:\s*launchLoad\s+([\d.]+)s/) || [])[1]) * 1000;
+  const jsMs = Number((dash.match(/setTimeout\(enterApp,\s*(\d+)\)/) || [])[1]);
+  const overlayMs = Number((main.match(/syncOverlayVisibility\(\);\s*\n\s*\},\s*(\d+)\)/) || [])[1]);
+  assert.ok(cssMs > 0 && jsMs > 0 && overlayMs > 0,
+    `三个时长没都读到（css=${cssMs} js=${jsMs} overlay=${overlayMs}）⟹ 断言失效`);
+  assert.ok(jsMs >= cssMs,
+    `自动进入(${jsMs}ms)早于进度条走完(${cssMs}ms) ⟹ 条还没满就切走了`);
+  assert.ok(overlayMs > jsMs,
+    `骨架层(${overlayMs}ms)不晚于进入主界面(${jsMs}ms) ⟹ 骨架会压在启动页上`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

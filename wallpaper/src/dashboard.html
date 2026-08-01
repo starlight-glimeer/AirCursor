@@ -23,18 +23,71 @@
     font: 400 13px/1.65 -apple-system, "PingFang SC", sans-serif;
   }
 
-  /* ---- 启动页：盖在最上面，点一下进入 ---- */
+  /* ---- 启动页 ----
+     ⚠️⚠️ 用户 2026-08-01：
+       「最开始的时候，我们那个登录界面人家是加载界面，我们这个只是覆盖了一层
+         什么效果都没有」「人家设计好看呀，背景啊，什么半透明怎么粒子效果都很好看」
+
+     他说得对。原来这里就是 radial-gradient + 三行字 —— 那是"一层蒙层"，
+     不是一个加载界面。⟹ 加三样东西：
+       ① **粒子背景**（canvas，见 launchParticles）—— 慢速上浮的光点 + 近邻连线
+       ② logo 的呼吸光晕（text-shadow 动画）
+       ③ 一条走完就进主界面的进度条 —— 用户知道"它在起，不是卡了"
+
+     ⚠️ 为什么用 canvas 而不是 CSS 粒子：CSS 只能做固定几个元素的动画，
+     而"粒子"要的是几十个 + 随机轨迹 + 连线。连线（两点距离小于阈值就画一条）
+     是这个效果好看的关键，CSS 做不到。
+     ⚠️ 为什么不用 WebGL：canvas 2d 画 60 个点绰绰有余，而 WebGL 要着色器
+     ⟹ 又一个能静默失败的东西（这个项目在"注册成功但功能是死的"上栽过七次）。 */
   #launch {
     position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
-    background: radial-gradient(130% 100% at 50% 35%, #23252e 0%, #14151a 55%, #0b0c0f 100%);
-    cursor: pointer; transition: opacity .45s ease;
+    /* 底色仍然是径向渐变（粒子画在它上面，canvas 是透明的）。
+       比原来更暗、更蓝一点 —— 亮点才显得亮。 */
+    background:
+      radial-gradient(120% 90% at 50% 30%, #1c2030 0%, #12141c 50%, #08090d 100%);
+    cursor: pointer; transition: opacity .5s ease;
+    overflow: hidden;
+  }
+  /* 粒子层：铺满，在文字**下面**（z-index 比 .wrap 小） */
+  #launch-particles {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    display: block; z-index: 0;
+  }
+  /* 中心那团柔光 —— 让 logo 从背景里"浮"出来，而不是贴在上面。
+     ⚠️ pointer-events: none，否则它盖住 #launch 的点击。 */
+  #launch::after {
+    content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background: radial-gradient(38% 30% at 50% 42%,
+                rgba(108,199,255,.10) 0%, rgba(108,199,255,0) 70%);
   }
   #launch.gone { opacity: 0; pointer-events: none; }
-  #launch .wrap { text-align: center; }
+  #launch .wrap { text-align: center; position: relative; z-index: 2; }
   #launch h1 {
-    margin: 0; font-size: 42px; font-weight: 300; letter-spacing: .1em;
+    margin: 0; font-size: 46px; font-weight: 200; letter-spacing: .12em;
+    /* 呼吸光晕。⚠️ 动画 text-shadow 而不是 opacity —— 后者会把字一起变淡，
+       而我们要的是"光在呼吸、字一直清楚"。 */
+    animation: logoGlow 3.4s ease-in-out infinite;
   }
-  #launch h1 b { font-weight: 600; }
+  #launch h1 b { font-weight: 500; color: #cfe9ff; }
+  @keyframes logoGlow {
+    0%, 100% { text-shadow: 0 0 18px rgba(108,199,255,.16); }
+    50%      { text-shadow: 0 0 34px rgba(108,199,255,.42); }
+  }
+  /* 进度条：细、宽度固定、居中。走完 → 自动进主界面。
+     ⚠️ 它不是真进度（我们没有可测的加载阶段）—— 是**一段固定时长的过场**。
+     那仍然比"点击进入"好：用户不需要做动作，而且它明确表示"在起"。
+     ⚠️ 但「点击进入」要**保留** —— 不耐烦的人（比如来回测试的我们）
+     能立刻跳过。两条路径都通到同一个 enter()。 */
+  #launch .track {
+    width: 190px; height: 2px; margin: 34px auto 0;
+    background: rgba(255,255,255,.10); border-radius: 2px; overflow: hidden;
+  }
+  #launch .track i {
+    display: block; height: 100%; width: 0;
+    background: linear-gradient(90deg, rgba(108,199,255,.5), #6cc7ff);
+    animation: launchLoad 2.2s ease-out forwards;
+  }
+  @keyframes launchLoad { to { width: 100%; } }
   /* build 标识：小、灰，但必须**清晰可读** —— 它是来回测试时核对版本的唯一依据，
      看不清等于没有。所以不用 .hint 的默认色，单独定一个。 */
   /* 分组标题（project.json 里 type=text 的项）。⚠️ 不是装饰 —— 作者用它把
@@ -59,17 +112,30 @@
     margin-top: 14px; font-size: 11px; letter-spacing: .34em;
     text-transform: uppercase; color: var(--dim);
   }
+  /* 「点击进入」改成进度条下面一行更轻的提示 —— 它现在是**可选**的快捷路径
+     （进度条走完会自动进），所以不该像原来那样是唯一的行动号召。 */
   #launch .go {
-    margin-top: 46px; font-size: 12px; color: var(--dim);
+    margin-top: 16px; font-size: 11px; color: rgba(232,232,238,.34);
     animation: breathe 2.6s ease-in-out infinite;
   }
   @keyframes breathe { 0%,100% { opacity: .4 } 50% { opacity: .95 } }
 
   /* ---- 左侧栏 ---- */
   nav {
-    border-right: 1px solid var(--line); padding: 18px 0;
+    border-right: 1px solid var(--line);
+    /* ⚠️⚠️ 顶部 **42px** 是给 `titleBarStyle: 'hiddenInset'` 的红绿灯让位（0.9.46）。
+       内容延伸到窗口顶部之后，那三个按钮会**压在** brand 上（它们在左上角）。
+       42 = 红绿灯 y 中心 ~18px + 半径 + 呼吸空间；实测 macOS hiddenInset 下
+       按钮区约到 y=36。给 42 是留一点余量，少了会贴脸。
+       ⚠️ 这个数字只对 hiddenInset 成立 —— 改回默认标题栏的话它就是白留一块。
+          守卫盯住"两者成对"。 */
+    padding: 42px 0 18px;
     display: flex; flex-direction: column; background: #0d0d11;
+    /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。
+       -webkit-app-region 是 Electron 的，nav 设 drag、里面的按钮设 no-drag。 */
+    -webkit-app-region: drag;
   }
+  nav button, nav .keys, #build-stamp { -webkit-app-region: no-drag; }
   nav .brand {
     padding: 0 18px 18px; font-size: 14px; font-weight: 600; letter-spacing: .04em;
   }
@@ -94,7 +160,10 @@
   }
 
   /* ---- 右侧内容 ---- */
-  main { overflow-y: auto; padding: 22px 26px 60px; }
+  /* ⚠️ 顶部 42px 和 nav 对齐 —— hiddenInset 下内容延伸到窗口顶部，
+     22px 会让第一块卡片顶到标题栏区（那一带是可拖拽的，点它不会有反应，
+     看起来像"这个卡片点不动"）。 */
+  main { overflow-y: auto; padding: 42px 26px 60px; -webkit-app-region: no-drag; }
   section { display: none; }
   section.on { display: block; }
   h2 {
@@ -380,10 +449,13 @@
 <body>
 
 <div id="launch">
+  <!-- 粒子背景。⚠️ 在 .wrap **之前** —— 它靠 DOM 顺序 + z-index 垫在文字底下。 -->
+  <canvas id="launch-particles"></canvas>
   <div class="wrap">
     <h1>Gesture<b>Wall</b></h1>
     <div class="sub">gesture music wallpaper</div>
-    <div class="go">点击进入</div>
+    <div class="track"><i></i></div>
+    <div class="go">点击跳过</div>
   </div>
 </div>
 

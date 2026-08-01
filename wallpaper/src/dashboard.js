@@ -15,13 +15,129 @@ let recordingAction = null;
 // 启动页
 // ---------------------------------------------------------------------------
 const launch = document.getElementById('launch');
-launch.onclick = () => launch.classList.add('gone');
+
+// ⚠️ 三条路径进主界面：进度条走完（自动）、点击、回车/空格。
+// 抽成一个函数是因为它现在要做的不只是加 class —— 还要停掉粒子动画
+// （不停的话 requestAnimationFrame 会在一个 opacity:0 的 canvas 上一直跑，
+//  白烧 CPU；而这个应用是**常驻**的，长跑的浪费会累积）。
+let launchDone = false;
+function enterApp() {
+  if (launchDone) return;    // ⚠️ 三条路径可能同时到（点击 + 定时器）
+  launchDone = true;
+  launch.classList.add('gone');
+  stopLaunchParticles();
+}
+launch.onclick = enterApp;
 // 键盘也能进：点击是主路径，但一个只能点的入口对键盘用户是死路。
 window.addEventListener('keydown', (e) => {
-  if (!launch.classList.contains('gone') && (e.key === 'Enter' || e.key === ' ')) {
-    launch.classList.add('gone');
-  }
+  if (!launchDone && (e.key === 'Enter' || e.key === ' ')) enterApp();
 });
+// ⚠️ 2300ms = CSS 里 `launchLoad` 的 2.2s + 一点余量。
+// ⚠️⚠️ 这两个数字**必须一致**，否则症状是"进度条走完了还卡着"（时长偏大）
+// 或者"条还没走完就切走了"（偏小）—— 都不报错。守卫盯住它们成对。
+setTimeout(enterApp, 2300);
+
+// ---------------------------------------------------------------------------
+// 启动页的粒子背景（0.9.46）
+//
+// ⚠️ 用户 2026-08-01：「人家设计好看呀，背景啊，什么半透明怎么粒子效果都很好看」
+// 「我们这个只是覆盖了一层什么效果都没有」
+//
+// 效果 = 慢速上浮的光点 + 近邻连线。连线是关键 —— 光有点只是噪点，
+// 连起来才有"网"的感觉（那也是这类背景常见的做法）。
+//
+// ⚠️ 三个必须做对的地方，否则是"看起来在跑但什么都没有"：
+//   ① devicePixelRatio —— 不缩放的话 Retina 上是模糊的一团
+//   ② canvas 的 CSS 尺寸是 100%，而 width/height 属性是像素 ⟹ 必须显式设
+//      （不设默认 300×150，画出来只占左上角一小块）
+//   ③ 拿不到 2d context 时要**安静地放弃**，不能抛 —— 这个文件顶层抛异常
+//      会让后面所有开关的绑定全停（这个项目栽过：面板异常表现为"开关点了没反应"）
+// ---------------------------------------------------------------------------
+let launchRAF = null;
+
+function stopLaunchParticles() {
+  if (launchRAF !== null) { cancelAnimationFrame(launchRAF); launchRAF = null; }
+}
+
+function startLaunchParticles() {
+  const cv = document.getElementById('launch-particles');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return;   // 安静放弃：背景是装饰，不该拖垮整个面板
+
+  let w = 0;
+  let h = 0;
+  const dots = [];
+  const N = 58;          // 58 个点：连线是 O(N²)，58 → 1653 次距离计算/帧，可以忽略
+  const LINK = 108;      // 连线阈值（CSS 像素）。太大就成一团网，太小看不到线
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    w = cv.clientWidth;
+    h = cv.clientHeight;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    // ⚠️ setTransform 而不是 scale —— 后者会在每次 resize 时**累积**
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  for (let i = 0; i < N; i += 1) {
+    dots.push({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      // 慢 —— 这是背景，不该抢注意力。上浮为主（vy 偏负），横向轻微飘。
+      vx: (Math.random() - 0.5) * 0.22,
+      vy: -0.10 - Math.random() * 0.22,
+      r: 0.7 + Math.random() * 1.5,
+      a: 0.20 + Math.random() * 0.45,
+    });
+  }
+
+  function frame() {
+    ctx.clearRect(0, 0, w, h);
+
+    for (const d of dots) {
+      d.x += d.vx;
+      d.y += d.vy;
+      // 飘出去就从另一边回来（上浮 ⟹ 主要从底部重新进入）
+      if (d.y < -6) { d.y = h + 6; d.x = Math.random() * w; }
+      if (d.x < -6) d.x = w + 6;
+      if (d.x > w + 6) d.x = -6;
+    }
+
+    // 连线先画（在点下面），线比点淡很多
+    ctx.lineWidth = 1;
+    for (let i = 0; i < dots.length; i += 1) {
+      for (let j = i + 1; j < dots.length; j += 1) {
+        const dx = dots[i].x - dots[j].x;
+        const dy = dots[i].y - dots[j].y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > LINK) continue;
+        // 越近越亮 —— 这是"网在动"的观感来源
+        const alpha = (1 - dist / LINK) * 0.16;
+        ctx.strokeStyle = `rgba(140,205,255,${alpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(dots[i].x, dots[i].y);
+        ctx.lineTo(dots[j].x, dots[j].y);
+        ctx.stroke();
+      }
+    }
+
+    for (const d of dots) {
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(180,222,255,${d.a.toFixed(3)})`;
+      ctx.fill();
+    }
+
+    launchRAF = requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+startLaunchParticles();
 
 // ---------------------------------------------------------------------------
 // 左栏切换
