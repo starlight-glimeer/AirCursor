@@ -52,41 +52,63 @@ trap restore EXIT
 npx electron-builder --mac dmg
 
 echo ""
-echo "=== 装哪个包 ==="
-# ⚠️ 按修改时间取最新，而不是按名字 —— 同一版本号会覆盖，名字看不出新旧。
+echo "=== 装哪个 ==="
+# ⚠️⚠️ **优先用未打包的 .app，跳过 dmg。**
+#
+# 用户 2026-08-01 问：「xattr -dr com.apple.quarantine 这个我在想是不是
+# 我的电脑只要操作过一次就行呢」
+#
+# **不是** —— `com.apple.quarantine` 是**按文件**的扩展属性，不是
+# "这台机器信任这个应用"的记录。谁打的：浏览器下载、AirDrop、
+# **以及从挂载的 dmg 里拷文件**。
+# ⟹ 每次从 dmg 拖一个新的 .app 出来，那个新文件就带着 quarantine
+# ⟹ 上次清的是上次那个 .app，和新的无关。
+#
+# ⚠️ 但**不经过 dmg 就不会被打** ⟹ electron-builder 同时产出
+# `dist/mac-arm64/GestureWall.app`（未打包），直接从那里 cp 就干净。
+# ⟹ 那样每次装新版**不用再 xattr**（本地开发的场景）。
+#
+# ⚠️ dmg 仍然保留 —— 它是给别人的（发给同事/自己另一台机器时要它）。
+APP=$(ls -td dist/mac*/GestureWall.app 2>/dev/null | head -1)
 DMG=$(ls -t dist/*.dmg 2>/dev/null | head -1)
-if [ -z "$DMG" ]; then
-  echo "  ❌ dist/ 下没有 .dmg —— 打包失败了，往上翻 electron-builder 的输出"
+
+if [ -z "$APP" ] && [ -z "$DMG" ]; then
+  echo "  ❌ dist/ 下既没有 .app 也没有 .dmg —— 打包失败了，往上翻 electron-builder 的输出"
   exit 1
 fi
-echo "  $DMG"
-echo "  时间: $(date -r "$DMG" '+%H:%M:%S')"
+
 echo ""
-echo "  open \"$DMG\""
+echo "--- ① 退掉旧的（如果在跑）：⌃⇧Q ---"
+echo "    否则新装的和旧的会抢壁纸层。"
 echo ""
-echo "--- 装的步骤（未签名应用，前两步是必须的）---"
+
+if [ -n "$APP" ]; then
+  echo "--- ② 装（推荐：直接拷，**不用 xattr**）---"
+  echo ""
+  echo "  rm -rf /Applications/GestureWall.app && cp -R \"$APP\" /Applications/"
+  echo ""
+  echo "    时间: $(date -r "$APP" '+%H:%M:%S')"
+  echo "    ⚠️ 为什么不用 xattr：quarantine 是**从 dmg 拷出来时**被打上的，"
+  echo "       直接 cp 构建产物不经过那一步 ⟹ 没有那个属性。"
+  echo ""
+fi
+
+if [ -n "$DMG" ]; then
+  echo "--- ②' 或者走 dmg（发给别人时用这个）---"
+  echo ""
+  echo "  open \"$DMG\"      # 拖进「应用程序」"
+  echo "  xattr -dr com.apple.quarantine /Applications/GestureWall.app"
+  echo ""
+  echo "    时间: $(date -r "$DMG" '+%H:%M:%S')"
+  echo "    ⚠️ 走 dmg **每次都要** xattr —— 那个属性是按文件打的，"
+  echo "       不是「这台机器信任过一次就行」。不做的症状是「打不开」/"
+  echo "       「来自身份不明的开发者」，而那看起来像我们的包坏了。"
+  echo ""
+fi
+
+echo "--- ③ 打开 GestureWall，⌃⇧W 开面板 ---"
 echo ""
-echo "  ① 退掉旧的（如果在跑）：⌃⇧Q"
-echo "     否则新装的和旧的会抢壁纸层。"
+echo "  ⚠️ **重新装过之后授权可能要重给** —— 辅助功能/屏幕录制是按"
+echo "     二进制路径挂的。症状：鼠标转发不工作（面板会说「零事件」）。"
+echo "     ⟹ 系统设置 → 隐私与安全性 → 辅助功能，把 GestureWall 删掉再加回来。"
 echo ""
-echo "  ② open \"$DMG\" → 把 GestureWall 拖进「应用程序」"
-echo ""
-echo "  ③ 解除 Gatekeeper 隔离（**未签名应用必须这一步**）："
-echo "     xattr -dr com.apple.quarantine /Applications/GestureWall.app"
-echo ""
-echo "     ⚠️ 不做这步的症状是"打不开 / 提示来自身份不明的开发者"，"
-echo "     而那看起来像我们的包坏了。也可以右键→打开，但命令更省事。"
-echo ""
-echo "  ④ 打开 GestureWall，⌃⇧W 开面板"
-echo ""
-echo "--- 两个已知的"看起来像 bug"其实不是 ---"
-echo ""
-echo "  ⚠️ 每次重装后**可能要重新勾一次辅助功能** —— 未签名应用的主二进制"
-echo "     每次都变，macOS 按二进制记授权。"这次又要我勾"不是代码 bug。"
-echo ""
-echo "  ⚠️ 权限表现不如正式签名应用稳定（原型阶段可接受）。"
-echo ""
-echo "⚠️ 装好后**核对面板顶部的 build 标识**：应该是 v$VERSION $COMMIT 打包版"
-echo "   对不上就是装成旧包了 —— 那会让你测出"改了没生效"的假结论。"
-echo ""
-exit 0

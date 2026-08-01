@@ -3511,4 +3511,36 @@ check('CoreAudio tap 的四个静默失效点都防住了', () => {
     'audio-source.js 不认 backend ⟹ 面板上看不到当前用的哪条路');
 });
 
+// ⚠️⚠️⚠️ **shell 脚本的引号必须配对（bash -n 能查，但没人跑它）。**
+//
+// 我在 `build-mac.sh` 的 `echo "…"` 里写了 `「零事件」` 用的 ASCII 双引号
+// ⟹ 字符串被提前截断 ⟹ `bash: unexpected EOF while looking for matching '"'`
+// ⟹ **整个脚本跑不了**，而它是用户装包的唯一入口。
+//
+// ⚠️ 而这和 Swift 那两个坑是同一个形状：**在字符串里写引用**。
+// Swift 里是中文引号（`"`）编译失败，shell 里是 ASCII 引号截断字符串。
+// ⟹ 规则统一：**在字符串里引用文字，一律用「」**。
+check('shell 脚本里的引号配对（否则脚本跑不了）', () => {
+  const dir = path.join(__dirname, '..', 'scripts');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.sh'))) {
+    const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      // 只查 echo 行 —— 多行 node -e 那种本来就跨行配对
+      if (!/^\s*echo\s+"/.test(line)) return;
+      let n = 0;
+      for (let k = 0; k < line.length; k += 1) {
+        if (line[k] === '\\') { k += 1; continue; }
+        if (line[k] === '"') n += 1;
+      }
+      if (n % 2) bad.push(`${f}:${i + 1}`);
+    });
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些 echo 行的双引号不配对：${bad.join(', ')}\n`
+    + '    ⟹ bash 会报 "unexpected EOF while looking for matching" ⟹ **整个脚本跑不了**\n'
+    + '    ⟹ 在字符串里引用文字用 「」，不要用 ASCII 双引号\n'
+    + '    （和 Swift 里"中文引号让编译失败"是同一个形状）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
