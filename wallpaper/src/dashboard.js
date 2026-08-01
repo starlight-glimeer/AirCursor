@@ -1919,9 +1919,12 @@ function renderMineDirs() {
     const title = document.createElement('div');
     title.className = 'hint';
     title.style.marginBottom = '4px';
+    // ⚠️ 0.9.29 起工坊下载会**移动**到我们目录（不是复制）+ 清空壳
+    // ⟹ 这个目录正常情况下**应该是空的或不存在**。
+    // 里面还有东西 = 上次搬运失败了（那时 logEvent 里有记录）。
     title.textContent = autoReal.length
-      ? 'Steam 创意工坊的下载目录（下载后会自动复制到上面那个目录）：'
-      : '没找到 Steam 的下载目录（没装 steamcmd 的话这是正常的）：';
+      ? 'steamcmd 的临时下载目录（下载完会移走，所以这里通常是空的）：'
+      : '没找到 steamcmd 的下载目录（没装 steamcmd 的话这是正常的）：';
     host.appendChild(title);
     for (const item of auto) {
       const row = document.createElement('div');
@@ -1936,14 +1939,54 @@ function renderMineDirs() {
       // ⟹ 这里的数字是"Steam 那边还留着的原件"，而列表里显示的是我们目录那份
       //（去重逻辑保留我们的那份）⟹ 不说清的话"这里有 3 个但列表只有 3 个"
       // 看起来像数字不对。
+      // ⚠️ 0.9.29 起下载内容会被**移走** ⟹ 这里有东西说明搬运失败了。
+      // 那和"目录空着"是完全不同的状态：前者要查为什么搬不动（磁盘满/权限/跨卷），
+      // 后者是正常。⟹ 措辞必须让这两种分开。
       const mark = item.exists
         ? (item.found
-          ? `${item.found} 个（原件，已复制到上面那个目录）`
-          : '目录在，但里面没有壁纸')
+          ? `⚠️ 还留着 ${item.found} 个 —— 上次没搬走（磁盘满？权限？）`
+          : '空的（正常 —— 下载完会移到上面那个目录）')
         : '（不存在 —— 没装 steamcmd 的话是正常的）';
       text.textContent = `${item.path}  ${mark}`;
-      if (item.exists && !item.found) text.style.color = 'var(--warn, #c98)';
+      // ⚠️ 标黄的条件**反过来了**：现在"有残留"才是异常，"空的"是正常。
+      // 漏改这一行的话，正常状态会一直显示成警告色 ⟹ 用户以为有问题。
+      if (item.exists && item.found) text.style.color = 'var(--warn, #c98)';
       row.appendChild(text);
+      // ⚠️ 有残留时给一个「搬过来」按钮。
+      //
+      // 0.9.24-0.9.28 用的是**复制** ⟹ 用户机器上已经有两份了，
+      // 而 0.9.29 改成移动只对**新下载**生效 ⟹ 存量不会自己消失。
+      // 用户 2026-08-01：「那不就是自动两份，太离谱了」—— 存量也得能清。
+      if (item.exists && item.found) {
+        const fix = document.createElement('button');
+        fix.type = 'button';
+        fix.className = 'act';
+        fix.textContent = `搬到我的壁纸目录`;
+        fix.title = '把这里的壁纸移进上面那个目录（我们目录已有的就只删这边的副本）';
+        fix.onclick = async () => {
+          fix.disabled = true;
+          fix.textContent = '搬运中…';
+          const r = await window.gw.importExistingFromSteam();
+          const moved = (r && r.moved) || [];
+          const failed = (r && r.failed) || [];
+          fix.textContent = failed.length
+            ? `搬了 ${moved.length} 个，${failed.length} 个失败`
+            : `已搬 ${moved.length} 个`;
+          // ⚠️ 刷新列表 —— 不刷的话用户看到按钮变了字但路径行没变，
+          // 会以为没生效（这个项目栽过"做了但用户看不到"六次）。
+          //
+          // ⚠️ 调 `renderMine()` 而不是 `renderMineDirs()` —— 前者会重新扫描
+          // （刷新 lastScanned）并自己调后者。只调后者的话它用的还是旧的扫描结果
+          // ⟹ 路径行上的数字不变 ⟹ 看起来像没搬。
+          //
+          // ⚠️ 而我第一版写的是 `refreshLocal()` —— **那个函数不存在**。
+          // `node --check` 查不出（它只查语法），而症状是点了按钮后
+          // 抛 ReferenceError、列表不刷新 —— 那正是"静默失败"。
+          // ⟹ 教训：写调用之前先 grep 函数名，别凭印象。
+          await renderMine();
+        };
+        row.appendChild(fix);
+      }
       // ⚠️ **能点开。** 用户要的：「我要能进到那个目录，看到我的壁纸文件」。
       // 只有存在的目录才给按钮 —— 打开一个不存在的目录只会弹错误。
       if (item.exists) {

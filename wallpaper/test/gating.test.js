@@ -2461,14 +2461,28 @@ check('renderMineDirs 的函数体里不调 renderMine（死循环）', () => {
   const end = dash.indexOf('\n}', i);
   const body = dash.slice(i, end);
   // onclick 里调是允许的（那是事件回调，不是同步执行）
+  //
+  // ⚠️ 判定方式改了：原来往上找**固定 8 行**里有没有 `onclick`
+  // ⟹ 我在调用前面加了一段 8 行以上的注释，`onclick` 就被推出窗口
+  // ⟹ **在正确代码上报红**（调用确实在 onclick 回调里）。
+  //
+  // ⟹ 改成往上找**最近的一个** `onclick` / `function` / `=>` 边界：
+  //    若最近的边界是 onclick 或箭头函数，那就是在回调里。
+  // ⚠️ 这是"固定长度窗口"的又一次 —— 这一轮我已经栽过五次（都是切片长度），
+  //    而这次是**行数窗口**，同一个形状换了个样子。
   const lines = body.split('\n');
   for (const [n, line] of lines.entries()) {
     if (!line.includes('renderMine()')) continue;
-    // 往上找是不是在 onclick 里
-    const before = lines.slice(Math.max(0, n - 8), n).join('\n');
-    assert.ok(/onclick/.test(before),
+    // 往上扫到函数体开头，找最近的一个"进入回调"的标志
+    let inCallback = false;
+    for (let k = n - 1; k >= 0; k -= 1) {
+      if (/onclick|addEventListener|\.then\(|=>\s*\{/.test(lines[k])) { inCallback = true; break; }
+      // 遇到函数体开头就停（说明是同步路径）
+      if (/^function |^const \w+ = function/.test(lines[k])) break;
+    }
+    assert.ok(inCallback,
       `renderMineDirs 的函数体里直接调了 renderMine()（第 ${n} 行）⟹ 死循环。`
-      + '只有 onclick 回调里可以调');
+      + '只有 onclick / 事件回调 里可以调');
   }
 });
 
@@ -3078,7 +3092,9 @@ check('打包命令 dist:mac 和 build:mac 都在（我给过两个名字）', (
 // 不复制的两个后果：①「我的壁纸」列表里看不到刚下载的
 // ②用户从 Finder 打开壁纸目录找不到自己下的（Steam 那个路径在「资源库」下，
 //   Finder 默认不显示）
-check('工坊下载后复制到统一壁纸目录', () => {
+// ⚠️ 这条测试原名「工坊下载后**复制**到统一壁纸目录」—— 0.9.29 改成移动了。
+// 一个名字说着旧行为的绿色测试是文档级的错：读的人会照它理解代码。
+check('工坊下载后移动到统一壁纸目录（不留两份）', () => {
   const src = codeOnly(mainSrc);
   assert.match(src, /function importToOurDir/,
     '没有把工坊下载搬进我们目录的函数 ⟹ 用户在「我的壁纸」里看不到刚下载的');
@@ -3088,13 +3104,37 @@ check('工坊下载后复制到统一壁纸目录', () => {
   const block = src.slice(at, src.indexOf('setWEWallpaper', at) + 40);
   assert.match(block, /importToOurDir/,
     'importToOurDir 定义了但下载成功后没调用 ⟹ 壁纸还留在 Steam 目录');
-  // ⚠️ **复制不是移动** —— Steam 目录是 steamcmd 的账本，移走它会让下次下载
-  // 认为"已下载"却找不到文件（manifest 在 appworkshop_*.acf 里），很难恢复。
-  assert.match(src, /fs\.cpSync/,
-    '没用 cpSync ⟹ 若改成 renameSync（移动），steamcmd 下次会认为已下载'
-    + '却找不到文件，只能手动清 appworkshop_*.acf');
-  assert.ok(!/fs\.renameSync\([^)]*srcDir|fs\.renameSync\([^)]*dir,/.test(src),
-    '用了 renameSync 搬工坊目录 —— 那会破坏 steamcmd 的下载账本');
+  // ⚠️⚠️ **这条断言反过来了（0.9.29）—— 前提变了，不是摇摆。**
+  //
+  // 0.9.24 我要求 `cpSync`（复制），理由是"移走会破坏 steamcmd 的账本"。
+  // 而用户 0.9.28 实测后说：「那不就是自动两份，太离谱了」——**他说得对**：
+  //   ① 磁盘占用翻倍（壁纸可以到几百 MB）
+  //   ② 面板上要解释"这份是原件、那份是副本"，本身就是设计失败的信号
+  //   ③ 用户删了我们那份，Steam 那份还在 ⟹ 下次扫描它又冒出来
+  //
+  // ⟹ 改成移动，而"下次下载被跳过"那个风险用**下载前清 manifest** 兜。
+  // ⟹ 于是这条守卫从"禁止移动"翻成"**移动 + 必须有清 manifest 的兜底**"。
+  assert.match(src, /fs\.renameSync/,
+    '还在用复制 ⟹ 用户目录和 Steam 目录各一份（用户 0.9.28：「太离谱了」）');
+  // ⚠️ 而移动**必须**配清 manifest —— 否则下次下载 steamcmd 说"已是最新"
+  // 然后什么都不做，而它的退出码是 0、日志里有 Success ⟹ **静默失败**
+  // ⚠️ 用 `\b…\(` 锚住**定义**这个形状 —— 我第一版写 `/function clearWorkshopManifest/`
+  // 而把定义改名成 `…X` 后，**调用点**的 `clearWorkshopManifest()` 仍然匹配
+  // ⟹ 守卫绿着，而代码其实是坏的（调了不存在的函数）。
+  // ⟹ 教训：查"这个函数存在吗"要锚定义的完整形状，不是名字的子串。
+  assert.match(src, /function clearWorkshopManifest\s*\(\s*\)/,
+    '移走了内容却没有清 steamcmd 账本的函数 ⟹ 下次下载会被静默跳过'
+    + '（退出码 0 + 日志有 Success，而我们目录里没有新东西）');
+  // 而且要在**下载前**调
+  const dlAt = src.indexOf('const args = Workshop.downloadArgs');
+  assert.ok(dlAt > 0, '找不到下载入口');
+  const before = src.slice(Math.max(0, dlAt - 600), dlAt);
+  assert.match(before, /clearWorkshopManifest\(\)/,
+    'clearWorkshopManifest 定义了但没在下载前调用 ⟹ 等于没有');
+  // ⚠️ 跨卷（EXDEV）要退回复制 + 删源 —— 用户可能把 Steam 装在外置盘上
+  assert.match(src, /EXDEV/,
+    '没处理跨卷的 EXDEV ⟹ Steam 装在外置盘时 renameSync 直接失败'
+    + '（而那会退到"降级：仍从 Steam 目录装载"，用户又变成两份）');
   // ⚠️ 复制失败要**降级不报错**：文件已经在 Steam 目录里，装载仍然能看到画面
   const fnAt = src.indexOf('function importToOurDir');
   const fn = src.slice(fnAt, src.indexOf('\nfunction ', fnAt + 10));
@@ -3134,8 +3174,44 @@ check('目录列表只显示存在的 Steam 目录，且不重复列我们自己
   assert.match(dash, /autoReal\.length \? autoReal : autoAll\.slice\(0, 1\)/,
     '全都不存在时一行都不显示 ⟹ "没装 steamcmd"变成静默状态，'
     + '而用户会以为面板坏了');
-  assert.match(dash, /没找到 Steam 的下载目录/,
+  assert.match(dash, /没找到 steamcmd 的下载目录/,
     '没有"没装 steamcmd"那种情况的文案');
+  // ⚠️ 0.9.29 起下载内容会被**移走** ⟹ 那个目录**空着才是正常**。
+  // 而标黄的条件必须跟着反过来 —— 漏改的话正常状态一直显示警告色。
+  assert.match(dash, /if \(item\.exists && item\.found\) text\.style\.color/,
+    '标黄的条件没反过来 ⟹ "空的（正常）"会被标成警告色，'
+    + '而"还留着 N 个（搬运失败）"反而不标');
+});
+
+// ⚠️⚠️⚠️ **存量的两份也要能清。**
+//
+// 0.9.24-0.9.28 用的是**复制** ⟹ 用户机器上已经有两份了，
+// 而 0.9.29 改成移动**只对新下载生效** ⟹ 存量不会自己消失。
+//
+// 用户 2026-08-01：「那不就是自动两份，太离谱了」
+// ⟹ 只改新下载不够，要给存量一条出路。
+check('存量的 Steam 副本能一键搬走', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function importExistingFromSteam\s*\(\s*\)/,
+    '没有整理存量的函数 ⟹ 0.9.28 之前下载的壁纸永远是两份');
+  assert.match(src, /ipcMain\.handle\('import-existing-from-steam'/,
+    'IPC 没注册 ⟹ 面板调不到（这个项目栽过"写了函数但没接线"好几次）');
+  // ⚠️ 我们目录已有同 ID 时**只删源，不覆盖** —— 用户可能改过里面的属性/文件
+  assert.match(src, /removed-duplicate/,
+    '没有"我们已有这个 ID ⟹ 只删源"的分支 ⟹ 会覆盖用户改过的那份');
+  // ⚠️ 搬完要清账本（内容不在了，账本还记着"已下载"会让下次下载被跳过）
+  const fnAt = src.indexOf('function importExistingFromSteam');
+  const fn = src.slice(fnAt, src.indexOf('\nipcMain', fnAt));
+  assert.match(fn, /clearWorkshopManifest\(\)/,
+    '整理存量后没清 steamcmd 账本 ⟹ 下次下载会被静默跳过');
+  // 面板要有按钮，而且只在**有残留时**出现
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /importExistingFromSteam/, '面板没有触发入口');
+  assert.match(dash, /if \(item\.exists && item\.found\) \{[\s\S]{0,400}?搬到我的壁纸目录/,
+    '「搬到我的壁纸目录」按钮不是只在有残留时出现 ⟹ 目录空着也显示一个没用的按钮');
+  // ⚠️ 搬完必须刷新列表 —— 否则用户看到按钮变字但路径行没变，以为没生效
+  assert.match(dash, /await renderMine\(\)/,
+    '搬完没刷新列表 ⟹ "做了但用户看不到"（这个项目栽过六次）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

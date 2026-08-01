@@ -113,6 +113,8 @@ contextBridge.exposeInMainWorld('gw', {
   // 之前面板上连路径都只是纯文本。
   revealWallpaperDir: (dir) => ipcRenderer.invoke('reveal-wallpaper-dir', dir),
   ourWallpaperDir: () => ipcRenderer.invoke('our-wallpaper-dir'),
+  // 把已经在 Steam 目录里的工坊壁纸搬进我们目录（清 0.9.24-0.9.28 留下的两份）
+  importExistingFromSteam: () => ipcRenderer.invoke('import-existing-from-steam'),
   onWorkshopProgress: on('workshop-progress'),
   onMouseStatus: on('mouse-status'),
   onVideoStatus: on('video-status'),

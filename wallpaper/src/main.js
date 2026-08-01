@@ -2011,6 +2011,17 @@ ipcMain.handle('workshop-download', async (_event, input) => {
     return { ok: false, error: '先填 Steam 用户名（工坊物品要登录才能下）', needsLogin: true };
   }
 
+  // ⚠️⚠️ **下载前清 steamcmd 的账本** —— 因为我们把下载内容移走了。
+  //
+  // 不清的话 steamcmd 会说"已是最新"然后什么都不做，而它的退出码是 0、
+  // 日志里有 Success ⟹ **静默失败**：用户看到"下载成功"但目录里没新东西。
+  // ⟹ 见 clearWorkshopManifest() 上面那段。
+  const clearedAcf = clearWorkshopManifest();
+  if (clearedAcf.length) {
+    logEvent('workshop', `已清 steamcmd 下载记录（我们把内容移走了，不清会被跳过）`,
+      { cleared: clearedAcf });
+  }
+
   const args = Workshop.downloadArgs({
     username: creds.username,
     password: creds.password,
@@ -2285,25 +2296,31 @@ function ourWallpaperDir() {
 //
 // ⚠️ 空目录对用户是没有信息的 —— 他不知道往里放什么、什么格式认得出来。
 // 而"放了一堆 mp4 结果认不出来"是这个产品最容易撞的墙（每个子目录要有 project.json）。
-// 把工坊下载的目录**搬进我们统一的壁纸目录**。
+// 把工坊下载的目录**移进我们统一的壁纸目录**。
 //
 // ⚠️⚠️ 为什么必须搬：steamcmd 的下载位置是**它自己定的、不可配** ——
 //   `~/Library/Application Support/Steam/steamapps/workshop/content/431960/<ID>/`
-// 而用户的要求是「统一都在 Documents/GestureWall/Wallpapers」（2026-08-01）：
-//   「创意工坊的壁纸下载，和默认加载都应该是这样」
+// 而用户的要求是「统一都在 Documents/GestureWall/Wallpapers」。
 //
-// ⟹ 不搬的话有两个后果：
-//   ① 「我的壁纸」列表里看不到刚下载的（它扫的是 Documents 那个目录）
-//   ② 用户从 Finder 打开壁纸目录，找不到自己下的东西
-//      —— 而 Steam 那个路径在「资源库」里，Finder 默认不显示
+// ⚠️⚠️⚠️ **0.9.29 起是移动，不是复制。**
 //
-// ⚠️ **用复制而不是移动**：Steam 目录是 steamcmd 的账本，
-// 移走它会让下次 `workshop_download_item` 认为"已下载"却找不到文件
-//（steamcmd 有自己的 manifest）⟹ 那种状态很难恢复，只能手动清 appworkshop_*.acf。
-// 复制的代价是磁盘占用翻倍，而壁纸通常几十 MB —— 值得。
+// 0.9.24 我用的是 `cpSync`（复制），理由是"Steam 目录是 steamcmd 的账本，
+// 移走会让下次下载认为已下载却找不到文件"。而用户 0.9.28 实测后说：
+//   「那不就是自动两份，太离谱了」
 //
-// ⚠️ 目录名带工坊 ID：`<ID>-<标题>`。只用标题会撞名（很多壁纸叫"时钟"），
-// 而只用 ID 用户在 Finder 里认不出来是哪个。
+// 他说得对 —— **那个理由不足以让用户接受两份**：
+//   ① 磁盘占用翻倍，而壁纸可以到几百 MB
+//   ② 面板上要解释"这份是原件、那份是副本"，本身就是设计失败的信号
+//   ③ 用户删了我们目录那份，Steam 那份还在 ⟹ 下次扫描它又冒出来
+//
+// ⟹ 改成 `renameSync`（移动）+ **删掉 Steam 那边的空壳目录**。
+//
+// ⚠️ 而"下次下载被跳过"这个风险是真的（`appworkshop_431960.acf` 记着
+// "已下载了哪些物品"）⟹ 用**下载前先删 manifest 条目**来兜：
+// 见 `clearWorkshopManifest()`。那样 steamcmd 每次都真的重下。
+//
+// ⚠️ `renameSync` 跨卷会失败（`EXDEV`）—— Steam 目录和 Documents 通常同卷，
+// 但用户可能把 Steam 装在外置盘上 ⟹ 失败时退回"复制 + 删源"。
 function importToOurDir(srcDir, workshopId, title) {
   const root = ensureOurWallpaperDir();
   // 标题可能含 / : 等在文件名里非法的字符，也可能是空的
@@ -2316,16 +2333,62 @@ function importToOurDir(srcDir, workshopId, title) {
   const dest = path.join(root, name);
   try {
     // ⚠️ 已存在就先删 —— 重新下载同一个物品时要拿到新内容，
-    // 而 cpSync 遇到同名文件不会覆盖目录结构里的残留（旧资产会留下）。
+    // 而 rename 到已存在的目录会失败（ENOTEMPTY）。
     if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
-    // recursive + 保留时间戳。Node 16.7+ 有 cpSync。
-    fs.cpSync(srcDir, dest, { recursive: true });
+    try {
+      fs.renameSync(srcDir, dest);
+    } catch (err) {
+      // ⚠️ 跨卷（EXDEV）⟹ rename 不行，退回复制 + 删源。
+      // 判 code 而不是判消息 —— 消息随系统语言变。
+      if (err && err.code === 'EXDEV') {
+        fs.cpSync(srcDir, dest, { recursive: true });
+        fs.rmSync(srcDir, { recursive: true, force: true });
+      } else {
+        throw err;
+      }
+    }
+    // ⚠️ 顺手清掉 Steam 那边留下的**空壳目录**（rename 之后 <ID>/ 就不在了，
+    // 但它的父目录 content/431960/ 可能只剩空壳）。
+    // 不清的话面板上那行会报"目录在，但里面没有壁纸"—— 那是噪声。
+    try {
+      const parent = path.dirname(srcDir);
+      if (fs.existsSync(parent) && fs.readdirSync(parent).length === 0) {
+        fs.rmdirSync(parent);
+      }
+    } catch (e) { /* 清不掉不影响功能 */ }
     return { ok: true, dir: dest };
   } catch (err) {
-    // ⚠️ 搬失败不能让整个下载算失败 —— 文件已经在 Steam 目录里了，
+    // ⚠️ 搬失败不能让整个下载算失败 —— 文件还在 Steam 目录里，
     // 直接用那个路径装载仍然能看到画面。**降级而不是报错。**
     return { ok: false, error: String(err && err.message ? err.message : err) };
   }
+}
+
+// 下载前清掉这个物品在 steamcmd 账本里的记录。
+//
+// ⚠️⚠️ 为什么需要：我们把下载的内容**移走**了（见 importToOurDir），
+// 而 steamcmd 的 `appworkshop_431960.acf` 仍记着"已下载物品 <ID>，版本 X"
+// ⟹ 下次下载同一个物品时它会说"已是最新"然后**什么都不做**
+// ⟹ 用户看到"下载成功"但我们目录里没有新东西。
+//
+// ⚠️ 那是个**静默失败**：steamcmd 的退出码是 0、日志里有 Success。
+// ⟹ 所以不能靠"出问题再说"，必须每次下载前主动清。
+//
+// ⚠️ 做法是删整个 acf 而不是解析它 —— acf 是 Valve 的私有格式（类 VDF），
+// 手写解析器去改一个条目，风险比重新下载所有物品高得多。
+// 而删掉它的代价只是"steamcmd 忘记了下载历史"，而那正是我们要的。
+function clearWorkshopManifest() {
+  const cleared = [];
+  for (const root of Workshop.STEAM_ROOTS) {
+    const acf = path.join(root, 'steamapps', 'workshop', `appworkshop_${Workshop.WE_APP_ID}.acf`);
+    try {
+      if (fs.existsSync(acf)) {
+        fs.rmSync(acf, { force: true });
+        cleared.push(acf);
+      }
+    } catch (e) { /* 删不掉就算了，下载还是会跑 */ }
+  }
+  return cleared;
 }
 
 function ensureOurWallpaperDir() {
@@ -2364,6 +2427,67 @@ function ensureOurWallpaperDir() {
     return dir;
   }
 }
+
+// 把**已经存在于 Steam 目录**的工坊壁纸搬进我们目录。
+//
+// ⚠️ 为什么需要：0.9.24-0.9.28 用的是复制 ⟹ 用户机器上已经有两份了。
+// 而 0.9.29 改成移动只对**新下载**生效 ⟹ 存量的两份不会自己消失。
+//
+// ⟹ 扫描 Steam 目录，把每个工坊壁纸搬过来（我们目录已有同 ID 的就只删源）。
+// 用户 2026-08-01：「那不就是自动两份，太离谱了」—— 存量也得清。
+function importExistingFromSteam() {
+  const root = ensureOurWallpaperDir();
+  const moved = [];
+  const failed = [];
+  // 我们目录里已有哪些工坊 ID（目录名开头的数字）
+  const have = new Set();
+  try {
+    for (const name of fs.readdirSync(root)) {
+      const m = name.match(/^(\d{6,})/);
+      if (m) have.add(m[1]);
+    }
+  } catch (e) { /* 目录刚建、读不到都不影响 */ }
+
+  for (const steamRoot of Workshop.STEAM_ROOTS) {
+    const content = path.join(steamRoot, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID);
+    let entries = [];
+    try { entries = fs.readdirSync(content); } catch (e) { continue; }
+    for (const id of entries) {
+      if (!/^\d{6,}$/.test(id)) continue;
+      const srcDir = path.join(content, id);
+      try { if (!fs.statSync(srcDir).isDirectory()) continue; } catch (e) { continue; }
+      // ⚠️ 我们已经有这个 ID 了 ⟹ **只删源**，别覆盖用户目录里那份
+      //（他可能已经改过里面的属性/文件）。
+      if (have.has(id)) {
+        try {
+          fs.rmSync(srcDir, { recursive: true, force: true });
+          moved.push({ id, action: 'removed-duplicate' });
+        } catch (err) {
+          failed.push({ id, error: String(err && err.message ? err.message : err) });
+        }
+        continue;
+      }
+      // 读标题给目录起名（失败就只用 ID）
+      let title = '';
+      try {
+        const pj = JSON.parse(fs.readFileSync(path.join(srcDir, 'project.json'), 'utf8'));
+        title = pj && typeof pj.title === 'string' ? pj.title : '';
+      } catch (e) { title = ''; }
+      const r = importToOurDir(srcDir, id, title);
+      if (r.ok) { moved.push({ id, action: 'moved', dir: r.dir }); have.add(id); }
+      else failed.push({ id, error: r.error });
+    }
+  }
+  // ⚠️ 搬完清账本 —— 内容不在了，账本还记着"已下载"会让下次下载被跳过
+  if (moved.length) clearWorkshopManifest();
+  return { moved, failed };
+}
+
+ipcMain.handle('import-existing-from-steam', () => {
+  const r = importExistingFromSteam();
+  logEvent('workshop', `整理存量：搬了 ${r.moved.length} 个，失败 ${r.failed.length} 个`, r);
+  return { ok: true, ...r };
+});
 
 ipcMain.handle('workshop-local', () => {
   // 我们自己的目录 + steamcmd 的下载目录 + 用户自己加的目录。
