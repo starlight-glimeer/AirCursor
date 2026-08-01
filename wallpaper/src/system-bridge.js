@@ -104,7 +104,13 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
         trusted,
         ...(trusted
           ? {}
-          : { state: "untrusted", detail: "缺少辅助功能权限：点击不会生效，请在系统设置里勾选后重启 AirCursor" }),
+          // ⚠️ 这句里原来写「重启 AirCursor」—— 0.9.73 改成 GestureWall。
+          // 用户装的应用就叫那个，而 AirCursor 是**上游项目**的名字 ——
+          // 让他去重启一个不存在的应用是纯误导。
+          // ⚠️ 而 `AirCursorPointer` / `AirCursorVoice`（helper 的二进制名）
+          //   **不能改** —— 系统授权列表里显示的就是那些，改了用户找不到。
+          //   ⟹ 判据：**"对外的称呼"可以改，"系统里的真实标识"不能。**
+          : { state: "untrusted", detail: "缺少辅助功能权限：点击不会生效，请在系统设置里勾选后重启 GestureWall" }),
       });
     }
     return trusted;

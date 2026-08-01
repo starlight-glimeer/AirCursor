@@ -58,7 +58,7 @@ if (!(PALM_FLOOR_FRACTION > 0.01 && PALM_FLOOR_FRACTION < 0.15)) {
   // 启动时就炸，而不是等手势不响。上游改了下限就必须重新想 FILTER_SPACE。
   throw new Error(
     `掌宽下限占屏宽 ${(PALM_FLOOR_FRACTION * 100).toFixed(1)}%，超出合理区间 ——`
-    + ` AirCursor 的 PALM_WIDTH_FLOOR_PX 变成 ${Pose.PALM_WIDTH_FLOOR_PX} 了，`
+    + ` 上游 vendor（AirCursorPose）的 PALM_WIDTH_FLOOR_PX 变成 ${Pose.PALM_WIDTH_FLOOR_PX} 了，`
     + ' FILTER_SPACE 要跟着调');
 }
 

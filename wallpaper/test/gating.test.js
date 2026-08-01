@@ -5401,4 +5401,66 @@ check('rAF 回调：引用的变量都有声明 + 异常不会静默吞掉', () 
     'catch 里没写到那个固定落点 ⟹ 流式日志会把它冲掉');
 });
 
+// ⚠️⚠️ **用户可见的文案里不许出现 "AirCursor"**（0.9.73）。
+// 用户 2026-08-01：仓库和产品都叫 GestureWall 了，而手势那块的文案还写着
+// 「用的是 AirCursor 那套滤波器」、错误提示还说「请重启 AirCursor」——
+// **让用户去重启一个不存在的应用是纯误导。**
+//
+// ⚠️⚠️ 但**不是所有 AirCursor 都能改**，这是这条守卫的关键：
+//   · `AirCursorPointer` / `AirCursorVoice` —— **真实的 helper 二进制名**
+//     （native/AirCursorVoice.swift），macOS 授权列表里显示的就是那个
+//     ⟹ 文案里必须保留原名，否则用户找不到要授权的东西
+//   · `AirCursorPose` / `AirCursorMotion` / `AirCursorTracking` ——
+//     **vendor 的全局命名空间**，改了就是改上游代码
+//   · `vendor/aircursor/` —— 目录名
+//
+// ⟹ 判据：**代码里的名字分"对外的称呼"和"系统里的真实标识"**，
+//    前者该跟着产品名走，后者改了就和现实脱节。
+check('用户可见的文案不写上游项目名（但真实标识符要保留）', () => {
+  const files = ['src/dashboard.html', 'src/system-bridge.js', 'src/input.js',
+    'src/main.js', 'src/dashboard.js'];
+  // 允许出现的：真实的二进制名 / vendor 命名空间 / 目录名
+  const ALLOWED = /AirCursor(?:Pointer|Voice|VoiceInfo|Pose|Motion|Tracking)|vendor\/aircursor|aircursor-helper/;
+
+  for (const rel of files) {
+    const raw = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    // 剥注释 —— 注释里讲历史是应该的（"这里原来写 AirCursor…"）
+    const code = rel.endsWith('.html')
+      ? raw.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      : codeOnly(raw);
+    for (const m of code.matchAll(/AirCursor\w*/g)) {
+      assert.ok(ALLOWED.test(m[0]),
+        `${rel} 里有裸的 "${m[0]}" ⟹ 那是上游项目名，用户没见过它。`
+        + '（而 AirCursorPointer/Voice 是真实的 helper 二进制名，Pose/Motion/Tracking'
+        + ' 是 vendor 的命名空间 —— 那些必须保留）');
+    }
+  }
+
+  // ⚠️ 反过来：那两个**真实标识符必须还在** —— 改掉它们的话
+  //   用户在授权列表里找不到对应的项（而那是"授权了但没生效"的成因）。
+  // ⚠️⚠️ 守的是"**代码里的名字和磁盘上的文件名一致**"，
+  //   而不是"某个字符串在不在"（第一版用 includes ⟹ 那个名字在文件里有 4 处，
+  //   改掉一处照样绿 —— 反向验证第 3 条：报红 0，"锚点太弱"第 11 次）。
+  //
+  // ⚠️ 判据的实质：helper 的二进制名是**跨越代码和系统的契约** ——
+  //   我们编译出 `AirCursorPointer`，macOS 的授权列表里显示 `AirCursorPointer`，
+  //   而面板上告诉用户去找 `AirCursorVoice`。三者任何一处不一致，
+  //   症状都是"授权了但没生效"（而这个项目在那上面栽过）。
+  const bridge = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  const nativeDir = path.join(__dirname, '..', '..', 'native');
+  for (const name of ['AirCursorPointer', 'AirCursorVoice']) {
+    // ① 磁盘上真有那个 .swift
+    assert.ok(fs.existsSync(path.join(nativeDir, `${name}.swift`)),
+      `native/${name}.swift 不存在 ⟹ 编译会失败`);
+    // ② 代码里**用它编译**（不只是提到）—— 那是名字真正生效的地方
+    assert.match(bridge, new RegExp(`['"\`]${name}['"\`]`),
+      `system-bridge.js 没有用 "${name}" 编译 helper ⟹ 编译出来的二进制名会变，`
+      + '而 macOS 授权列表里显示的就是那个名字（用户会找不到要授权的项）');
+    // ③ 而 .swift 的路径也要指向同名文件
+    assert.match(bridge, new RegExp(`${name}\\.swift`),
+      `system-bridge.js 里的源文件路径不是 ${name}.swift`);
+  }
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
