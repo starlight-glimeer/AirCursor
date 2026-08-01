@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 TAG="${1:-gesture-ok}"
-git rev-parse "$TAG" >/dev/null 2>&1 || { echo "❌ 找不到 $TAG，先 git fetch --tags"; exit 1; }
+git rev-parse "$TAG" >/dev/null 2>&1 || { echo "❌ 找不到 ${TAG}，先 git fetch --tags"; exit 1; }
 
 FILES=(
   wallpaper/src/input.js

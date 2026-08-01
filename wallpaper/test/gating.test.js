@@ -3729,4 +3729,47 @@ check('shell 脚本：set -e 下的 ls 赋值要有 || true（否则静默退出
     + '    ⟹ 加 `|| true`，让"失败"靠后面的 if 判空来处理');
 });
 
+// ⚠️⚠️⚠️ **`$VAR` 紧跟中文字符 = `unbound variable`（bash -n 查不出）。**
+//
+// 用户 2026-08-01 真机，两个脚本同时挂在这上面：
+//     build-mac.sh: line 120: APP?: unbound variable
+//     install-dmg.sh: line 93: DEST?: unbound variable
+//
+// 原文是：
+//     echo "② 覆盖 $DEST（先删旧的 …）"
+//     echo "--- ⚠️ 未打包的 .app 也在（$APP）---"
+//
+// ⟹ bash 读变量名时**不认多字节字符的边界** —— 它把 `（`（UTF-8 三字节）
+//    的首字节吞进变量名 ⟹ 变量名变成 `DEST?` ⟹ `set -u` 报 unbound。
+//
+// ⚠️⚠️ 而这类错 **`bash -n` 查不出**（语法是合法的）——
+// 只有**真跑**才暴露，而我在云端跑不了完整脚本（没有 dmg / 没有 /Applications）。
+// ⟹ 这正是"云端只能靠守卫兜"的又一类，和 Swift 那两个坑同性质。
+//
+// ⚠️ 顺带扫出 `restore-gestures.sh` 也有一处（`$TAG，`）——
+// **那是恢复手势的救命脚本**，而它挂掉的时机正好是"手势文件已经被覆盖"的时候。
+//
+// ⟹ 规则：**`$VAR` 后面接非 ASCII 一律写成 `${VAR}`。**
+check('shell 里 $VAR 紧跟中文要用 ${VAR}（否则 unbound variable）', () => {
+  const dir = path.join(__dirname, '..', 'scripts');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.sh'))) {
+    const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (line.trim().startsWith('#')) return;
+      // `$NAME` 紧跟非 ASCII（没有 {} 保护）
+      const re = /\$([A-Za-z_][A-Za-z0-9_]*)([^\x00-\x7f])/g;
+      let m = re.exec(line);
+      while (m) {
+        bad.push(`${f}:${i + 1} $${m[1]}${m[2]} ⟹ 写成 \${${m[1]}}`);
+        m = re.exec(line);
+      }
+    });
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些地方 bash 会把中文字符的首字节吞进变量名：\n    ${bad.join('\n    ')}\n`
+    + '    ⟹ `set -u` 下报 `unbound variable`，而**`bash -n` 查不出**（语法合法）\n'
+    + '    ⟹ 只有真跑才暴露，而云端跑不了完整脚本 ⟹ 只能靠这条守卫');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
