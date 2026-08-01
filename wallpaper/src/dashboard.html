@@ -418,6 +418,17 @@
       <div id="rotate-hint" class="hint" style="font-size:11px;margin-top:6px"></div>
     </div>
 
+    <!-- ⚠️ 音频那一整块搬进「开发者选项」了（五个音源按钮 + 频谱数值 + helper 日志），
+         但**"壁纸能不能跟着音乐动"是 2C 用户要的** ⟹ 在这里留一个开关。
+         它映射到 `全系统` / `关`（那两个是普通用户唯一会用的两种）。 -->
+    <div class="card" id="audio-simple">
+      <div class="toggle">
+        <input type="checkbox" id="audioFollow">
+        <label for="audioFollow">让壁纸跟着音乐动</label>
+      </div>
+      <div id="audio-simple-hint" class="hint" style="font-size:11px;margin-top:6px"></div>
+    </div>
+
     <div id="mine-grid" class="ws-grid"></div>
       <!-- ⚠️⚠️ 这里原来有一段写死的说明（steamcmd 自动扫 + 两条约束），删了。
            用户 2026-08-01 指出它和 renderMineDirs 生成的内容**重复显示**
@@ -447,6 +458,44 @@
       （下载后的确认列表，没有筛选/排序/打开目录）。删旧留新。
        ⟹ 那是我把四块从「创意工坊」搬过来时造成的重复：搬之前它们在两个页签里，
        各自看起来都合理。**搬动之后要重新审有没有重复**，我漏了这一步。 -->
+    <h3>壁纸自己的参数</h3>
+    <div class="card">
+      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
+    </div>
+
+    <!-- ╔═══════════════════════════════════════════════════════════════════╗
+         ║  DEV-PANEL-START  —— 开发者/诊断模块（产品问世时整块删掉）        ║
+         ╚═══════════════════════════════════════════════════════════════════╝
+
+         用户 2026-08-01：
+           「你的设计太 dashboard 了，我们是一个 2C 的产品」
+           「你可以把开发者的东西全部聚合成一个控制面板模块，
+             最后产品问世了，把这个模块直接撤掉就行」
+
+         **他说得对** —— 我一直在加「能观测的东西」，而那是给我自己用的。
+         一个 2C 用户要选壁纸，而我给了他：壁纸层策略（三个他不认识的词）、
+         鼠标转发开关（不转发壁纸就点不动 —— 那不该是选项）、Finder 门
+         （文案自己写着「开了会挡掉大部分点击」）、音源五个按钮（含单段扫描
+         和合成测试音，纯诊断工具）、频谱数值/钟点/孤峰/帧节奏、helper 日志。
+
+         ⚠️ 但那些观测**不能删** —— 它们是这几十轮唯一的调试手段
+         （用户报症状 → 面板给数字）。删了下次出问题又回到「我猜」，
+         而这一轮我因为猜错烧掉的轮次很清楚。
+
+         ⟹ **物理隔离**：这两个 marker 之间就是全部。撤掉时：
+              ① 删掉 marker 之间的 HTML
+              ② 删掉 dashboard.js 里 DEV-PANEL 那一段
+              ③ 删掉 dashboard.html 里 .dev-* 的 CSS
+            守卫（gating.test.js）查这三处的对应关系，漏一处会报红。 -->
+    <div id="dev-panel-wrap" style="margin-top:18px">
+      <button class="act" id="dev-toggle" type="button"
+              style="font-size:11px;opacity:.6">▸ 开发者选项</button>
+      <div id="dev-panel" hidden>
+        <p class="hint" style="font-size:11px;margin:10px 0 0">
+          ⚠️ 这些是<b>诊断用</b>的，正常使用不需要碰。
+          出问题时打开它、把里面的数字发给开发者。
+        </p>
+
 <h3>壁纸层</h3>
     <div class="card">
       <div id="we-strategy" class="we-src"></div>
@@ -503,10 +552,12 @@
       </p>
     </div>
 
-    <h3>壁纸自己的参数</h3>
-    <div class="card">
-      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
+      </div>
     </div>
+    <!-- ╔═══════════════════════════════════════════════════════════════════╗
+         ║  DEV-PANEL-END                                                    ║
+         ╚═══════════════════════════════════════════════════════════════════╝ -->
+
   </section>
 
   <!-- ============ WE 网页壁纸 ============ -->

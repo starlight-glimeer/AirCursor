@@ -923,6 +923,34 @@ window.gw.onCaptureSaved((payload) => {
 // WE 网页壁纸
 // ---------------------------------------------------------------------------
 
+// ⚠️⚠️ **2C 区的那个「让壁纸跟着音乐动」开关**（0.9.44）。
+//
+// 用户 2026-08-01：「你的设计太 dashboard 了，我们是一个 2C 的产品」
+// ⟹ 五个音源按钮（含单段扫描、合成测试音）搬进了开发者选项，
+//    而"壁纸能不能跟着音乐动"是普通用户真正要的那一件事。
+//
+// ⚠️ 它只映射两个值：`system`（跟随）和 `off`（不跟随）——
+// 那是普通用户唯一会用的两种。若当前是 `netease`/`sweep`/`synth`
+//（开发者在开发者选项里选的），开关显示成"开"但**不去改它** ——
+// 否则用户一进面板就把开发者的设置改掉了。
+function renderAudioSimple() {
+  const box = document.getElementById('audioFollow');
+  const hint = document.getElementById('audio-simple-hint');
+  if (!box) return;
+  const src = (config.we && config.we.audioSource) || 'off';
+  box.checked = src !== 'off';
+  // ⚠️ 非 system 的"开"要说清 —— 否则用户看到开关是开的、
+  // 而行为和他预期不同（比如 synth 是假频谱），会以为坏了。
+  if (src === 'off') {
+    hint.textContent = '关着 —— 壁纸里的频谱/波形不会动';
+  } else if (src === 'system') {
+    hint.textContent = '跟随电脑正在放的声音';
+  } else {
+    const label = (AUDIO_SOURCES.find((x) => x.id === src) || {}).label || src;
+    hint.innerHTML = `当前音源是<b>${label}</b>（在开发者选项里选的）`;
+  }
+}
+
 const AUDIO_SOURCES = [
   { id: 'netease', label: '网易云', hint: '只抓网易云的声音（需 macOS 14.4+，要屏幕录制授权）' },
   { id: 'system', label: '全系统', hint: '整台机器的输出，要屏幕录制授权' },
@@ -1885,6 +1913,7 @@ async function renderMine() {
   // ⚠️ 轮播那块和网格是同一份数据（列表里的路径要和卡片对上）
   // ⟹ 一起刷新，否则"加入列表"之后计数不变
   renderRotate();
+  renderAudioSimple();
   const state = document.getElementById('mine-state');
   const grid = document.getElementById('mine-grid');
   const result = await window.gw.workshopLocal();
@@ -2109,6 +2138,38 @@ async function setRotate(patch) {
 }
 
 // ⚠️ 三个控件都走 `setRotate` —— 各写一遍 patch 必然漏一个字段。
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║  DEV-PANEL-START —— 开发者模块的开关（产品问世时整块删掉）             ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+//
+// 用户 2026-08-01：「你可以把开发者的东西全部聚合成一个控制面板模块，
+// 最后产品问世了，把这个模块直接撤掉就行」
+//
+// ⟹ 撤掉时删三处：这一段、dashboard.html 里 DEV-PANEL marker 之间的 HTML、
+//    以及 .dev-* 的 CSS。守卫（gating.test.js）查这三处的对应关系。
+//
+// ⚠️ 状态**不落配置** —— 那是个调试开关，不该在 config.json 里留痕迹
+// （撤掉模块之后配置里还有个孤儿字段，而下一个人不知道它是干什么的）。
+// ⟹ 每次开面板默认收起。
+(() => {
+  const toggle = document.getElementById('dev-toggle');
+  const panel = document.getElementById('dev-panel');
+  if (!toggle || !panel) return;
+  toggle.onclick = () => {
+    panel.hidden = !panel.hidden;
+    toggle.textContent = panel.hidden ? '▸ 开发者选项' : '▾ 开发者选项';
+  };
+})();
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║  DEV-PANEL-END                                                        ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+
+// ⚠️ 只在两个值之间切 —— 见 renderAudioSimple 上面那段。
+document.getElementById('audioFollow').onchange = async (e) => {
+  await window.gw.weSetAudioSource(e.target.checked ? 'system' : 'off');
+  renderAudioSimple();
+};
+
 document.getElementById('rotateOn').onchange = (e) =>
   setRotate({ on: e.target.checked });
 // ⚠️ 用 change 而不是 input —— input 会在用户还在敲的时候就触发

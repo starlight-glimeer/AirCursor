@@ -3920,4 +3920,81 @@ check('轮播：列表存路径 / 手动不打断 / 少于2个不起 / 失败不
     '「下一张」改了开关状态 ⟹ "点一下就把轮播开了/关了"是意外行为');
 });
 
+// ⚠️⚠️⚠️ **开发者模块必须能整块撤掉（0.9.44）。**
+//
+// 用户 2026-08-01：
+//   「你的设计太 dashboard 了，我们是一个 2C 的产品」
+//   「你可以把开发者的东西全部聚合成一个控制面板模块，
+//     最后产品问世了，把这个模块直接撤掉就行」
+//
+// **他说得对** —— 我一直在加"能观测的东西"，而那是给我自己用的。
+// 一个 2C 用户要选壁纸，而「我的壁纸」这一屏给了他：
+//   壁纸层策略（真壁纸层/压最底/悬浮 —— 三个他不认识的词）
+//   转发鼠标 + 「只在桌面被聚焦时转发」（文案自己写着「开了会挡掉大部分点击」）
+//   mouse-state 诊断（「已转发 N · 页面收到 mousedown x」）
+//   音源五个按钮（含单段扫描、合成测试音 —— 纯诊断工具）
+//   频谱数值 / 钟点 / 孤峰 / 帧节奏 / helper 日志
+//
+// ⚠️ 但那些**不能删** —— 它们是这几十轮唯一的调试手段（用户报症状 → 面板给数字）。
+// ⟹ **物理隔离**成一个模块，撤掉时删三处（HTML marker 之间、JS 那一段、CSS）。
+check('开发者模块物理隔离，能整块撤掉', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ⚠️ 三处都要有配对的 marker —— 少一处的话"撤掉"就变成"到处找"
+  for (const [name, text] of [['dashboard.html', html], ['dashboard.js', dash]]) {
+    const starts = (text.match(/DEV-PANEL-START/g) || []).length;
+    const ends = (text.match(/DEV-PANEL-END/g) || []).length;
+    assert.strictEqual(starts, 1, `${name} 里 DEV-PANEL-START 有 ${starts} 个（要 1 个）`);
+    assert.strictEqual(ends, 1, `${name} 里 DEV-PANEL-END 有 ${ends} 个（要 1 个）`);
+    assert.ok(text.indexOf('DEV-PANEL-START') < text.indexOf('DEV-PANEL-END'),
+      `${name} 里 marker 顺序反了`);
+  }
+
+  // ⚠️⚠️ **诊断元素必须全在 marker 之间** —— 散在外面的话撤掉模块会留下
+  // 孤儿元素，而 `getElementById` 拿到 null 就是 `null.onclick` 崩溃
+  // （这个项目为"删 UI 留调用"栽过三次）。
+  const devStart = html.indexOf('DEV-PANEL-START');
+  const devEnd = html.indexOf('DEV-PANEL-END');
+  const devHtml = html.slice(devStart, devEnd);
+  const outside = html.slice(0, devStart) + html.slice(devEnd);
+  for (const id of ['we-strategy', 'mouseForward', 'mouseGateFinder', 'mouse-state',
+    'we-audio-source', 'we-audio-frame', 'audio-log']) {
+    assert.ok(devHtml.includes(`id="${id}"`),
+      `诊断元素 ${id} 不在开发者模块里 ⟹ 撤掉模块时它会留下（或者被漏掉）`);
+    assert.ok(!outside.includes(`id="${id}"`),
+      `诊断元素 ${id} 在模块外面也有一份 ⟹ 重复显示`);
+  }
+
+  // ⚠️ 而 2C 要的那些**不能**在模块里 —— 撤掉模块不该带走核心功能
+  const htmlNoComment = html.replace(/<!--[\s\S]*?-->/g, '');
+  const devHtmlNoComment = devHtml.replace(/<!--[\s\S]*?-->/g, '');
+  for (const id of ['mine-dirs', 'mine-grid', 'rotateOn', 'audioFollow']) {
+    assert.ok(htmlNoComment.includes(`id="${id}"`), `${id} 不见了`);
+    assert.ok(!devHtmlNoComment.includes(`id="${id}"`),
+      `${id} 被放进开发者模块了 ⟹ 撤掉模块会带走 2C 功能`);
+  }
+
+  // ⚠️ **默认收起** —— 否则"聚合"了但用户还是一眼看到全部
+  assert.match(devHtml, /id="dev-panel" hidden/,
+    '开发者面板默认展开 ⟹ 聚合了但没收起，2C 用户还是一眼看到全部');
+
+  // ⚠️ 状态不落配置 —— 撤掉模块后 config.json 里会留个孤儿字段，
+  // 而下一个人不知道它是干什么的
+  const jsDevStart = dash.indexOf('DEV-PANEL-START');
+  const jsDevEnd = dash.indexOf('DEV-PANEL-END');
+  const jsDev = dash.slice(jsDevStart, jsDevEnd);
+  assert.ok(!/weSet|writeConfig|config\.we\./.test(jsDev),
+    '开发者开关的状态落进了配置 ⟹ 撤掉模块后 config.json 里留下孤儿字段');
+
+  // ⚠️ 「让壁纸跟着音乐动」只能在 system/off 之间切 —— 它是 2C 的简化入口，
+  // 而开发者可能在开发者选项里选了 netease/synth ⟹ 不该被这个开关改掉
+  // ⚠️ 锚在 **onchange 那一处**，不是 `getElementById('audioFollow')` ——
+  // 那个字符串在 `renderAudioSimple` 里也有（而且更靠前）
+  // ⟹ `indexOf` 找到读取那处，切片里当然没有 system/off
+  // ⟹ **在正确代码上报红**（这一轮第二次"锚点撞名"，上一次是 spikes:）。
+  assert.match(dash, /audioFollow'\)\.onchange[\s\S]{0,200}?'system' : 'off'/,
+    '2C 的音频开关不是在 system/off 之间切 ⟹ 那是普通用户唯一会用的两种');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
