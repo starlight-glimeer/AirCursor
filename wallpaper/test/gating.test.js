@@ -5679,6 +5679,32 @@ check('ad-hoc 签名在；应用信息不写上游项目名', () => {
     'ad-hoc 签名不在了 ⟹ 用户双击会看到「已损坏」而不是「身份不明的开发者」，'
     + '而前者会让他以为文件下载坏了');
 
+  // ⚠️⚠️⚠️ **ad-hoc 签名必须配 `hardenedRuntime: false`**（0.9.79）。
+  //
+  // 用户 0.9.78 那次打包，electron-builder 报了：
+  //   「ad-hoc signing with hardenedRuntime enabled requires the
+  //     com.apple.security.cs.disable-library-validation entitlement
+  //     to prevent **app launch failures** due to library validation」
+  //
+  // ⚠️ `hardenedRuntime` **默认是 true**（electron-builder 的默认值）——
+  //   而它开着 + ad-hoc 签名 ⟹ **library validation 会拦住动态库**
+  //   ⟹ 应用**可能打不开**。而我们 `.app` 里有 electron 的一堆 .dylib
+  //     和四个独立的 helper 二进制。
+  //
+  // ⟹ 两条路：给 `disable-library-validation` entitlement，或**关掉它**。
+  //   选后者：hardenedRuntime 是给**公证**用的，而我们没公证
+  //   （`skipped macOS notarization` 也在那次输出里）⟹ 开着它只有代价没有收益。
+  //
+  // ⚠️ 这是"看起来只是个配置项"但会让应用**打不开**的那类 ——
+  //   而症状是双击没反应，跟签名一点关系都看不出来。
+  const mac = JSON.parse(pkg).build.mac;
+  if (mac.identity === '-') {
+    assert.strictEqual(mac.hardenedRuntime, false,
+      'ad-hoc 签名（identity: "-"）配着 hardenedRuntime（默认 true）'
+      + ' ⟹ library validation 会拦住动态库，应用可能打不开。'
+      + '要么设 hardenedRuntime: false，要么给 disable-library-validation entitlement');
+  }
+
   // ②⚠️⚠️ 那个弹框里的**开发者名字填不了** —— 它来自代码签名证书的
   //   Common Name，而 ad-hoc 没有证书。要显示「由 xx 开发」只有
   //   Apple Developer ID（$99/年）这一条路。

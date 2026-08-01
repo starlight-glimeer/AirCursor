@@ -729,7 +729,11 @@ func selfTestFFT(_ spectrum: Spectrum) {
     //
     // ⟹ 判据只跑前 64 段。而"镜像本身对不对"另有一条专门的检查（见下）。
     // `bins` 已经就是一路的 64 段 ⟹ 不用再切前半（那是 128 时代的写法）
-    let bandsHalf = BIN_COUNT / 2
+    // ⚠️ 这里原来还有 `let bandsHalf = BIN_COUNT / 2` —— 0.9.79 删了。
+    //   它是 128 时代切前半用的，改成 64 之后就没人读了 ⟹ swiftc 每次打包
+    //   都刷一条 `initialization of immutable value 'bandsHalf' was never used`。
+    //   ⚠️ 一条常驻的警告的代价不是"丑"，是**它会让真正的新警告被忽略**
+    //     （这个项目在"重复消息刷屏把真问题埋掉"上栽过）。
     let front = bins
 
     // 峰值段 + 它周围有几段超过峰值的 1/4（那是"主瓣宽度"的粗略度量）
