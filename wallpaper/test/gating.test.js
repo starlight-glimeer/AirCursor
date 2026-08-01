@@ -880,7 +880,7 @@ function dynamicIds(dashSrc) {
 }
 
 check('面板渲染函数要的容器 id 在 HTML 里都存在', () => {
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   // getElementById('x') 和 renderActionGroup('x', …) 两种取法都算
   const ids = new Set([
@@ -1462,7 +1462,16 @@ check('换源时显式 load（否则旧视频继续放）', () => {
 // node --check 看不见这个（语法完全合法），而症状是"面板打开一片空白"——
 // 和"面板没做好"分不清。另一个模块也栽过同一个形状（删下拉框留下元素引用）。
 check('dashboard.js 引用的 element id 在 HTML 里都存在', () => {
-  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // ⚠️⚠️ **剥注释** —— 这是今天第五次踩"注释让守卫误判"。
+  //
+  // 我在删掉 `mine-refresh` 按钮时，注释里写了
+  //   「这里原来是 `document.getElementById('mine-refresh').onclick = …`」
+  // 而这条守卫读**原文** ⟹ 把注释里那个 id 当成真引用 ⟹ **在正确代码上报红**。
+  //
+  // 前四次是反方向（注释让守卫假**阴**性：改了代码而断言照样绿）。
+  // 这次是假**阳**性 —— 同一个根因，两种表现。
+  // ⟹ 规则很简单：**任何"查代码里有什么"的断言，一律先剥注释。**
+  const js = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const ids = [...js.matchAll(/getElementById\('([\w-]+)'\)/g)].map((m) => m[1]);
   assert.ok(ids.length > 10, `只解析出 ${ids.length} 个 id，正则失效了`);
@@ -2431,8 +2440,14 @@ check('自动扫描的目录要显示出来（路径 + 在不在 + 找到几个�
 
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   assert.match(dash, /lastScanned/, '面板没保存扫描结果 ⟹ 目录区渲染不出来');
+  // ⚠️ 切到**函数结尾**，不用固定长度 —— 我往 renderMineDirs 里加了三个
+  // 操作按钮（换目录/恢复默认/刷新），2200 字符就把 `lastScanned` 推出去了
+  // ⟹ **在正确代码上报红**。
+  // ⚠️ 这一轮我已经栽过六次固定长度切片 + 一次固定行数窗口，这是第八次。
+  //   ⟹ 规则：位置锚一律切到结构边界（`\n}` / `\nfunction ` / 下一个已知锚点）。
   const j = dash.indexOf('function renderMineDirs');
-  const fn = dash.slice(j, j + 2200);
+  const jEnd = dash.indexOf('\nfunction ', j + 10);
+  const fn = dash.slice(j, jEnd > 0 ? jEnd : undefined);
   assert.match(fn, /lastScanned/,
     'renderMineDirs 没用扫描结果 —— 它只看 config.libraryDirs，'
     + '那样自动扫的目录永远不显示（用户实测撞到）');
@@ -2536,15 +2551,30 @@ console.log('\n  标准壁纸目录 + 能在 Finder 打开');
 check('有我们自己的壁纸目录，且在用户可见的位置', () => {
   const src = codeOnly(mainSrc);
   assert.match(src, /function ourWallpaperDir/, '没有我们自己的壁纸目录');
-  const i = src.indexOf('function ourWallpaperDir');
-  const fn = src.slice(i, i + 300);
+  // ⚠️ 0.9.31 起拆成两个：`defaultWallpaperDir()`（算默认路径）和
+  // `ourWallpaperDir()`（读配置，空则退默认）—— 因为目录变成用户可改的了。
+  // ⟹ `documents` 的断言要查**默认那个**，而且用**结构边界**切
+  //（原来是 `slice(i, i+300)` 固定长度 —— 拆函数后那 300 字符里就没有它了）。
+  assert.match(src, /function defaultWallpaperDir/,
+    '没有 defaultWallpaperDir —— 默认路径必须单独算，'
+    + '那样它能跟着 app.getPath 走（换用户/换机器自适应）');
+  const di = src.indexOf('function defaultWallpaperDir');
+  const dfn = src.slice(di, src.indexOf('\n}', di));
   // ⚠️ 必须在 documents 而不是 userData：后者是应用私有数据的位置，
   // Finder 里默认隐藏、用户找不到、也不该往里拖文件。
-  assert.match(fn, /getPath\('documents'\)/,
+  assert.match(dfn, /getPath\('documents'\)/,
     "壁纸目录不在 documents 下 —— userData 是应用私有数据的位置，"
     + 'Finder 里默认隐藏，而壁纸是**用户的内容**：他要能打开、拖进去、备份');
-  assert.ok(!/getPath\('userData'\)/.test(fn),
+  assert.ok(!/getPath\('userData'\)/.test(dfn),
     '壁纸目录用了 userData —— 那是私有数据目录，用户找不到');
+  // ⚠️ 而**可改**这件事本身要有守卫：读 `config.we.wallpaperDir`，空则退默认
+  const oi = src.indexOf('function ourWallpaperDir');
+  const ofn = src.slice(oi, src.indexOf('\n}', oi));
+  assert.match(ofn, /config\.we && config\.we\.wallpaperDir/,
+    'ourWallpaperDir 不读配置 ⟹ 目录改不了（用户 2026-08-01：'
+    + '「反正只有一个路径来源，只是我允许你更改」）');
+  assert.match(ofn, /trim\(\)/,
+    '没判空字符串 ⟹ 用户清空配置时会 path.join(undefined) 崩溃');
 });
 
 check('壁纸目录首次会建出来，且放说明文件', () => {
@@ -3232,6 +3262,68 @@ check('存量的 Steam 副本能一键搬走', () => {
   // ⚠️ 搬完必须刷新列表 —— 否则用户看到按钮变字但路径行没变，以为没生效
   assert.match(dash, /await renderMine\(\)/,
     '搬完没刷新列表 ⟹ "做了但用户看不到"（这个项目栽过六次）');
+});
+
+// ⚠️⚠️⚠️ **单一路径来源，而且可改。**
+//
+// 用户 2026-08-01：
+//   「这个刷新和加一个壁纸目录应该和我们的『我的壁纸目录：…打开』功能合并，
+//     就是打开，然后你也可以添加新的目录然后我的壁纸目录就自动更新，
+//     **反正只有一个路径来源，只是我允许你更改**」
+//
+// 改之前是**两个模型并存**：固定主目录 + 可加的 `libraryDirs` 列表
+// ⟹ 面板上三种东西（主目录 / Steam 目录 / 自定义目录列表）
+// ⟹ 用户要问"我的壁纸到底在哪"、"加的目录和上面那个什么关系"。
+check('壁纸目录是单一来源，操作都在那一行', () => {
+  const src = codeOnly(mainSrc);
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, '');
+
+  // ⚠️ 「换目录」必须改 wallpaperDir（那唯一的一个），不是往列表里加
+  const addAt = src.indexOf("ipcMain.handle('workshop-add-dir'");
+  assert.ok(addAt > 0, '找不到换目录的 IPC');
+  const addFn = src.slice(addAt, src.indexOf('\nipcMain', addAt + 10));
+  assert.match(addFn, /config\.we\.wallpaperDir = dir/,
+    '「换目录」还在往 libraryDirs 里加 ⟹ 又变成两个路径来源');
+  assert.ok(!/libraryDirs.*push|push.*libraryDirs/.test(addFn),
+    '「换目录」仍在 push 到 libraryDirs');
+
+  // ⚠️ 「恢复默认」必须有 —— 默认值不写进 config（那样换用户自适应），
+  // 所以用户改错了之后不知道该填什么路径回去
+  assert.match(src, /ipcMain\.handle\('workshop-reset-dir'/,
+    '没有恢复默认的通道 ⟹ 用户改错目录后回不去'
+    + '（默认值不写进 config，他不知道该填什么）');
+  assert.match(dash, /resetWallpaperDir/, '面板没有恢复默认的入口');
+
+  // ⚠️ 那三个操作必须在目录那一行里（不是散在别处）
+  const j = dash.indexOf('function renderMineDirs');
+  const fn = dash.slice(j, dash.indexOf('\nfunction ', j + 10));
+  for (const [needle, why] of [
+    [/revealWallpaperDir/, '打开'],
+    [/workshopAddDir/, '换目录'],
+    [/renderMine\(\)/, '刷新'],
+  ]) {
+    assert.match(fn, needle, `目录那一行里没有「${why}」操作`);
+  }
+
+  // ⚠️ HTML 里那两个独立按钮必须删掉 —— 否则又是两处入口
+  assert.ok(!/id="mine-refresh"/.test(html),
+    'HTML 里还有独立的「刷新」按钮 ⟹ 和目录行里那个重复');
+  assert.ok(!/id="mine-add-dir"/.test(html),
+    'HTML 里还有独立的「加一个壁纸目录…」按钮 ⟹ 那是旧模型');
+
+  // ⚠️ 而删了 HTML 就必须删对应的 getElementById —— 否则 null.onclick 抛异常
+  // ⟹ 那一行之后所有初始化都不跑（这个项目为同一形状烧过一轮）
+  assert.ok(!/getElementById\('mine-refresh'\)/.test(dash),
+    "HTML 里删了按钮但 JS 还在 getElementById('mine-refresh') ⟹ "
+    + 'null.onclick 抛 TypeError ⟹ 后面所有初始化都不跑');
+  assert.ok(!/getElementById\('mine-add-dir'\)/.test(dash),
+    '同上（mine-add-dir）');
+
+  // ⚠️ libraryDirs 只读不写：旧配置里可能还有值（要继续扫），但不再有写入路径
+  assert.match(src, /\.\.\.\(config\.we\.libraryDirs \|\| \[\]\)/,
+    '不再扫 libraryDirs ⟹ 旧配置里的目录会突然消失，用户的壁纸不见了');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

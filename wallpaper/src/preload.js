@@ -115,6 +115,8 @@ contextBridge.exposeInMainWorld('gw', {
   ourWallpaperDir: () => ipcRenderer.invoke('our-wallpaper-dir'),
   // 把已经在 Steam 目录里的工坊壁纸搬进我们目录（清 0.9.24-0.9.28 留下的两份）
   importExistingFromSteam: () => ipcRenderer.invoke('import-existing-from-steam'),
+  // 恢复默认壁纸目录（改错了之后回不去 —— 默认值不写进 config，用户不知道填什么）
+  resetWallpaperDir: () => ipcRenderer.invoke('workshop-reset-dir'),
   onWorkshopProgress: on('workshop-progress'),
   onMouseStatus: on('mouse-status'),
   onVideoStatus: on('video-status'),

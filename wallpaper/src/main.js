@@ -422,6 +422,13 @@ const defaultConfig = {
     steamCmdPath: null,
     // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
     // 这里是"我从别处拿到的壁纸放在哪"。
+    // ⚠️ 壁纸目录。**空字符串 = 用默认**（`Documents/GestureWall/Wallpapers`）
+    // ⟹ 不写死绝对路径，那样换用户/换机器时自己跟着走。
+    wallpaperDir: '',
+    // ⚠️ **已废弃**（0.9.31）：原来是"附加壁纸目录列表"，和主目录构成两个模型。
+    // 用户 2026-08-01：「反正只有一个路径来源，只是我允许你更改」
+    // ⟹ 收成 `wallpaperDir` 一个。这个字段留着只为**读旧配置不报错**，
+    //    不再有写入路径，UI 也不再暴露。
     libraryDirs: [],
     // WE 壁纸的层策略。
     //
@@ -2288,8 +2295,31 @@ ipcMain.handle('workshop-browse-meta', () => ({
 // ⟹ `~/Documents/GestureWall/Wallpapers/` ——
 // Wallpaper Engine 自己也是把壁纸放在可见目录（Steam workshop content 下）。
 // 每个子目录一个壁纸，里面有 project.json，和工坊的布局完全一致。
-function ourWallpaperDir() {
+// 我们的壁纸目录 —— **唯一的路径来源，而且用户可以改**。
+//
+// ⚠️⚠️ 用户 2026-08-01 定的模型：
+//   「反正只有一个路径来源，只是我允许你更改」
+//
+// 原来是两个模型并存：一个固定的主目录（`Documents/GestureWall/Wallpapers`）
+// + 一个可加的 `libraryDirs` 列表。而那让面板上出现三种东西
+//（主目录、Steam 目录、自定义目录列表）⟹ 用户要问"我的壁纸到底在哪"。
+//
+// ⟹ 收成一个：默认还是 `Documents/GestureWall/Wallpapers`（跟着用户名自适应），
+//    但可以改成任何目录，改完列表就从那里扫。
+//
+// ⚠️ 默认值**不写进 config** —— 那样换用户/换机器时它自己跟着 `app.getPath`
+// 走（`config.we.wallpaperDir` 为空时才用默认）。写死的话配置一旦生成
+// 就绑在某个用户名上，而这个项目已经因为"路径从自己环境取"栽过几次。
+function defaultWallpaperDir() {
   return path.join(app.getPath('documents'), 'GestureWall', 'Wallpapers');
+}
+
+function ourWallpaperDir() {
+  const custom = config.we && config.we.wallpaperDir;
+  // ⚠️ 只有**非空字符串**才当自定义 —— `''` / null / undefined 都退回默认。
+  // 漏了这条判断的话，用户"清空"那个配置会得到 `path.join(undefined)` 崩溃。
+  if (typeof custom === 'string' && custom.trim()) return custom;
+  return defaultWallpaperDir();
 }
 
 // 首次启动时建出来 + 放一个说明文件。
@@ -2496,6 +2526,9 @@ ipcMain.handle('workshop-local', () => {
     ensureOurWallpaperDir(),
     ...Workshop.STEAM_ROOTS.map((r) =>
       path.join(r, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID)),
+    // ⚠️ `libraryDirs` 已废弃（0.9.31，收成单一的 `wallpaperDir`）——
+    // 但**旧配置里可能还有值** ⟹ 继续扫它们，否则用户的壁纸会突然消失。
+    // 只是不再有写入路径、UI 也不再暴露。
     ...(config.we.libraryDirs || []),
   ];
 
@@ -2577,23 +2610,53 @@ ipcMain.handle('workshop-local', () => {
   };
 });
 
-// 加一个自己的壁纸目录。
+// **改壁纸目录**（0.9.31 起：不是"加一个"，是改那唯一的一个）。
+//
+// ⚠️ 用户 2026-08-01：「反正只有一个路径来源，只是我允许你更改」
+//
+// ⚠️⚠️ **只改指向，不搬文件**（用户明确选的）：
+// 新目录空的话列表就空了，要不要把文件拷过去由用户自己决定。
+// ⟹ 那样行为可预测 —— "临时看另一个目录"不会把几百 MB 的文件搬走。
 ipcMain.handle('workshop-add-dir', async () => {
   const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
-    title: '选择壁纸存储目录（里面每个子目录是一个壁纸）',
+    title: '选择壁纸目录（里面每个子目录是一个壁纸）',
     properties: ['openDirectory', 'createDirectory'],
-    buttonLabel: '加入我的壁纸',
+    buttonLabel: '用这个目录',
   });
   if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
   const dir = result.filePaths[0];
-  const dirs = config.we.libraryDirs || [];
-  if (!dirs.includes(dir)) dirs.push(dir);
-  config.we.libraryDirs = dirs;
+  const before = ourWallpaperDir();
+  config.we.wallpaperDir = dir;
   writeConfig(config);
   broadcast('config', config);
-  return { ok: true, dir };
+  // ⚠️ 换目录后要建好结构（放说明文件）—— 否则新目录空空的，
+  // 用户不知道"每个子目录要有 project.json"这条约束。
+  ensureOurWallpaperDir();
+  logEvent('wallpaper', `壁纸目录改成：${dir}`, { before });
+  // ⚠️ 报 `before` 给面板 —— 旧目录里可能还有壁纸，而我们不搬
+  // ⟹ 面板要能提示"旧目录还在那儿，文件没动"。
+  return { ok: true, dir, before, moved: false };
 });
 
+// 恢复默认壁纸目录。
+//
+// ⚠️ 为什么要有这条：改错了目录之后，用户没有别的办法回到默认
+//（默认值不写进 config，所以他不知道该填什么路径）。
+ipcMain.handle('workshop-reset-dir', () => {
+  const before = ourWallpaperDir();
+  config.we.wallpaperDir = '';
+  writeConfig(config);
+  broadcast('config', config);
+  const dir = ensureOurWallpaperDir();
+  logEvent('wallpaper', `壁纸目录恢复默认：${dir}`, { before });
+  return { ok: true, dir, before };
+});
+
+// 删掉一个**旧配置里的**附加目录。
+//
+// ⚠️ `libraryDirs` 已废弃（0.9.31 收成单一的 `wallpaperDir`），但这条 IPC 保留 ——
+// 旧配置里可能还有值，而用户需要能删掉它们。没有这条的话那些目录会一直被扫，
+// 而 UI 上没有任何办法处理 ⟹ 那比留一个"只能删不能加"的入口更糟。
 ipcMain.handle('workshop-remove-dir', (_event, dir) => {
   config.we.libraryDirs = (config.we.libraryDirs || []).filter((d) => d !== dir);
   writeConfig(config);

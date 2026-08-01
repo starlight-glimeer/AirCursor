@@ -1883,12 +1883,70 @@ function renderMineDirs() {
     label.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
       + 'user-select:text;flex:1';
     label.textContent = `我的壁纸目录：${res.dir}`;
+    // ⚠️⚠️ **全部操作都在这一行**（0.9.31）。
+    //
+    // 用户 2026-08-01：「这个刷新和加一个壁纸目录应该和我们的
+    //   『我的壁纸目录：…打开』功能合并…反正只有一个路径来源，只是我允许你更改」
+    //
+    // ⟹ [打开] [换目录…] [刷新]，而"换目录"改的就是**这一个**路径。
     const open = document.createElement('button');
     open.type = 'button';
     open.className = 'act';
     open.textContent = '打开';
+    open.title = '在 Finder 里打开';
     open.onclick = () => window.gw.revealWallpaperDir(res.dir);
-    box.append(label, open);
+
+    const change = document.createElement('button');
+    change.type = 'button';
+    change.className = 'act';
+    change.textContent = '换目录…';
+    // ⚠️ title 里说清"不搬文件" —— 用户选的就是这个行为，
+    // 而不说的话他会以为壁纸跟着走了（然后发现列表空了以为坏了）。
+    change.title = '换成别的目录。⚠️ 只改指向，**不会搬文件** ——'
+      + '旧目录里的壁纸留在原地';
+    change.onclick = async () => {
+      const out = await window.gw.workshopAddDir();
+      if (!out || !out.ok) return;
+      // ⚠️ 换完立刻刷新，而且要提示"旧目录没动" ——
+      // 新目录空的话列表会空，用户需要知道那是预期的。
+      await renderMine();
+      if (out.before && out.before !== out.dir) {
+        // ⚠️ 我第一版写 `mineState.innerHTML` —— **那个变量不存在**。
+        // `renderMine` 里的叫 `state`（局部的），而这里是 `renderMineDirs`。
+        // `node --check` 查不出（语法没错），症状是点了「换目录」抛 ReferenceError
+        // ⟹ 后面的刷新不跑，用户看到"点了没反应"。
+        // ⟹ 现取 —— 那样跨函数也安全。
+        const st = document.getElementById('mine-state');
+        if (st) st.innerHTML = `已换到 <b>${out.dir}</b>`
+          + `\n⚠️ 旧目录 ${out.before} 里的壁纸**没有搬走**，还在原地。`
+          + `\n要用它们的话，把那些子目录拷进新目录（或者点「恢复默认」换回去）`;
+      }
+    };
+
+    // ⚠️ 「恢复默认」只在**用过自定义目录**时出现。
+    // 为什么需要它：默认值不写进 config（那样换用户/换机器自适应）
+    // ⟹ 用户改错了之后不知道该填什么路径回去。
+    const isDefault = !(config.we && config.we.wallpaperDir);
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'act';
+    reset.textContent = '恢复默认';
+    reset.title = '回到 文档/GestureWall/Wallpapers';
+    reset.onclick = async () => {
+      const out = await window.gw.resetWallpaperDir();
+      if (out && out.ok) await renderMine();
+    };
+
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'act';
+    refresh.textContent = '刷新';
+    refresh.title = '重新扫描这个目录';
+    refresh.onclick = () => renderMine();
+
+    box.append(label, open, change);
+    if (!isDefault) box.append(reset);
+    box.append(refresh);
     // ⚠️ 插到最前面而不是 append —— 这个函数是异步回调，
     // 直接 append 会让它落在已经渲染好的目录列表后面（顺序随机）。
     host.insertBefore(box, host.firstChild);
@@ -2050,11 +2108,19 @@ function renderMineDirs() {
   }
 }
 
-document.getElementById('mine-refresh').onclick = renderMine;
-document.getElementById('mine-add-dir').onclick = async () => {
-  const out = await window.gw.workshopAddDir();
-  if (out.ok) { renderMineDirs(); renderMine(); }
-};
+// ⚠️⚠️ 这里原来是 `document.getElementById('mine-refresh').onclick = …` 和
+// `mine-add-dir` 两个绑定 —— **0.9.31 那两个按钮从 HTML 里删了**
+//（合并进目录那一行），而绑定必须跟着删。
+//
+// ⚠️ 留着的后果不是"没反应"，是 **`null.onclick` 直接抛 TypeError**
+// ⟹ 这个文件在那一行**中断** ⟹ 后面所有初始化都不跑。
+//
+// 这个项目已经为**同一个形状**烧过一轮：收缩页签时删了三个开关的 HTML，
+// 而 `bind('music')` / `bind('moodFromCover')` / `bind('showHud')` 留着
+// ⟹ `renderToggles()` 第一个就抛 ⟹ 我的壁纸目录列表、鼠标转发勾选、
+//    筛选初始状态全都不渲染，而面板日志刷屏 `Cannot set properties of null`。
+//
+// ⟹ 守卫（gating.test.js）查的就是"每个 getElementById 的 id 必须在 HTML 里存在"。
 
 // 已下载的列表 —— 下过的东西要能重新装载，而不是每次重填 ID。
 
