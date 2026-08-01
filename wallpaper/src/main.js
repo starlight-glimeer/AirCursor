@@ -2388,13 +2388,18 @@ ipcMain.handle('workshop-local', () => {
   // ⟹ 「我的壁纸是空的」时无从判断是"目录不对"还是"目录对但里面没东西"。
   //
   // 每个根目录单独报：在不在、找到几个壁纸。那三件事决定用户下一步做什么。
+  const ourDir = ensureOurWallpaperDir();
   const scanned = roots.map((root) => {
     const here = dirs.filter((d) => d.startsWith(root));
     return {
       path: root,
       exists: fs.existsSync(root),
       found: here.length,
-      auto: !(config.we.libraryDirs || []).includes(root),
+      // ⚠️ **我们自己的目录不算 auto** —— 面板已经在最上面单独显示它了
+      //（「我的壁纸目录：… [打开]」），再当成"自动扫描的目录"列一遍就是重复。
+      // 用户 2026-08-01 提的：「不用每一张壁纸都这样显示，就这两个地址就行」。
+      ours: root === ourDir,
+      auto: root !== ourDir && !(config.we.libraryDirs || []).includes(root),
     };
   });
 

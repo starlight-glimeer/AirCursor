@@ -3106,4 +3106,36 @@ check('工坊下载后复制到统一壁纸目录', () => {
     '复制失败时没告诉用户 ⟹ 他会以为下载坏了，或者以为列表有 bug');
 });
 
+// ⚠️⚠️⚠️ **目录只显示两行：我们的 + Steam 实际那个。**
+//
+// 用户 2026-08-01：
+//   「不用每一张壁纸都这样显示，就这两个地址就行
+//     我的壁纸目录：/Users/moon/Documents/GestureWall/Wallpapers
+//     /Users/moon/Library/Application Support/Steam/steamapps/workshop/content/」
+//
+// 两个问题：
+// ① `STEAM_ROOTS` 有**三个候选**（`~/Library/Application Support/Steam`、
+//    `~/steamcmd`、`~/Steam`）—— steamcmd 装法不同数据目录不同，我们只能逐个找。
+//    但面板列三行没意义：两个必然不存在，而"这个目录不存在（正常）"是纯噪声。
+// ② 我们自己的目录**同时**出现在最上面那行和"自动扫描"列表里 ⟹ 重复。
+check('目录列表只显示存在的 Steam 目录，且不重复列我们自己的', () => {
+  const src = codeOnly(mainSrc);
+  // ⚠️ 我们的目录不能被标成 auto —— 面板最上面已经单独显示它了
+  assert.match(src, /ours: root === ourDir/,
+    '没标记"这是我们自己的目录" ⟹ 它会被当成"自动扫描的目录"再列一遍');
+  assert.match(src, /auto: root !== ourDir/,
+    'auto 的判据没排除我们自己的目录 ⟹ 重复显示');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // ⚠️ 只显示存在的那个
+  assert.match(dash, /autoAll\.filter\(\(x\) => x\.exists\)/,
+    '面板没过滤掉不存在的 Steam 候选 ⟹ 会列出三行，两行是"不存在（正常）"的噪声');
+  // ⚠️ 但**全都不存在时要留一行** —— 否则"没装 Steam"和"扫了但没找到"
+  // 在面板上长得一样，而那两件事的下一步完全不同（去装 vs 去下壁纸）
+  assert.match(dash, /autoReal\.length \? autoReal : autoAll\.slice\(0, 1\)/,
+    '全都不存在时一行都不显示 ⟹ "没装 steamcmd"变成静默状态，'
+    + '而用户会以为面板坏了');
+  assert.match(dash, /没找到 Steam 的下载目录/,
+    '没有"没装 steamcmd"那种情况的文案');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

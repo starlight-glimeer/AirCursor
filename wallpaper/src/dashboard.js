@@ -1900,12 +1900,28 @@ function renderMineDirs() {
   // 而"那个"是哪个路径、存不存在、找到几个，一个字都没说。
   // ⟹「我的壁纸是空的」时，用户没法判断是"目录不对"还是"目录对但里面没东西"，
   // 而那两件事的下一步完全不同（改路径 vs 去下壁纸）。
-  const auto = (lastScanned || []).filter((x) => x.auto);
+  // ⚠️⚠️ **只显示真实存在的那个 Steam 目录，不是三个候选都列。**
+  //
+  // `STEAM_ROOTS` 有三个候选（`~/Library/Application Support/Steam`、
+  // `~/steamcmd`、`~/Steam`）—— 因为 steamcmd 的装法不同、数据目录不同，
+  // 而我们只能逐个找。但**面板上列三行没有意义**：
+  // 两个必然不存在，而"这个目录不存在（正常）"这种行只是噪声。
+  //
+  // 用户 2026-08-01：「不用每一张壁纸都这样显示，就这两个地址就行」
+  // ⟹ 我的壁纸目录（最上面那行）+ Steam 实际那个 = **两行**。
+  //
+  // ⚠️ 但**全都不存在时要显示一行** —— 否则"没装 Steam"和"扫了但没找到"
+  // 在面板上长得一样，而那两件事的下一步完全不同。
+  const autoAll = (lastScanned || []).filter((x) => x.auto);
+  const autoReal = autoAll.filter((x) => x.exists);
+  const auto = autoReal.length ? autoReal : autoAll.slice(0, 1);
   if (auto.length) {
     const title = document.createElement('div');
     title.className = 'hint';
     title.style.marginBottom = '4px';
-    title.textContent = '自动扫描的目录（steamcmd 下载的壁纸在这里）：';
+    title.textContent = autoReal.length
+      ? 'Steam 创意工坊的下载目录（下载后会自动复制到上面那个目录）：'
+      : '没找到 Steam 的下载目录（没装 steamcmd 的话这是正常的）：';
     host.appendChild(title);
     for (const item of auto) {
       const row = document.createElement('div');
@@ -1916,9 +1932,15 @@ function renderMineDirs() {
       text.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
         + 'user-select:text;flex:1';
       // 三件事一行说完：路径、在不在、找到几个。
+      // ⚠️ 措辞跟着 0.9.24 的改动更新：工坊下载现在会**自动复制**到我们目录
+      // ⟹ 这里的数字是"Steam 那边还留着的原件"，而列表里显示的是我们目录那份
+      //（去重逻辑保留我们的那份）⟹ 不说清的话"这里有 3 个但列表只有 3 个"
+      // 看起来像数字不对。
       const mark = item.exists
-        ? (item.found ? `✅ ${item.found} 个壁纸` : '目录在，但里面没有壁纸')
-        : '（这个目录不存在 —— 正常，装了 Steam 才会有）';
+        ? (item.found
+          ? `${item.found} 个（原件，已复制到上面那个目录）`
+          : '目录在，但里面没有壁纸')
+        : '（不存在 —— 没装 steamcmd 的话是正常的）';
       text.textContent = `${item.path}  ${mark}`;
       if (item.exists && !item.found) text.style.color = 'var(--warn, #c98)';
       row.appendChild(text);
