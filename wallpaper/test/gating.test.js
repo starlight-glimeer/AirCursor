@@ -3840,4 +3840,84 @@ check('删壁纸：废纸篓 + 路径白名单 + 不删根目录 + 要确认', (
     '删除失败时没报出来 ⟹ 用户以为删了，下次刷新它又在（像"删不掉"的鬼故事）');
 });
 
+// ⚠️⚠️⚠️ **轮播（0.9.43）的六个坑，每个都会静默失败。**
+//
+// 用户 2026-08-01：「壁纸应该设置一个播放列表，然后可以设置时间如轮播，
+// 可以选择顺序/随机等」
+//
+// 他拍的两个设计决定：
+//   · 列表是**手选**的（右键菜单里加/移出），不是"目录里全部"
+//   · 轮播开着时手动点一个壁纸**不打断轮播**，只是从它重新计时
+//     （理由：「点一下就关了一个开关」容易意外，重开还要去找那个开关）
+check('轮播：列表存路径 / 手动不打断 / 少于2个不起 / 失败不卡死', () => {
+  const src = codeOnly(mainSrc);
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① **列表存路径，不是索引或标题**
+  //   索引会随目录内容变（删一个壁纸，后面全错位）；标题会重名（很多叫"时钟"）
+  assert.match(src, /rotate: \{[\s\S]{0,300}?list: \[\]/,
+    '轮播配置里没有 list ⟹ 播放列表存哪儿？');
+  // ⚠️ 迁移要**逐字段**补 —— 老配置没有这个对象，而代码里到处读
+  //   `config.we.rotate.list` ⟹ 少一层就是 `undefined.list` 崩溃
+  assert.match(src, /!we\.rotate \|\| typeof we\.rotate !== 'object'/,
+    '老配置里没有 rotate 对象而没补默认值 ⟹ `undefined.list` 崩溃');
+  assert.match(src, /Array\.isArray\(we\.rotate\.list\)/,
+    'list 不是数组时没兜住 ⟹ `.filter` 崩溃');
+
+  // ② **每次重新过滤有效项，不缓存** —— 用户可能刚删掉列表里的一个，
+  //   而缓存会让轮播切到不存在的路径 ⟹ 症状是"轮播卡住"
+  // ⚠️ 锚**定义的完整形状** —— 只写 `/function rotateValid/` 时，
+  // 把定义改名成 `…X` 后调用点仍然匹配 ⟹ 守卫绿着而代码是坏的。
+  // （这一轮第四次栽在"名字子串"上。）
+  assert.match(src, /function rotateValid\s*\(\s*\)/,
+    '没有"列表里哪些还存在"的过滤 ⟹ 壁纸被删后轮播会切到不存在的路径');
+  assert.match(src, /fs\.existsSync\(path\.join\(d, 'project\.json'\)\)/,
+    '判"壁纸还在不在"没看 project.json ⟹ 空目录会被当成有效壁纸');
+
+  // ③ **少于 2 个不起定时器** —— 一个壁纸"轮播"就是每隔 N 分钟重载它，
+  //   画面会白闪一下，而用户不会理解那是什么
+  assert.match(src, /rotateValid\(\)\.length < 2/,
+    '列表少于 2 个仍然起定时器 ⟹ 每隔 N 分钟重载同一个壁纸（画面白闪）');
+  // 面板也要说清 —— 否则用户开了开关发现不动会以为坏了
+  assert.match(dash, /至少要 2 个/,
+    '面板没说"至少 2 个才会轮播" ⟹ 用户开了开关发现不动会以为坏了');
+
+  // ④ **随机要避开当前和上一个** —— 列表 3 个时连续撞的概率 1/3，
+  //   感知上就是"随机了半天还是那张"
+  // ⚠️ 同上：锚**声明**而不是名字（它在赋值和比较处也出现）
+  assert.match(src, /let rotateLast = null/,
+    '随机模式没记上一个 ⟹ 列表只有 2 个时会"根本不换"');
+
+  // ⑤ **手动装载时重算计时器**（用户拍的行为）
+  //   漏了的话：用户手动切了一张，5 秒后轮播把它换掉
+  //   ⟹ 症状是"我刚点的壁纸自己变了"
+  const loadAt = src.indexOf("ipcMain.handle('workshop-load-local'");
+  assert.ok(loadAt > 0, '找不到手动装载的 IPC');
+  const loadFn = src.slice(loadAt, src.indexOf('\nipcMain', loadAt + 10));
+  assert.match(loadFn, /syncRotate\(\)/,
+    '手动装载时没重算轮播计时器 ⟹ 用户刚点的壁纸可能几秒后就被换掉'
+    + '（症状："我刚点的壁纸自己变了"）');
+
+  // ⑥ **切换失败不能让轮播停** —— 一个坏壁纸不该卡住整条链
+  const stepAt = src.indexOf('function rotateStep');
+  const stepFn = src.slice(stepAt, src.indexOf('\nfunction ', stepAt + 10));
+  assert.match(stepFn, /轮播切换失败（跳过）/,
+    '切换失败时没报出来 ⟹ 用户看到"轮播不动了"而不知道是哪个壁纸坏了');
+
+  // ⑦ 启动时要起轮播，**而且要在恢复壁纸之后**
+  //   （rotateNext 靠 weProject.dir 判断"当前是第几个"）
+  const readyAt = src.indexOf('app.whenReady()');
+  const restoreAt = src.indexOf('setWEWallpaper(config.we.dir)', readyAt);
+  const syncAt = src.indexOf('syncRotate()', readyAt);
+  assert.ok(restoreAt > 0 && syncAt > 0 && restoreAt < syncAt,
+    '启动时 syncRotate 在恢复壁纸之前 ⟹ 第一次切换会从列表开头开始'
+    + '（症状：重启后壁纸跳到第一个）');
+
+  // ⑧ 「下一张」不能改开关状态 —— 用户点它只是想现在换一张
+  const nextAt = src.indexOf("ipcMain.handle('we-rotate-next'");
+  const nextFn = src.slice(nextAt, src.indexOf('\n', src.indexOf('return', nextAt)));
+  assert.ok(!/\.on = /.test(nextFn),
+    '「下一张」改了开关状态 ⟹ "点一下就把轮播开了/关了"是意外行为');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

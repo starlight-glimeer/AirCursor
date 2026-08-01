@@ -422,6 +422,24 @@ const defaultConfig = {
     steamCmdPath: null,
     // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
     // 这里是"我从别处拿到的壁纸放在哪"。
+    // ⚠️⚠️ **轮播**（0.9.43）。用户 2026-08-01：
+    //   「壁纸应该设置一个播放列表，然后可以设置时间如轮播，
+    //     可以选择顺序/随机等」
+    //
+    // ⚠️ 列表存**目录路径**而不是索引/标题：
+    //   索引会随目录内容变（删一个壁纸，后面全错位）
+    //   标题会重名（很多壁纸叫"时钟"）
+    // ⟹ 路径是唯一稳定的键，而它失效（壁纸被删）时能被检测到并跳过。
+    rotate: {
+      on: false,
+      // 分钟。⚠️ 不用秒 —— 壁纸切换有开销（重建窗口、重载资源），
+      // 而秒级轮播只会让画面一直在闪。
+      minutes: 30,
+      // 'order' | 'random'
+      mode: 'order',
+      // 手选进列表的壁纸目录（绝对路径）
+      list: [],
+    },
     // ⚠️ 壁纸目录。**空字符串 = 用默认**（`Documents/GestureWall/Wallpapers`）
     // ⟹ 不写死绝对路径，那样换用户/换机器时自己跟着走。
     wallpaperDir: '',
@@ -520,6 +538,21 @@ function migrateConfig(cfg) {
   }
   // 老配置里没有这两个键（mergeConfig 会补上默认值，但如果用户存过 false 就不动）
   if (we.mouseForward === undefined) { we.mouseForward = true; changed = true; }
+  // ⚠️ 轮播的默认值要逐字段补 —— 老配置里没有这个对象，而代码里到处
+  // 读 `config.we.rotate.list` ⟹ 少一层就是 `undefined.list` 崩溃。
+  if (!we.rotate || typeof we.rotate !== 'object') {
+    we.rotate = { on: false, minutes: 30, mode: 'order', list: [] };
+    changed = true;
+  } else {
+    if (typeof we.rotate.on !== 'boolean') { we.rotate.on = false; changed = true; }
+    if (typeof we.rotate.minutes !== 'number' || we.rotate.minutes < 1) {
+      we.rotate.minutes = 30; changed = true;
+    }
+    if (we.rotate.mode !== 'order' && we.rotate.mode !== 'random') {
+      we.rotate.mode = 'order'; changed = true;
+    }
+    if (!Array.isArray(we.rotate.list)) { we.rotate.list = []; changed = true; }
+  }
 
   // ⚠️ 音源默认值从 'off' 改成了 'system'，而**改默认值对存量配置无效** ——
   // `mergeConfig` 保留已存的值，所以老用户会永远停在 'off'。
@@ -1928,6 +1961,136 @@ ipcMain.on('we-mouse-seen', (_event, payload) => {
 // ⟹ 所以确认对话框在渲染进程那边（面板），而这里只负责执行 ——
 //    但这里也**再挡一道**：路径必须在我们的壁纸目录树下。
 //    那样"传错路径"不会变成"删掉用户的文档"。
+// ─────────────────────────────────────────────────────────────────────────
+// 轮播（0.9.43）
+// ─────────────────────────────────────────────────────────────────────────
+//
+// 用户 2026-08-01：「壁纸应该设置一个播放列表，然后可以设置时间如轮播，
+// 可以选择顺序/随机等」
+//
+// 两个设计决定（用户拍的）：
+//   · 列表是**手选**的（不是"目录里全部"）
+//   · 轮播开着时**手动点一个壁纸不打断轮播**，只是从它重新计时
+//     ⟹ 那样行为可预测，不会"点了一下轮播就停了"
+let rotateTimer = null;
+// ⚠️ 随机模式下记住**上一个**，避免连续两次抽到同一个
+//（列表只有 2 个时那会变成"根本不换"）。
+let rotateLast = null;
+
+// 列表里当前有效的那些（壁纸可能被删了/目录改了）。
+//
+// ⚠️ **每次都重新过滤，不缓存** —— 用户可能刚删掉列表里的一个，
+// 而缓存会让轮播切到一个不存在的路径 ⟹ 症状是"轮播卡住"（切换失败）。
+function rotateValid() {
+  const list = (config.we.rotate && config.we.rotate.list) || [];
+  return list.filter((d) => {
+    try {
+      return fs.existsSync(path.join(d, 'project.json'));
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+// 下一个该放哪个。
+function rotateNext() {
+  const valid = rotateValid();
+  if (!valid.length) return null;
+  if (valid.length === 1) return valid[0];
+
+  const mode = (config.we.rotate && config.we.rotate.mode) || 'order';
+  const cur = weProject ? path.resolve(weProject.dir) : null;
+
+  if (mode === 'random') {
+    // ⚠️ 排除当前和上一个 —— 否则用户会看到"随机了半天还是那张"
+    // （列表 3 个时连续撞的概率是 1/3，感知上很明显）。
+    const pool = valid.filter((d) => path.resolve(d) !== cur
+      && path.resolve(d) !== rotateLast);
+    const from = pool.length ? pool : valid.filter((d) => path.resolve(d) !== cur);
+    const pick = (from.length ? from : valid)[Math.floor(Math.random() * (from.length ? from.length : valid.length))];
+    return pick;
+  }
+
+  // 顺序：找当前的位置，取下一个（绕回）
+  // ⚠️ 当前那个**可能不在列表里**（用户手动点了列表外的）⟹ 那时从头开始。
+  const idx = valid.findIndex((d) => path.resolve(d) === cur);
+  return valid[(idx + 1) % valid.length];
+}
+
+// 切到下一个。⚠️ 切换失败**不能让轮播停** —— 一个坏壁纸不该卡住整条链。
+function rotateStep() {
+  const next = rotateNext();
+  if (!next) {
+    logEvent('wallpaper', '轮播：列表里没有可用的壁纸 —— 停了');
+    stopRotate();
+    broadcast('config', config);
+    return;
+  }
+  const out = setWEWallpaper(next);
+  if (out.ok) {
+    rotateLast = weProject ? path.resolve(weProject.dir) : null;
+    config.we.dir = next;
+    writeConfig(config);
+    broadcast('config', config);
+    logEvent('wallpaper', `轮播切到：${path.basename(next)}`);
+  } else {
+    // ⚠️ 报出来但继续 —— 否则用户看到"轮播不动了"而不知道是哪个壁纸坏了
+    logEvent('wallpaper', `轮播切换失败（跳过）：${next}`, { error: out.error });
+  }
+  broadcast('we-status-changed', { rotated: true });
+}
+
+function stopRotate() {
+  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
+  if (config.we.rotate) config.we.rotate.on = false;
+}
+
+// 按配置起停轮播。⚠️ 改任何一项（开关/间隔/列表）都要调它。
+function syncRotate() {
+  const r = config.we.rotate || {};
+  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
+  if (!r.on) return;
+  // ⚠️ 列表少于 2 个时不起定时器 —— 一个壁纸"轮播"没有意义，
+  // 而起了定时器会每隔 N 分钟重载同一个壁纸（画面白闪一下）。
+  if (rotateValid().length < 2) {
+    logEvent('wallpaper', '轮播：列表里不足 2 个可用壁纸 —— 不启动');
+    return;
+  }
+  const ms = Math.max(1, Number(r.minutes) || 30) * 60 * 1000;
+  rotateTimer = setInterval(rotateStep, ms);
+  logEvent('wallpaper', `轮播已启动：每 ${r.minutes} 分钟，${r.mode === 'random' ? '随机' : '顺序'}`);
+}
+
+ipcMain.handle('we-set-rotate', (_event, patch) => {
+  const r = config.we.rotate || {};
+  if (patch && typeof patch === 'object') {
+    if (typeof patch.on === 'boolean') r.on = patch.on;
+    if (typeof patch.minutes === 'number' && patch.minutes >= 1) {
+      r.minutes = Math.round(patch.minutes);
+    }
+    if (patch.mode === 'order' || patch.mode === 'random') r.mode = patch.mode;
+    if (Array.isArray(patch.list)) {
+      // ⚠️ 去重 + 只留真实存在的 —— 列表是用户手点出来的，
+      // 而"加了一个然后把它删了"会留下死路径。
+      r.list = [...new Set(patch.list.filter((d) => typeof d === 'string' && d))];
+    }
+  }
+  config.we.rotate = r;
+  writeConfig(config);
+  broadcast('config', config);
+  syncRotate();
+  return { ok: true, rotate: r, valid: rotateValid().length };
+});
+
+// 立刻切下一个（面板上的「下一个」按钮）。
+//
+// ⚠️ 它**不改开关状态** —— 用户点它只是想现在换一张，
+// 而"点了一下就把轮播关了/开了"是意外行为。
+ipcMain.handle('we-rotate-next', () => {
+  rotateStep();
+  return { ok: true, dir: weProject ? weProject.dir : null };
+});
+
 ipcMain.handle('we-delete-wallpaper', async (_event, dir) => {
   if (!dir || typeof dir !== 'string') return { ok: false, error: '没给路径' };
 
@@ -2758,6 +2921,16 @@ ipcMain.handle('workshop-load-local', (_event, dir) => {
   }
   const out = setWEWallpaper(dir);
   if (out.ok) {
+    // ⚠️⚠️ **手动点一个壁纸时，轮播计时器重算**（用户 2026-08-01 拍的）。
+    //
+    // 他选的是「切过去，计时器重算」而不是「自动关掉轮播」——
+    // 理由是"点一下就关了一个开关"容易意外，而重新打开要去找那个开关。
+    // ⟹ 轮播继续，只是从这个壁纸开始重新计时。
+    //
+    // ⚠️ 而 `syncRotate()` 会 clearInterval + 重建 ⟹ 那正好就是"重算"。
+    // 漏了这一句的话：用户手动切了一张，5 秒后轮播把它换掉了
+    // ⟹ 症状是"我刚点的壁纸自己变了"。
+    if (config.we.rotate && config.we.rotate.on) syncRotate();
     config.we.dir = dir;
     writeConfig(config);
     broadcast('config', config);
@@ -3992,6 +4165,10 @@ app.whenReady().then(() => {
     wallWindow = createWallWindow(config.wallStrategy);
   }
   followDisplayChanges();
+  // ⚠️ **轮播要在恢复壁纸之后起** —— `rotateNext()` 靠 `weProject.dir` 判断
+  // "当前是列表里的第几个"，而那时 weProject 才有值。
+  // 放前面的话第一次切换会从列表开头开始（症状：重启后壁纸跳到第一个）。
+  syncRotate();
   openDashboard();
   // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
   syncOverlayVisibility();

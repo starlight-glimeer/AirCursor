@@ -1882,6 +1882,9 @@ window.gw.workshopBrowseMeta().then((meta) => {
 // 用户的原话："不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸
 // 就在这里" ⟹ 判据是目录里有 project.json，不是"我们下载过"。
 async function renderMine() {
+  // ⚠️ 轮播那块和网格是同一份数据（列表里的路径要和卡片对上）
+  // ⟹ 一起刷新，否则"加入列表"之后计数不变
+  renderRotate();
   const state = document.getElementById('mine-state');
   const grid = document.getElementById('mine-grid');
   const result = await window.gw.workshopLocal();
@@ -1966,6 +1969,30 @@ async function renderMine() {
           label: '在 Finder 中打开',
           onClick: () => window.gw.revealWallpaperDir(it.dir),
         },
+        // ⚠️⚠️ **播放列表的入口在这里**（0.9.43）——
+        // 用户选的是"手选哪几个进列表"而不是"目录里全部"。
+        //
+        // ⚠️ 放在右键菜单而不是卡片上加勾选框：那会给每张卡片加一个常驻控件，
+        // 而这个项目刚因为"常驻的东西太多"被要求删过三轮
+        //（每张卡片的「打开目录」按钮、目录行的「刷新」、创意工坊那段说明）。
+        // ⟹ 判据：**常驻的东西要少，而不是功能要少。**
+        (() => {
+          const list = ((config.we && config.we.rotate) || {}).list || [];
+          const inList = list.includes(it.dir);
+          return {
+            label: inList ? '从播放列表移出' : '加入播放列表',
+            onClick: () => {
+              const next = inList
+                ? list.filter((d) => d !== it.dir)
+                : [...list, it.dir];
+              setRotate({ list: next });
+              // ⚠️ 要重渲染网格 —— 卡片上有"在列表里"的标记，
+              // 不刷的话用户加了之后卡片没变化，会以为没生效
+              //（这个项目栽过六次"做了但用户看不到"）。
+              renderMine();
+            },
+          };
+        })(),
         // ⚠️⚠️ **「卸载（回到内置壁纸）」换成了「删除」**（0.9.42）。
         //
         // 用户 2026-08-01：「应该是卸载，就是这个壁纸的文件直接删除，
@@ -2014,9 +2041,92 @@ async function renderMine() {
       card.style.borderColor = 'var(--accent)';
       card.title = '正在用（右键有更多操作）';
     }
+    // ⚠️ **在播放列表里的要标出来** —— 否则用户加了几个之后
+    // 完全看不出是哪几个（而列表只在右键菜单里能改）。
+    // ⟹ 一个小角标，不占卡片的空间。
+    const rlist = ((config.we && config.we.rotate) || {}).list || [];
+    if (rlist.includes(item.dir)) {
+      const mark = document.createElement('div');
+      mark.textContent = '▶';
+      mark.title = '在播放列表里';
+      mark.style.cssText = 'position:absolute;top:4px;right:5px;font-size:10px;'
+        + 'color:var(--accent);text-shadow:0 0 3px #000';
+      // ⚠️ 卡片要 relative 才能定位角标（ws-item 默认 static）
+      card.style.position = 'relative';
+      card.appendChild(mark);
+    }
     grid.appendChild(card);
   }
 }
+
+// ⚠️⚠️ **轮播那一块的渲染**（0.9.43）。
+//
+// 用户 2026-08-01：「壁纸应该设置一个播放列表，然后可以设置时间如轮播，
+// 可以选择顺序/随机等」
+//
+// 两个设计决定（用户拍的）：
+//   · 列表是**手选**的（右键菜单里加/移出），不是"目录里全部"
+//   · 轮播开着时手动点一个壁纸**不打断轮播**，只是从它重新计时
+function renderRotate() {
+  const r = (config.we && config.we.rotate) || {};
+  const list = r.list || [];
+  const onBox = document.getElementById('rotateOn');
+  const minBox = document.getElementById('rotateMinutes');
+  const modeBox = document.getElementById('rotateMode');
+  const opts = document.getElementById('rotate-opts');
+  const count = document.getElementById('rotate-count');
+  const hint = document.getElementById('rotate-hint');
+  if (!onBox) return;
+
+  onBox.checked = !!r.on;
+  minBox.value = r.minutes || 30;
+  modeBox.value = r.mode || 'order';
+  count.textContent = list.length ? `播放列表 ${list.length} 个` : '';
+
+  // ⚠️ 列表空时藏掉那些设置 —— 它们没有意义，而这个项目刚因为
+  // "常驻的东西太多"被用户要求删过三轮。
+  opts.hidden = list.length < 2;
+
+  if (!list.length) {
+    hint.innerHTML = '播放列表是空的 —— <b>在壁纸上右键 → 「加入播放列表」</b>';
+  } else if (list.length === 1) {
+    // ⚠️ 一个壁纸"轮播"没有意义，而且主进程那边也不会起定时器
+    // ⟹ 要说清，否则用户开了开关发现不动会以为坏了。
+    hint.innerHTML = '⚠️ 列表里只有 1 个 —— 至少要 2 个才会轮播'
+      + '（一个壁纸"轮播"就是每隔 N 分钟重载它，画面会白闪一下）';
+  } else {
+    hint.textContent = r.on
+      ? `轮播中：每 ${r.minutes} 分钟，${r.mode === 'random' ? '随机' : '按列表顺序'}`
+      : '开关关着 —— 打开才会自动换';
+  }
+}
+
+// ⚠️ 改任何一项都走同一个入口 —— 三个控件各写一遍 patch 必然漏一个
+async function setRotate(patch) {
+  const out = await window.gw.weSetRotate(patch);
+  if (out && out.ok && config.we) config.we.rotate = out.rotate;
+  renderRotate();
+}
+
+// ⚠️ 三个控件都走 `setRotate` —— 各写一遍 patch 必然漏一个字段。
+document.getElementById('rotateOn').onchange = (e) =>
+  setRotate({ on: e.target.checked });
+// ⚠️ 用 change 而不是 input —— input 会在用户还在敲的时候就触发
+// （敲 "15" 的过程中先收到 1 ⟹ 那会让轮播先按 1 分钟起一次定时器）。
+document.getElementById('rotateMinutes').onchange = (e) => {
+  const v = Math.round(Number(e.target.value));
+  // ⚠️ 挡住非法值 —— 空/0/负数会让主进程那边 fallback 到 30，
+  // 而用户看到"我填了 0 它变成 30"会以为没生效。
+  if (!Number.isFinite(v) || v < 1) { renderRotate(); return; }
+  setRotate({ minutes: v });
+};
+document.getElementById('rotateMode').onchange = (e) =>
+  setRotate({ mode: e.target.value });
+document.getElementById('rotateNext').onclick = async () => {
+  await window.gw.weRotateNext();
+  renderWEStatus();
+  renderMine();
+};
 
 // 最近一次扫描的结果（哪些目录、在不在、找到几个）。renderMine 拿到就存下来。
 //
@@ -2097,16 +2207,18 @@ function renderMineDirs() {
       if (out && out.ok) await renderMine();
     };
 
-    const refresh = document.createElement('button');
-    refresh.type = 'button';
-    refresh.className = 'act';
-    refresh.textContent = '刷新';
-    refresh.title = '重新扫描这个目录';
-    refresh.onclick = () => renderMine();
-
+    // ⚠️⚠️ 这里原来还有一个「刷新」按钮，删了（0.9.43）。
+    //
+    // 用户 2026-08-01：「刷新我理解是自动刷新的，所以没有也无所谓」
+    // —— **他的理解是对的**，代码里两处都会自动扫：
+    //   `dashboard.js:46`    切到「我的壁纸」页签时
+    //   `dashboard.js:2375`  窗口重新聚焦时（且当前是那个页签）
+    // ⟹ 用户从 Finder 拖进一个壁纸再切回来，列表就更新了 ⟹ 那个按钮是冗余的。
+    //
+    // ⚠️ 而它不做轮询是故意的：扫描要遍历磁盘（Steam 那个目录 639MB），
+    // 每隔几秒扫一次会一直占着 IO。
     box.append(label, open, change);
     if (!isDefault) box.append(reset);
-    box.append(refresh);
     // ⚠️ 插到最前面而不是 append —— 这个函数是异步回调，
     // 直接 append 会让它落在已经渲染好的目录列表后面（顺序随机）。
     host.insertBefore(box, host.firstChild);

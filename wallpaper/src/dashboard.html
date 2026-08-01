@@ -385,6 +385,39 @@
               ⟹ 见 dashboard.js 的 renderMine 里 `item.active` 那段。 -->
     </div>
 
+    <!-- ⚠️ 轮播（0.9.43）。用户 2026-08-01：
+         「壁纸应该设置一个播放列表，然后可以设置时间如轮播，
+           可以选择顺序/随机等」
+
+         ⚠️ 放在网格**上面** —— 它管的是"这些壁纸怎么放"，
+         而网格是"有哪些壁纸"。顺序反了的话用户要先滚过一屏缩略图才看到设置。
+
+         ⚠️ 而整块只在**列表里有东西**时才显示细节（间隔/顺序/下一个）——
+         列表空的时候那些设置没有意义，而这个项目刚因为"常驻的东西太多"
+         被用户要求删过三轮。 -->
+    <div class="card" id="rotate-card">
+      <div class="bar-row" style="align-items:baseline">
+        <div class="toggle" style="flex:1">
+          <input type="checkbox" id="rotateOn">
+          <label for="rotateOn">轮播播放列表里的壁纸</label>
+        </div>
+        <span id="rotate-count" class="hint" style="font-size:11px"></span>
+      </div>
+      <div id="rotate-opts" class="bar-row" style="margin-top:8px;align-items:baseline">
+        <span class="hint" style="font-size:11px">每</span>
+        <input type="number" id="rotateMinutes" min="1" max="1440" step="1"
+               style="width:64px" title="分钟。⚠️ 不支持秒级 —— 切换要重建窗口、重载资源，秒级只会让画面一直闪">
+        <span class="hint" style="font-size:11px">分钟换一张，</span>
+        <select id="rotateMode" title="顺序：按列表往下走。随机：避开当前和上一张">
+          <option value="order">顺序</option>
+          <option value="random">随机</option>
+        </select>
+        <button class="act" id="rotateNext" type="button"
+                title="立刻换下一张（不改开关状态）">下一张</button>
+      </div>
+      <div id="rotate-hint" class="hint" style="font-size:11px;margin-top:6px"></div>
+    </div>
+
     <div id="mine-grid" class="ws-grid"></div>
       <!-- ⚠️⚠️ 这里原来有一段写死的说明（steamcmd 自动扫 + 两条约束），删了。
            用户 2026-08-01 指出它和 renderMineDirs 生成的内容**重复显示**
