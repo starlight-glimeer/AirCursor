@@ -328,6 +328,41 @@ if let pid = procID { AudioDeviceDestroyIOProcID(aggID, pid) }
 let rms = c.frames > 0 ? (c.sumSq / Double(c.frames)).squareRoot() : 0
 let dbfs = rms > 0 ? 20 * log10(rms) : -999
 
+// ⚠️⚠️ **读音量必须在组装 verdict 之前。**
+//
+// 我第一版把这段放在 verdict **之后** —— 而 Swift 顶层代码是顺序执行的
+// ⟹ verdict 里的 `sysVol` 还是初始值 -1 ⟹ 文案说「当前系统音量 0%」，
+// 而 JSON 里的 `systemVolume` 是对的（0.257 / 0.526）。
+//
+// ⚠️ 用户 2026-08-01 实测两次都看到那句 0% —— 而**幸好 JSON 是对的**，
+// 否则我会照着"音量 0%"去解释 RMS 没变（那会得出完全错的结论）。
+// ⟹ 教训：**同一个数在两处显示时，先确认它们读的是同一个时刻的值。**
+// ⚠️⚠️ **系统音量 —— 换过去之前必须确认的另一件事。**
+//
+// PulseAudio 的 monitor（WE 用的）= **音量之后**的信号
+// ScreenCaptureKit（我们现在用的）= **音量之前** ⟹ 我们为此乘了系统音量
+// CoreAudio tap = **不知道**
+//
+// ⟹ 若 tap 已经是音量后，我们再乘一次就**乘了两遍**
+//    ⟹ 音量 50% 时柱子只有 WE 的 1/4
+//
+// ⟹ 报出当前音量 + RMS，让用户**改音量跑两次**对比：
+//    RMS 跟着变 ⟹ tap 是音量后 ⟹ 换过去要**去掉**那次乘法
+//    RMS 不变   ⟹ tap 是音量前 ⟹ 保留乘法
+var volAddr = AudioObjectPropertyAddress(
+    mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+    mScope: kAudioDevicePropertyScopeOutput,
+    mElement: kAudioObjectPropertyElementMain
+)
+var sysVol = Float32(-1)
+var volSize = UInt32(MemoryLayout<Float32>.size)
+if AudioObjectHasProperty(defOut, &volAddr) {
+    if AudioObjectGetPropertyData(defOut, &volAddr, 0, nil, &volSize, &sysVol) != noErr {
+        sysVol = -1
+    }
+}
+
+
 // ⚠️ **结论用 if/else 组装** —— 三元嵌套会让 Swift 类型检查超时（上一版踩过）。
 var verdict = ""
 if c.callbacks == 0 {
@@ -354,31 +389,6 @@ if c.callbacks == 0 {
     verdict += "②这个 RMS 是音量前还是音量后 —— **改一下系统音量再跑一次**："
     verdict += "RMS 跟着变=音量后（换过去要去掉那次乘系统音量），不变=音量前（保留）。"
     verdict += " 当前系统音量 \(Int(max(0, sysVol) * 100))%。"
-}
-
-// ⚠️⚠️ **系统音量 —— 换过去之前必须确认的另一件事。**
-//
-// PulseAudio 的 monitor（WE 用的）= **音量之后**的信号
-// ScreenCaptureKit（我们现在用的）= **音量之前** ⟹ 我们为此乘了系统音量
-// CoreAudio tap = **不知道**
-//
-// ⟹ 若 tap 已经是音量后，我们再乘一次就**乘了两遍**
-//    ⟹ 音量 50% 时柱子只有 WE 的 1/4
-//
-// ⟹ 报出当前音量 + RMS，让用户**改音量跑两次**对比：
-//    RMS 跟着变 ⟹ tap 是音量后 ⟹ 换过去要**去掉**那次乘法
-//    RMS 不变   ⟹ tap 是音量前 ⟹ 保留乘法
-var volAddr = AudioObjectPropertyAddress(
-    mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
-    mScope: kAudioDevicePropertyScopeOutput,
-    mElement: kAudioObjectPropertyElementMain
-)
-var sysVol = Float32(-1)
-var volSize = UInt32(MemoryLayout<Float32>.size)
-if AudioObjectHasProperty(defOut, &volAddr) {
-    if AudioObjectGetPropertyData(defOut, &volAddr, 0, nil, &volSize, &sysVol) != noErr {
-        sysVol = -1
-    }
 }
 
 // ⚠️ 正常路径也要清理（不能只靠 defer，因为上面已经改成手动了）
