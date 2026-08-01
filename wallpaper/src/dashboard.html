@@ -132,7 +132,9 @@
        -webkit-app-region 是 Electron 的，nav 设 drag、里面的按钮设 no-drag。 */
     -webkit-app-region: drag;
   }
-  nav button, nav .keys, #build-stamp { -webkit-app-region: no-drag; }
+  /* ⚠️ `nav .keys` 从这里去掉了（0.9.51 搬进设置弹窗）。
+     ⚠️ `nav button` 已经覆盖齿轮（它就是个 button），不用单列。 */
+  nav button, #build-stamp { -webkit-app-region: no-drag; }
   nav .brand {
     padding: 0 18px 18px; font-size: 14px; font-weight: 600; letter-spacing: .04em;
   }
@@ -147,10 +149,19 @@
     background: rgba(108,199,255,.07);
   }
   nav .spacer { flex: 1; }
-  nav .keys {
-    padding: 14px 18px 0; font: 400 10px/1.9 ui-monospace, monospace;
-    color: rgba(232,232,238,.34); border-top: 1px solid var(--line);
+  /* ⚠️ 齿轮按钮：0.9.51 取代了 nav 底部那 7 行快捷键提示（搬进设置弹窗了）。
+     ⚠️ 它复用 `nav button` 的基础样式（那条选择器管所有 nav 里的 button），
+     所以这里只加"在最下面 + 有分隔线"这几点，不重复写一遍字号颜色。 */
+  #settings-open {
+    border-top: 1px solid var(--line);
+    padding-top: 12px; margin-top: 8px;
   }
+  #settings-open .gear {
+    display: inline-block; font-size: 13px; margin-right: 3px;
+    /* 悬停时转一下 —— 一个很轻的反馈，说明它是可点的 */
+    transition: transform .3s ease;
+  }
+  #settings-open:hover .gear { transform: rotate(60deg); }
   kbd {
     background: rgba(255,255,255,.1); padding: 1px 4px; border-radius: 3px;
     font: inherit;
@@ -411,21 +422,39 @@
         我第一版注释写"右键菜单是 200"，那是凭记忆写的、错的。
         grep 出来才是 9999。⟹ 取 150：启动页之上、右键菜单之下。
         顺序对的理由：弹窗里的卡片也能右键，菜单必须浮在弹窗上面。 */
-  #rotate-modal { position: fixed; inset: 0; z-index: 150; }
-  #rotate-modal-mask {
+  /* ⚠️ 两个弹窗（轮播 0.9.49 / 设置 0.9.51）共用遮罩和盒子样式 ——
+     长得一样是**有意的**：用户学一次就会用第二个。
+     ⚠️ 共用选择器而不是各写一遍：各写一遍的话改一个忘一个，
+     而"两个弹窗长得不一样"是那种看得见但没人报的缺陷。 */
+  #rotate-modal, #settings-modal { position: fixed; inset: 0; z-index: 150; }
+  #rotate-modal-mask, #settings-modal-mask {
     position: absolute; inset: 0;
     background: rgba(4,5,9,.62);
     /* 毛玻璃：底下的面板还能看见轮廓 ⟹ "这是个浮层"而不是"换了一页" */
     backdrop-filter: blur(3px);
   }
-  #rotate-modal-box {
+  #rotate-modal-box, #settings-modal-box {
     position: absolute; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
-    width: 460px; max-width: calc(100vw - 48px);
+    max-width: calc(100vw - 48px);
     max-height: calc(100vh - 64px); overflow-y: auto;
     background: var(--panel); border: 1px solid rgba(255,255,255,.14);
     border-radius: 12px; padding: 16px 18px 18px;
     box-shadow: 0 18px 50px rgba(0,0,0,.6);
+  }
+  /* 宽度是两者唯一的区别：轮播那个装一排缩略图，设置那个要装目录路径和诊断读数。 */
+  #rotate-modal-box { width: 460px; }
+  #settings-modal-box { width: 560px; }
+  /* .sm-* = 设置弹窗自己的东西。.rm-head 那套沿用（下面 .rm-head 那条已经带上了）。 */
+  .sm-head { display: flex; align-items: center; margin-bottom: 12px; }
+  .sm-head b { flex: 1; font-size: 14px; }
+  #settings-modal-close { padding: 2px 8px; font-size: 13px; line-height: 1.3; }
+  /* 快捷键：从 nav 底部搬来的。横排（弹窗宽），行距松一点。 */
+  .sm-keys {
+    margin: 14px 0 4px; padding-top: 12px;
+    border-top: 1px solid var(--line);
+    font: 400 10px/2.1 ui-monospace, monospace;
+    color: rgba(232,232,238,.42);
   }
   .rm-head { display: flex; align-items: center; margin-bottom: 12px; }
   .rm-head b { flex: 1; font-size: 14px; }
@@ -573,15 +602,22 @@
   <button data-tab="mine">我的壁纸</button>
   <button data-tab="gesture">手势录制</button>
   <div class="spacer"></div>
-  <div class="keys">
-    <kbd>⌃⇧W</kbd> 面板<br>
-    <kbd>⌃⇧L</kbd> 换壁纸层<br>
-    <kbd>⌃⇧R</kbd> 复位视角<br>
-    <kbd>⌃⇧H</kbd> 壁纸调试信息<br>
-    <kbd>⌃⇧D</kbd> 开发者工具（面板 + 骨架层）<br>
-    <kbd>⌃⇧X</kbd> 拆掉骨架层（鼠标点不动时用）<br>
-    <kbd>⌃⇧Q</kbd> 退出
-  </div>
+  <!-- ⚠️⚠️ **左下角的齿轮**（0.9.51）。用户 2026-08-01：
+       「我有个很棒的设想，左下方来个齿轮按钮是设置，设置打开后弹窗，
+         这个弹窗里有{{我的壁纸目录：… 打开 更换目录 6 个，4 个能跑}}
+         以及之前的开发者选项」
+
+       **这个设想是对的** —— 目录行和开发者选项都不是"每天要看"的东西：
+         · 目录：一次设定，之后几个月不碰
+         · 开发者选项：只在出问题时打开
+       而它们原来都常驻在「我的壁纸」页上 ⟹ 那一页有一半不是壁纸。
+       ⟹ 搬进设置弹窗之后，「我的壁纸」只剩：轮播摘要行 + 壁纸网格。
+
+       ⚠️ 那一串快捷键提示（⌃⇧W/⌃⇧L/…）也搬进去了 —— 它占了 nav 底部 7 行，
+       而它是**参考资料**，不是每天要看的东西。同一个判据。 -->
+  <button id="settings-open" type="button" title="设置">
+    <span class="gear">⚙</span> 设置
+  </button>
 </nav>
 
 <main>
@@ -593,34 +629,6 @@
          不管它是怎么来的…」）—— 0.9.50 删了，用户点名。
          它说的是**我们怎么实现的**（扫目录、认 project.json），
          而用户在这一页要做的是挑壁纸。 -->
-
-    <!-- ⚠️⚠️ **目录那一行自带全部操作**（0.9.31）。
-         用户 2026-08-01：
-           「这个刷新和加一个壁纸目录应该和我们的『我的壁纸目录：…打开』
-             功能合并，就是打开，然后你也可以添加新的目录然后我的壁纸目录
-             就自动更新，反正只有一个路径来源，只是我允许你更改」
-
-         原来是三处分开：上面一排「刷新 / 加一个壁纸目录…」按钮、
-         中间壁纸网格、下面「存储目录」卡片里的路径行。
-         ⟹ 用户要问"我的壁纸到底在哪"、"加的目录和上面那个什么关系"。
-
-         ⟹ 现在：路径 + [打开] [换目录] [刷新] 在**同一行**，而且只有一个路径。
-         ⟹ 「存储目录」那个标题也删了 —— 一行东西不需要一个章节标题。 -->
-    <div class="card">
-      <div id="mine-dirs"></div>
-      <div id="mine-state" class="hint">—</div>
-      <!-- ⚠️⚠️ 这里原来有「装载别处的目录…」和「卸载（回到内置壁纸）」两个按钮，
-           删了（0.9.37）。用户 2026-08-01：
-             「这两个不需要，我们已经有换目录的按钮了，这是冗余的操作」
-
-           ① 「装载别处的目录…」**确实冗余** —— 「换目录…」能到同一个地方，
-              而且换完那个目录里的壁纸会出现在网格里（更符合「我的壁纸」这个模型）。
-              原来那条路装载的壁纸**不在网格里** ⟹ 用户看不到它、也没法切回来。
-
-           ② 「卸载」**没有别的入口** ⟹ 不能直接删 ⟹ 搬到**网格里当前那张卡片上**。
-              那才是它该在的地方：点一个壁纸装载，点当前那个就取消。
-              ⟹ 见 dashboard.js 的 renderMine 里 `item.active` 那段。 -->
-    </div>
 
     <!-- ⚠️⚠️ 轮播（0.9.49 重做成"一行摘要 + 点开弹窗"）。
          用户 2026-08-01：「轮播那里改一下，应该是点击一下出一个弹窗，
@@ -745,103 +753,13 @@
        各自看起来都合理。**搬动之后要重新审有没有重复**，我漏了这一步。 -->
     <h3>壁纸自己的参数</h3>
     <div class="card">
-      <div id="we-controls"><span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span></div>
+      <!-- ⚠️ 这里原来有一句「装载壁纸后，这里会按它的 project.json 自动生成。」
+           —— 0.9.51 删了，用户点名。它说的是**我们怎么实现的**，
+           而且没装载壁纸时这一整块本来就是空的（那个空状态自己说明了一切）。 -->
+      <div id="we-controls"></div>
     </div>
 
-    <!-- ╔═══════════════════════════════════════════════════════════════════╗
-         ║  DEV-PANEL-START  —— 开发者/诊断模块（产品问世时整块删掉）        ║
-         ╚═══════════════════════════════════════════════════════════════════╝
 
-         用户 2026-08-01：
-           「你的设计太 dashboard 了，我们是一个 2C 的产品」
-           「你可以把开发者的东西全部聚合成一个控制面板模块，
-             最后产品问世了，把这个模块直接撤掉就行」
-
-         **他说得对** —— 我一直在加「能观测的东西」，而那是给我自己用的。
-         一个 2C 用户要选壁纸，而我给了他：壁纸层策略（三个他不认识的词）、
-         鼠标转发开关（不转发壁纸就点不动 —— 那不该是选项）、Finder 门
-         （文案自己写着「开了会挡掉大部分点击」）、音源五个按钮（含单段扫描
-         和合成测试音，纯诊断工具）、频谱数值/钟点/孤峰/帧节奏、helper 日志。
-
-         ⚠️ 但那些观测**不能删** —— 它们是这几十轮唯一的调试手段
-         （用户报症状 → 面板给数字）。删了下次出问题又回到「我猜」，
-         而这一轮我因为猜错烧掉的轮次很清楚。
-
-         ⟹ **物理隔离**：这两个 marker 之间就是全部。撤掉时：
-              ① 删掉 marker 之间的 HTML
-              ② 删掉 dashboard.js 里 DEV-PANEL 那一段
-              ③ 删掉 dashboard.html 里 .dev-* 的 CSS
-            守卫（gating.test.js）查这三处的对应关系，漏一处会报红。 -->
-    <div id="dev-panel-wrap" style="margin-top:18px">
-      <button class="act" id="dev-toggle" type="button"
-              style="font-size:11px;opacity:.6">▸ 开发者选项</button>
-      <div id="dev-panel" hidden>
-        <p class="hint" style="font-size:11px;margin:10px 0 0">
-          ⚠️ 这些是<b>诊断用</b>的，正常使用不需要碰。
-          出问题时打开它、把里面的数字发给开发者。
-        </p>
-
-<h3>壁纸层</h3>
-    <div class="card">
-      <div id="we-strategy" class="we-src"></div>
-      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
-      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
-      <div id="mouse-state" class="hint">—</div>
-      <p class="hint">
-        <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
-        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
-        <b>点击、拖拽、滚轮都能用</b>。
-        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b> ——
-        授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
-        （<code>npm run dist:mac</code>）。
-        <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
-        然后静默收不到任何事件。）
-        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
-        再转发一次会变成双份事件（点一下算两下）。
-      </p>
-    </div>
-
-    <h3>音源</h3>
-    <div class="card">
-      <div id="we-audio-source"></div>
-      <div id="we-audio-state" class="hint"></div>
-      <!-- 装载了「要音频」的壁纸而音源是关时，说清"为什么那部分不动" -->
-      <div id="we-audio-note" class="hint" hidden></div>
-      <!-- ⚠️ 实际频谱值。这是调参的唯一依据 —— 在它之前只能猜。 -->
-      <div id="we-audio-frame" class="hint" style="margin-top:8px;user-select:text" hidden></div>
-      <!-- ⚠️ 音频/壁纸的 helper 日志。
-           原来只有「手势录制」页签底部有一个 #log，而音频的输出（FFT 自检、
-           swiftc 编译失败、丢帧报告）都往那里去 ⟹ 用户在「我的壁纸」页签里
-           找不到它，我还告诉他"在创意工坊的诊断那块"（也是错的）。
-           ⟹ 音频的东西要在音频旁边。 -->
-      <pre id="audio-log" class="log" style="margin-top:8px;max-height:120px"></pre>
-      <p class="hint">
-        <b>「全系统」音源走 CoreAudio 进程 tap（macOS 14.2+）——
-        不需要屏幕录制权限，菜单栏也不会显示"正在共享屏幕"。</b>
-        <br>⚠️ 而这两种情况会退回 ScreenCaptureKit（<b>那时才要屏幕录制</b>，
-        菜单栏会显示"正在共享屏幕"）：
-        <br>　① <b>「只抓网易云」</b> —— tap 抓不了单个 App
-        （能做，但要多走三步链，每步都可能静默失败 ⟹ 暂时不做）
-        <br>　② macOS 低于 14.2，或者 tap 起不来（那时上面那行状态会说原因）
-        <br>　⟹ <b>上面那行状态会写清当前用的是哪条</b>。
-        <br>⚠️ <b>而这只影响音频</b> —— 手势走<b>摄像头</b>权限（菜单栏绿点）、
-        鼠标转发走<b>辅助功能</b>权限（<b>不亮任何指示</b>）。三条链是分开的。
-        <br>　（我原来在这里写"CoreAudio 进程 tap 同样要屏幕录制权限"，
-        <b>那句话是我凭印象说的、没验过</b> —— 用户反问后写了两个探针去量，
-        结论是<b>不需要</b>：<code>tapErr 0</code> + <code>screenRecordingGranted
-        false</code> + 98% 非零采样。⟹ 一句没验的话挡住了一条真出路。）
-        <br>　不想看到它：把音源切成<b>关</b>（或「合成测试音」，那条不碰
-        ScreenCaptureKit）—— 指示会立刻消失，代价是壁纸不跟着音乐动。
-        <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
-        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
-      </p>
-    </div>
-
-      </div>
-    </div>
-    <!-- ╔═══════════════════════════════════════════════════════════════════╗
-         ║  DEV-PANEL-END                                                    ║
-         ╚═══════════════════════════════════════════════════════════════════╝ -->
 
   </section>
 
@@ -1028,6 +946,158 @@
     </div>
   </section>
 </main>
+
+<!-- ⚠️⚠️ **设置弹窗**（0.9.51）。结构和轮播弹窗一致（遮罩 + 居中面板 +
+     ✕/点遮罩/Esc 三条关闭路径）—— 两个弹窗长得一样是**有意的**：
+     用户学一次就会用第二个。
+     ⚠️ 但样式类前缀不同（.sm-* vs .rm-*）：轮播弹窗窄（460px，一排缩略图），
+     设置弹窗要宽（560px，装得下目录路径和诊断读数）。 -->
+<div id="settings-modal" hidden>
+  <div id="settings-modal-mask"></div>
+  <div id="settings-modal-box" role="dialog" aria-modal="true"
+       aria-labelledby="settings-modal-title">
+    <div class="sm-head">
+      <b id="settings-modal-title">设置</b>
+      <button class="act" id="settings-modal-close" type="button" title="关闭（Esc）">✕</button>
+    </div>
+
+    <!-- ⚠️⚠️ **目录那一行自带全部操作**（0.9.31）。
+         用户 2026-08-01：
+           「这个刷新和加一个壁纸目录应该和我们的『我的壁纸目录：…打开』
+             功能合并，就是打开，然后你也可以添加新的目录然后我的壁纸目录
+             就自动更新，反正只有一个路径来源，只是我允许你更改」
+
+         原来是三处分开：上面一排「刷新 / 加一个壁纸目录…」按钮、
+         中间壁纸网格、下面「存储目录」卡片里的路径行。
+         ⟹ 用户要问"我的壁纸到底在哪"、"加的目录和上面那个什么关系"。
+
+         ⟹ 现在：路径 + [打开] [换目录] [刷新] 在**同一行**，而且只有一个路径。
+         ⟹ 「存储目录」那个标题也删了 —— 一行东西不需要一个章节标题。 -->
+    <div class="card">
+      <div id="mine-dirs"></div>
+      <div id="mine-state" class="hint">—</div>
+      <!-- ⚠️⚠️ 这里原来有「装载别处的目录…」和「卸载（回到内置壁纸）」两个按钮，
+           删了（0.9.37）。用户 2026-08-01：
+             「这两个不需要，我们已经有换目录的按钮了，这是冗余的操作」
+
+           ① 「装载别处的目录…」**确实冗余** —— 「换目录…」能到同一个地方，
+              而且换完那个目录里的壁纸会出现在网格里（更符合「我的壁纸」这个模型）。
+              原来那条路装载的壁纸**不在网格里** ⟹ 用户看不到它、也没法切回来。
+
+           ② 「卸载」**没有别的入口** ⟹ 不能直接删 ⟹ 搬到**网格里当前那张卡片上**。
+              那才是它该在的地方：点一个壁纸装载，点当前那个就取消。
+              ⟹ 见 dashboard.js 的 renderMine 里 `item.active` 那段。 -->
+    </div>
+
+
+    <!-- ⚠️ 快捷键：从 nav 底部搬进来的（那里占 7 行，而这是参考资料）。 -->
+    <div class="sm-keys">
+      <kbd>⌃⇧W</kbd> 面板　
+      <kbd>⌃⇧L</kbd> 换壁纸层　
+      <kbd>⌃⇧R</kbd> 复位视角<br>
+      <kbd>⌃⇧H</kbd> 壁纸调试信息　
+      <kbd>⌃⇧D</kbd> 开发者工具<br>
+      <kbd>⌃⇧X</kbd> 拆掉骨架层（鼠标点不动时用）　
+      <kbd>⌃⇧Q</kbd> 退出
+    </div>
+
+    <!-- ╔═══════════════════════════════════════════════════════════════════╗
+         ║  DEV-PANEL-START  —— 开发者/诊断模块（产品问世时整块删掉）        ║
+         ╚═══════════════════════════════════════════════════════════════════╝
+
+         用户 2026-08-01：
+           「你的设计太 dashboard 了，我们是一个 2C 的产品」
+           「你可以把开发者的东西全部聚合成一个控制面板模块，
+             最后产品问世了，把这个模块直接撤掉就行」
+
+         **他说得对** —— 我一直在加「能观测的东西」，而那是给我自己用的。
+         一个 2C 用户要选壁纸，而我给了他：壁纸层策略（三个他不认识的词）、
+         鼠标转发开关（不转发壁纸就点不动 —— 那不该是选项）、Finder 门
+         （文案自己写着「开了会挡掉大部分点击」）、音源五个按钮（含单段扫描
+         和合成测试音，纯诊断工具）、频谱数值/钟点/孤峰/帧节奏、helper 日志。
+
+         ⚠️ 但那些观测**不能删** —— 它们是这几十轮唯一的调试手段
+         （用户报症状 → 面板给数字）。删了下次出问题又回到「我猜」，
+         而这一轮我因为猜错烧掉的轮次很清楚。
+
+         ⟹ **物理隔离**：这两个 marker 之间就是全部。撤掉时：
+              ① 删掉 marker 之间的 HTML
+              ② 删掉 dashboard.js 里 DEV-PANEL 那一段
+              ③ 删掉 dashboard.html 里 .dev-* 的 CSS
+            守卫（gating.test.js）查这三处的对应关系，漏一处会报红。 -->
+    <div id="dev-panel-wrap" style="margin-top:18px">
+      <button class="act" id="dev-toggle" type="button"
+              style="font-size:11px;opacity:.6">▸ 开发者选项</button>
+      <div id="dev-panel" hidden>
+        <p class="hint" style="font-size:11px;margin:10px 0 0">
+          ⚠️ 这些是<b>诊断用</b>的，正常使用不需要碰。
+          出问题时打开它、把里面的数字发给开发者。
+        </p>
+
+<h3>壁纸层</h3>
+    <div class="card">
+      <div id="we-strategy" class="we-src"></div>
+      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
+      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
+      <div id="mouse-state" class="hint">—</div>
+      <p class="hint">
+        <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
+        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
+        <b>点击、拖拽、滚轮都能用</b>。
+        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b> ——
+        授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
+        （<code>npm run dist:mac</code>）。
+        <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
+        然后静默收不到任何事件。）
+        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
+        再转发一次会变成双份事件（点一下算两下）。
+      </p>
+    </div>
+
+    <h3>音源</h3>
+    <div class="card">
+      <div id="we-audio-source"></div>
+      <div id="we-audio-state" class="hint"></div>
+      <!-- 装载了「要音频」的壁纸而音源是关时，说清"为什么那部分不动" -->
+      <div id="we-audio-note" class="hint" hidden></div>
+      <!-- ⚠️ 实际频谱值。这是调参的唯一依据 —— 在它之前只能猜。 -->
+      <div id="we-audio-frame" class="hint" style="margin-top:8px;user-select:text" hidden></div>
+      <!-- ⚠️ 音频/壁纸的 helper 日志。
+           原来只有「手势录制」页签底部有一个 #log，而音频的输出（FFT 自检、
+           swiftc 编译失败、丢帧报告）都往那里去 ⟹ 用户在「我的壁纸」页签里
+           找不到它，我还告诉他"在创意工坊的诊断那块"（也是错的）。
+           ⟹ 音频的东西要在音频旁边。 -->
+      <pre id="audio-log" class="log" style="margin-top:8px;max-height:120px"></pre>
+      <p class="hint">
+        <b>「全系统」音源走 CoreAudio 进程 tap（macOS 14.2+）——
+        不需要屏幕录制权限，菜单栏也不会显示"正在共享屏幕"。</b>
+        <br>⚠️ 而这两种情况会退回 ScreenCaptureKit（<b>那时才要屏幕录制</b>，
+        菜单栏会显示"正在共享屏幕"）：
+        <br>　① <b>「只抓网易云」</b> —— tap 抓不了单个 App
+        （能做，但要多走三步链，每步都可能静默失败 ⟹ 暂时不做）
+        <br>　② macOS 低于 14.2，或者 tap 起不来（那时上面那行状态会说原因）
+        <br>　⟹ <b>上面那行状态会写清当前用的是哪条</b>。
+        <br>⚠️ <b>而这只影响音频</b> —— 手势走<b>摄像头</b>权限（菜单栏绿点）、
+        鼠标转发走<b>辅助功能</b>权限（<b>不亮任何指示</b>）。三条链是分开的。
+        <br>　（我原来在这里写"CoreAudio 进程 tap 同样要屏幕录制权限"，
+        <b>那句话是我凭印象说的、没验过</b> —— 用户反问后写了两个探针去量，
+        结论是<b>不需要</b>：<code>tapErr 0</code> + <code>screenRecordingGranted
+        false</code> + 98% 非零采样。⟹ 一句没验的话挡住了一条真出路。）
+        <br>　不想看到它：把音源切成<b>关</b>（或「合成测试音」，那条不碰
+        ScreenCaptureKit）—— 指示会立刻消失，代价是壁纸不跟着音乐动。
+        <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
+        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
+      </p>
+    </div>
+
+      </div>
+    </div>
+    <!-- ╔═══════════════════════════════════════════════════════════════════╗
+         ║  DEV-PANEL-END                                                    ║
+         ╚═══════════════════════════════════════════════════════════════════╝ -->
+  </div>
+</div>
+
 
 <script src="system.js"></script>
 <script src="templates.js"></script>

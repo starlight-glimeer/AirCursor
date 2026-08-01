@@ -2642,9 +2642,17 @@ check('「用壁纸」的四块在「我的壁纸」页签，不在创意工坊'
   // ⚠️ 原来这里有「已下载的壁纸」—— 那块**和「我的壁纸」的列表重复**（同一个
   // workshopLocal()、同一批数据），用户报了之后删掉了旧的那份。
   // ⟹ 搬动区块之后要重新审有没有重复：搬之前它们在两个页签里，各自看起来都合理。
+  //
+  // ⚠️⚠️ 0.9.51：「壁纸层」「音源」在开发者模块里，而**开发者模块搬进了设置弹窗**
+  // （用户：「左下方来个齿轮按钮是设置…这个弹窗里有…以及之前的开发者选项」）
+  // ⟹ 判据从"必须在 tab-mine 里"改成"**在 tab-mine 或设置弹窗里**"。
+  //   不变的那一半是"不许在创意工坊"—— 那个页签只管"找壁纸"。
+  const settingsAt = html.indexOf('id="settings-modal"');
+  assert.ok(settingsAt > 0, '找不到设置弹窗');
+  const settings = html.slice(settingsAt);
   for (const title of ['壁纸层', '音源', '壁纸自己的参数']) {
-    assert.ok(mine.includes(`<h3>${title}</h3>`),
-      `「${title}」不在「我的壁纸」页签 —— 那是"用壁纸"的功能`);
+    assert.ok(mine.includes(`<h3>${title}</h3>`) || settings.includes(`<h3>${title}</h3>`),
+      `「${title}」既不在「我的壁纸」页签也不在设置弹窗 —— 那是"用壁纸"的功能`);
     assert.ok(!we.includes(`<h3>${title}</h3>`),
       `「${title}」还在「创意工坊」—— 那个页签只该管"找壁纸"`);
   }
@@ -3004,12 +3012,19 @@ check('频谱上报带尖刺量化（相邻段跳变）', () => {
 check('音频日志在音源旁边（不是手势页签）', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   assert.ok(html.includes('id="audio-log"'), '音源旁边没有日志区');
-  // 必须在「我的壁纸」页签里（音源搬过去了）
-  const mineAt = html.indexOf('id="tab-mine"');
-  const mineEnd = html.indexOf('</section>', mineAt);
+  // ⚠️⚠️ 这条断言的**本意是"日志和音源在一起"**，而不是"在某个页签里"。
+  // 原来写的是"必须在 tab-mine 里"，而 0.9.51 音源和日志**一起**搬进了
+  // 设置弹窗的开发者模块 ⟹ 断言在正确代码上报红。
+  // ⟹ 改成直接查它想查的那件事：两者在同一个容器里、而且日志紧跟音源。
+  //   （判据：断言要表达**意图**，不是当时那个位置。）
+  const srcAt = html.indexOf('<h3>音源</h3>');
   const logAt = html.indexOf('id="audio-log"');
-  assert.ok(logAt > mineAt && logAt < mineEnd,
-    '#audio-log 不在「我的壁纸」页签里 —— 音源在那儿，日志也该在那儿');
+  assert.ok(srcAt > 0 && logAt > srcAt,
+    '#audio-log 不在「音源」那块后面 —— 音源在哪，日志就该在哪');
+  // 中间不许插进另一个 <h3>（那说明日志被推到别的小节里去了）
+  const between = html.slice(srcAt + 12, logAt);
+  assert.ok(!/<h3>/.test(between),
+    '「音源」和 #audio-log 之间插进了另一个小节 ⟹ 日志跑到别处了');
 
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const i = dash.indexOf('function logLine');
@@ -4240,8 +4255,18 @@ check('轮播 UI：摘要行开弹窗 / 分钟小时 / 横滑预览 / 网格不�
   // ③ 三条关闭路径：✕ / 遮罩 / Esc。少一条都会让人觉得"关不掉"。
   assert.match(dash, /rotate-modal-close'\)\.onclick/, '弹窗没有 ✕ 关闭');
   assert.match(dash, /rotate-modal-mask'\)\.onclick/, '点遮罩关不掉弹窗');
-  assert.match(dash, /e\.key !== 'Escape'[\s\S]{0,300}?closeRotateModal\(\)/,
-    'Esc 关不掉弹窗');
+  // ⚠️⚠️ 锚**Esc 那个 handler 的整体**，不用固定长度窗口。
+  // 原来写的是 `[\s\S]{0,300}?` —— 0.9.51 把 Esc 改成一个 handler 管两个弹窗
+  // （循环 + return 一次只关一个）之后，`closeRotateModal()` 落到了 300 字符外
+  // ⟹ 断言在正确代码上报红。**固定长度切片第 9 次**（判据一直是：锚结构边界）。
+  const escStart = dash.indexOf("if (e.key !== 'Escape') return;");
+  assert.ok(escStart > 0, '没有 Esc 的 handler');
+  const escFn = dash.slice(escStart, dash.indexOf('\n});', escStart));
+  assert.match(escFn, /closeRotateModal/, 'Esc 关不掉轮播弹窗');
+  assert.match(escFn, /closeSettingsModal/, 'Esc 关不掉设置弹窗');
+  // ⚠️ 一次只关一个 —— 没有 return 的话两个都开着时会同时关掉两个
+  assert.match(escFn, /close\(\); return;/,
+    'Esc 的 handler 里没有 return ⟹ 两个弹窗都开着时会一次关掉两个');
 
   // ④ 分钟/小时：**换算只在 UI 层**，配置里仍然只有 minutes。
   //    存两个字段会引入"120 分钟"和"2 小时"两种表示同一件事的状态，而它们会漂。
@@ -4338,6 +4363,59 @@ check('目录行：一行装完 / 计数不写死 0 / 状态行只报异常', ()
   // ⑤ 按钮文案（用户点名叫「更换目录」）
   assert.match(dash, /change\.textContent = '更换目录'/,
     '「更换目录」按钮改名了 ⟹ 用户点名要这个文案');
+});
+
+// ⚠️⚠️ **设置弹窗**（0.9.51）。用户 2026-08-01：
+//   「我有个很棒的设想，左下方来个齿轮按钮是设置，设置打开后弹窗，
+//     这个弹窗里有{{我的壁纸目录：… 打开 更换目录 6 个，4 个能跑}}
+//     以及之前的开发者选项」
+check('设置弹窗：齿轮入口 / 目录行和开发者选项都在里面 / 撤 dev 不带走目录', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① 齿轮在 nav 里（左下角），弹窗默认 hidden
+  const nav = html.slice(html.indexOf('<nav>'), html.indexOf('</nav>'));
+  assert.match(nav, /id="settings-open"/, '齿轮按钮不在 nav 里 ⟹ 左下角没有入口');
+  assert.match(html, /id="settings-modal"[^>]*hidden/,
+    '设置弹窗没有 hidden ⟹ 一开面板它就糊在上面');
+
+  // ②⚠️⚠️ 目录行和开发者模块都要在**弹窗里**，而不在「我的壁纸」页签里。
+  const smAt = html.indexOf('id="settings-modal"');
+  const mineAt = html.indexOf('id="tab-mine"');
+  const mineEnd = html.indexOf('</section>', mineAt);
+  assert.ok(smAt > 0 && mineAt > 0, '找不到设置弹窗或「我的壁纸」页签');
+  const dirsAt = html.indexOf('id="mine-dirs"');
+  assert.ok(dirsAt > smAt, '目录行不在设置弹窗里（用户点名搬进去）');
+  assert.ok(!(dirsAt > mineAt && dirsAt < mineEnd),
+    '目录行还在「我的壁纸」页签里 ⟹ 那一页又有一半不是壁纸');
+  assert.ok(html.indexOf('DEV-PANEL-START') > smAt,
+    '开发者模块不在设置弹窗里（用户点名搬进去）');
+
+  // ③⚠️⚠️ **目录行必须在 dev marker 之外** —— 两块现在都在同一个弹窗里，
+  //    很容易不小心把目录行圈进 marker，而那样"撤掉开发者模块"会**连目录行一起删**
+  //    （撤掉之后用户再也找不到"我的壁纸在哪"）。
+  //    上面那条「开发者模块物理隔离」已经在查 mine-dirs 不在 devHtml 里，
+  //    这里再直接查一次位置关系 —— 那是这次搬动引入的新风险，值得两道。
+  const ds = html.indexOf('DEV-PANEL-START');
+  const de = html.indexOf('DEV-PANEL-END');
+  assert.ok(!(dirsAt > ds && dirsAt < de),
+    '目录行被圈进 DEV-PANEL marker 了 ⟹ 撤掉开发者模块会连目录行一起删');
+
+  // ④ 三条关闭路径 + 打开时重扫
+  assert.match(dash, /settings-open'\)\.onclick = openSettingsModal/, '齿轮没接开弹窗');
+  assert.match(dash, /settings-modal-close'\)\.onclick/, '设置弹窗没有 ✕ 关闭');
+  assert.match(dash, /settings-modal-mask'\)\.onclick/, '点遮罩关不掉设置弹窗');
+  // ⚠️ 打开时要 renderMine() 而不是 renderMineDirs() —— 后者不重扫，
+  //   计数（"6 个，4 个能跑"）不会更新，而用户可能刚在 Finder 里加删过壁纸。
+  const openFn = dash.slice(dash.indexOf('function openSettingsModal'),
+    dash.indexOf('function closeSettingsModal'));
+  assert.match(openFn, /renderMine\(\)/,
+    '打开设置时没重扫 ⟹ 目录行里的计数是旧的（用户刚在 Finder 里加了壁纸也看不到）');
+
+  // ⑤ 那句讲实现的提示不许回来
+  assert.ok(!/装载壁纸后，这里会按它的 project\.json 自动生成/
+    .test(html.replace(/<!--[\s\S]*?-->/g, '')),
+    '「装载壁纸后，这里会按它的 project.json 自动生成」又回来了（用户点名删掉）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

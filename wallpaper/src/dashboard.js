@@ -2533,13 +2533,51 @@ rotateSummary.onkeydown = (e) => {
 // 三条关闭路径：✕ / 点遮罩 / Esc。
 document.getElementById('rotate-modal-close').onclick = closeRotateModal;
 document.getElementById('rotate-modal-mask').onclick = closeRotateModal;
+
+// ---- 设置弹窗（0.9.51）----
+//
+// ⚠️⚠️ 用户 2026-08-01：「左下方来个齿轮按钮是设置，设置打开后弹窗，
+// 这个弹窗里有{{我的壁纸目录：…}}以及之前的开发者选项」
+//
+// ⟹ 目录行和开发者选项都搬进来了。判据：**它们不是每天要看的东西**
+//   （目录一次设定、开发者选项只在出问题时开），而它们原来常驻在
+//   「我的壁纸」页上 ⟹ 那一页有一半不是壁纸。
+function openSettingsModal() {
+  const modal = document.getElementById('settings-modal');
+  if (!modal) return;
+  // ⚠️ 打开时重扫一次 —— 目录行里的计数（"6 个，4 个能跑"）来自 renderMine，
+  // 而用户可能在 Finder 里加删过壁纸。不刷的话打开看到的是旧数字。
+  // ⚠️ 用 renderMine() 而不是 renderMineDirs()：后者不重扫，计数不会更新。
+  renderMine();
+  modal.hidden = false;
+  const close = document.getElementById('settings-modal-close');
+  if (close) close.focus();
+}
+
+function closeSettingsModal() {
+  const modal = document.getElementById('settings-modal');
+  if (modal) modal.hidden = true;
+}
+
+document.getElementById('settings-open').onclick = openSettingsModal;
+document.getElementById('settings-modal-close').onclick = closeSettingsModal;
+document.getElementById('settings-modal-mask').onclick = closeSettingsModal;
+
 // ⚠️ Esc 挂在 window 上而不是弹窗上 —— 焦点可能在弹窗里任何一个控件上，
 // 而 keydown 冒泡到弹窗要求焦点在它内部，输入框里按 Esc 就不灵了。
 // ⚠️ 判 hidden 而不是无条件关 —— 否则和别处的 Esc（右键菜单）抢。
+// ⚠️⚠️ 两个弹窗**一个 handler 管**，而且 return 一次只关一个 ——
+// 各写一个 handler 的话两个都开着时按 Esc 会同时关掉两个
+// （虽然眼下不会两个同开，但那是"以后加第三个弹窗就出问题"的形状）。
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  const modal = document.getElementById('rotate-modal');
-  if (modal && !modal.hidden) { e.stopPropagation(); closeRotateModal(); }
+  for (const [id, close] of [
+    ['settings-modal', closeSettingsModal],
+    ['rotate-modal', closeRotateModal],
+  ]) {
+    const modal = document.getElementById(id);
+    if (modal && !modal.hidden) { e.stopPropagation(); close(); return; }
+  }
 });
 
 document.getElementById('rotateOn').onchange = (e) =>
