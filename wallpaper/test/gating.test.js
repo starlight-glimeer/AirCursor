@@ -3380,4 +3380,48 @@ check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸�
     + '⟹ 用户在「我的壁纸」点的按钮，错误显示在另一个页签');
 });
 
+// ⚠️⚠️⚠️ **「正在共享屏幕」那个指示要说清楚 —— 用户会自己发现并起疑。**
+//
+// 用户 2026-08-01：「为什么这个壁纸运行的时候会显示 gwsturewall 正在共享屏幕啊」
+//
+// 那是 macOS 对**任何** ScreenCaptureKit 会话都亮的隐私指示，**关不掉**。
+// 而我们非用它不可：macOS 上抓**系统输出**没有别的免安装 API ——
+//   `AVAudioEngine`      只能抓输入设备（麦克风）
+//   CoreAudio 进程 tap   14.2+ 才有，**而且同样要屏幕录制权限**
+//   虚拟声卡              要用户装内核扩展（BlackHole 那类）
+//
+// ⚠️ 而这条说明和"不支持 scene/video"那种**过期说明**是相反的性质：
+//   过期说明会主动误导 ⟹ 删掉
+//   这条是**用户必然会撞到、而且会怀疑我们在偷录屏**的事实 ⟹ 必须主动说
+// ⟹ 判据不是"说明越少越好"，是"用户会不会撞到 + 撞到时能不能自己解释"。
+check('说清「正在共享屏幕」是抓音频的必然副作用', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const htmlCode = html.replace(/<!--[\s\S]*?-->/g, '');
+  assert.match(htmlCode, /正在共享屏幕/,
+    '没说菜单栏会出现「正在共享屏幕」⟹ 用户会以为我们在偷录屏'
+    + '（他 2026-08-01 就是这么问的）');
+  assert.match(htmlCode, /关不掉|无法关闭/,
+    '没说那个指示关不掉 ⟹ 用户会去找开关然后找不到');
+  // ⚠️ 必须给出路 —— 说"关不掉"而不给替代方案等于甩锅
+  assert.match(htmlCode, /合成测试音/,
+    '没说"切成关或合成测试音就没有了" ⟹ 只讲了限制没给出路');
+  // ⚠️ 而"为什么非得用它"要有依据，否则读起来像借口
+  assert.match(htmlCode, /AVAudioEngine/,
+    '没说清为什么非用 ScreenCaptureKit ⟹ 读起来像"我们懒得找别的办法"');
+
+  // ⚠️ 而那条出路必须真的成立：synth 不能碰 SCStream
+  const src = codeOnly(mainSrc);
+  const synthAt = src.indexOf('function startSynthAudio');
+  const synthFn = src.slice(synthAt, src.indexOf('\nfunction ', synthAt + 10));
+  assert.ok(!/SCStream|AudioSource\.start/.test(synthFn),
+    '「合成测试音」这条路碰了 ScreenCaptureKit ⟹ 面板上说它没有那个指示是假的');
+  // ⚠️ 音源关掉时 SCStream 必须真的停 —— 否则"切成关就没有了"也是假的
+  const syncAt = src.indexOf('function syncAudioSource');
+  const syncFn = src.slice(syncAt, src.indexOf('\nfunction ', syncAt + 10));
+  assert.match(syncFn, /audioSource !== 'off'/,
+    'syncAudioSource 没判 off ⟹ 音源关掉后 SCStream 还在跑，指示灯不会消');
+  assert.match(syncFn, /audioTap\.stop\(\)/,
+    '不 want 时没停 audioTap ⟹ 同上');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

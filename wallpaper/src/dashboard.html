@@ -432,6 +432,15 @@
       <pre id="audio-log" class="log" style="margin-top:8px;max-height:120px"></pre>
       <p class="hint">
         抓系统音频要<b>屏幕录制</b>权限（不是麦克风 —— macOS 把系统声音归在屏幕录制下）。
+        <br>⚠️ <b>菜单栏会出现「GestureWall 正在共享屏幕」</b> —— 那是 macOS 对
+        <b>任何</b> ScreenCaptureKit 会话都亮的隐私指示，<b>关不掉</b>。
+        我们其实没在读画面（画面压到 2×2 像素、1 秒 1 帧），但系统只看
+        "有没有在抓"，不看抓多少。
+        <br>　为什么非得用它：macOS 上抓<b>系统输出</b>没有别的免安装 API ——
+        <code>AVAudioEngine</code> 只能抓麦克风；CoreAudio 的进程 tap 要 14.2+
+        <b>而且同样要屏幕录制权限</b>；虚拟声卡要用户装内核扩展。
+        <br>　不想看到它：把音源切成<b>关</b>（或「合成测试音」，那条不碰
+        ScreenCaptureKit）—— 指示会立刻消失，代价是壁纸不跟着音乐动。
         <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
         那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
       </p>
