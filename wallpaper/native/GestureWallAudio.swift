@@ -302,81 +302,111 @@ final class Spectrum {
         //
         // 而「颗粒粗、没有波浪感」也在这里：WE 每帧向目标插值 30%，
         // 我 ATTACK=1.0 直接跳。
+        // ⚠️⚠️⚠️ **128 = 左声道 64 + 右声道 64（右半镜像），不是 128 个连续频段。**
+        //
+        // 这是这一层最关键的一个判断，而我前十一轮全建立在"128 个连续频段"上。
+        //
+        // ⚠️ 证据（三条互相独立，都指向 64）：
+        //   ① WE 的算法本身是 **64 段**：`for (int band = 0; band < 64; band++)`，
+        //      数组是 `audio16[16] / audio32[32] / audio64[64]`
+        //      —— **它没有任何 128 长度的数组**
+        //   ② shader uniform 是 `g_AudioSpectrum64Left` / `g_AudioSpectrum64Right`
+        //      —— **两个 64**，加起来正好 128
+        //   ③ 壁纸侧两种取样法都假设**数组两端对称**：
+        //      `jquery.audiovisualizer.js:91` 的 `getRingArray` 交替 `shift()`/`pop()`
+        //        —— 从**两端**往里对称削
+        //      `PWLine.js:147` 的 `iv = (120 - 密度)/2`
+        //        —— 从**中心**往两边取
+        //      连续数组上这两种切法都毫无道理（会砍掉低频或只保留中频）。
+        //
+        // ⚠️ 反证（一条，所以这个结论不是铁的）：
+        //   粒子壁纸把 128 线性重采样到 512（`r = floor(n*t/512)`）—— 当连续数组用。
+        //   ⟹ **读代码分不出来**，而这个判断也无法从我们自己的数据判
+        //      （数据能说"我发的效果好不好"，不能说"WE 发什么"）。
+        //   ⟹ 判据只能是**用户看画面**，而这个改动是可逆的（一个 MIRROR 开关）。
+        //
+        // ⚠️ 而"连续 128"必然产生用户报了十几轮的那个症状：
+        //   连续频段 ⟹ 值随 band 单向递减（音乐的 1/f 分布）
+        //   ⟹ 圆环上从 3 点一路降到 2 点 ⟹ **必然螺旋**
+        //   ⟹ 而段 119 紧贴段 0 是 5.6kHz 贴 47Hz ⟹ **3 点必然是分割线**
+        //   用户 2026-08-01 的读数正是这个形状：
+        //     3点 0.374 → 9点 0.101 → 2点 0.05（单向递减，无回升）
+        //
+        // 而镜像布局下：3点响 → 9点弱 → 绕回 2点又响 ⟹ **左右对称、绕回连续**。
+        //
+        // ⚠️⚠️ **最强的一条支持**：镜像让所有常量回到 WE 原值。
+        //   加权分母  63     （我改成过 127）
+        //   stride    2      （我用过 2，改成 1，两轮都错）
+        //   覆盖范围  0-5.9kHz（我搞成过 11.2kHz）
+        // ⟹ 我过去每一个错，都出自"把 64 段公式适配到 128 段"这个前提。
+        //    前提换掉，那些补丁全都不需要了 —— **那本身就是前提对了的信号**。
         var out = [Float](repeating: 0, count: BIN_COUNT)
         let half = FFT_SIZE / 2
+        // WE 的一半：64。左右各一份。
+        let bands = BIN_COUNT / 2
 
-        for band in 0..<BIN_COUNT {
-            // ① **线性取样**：band × 2，但**跳过 bin 0**。
+        for band in 0..<bands {
+            // ① **线性取样 band × 2**（WE 原值），但**跳过 bin 0**。
             //
-            // ⚠️ WE 用 64 段时取 index = band*2（覆盖 FFT bin 0..126）。
-            // 我们是 128 段 ⟹ 同样的 index = band*2 覆盖 0..254，
-            // 那是同一套算法的更细版本（每段一个 bin，不做任何分组）。
+            // WE：`int index = band * 2;` ⟹ 64 段覆盖 bin 0..126 ⟹ 0-5.4kHz。
             //
-            // ⚠️ 但 **bin 0 是直流分量，不是频率** —— 用户实测「3 点方向那个柱子
-            // 一直居高不下」，而 3 点 = 段 0 = bin 0。
-            // 上面已经去了直流，这里再 +1 是**双重保险**：
-            // 去直流靠的是"整窗均值"，而窗内的极低频（<20Hz，听不见的隆隆声）
-            // 仍会落进 bin 0/1。那些不该驱动画面。
-            // ⚠️⚠️ **stride 1，不是 2。** 这是我抄 WE 算法时最关键的一个错。
-            //
-            // WE 是 **64 段** × stride 2 ⟹ 覆盖 bin 0..126 ⟹ **0-5.4kHz**
-            // 我照抄 `band*2` 但用在 **128 段**上 ⟹ 覆盖 bin 0..254 ⟹ **0-11.2kHz**
-            //
-            // ⟹ 我以为"128 段是同一算法的更细版本"，
-            // 实际上**我把频率范围也翻倍了**。
-            //
-            // 后果正是用户报了十几轮的那个（2026-08-01 他的描述定死了它）：
-            //
-            //   「3 点是一个很明显的分割线，上面很明显不活跃，下面太活跃了」
-            //   「3 点到 4 点这个区间有反应，其他的反应都很小」
-            //
-            // 算一下就明白：
-            //   3-4 点 = 段 0-10  = 47-1000Hz   ← 音乐能量集中在这
-            //   5 点起 = 段 20+   = 2000Hz 以上  ← 能量少得多
-            //   段 58-119 = 5.4k-11.2kHz        ← **WE 压根不覆盖这段**
-            //
-            // ⟹ 那 62 段在音乐里几乎没能量 ⟹ **一半圆环是死的**
-            // ⟹ 而 3 点正是圆周的接缝：段 119（11.2kHz）紧贴段 0（47Hz），
-            //    频率差 239 倍 ⟹ 必然出现"上面死、下面猛"的分割线。
-            //
-            // ⟹ stride 1 让 128 段覆盖 bin 0..127 = 0-5.95kHz，
-            // 和 WE 的 5.4kHz 基本一致 ⟹ 每段的频率间隔是 WE 的一半，
-            // 那才是**真正的更细版本**。
-            //
-            // ⚠️ bin 0 仍然跳过（直流分量）—— 那条上一轮验过了。
-            let index = min(half - 1, band + 1)
+            // ⚠️ bin 0 是直流分量不是频率 —— 用户实测「3 点方向那根柱子一直
+            // 居高不下」，而 3 点 = 段 0。上面已经去了直流，这里 +1 是双重保险：
+            // 去直流靠整窗均值，而窗内的极低频（<20Hz 听不见的隆隆声）
+            // 仍会落进 bin 0/1，那些不该驱动画面。
+            let index = min(half - 1, band * 2 + 1)
 
-            // ② **功率**，不开根。magnitudes 里存的已经是 |X| = sqrt(re²+im²)
-            // （vDSP_zvabs 的输出），所以这里平方回去拿功率。
+            // ② **功率**，不开根。magnitudes 存的是 |X|（vDSP_zvabs 的输出），
+            // 平方回去拿功率 —— WE 那边是 `f2 = re*re + im*im`。
             let magnitude = magnitudes[index]
             let power = magnitude * magnitude
 
             // ③ **0.35 × log10(功率)**。
-            // ⚠️ power ≤ 0 时 log10 是 -inf ⟹ 必须挡住（WE 那边也判了 f2 > 0）。
+            // ⚠️ power ≤ 0 时 log10 是 -inf ⟹ 必须挡（WE 也判了 f2 > 0）。
             var v: Float = 0.0
             if power > 0.0 {
                 v = LOG_SCALE * log10f(power)
             }
 
-            // ④ **频段加权**：2 − e^((1 − band/(N−1)) − 0.5)
-            // ⚠️ 分母用 BIN_COUNT−1（WE 64 段时用 63）—— 那让加权曲线
-            // 在我们 128 段下保持同样的形状（0.351 → 1.393）。
-            let t = 1.0 - Float(band) / Float(BIN_COUNT - 1)
+            // ④ **频段加权**：2 − e^((1 − band/63) − 0.5)
+            // ⚠️ 分母是 **63**（WE 原值）—— 我曾改成 127 去适配 128 段，
+            // 那是"把 64 段公式硬套到 128"的产物之一。
+            let t = 1.0 - Float(band) / Float(bands - 1)
             let weight = 2.0 - expf(t - 0.5)
             v = v * weight
 
             // ⑤ clamp 到 0..1。⚠️ WE 是 `fmin(1.0f, …)` —— **只截上界**，
-            // 而 log10 在功率很小时是负数 ⟹ 下界也要挡（否则柱子会往反方向长）。
+            // 而 log10 在功率 < 1 时是负数 ⟹ 下界也要挡
+            //（否则柱子往反方向长）。
+            //
+            // ⚠️ 这个下界是一道**硬地板**：power < 1 ⟹ 输出恒 0，
+            // 而频段加权是乘法、乘不动 0。那是"高段完全不动"的根因，
+            // 靠的是矩形窗的泄漏把整条谱抬到地板之上（见 init 里那段注释）。
             v = min(1.0, max(0.0, v))
 
             // ⑥ **两向平滑，系数 0.3**（WE 的 `movetowards(cur, target, 0.3f)`）。
-            // ⚠️ 我之前 ATTACK=1.0（上升不插值），理由是"PWCircle 自己有平滑，
-            // 再平滑就是双重平滑"。而 WE 原版**就是平滑的** ——
-            // 壁纸作者是对着这个行为调的效果，所以我们平滑才对。
-            // 那也是「波浪感」的来源：相邻帧之间连续变化，而不是每帧跳。
+            // ⚠️ 我之前 ATTACK=1.0（上升不插值），理由是"PWCircle 自己有平滑"。
+            // 而 WE 原版**就是平滑的** —— 壁纸作者是对着那个行为调效果的。
             smoothed[band] = smoothed[band] + (v - smoothed[band]) * SMOOTH
-            out[band] = smoothed[band]
+            let value = smoothed[band]
+
+            // ⑦ **镜像**：左声道写前半，右声道写后半（倒序）。
+            //
+            // ⚠️ 我们的输入是**双声道取平均**（一路 PCM）⟹ 两半是同一份数据。
+            // 那和 WE 在单声道音源下的行为一致（左右相同），
+            // 而立体声下 WE 的两半会有细微差别 —— 我们拿不到分声道的 FFT
+            // （`extractSamples` 就把两声道平均了）⟹ **这是一个已知的简化**。
+            //
+            // 要不要真的分左右声道做两次 FFT？暂时不做，理由：
+            //   壁纸消费的是"这个频段有多响"，而立体声的左右差异在圆环上
+            //   表现为"两半略有不同"—— 那是锦上添花，不是"螺旋"这一类的问题。
+            //   而它的成本是两倍 FFT + 改 extractSamples 的接口。
+            // ⟹ 如果用户报"左右两半一模一样，太死板"，那时再做，
+            //    而那个症状和现在要解决的完全不同。
+            out[band] = value
+            out[BIN_COUNT - 1 - band] = value
         }
+
         return out
     }
 }
@@ -423,9 +453,19 @@ func selfTestFFT(_ spectrum: Spectrum) {
     //
     // 如果这个数很大，说明我们的分箱/平滑在**稳态信号上**就已经产生尖刺
     // ⟹ 那和音乐无关，是这一层的问题。
+    // ⚠️⚠️ **只看前半（左声道那 64 段）。**
+    //
+    // 输出现在是镜像的（左 64 + 右 64 倒序），而所有判据在整个 128 上都会双计：
+    //   主瓣宽度 ×2、镜像那一份被算成"主瓣外的孤立高值"（= 假尖刺）、
+    //   峰值段可能落在后半（那时 peakSeg != expectSeg 会误报"频率映射错了"）。
+    //
+    // ⟹ 判据只跑前 64 段。而"镜像本身对不对"另有一条专门的检查（见下）。
+    let bandsHalf = BIN_COUNT / 2
+    let front = Array(bins[0..<bandsHalf])
+
     // 峰值段 + 它周围有几段超过峰值的 1/4（那是"主瓣宽度"的粗略度量）
     var peak = 0
-    for i in 1..<bins.count where bins[i] > bins[peak] { peak = i }
+    for i in 1..<front.count where front[i] > front[peak] { peak = i }
 
     // ⚠️ **排除主瓣附近** —— 我第一版没排除，而那让判据必然误报。
     //
@@ -437,23 +477,37 @@ func selfTestFFT(_ spectrum: Spectrum) {
     // 纯音的频谱该是"一个 4 段宽的钟形 + 其余全部接近 0"。
     var maxJump: Float = 0
     var jumpAt = 0
-    for i in 1..<bins.count {
+    for i in 1..<front.count {
         // 峰值 ±4 段是主瓣，它的陡峭是钟形本身，不是尖刺
         if abs(i - peak) <= 4 { continue }
-        let d = abs(bins[i] - bins[i - 1])
+        let d = abs(front[i] - front[i - 1])
         if d > maxJump { maxJump = d; jumpAt = i }
     }
     // ⚠️ 顺带报主瓣外的最大值 —— 那比跳变更直接：
     // 纯音下主瓣外该全是接近 0 的底噪，出现明显的值就是真尖刺。
     var outsidePeak: Float = 0
     var outsideAt = 0
-    for i in 0..<bins.count {
+    for i in 0..<front.count {
         if abs(i - peak) <= 4 { continue }
-        if bins[i] > outsidePeak { outsidePeak = bins[i]; outsideAt = i }
+        if front[i] > outsidePeak { outsidePeak = front[i]; outsideAt = i }
     }
-    let threshold = bins[peak] * 0.25
+    let threshold = front[peak] * 0.25
     var wide = 0
-    for v in bins where v > threshold { wide += 1 }
+    for v in front where v > threshold { wide += 1 }
+
+    // ⚠️ **镜像对不对**：段 i 和段 127−i 必须逐段相等。
+    //
+    // 这条查的是实现，不是假设：两半是同一份 `value` 写进去的
+    // ⟹ 任何不相等都说明索引写错了（比如写成 `BIN_COUNT - band` 差一位）。
+    // 而那种差一位的错在画面上表现为"接缝处有一根突兀的柱子"，
+    // 看起来像音频问题，实际是这里的下标。
+    var mirrorMaxDiff: Float = 0
+    var mirrorAt = 0
+    for i in 0..<bandsHalf {
+        let d = abs(bins[i] - bins[BIN_COUNT - 1 - i])
+        if d > mirrorMaxDiff { mirrorMaxDiff = d; mirrorAt = i }
+    }
+
     // 1kHz 在哪一段：bin = 1000 / (24000/512) ≈ 21 ⟹ 段 = (21-1)/2 = 10
     let expectSeg = Int((freq / (Float(SAMPLE_RATE) / 2.0 / Float(FFT_SIZE / 2)) - 1) / 2)
     emit([
@@ -461,7 +515,11 @@ func selfTestFFT(_ spectrum: Spectrum) {
         "tone": Int(freq),
         "peakSeg": peak,
         "expectSeg": expectSeg,
-        "peakValue": bins[peak],
+        "peakValue": front[peak],
+        // ⚠️ 镜像的逐段最大差值 —— 该恒为 0（两半写的是同一个 value）。
+        // 非 0 = 下标写错了，症状是"圆环接缝处有一根突兀的柱子"。
+        "mirrorMaxDiff": mirrorMaxDiff,
+        "mirrorAt": mirrorAt,
         // ⚠️ 这个数是判据：<2 说明主瓣太窄（窗函数或 stride 有问题），
         // 3-6 是正常的 Hann 窗主瓣
         "segsAboveQuarter": wide,
@@ -474,11 +532,11 @@ func selfTestFFT(_ spectrum: Spectrum) {
         "outsidePeak": outsidePeak,
         "outsideAt": outsideAt,
         "neighbors": [
-            peak >= 2 ? bins[peak - 2] : 0,
-            peak >= 1 ? bins[peak - 1] : 0,
-            bins[peak],
-            peak + 1 < bins.count ? bins[peak + 1] : 0,
-            peak + 2 < bins.count ? bins[peak + 2] : 0,
+            peak >= 2 ? front[peak - 2] : 0,
+            peak >= 1 ? front[peak - 1] : 0,
+            front[peak],
+            peak + 1 < front.count ? front[peak + 1] : 0,
+            peak + 2 < front.count ? front[peak + 2] : 0,
         ],
     ])
 }

@@ -51,15 +51,69 @@ console.log('\n  五个步骤，每个都有出处');
 // 算出来：3-4 点 = 段 0-10 = 47-1000Hz（音乐能量集中）；
 // 段 58-119 = 5.4k-11.2kHz（WE 压根不覆盖）⟹ 那 62 段几乎没能量 ⟹ 半个圆环死的。
 // 而 3 点是圆周接缝：段 119 的 11.2kHz 紧贴段 0 的 47Hz，**差 239 倍**。
-check('① 线性取样 stride 1（照抄 WE 的 2 会让频率范围翻倍）', () => {
-  assert.match(swiftCode, /band \+ 1/,
-    'stride 不是 1 —— WE 用 stride 2 是因为它只有 64 段。'
-    + '128 段用 stride 2 会覆盖到 11.2kHz，而音乐在那儿没能量 ⟹ 半个圆环是死的');
-  assert.ok(!/band \* 2/.test(swiftCode),
-    '还在用 band*2 —— 那让频率范围翻倍（用户报"3 点是分割线"就是它）');
+// ⚠️⚠️ **这条断言反过来过一次：先要求 stride 2，改成要求 stride 1，现在回到 2。**
+//
+// 那不是来回摇摆 —— **前提换了**。
+//   前提"128 个连续频段" ⟹ stride 2 覆盖 0-11.2kHz ⟹ 半个圆环死 ⟹ 要 stride 1
+//   前提"左 64 + 右 64"   ⟹ 只有 64 段 ⟹ stride 2 覆盖 0-5.4kHz ⟹ **WE 原值**
+//
+// ⚠️ 而"频率范围翻倍"这个观察从头到尾是对的，错的是我当时的解法：
+// 我改 stride 去补偿，而根源是"用 128 段"这个前提本身。
+// **改一个派生常量去补偿一个错的前提** —— 这一轮我干了三次
+//（stride、加权分母、覆盖范围），三次都在同一个前提上打补丁。
+check('① 线性取样 stride 2 —— WE 原值（因为只有 64 段）', () => {
+  assert.match(swiftCode, /band \* 2 \+ 1/,
+    'stride 不是 2 —— WE 是 `int index = band * 2`。'
+    + '我曾改成 stride 1，那是为了补偿"128 个连续频段"这个错前提造成的频率翻倍；'
+    + '前提改成「左 64 + 右 64」之后，stride 2 覆盖 0-5.4kHz，和 WE 一致');
   // 不许再出现我那三个错误模型的痕迹
   assert.ok(!/LINEAR_BINS|USEFUL_BINS|powf\(ratio/.test(swiftCode),
     '还有旧分箱模型的残留（LINEAR_BINS / USEFUL_BINS / powf(ratio…)）');
+});
+
+// ⚠️⚠️⚠️ **128 = 左 64 + 右 64（右半镜像）。**
+//
+// 证据三条（都指向 64）：WE 的循环 `band < 64`；数组只有 16/32/64 没有 128；
+// shader uniform 是 `g_AudioSpectrum64Left`/`64Right` 两个 64。
+// 壁纸侧两种取样也都假设两端对称（`getRingArray` 交替 shift/pop 从两端削、
+// `PWLine.js:147` 的 `iv=(120-密度)/2` 从中心取）。
+//
+// 反证一条：粒子壁纸把 128 线性重采样到 512，当连续数组用
+// ⟹ 读代码分不出来，**判据只能是用户看画面**（这个改动是可逆的）。
+//
+// 最强的支持：**镜像让所有常量回到 WE 原值**（加权分母 63、stride 2、0-5.4kHz）——
+// 我过去每个错都出自"把 64 段公式适配到 128 段"，前提换掉补丁全都不需要了。
+check('128 = 左 64 + 右 64，右半是镜像', () => {
+  assert.match(swiftSrc, /let bands = BIN_COUNT \/ 2/,
+    'Swift 里没有 `bands = BIN_COUNT / 2` —— 循环还在跑 128 段');
+  assert.match(swiftCode, /out\[BIN_COUNT - 1 - band\] = value/,
+    '没有镜像写入 ⟹ 后半 64 段是 0（半个圆环空的），'
+    + '或者按连续频段填（那必然单向递减 ⟹ 螺旋）');
+  // JS 规格也要镜像，而且要逐段相等
+  const mags = new Array(512).fill(0).map((_, i) => 100 / Math.sqrt(i + 1));
+  const f = A.frameValues(mags);
+  assert.strictEqual(f.length, 128, `输出长度 ${f.length}，壁纸要 128`);
+  for (let i = 0; i < 64; i += 1) {
+    assert.strictEqual(f[i], f[127 - i],
+      `段 ${i} (${f[i]}) 和段 ${127 - i} (${f[127 - i]}) 不相等 —— 镜像下标写错了。`
+      + '症状是"圆环接缝处有一根突兀的柱子"，看起来像音频问题实际是下标');
+  }
+  // ⚠️ **形状要"降下去再升回来"**，那是"不螺旋"的量化。
+  // 用户十几轮报的都是单向递减：3点 0.374 → 9点 0.101 → 2点 0.05。
+  const mean = (from) => {
+    let sum = 0;
+    for (let i = from; i < from + 10; i += 1) sum += f[i] || 0;
+    return sum / 10;
+  };
+  const at3 = mean(0);      // 3 点
+  const at9 = mean(60);     // 9 点（镜像轴附近）
+  const at2 = mean(110);    // 2 点（绕回来）
+  assert.ok(Math.abs(at3 - at2) / Math.max(at3, at2) < 0.4,
+    `3 点(${at3.toFixed(3)}) 和 2 点(${at2.toFixed(3)}) 差太多 —— `
+    + '绕一圈回来该接近（那是"接缝不可见"）。差得多就是螺旋');
+  assert.ok(at9 > at3,
+    `9 点(${at9.toFixed(3)}) 不比 3 点(${at3.toFixed(3)}) 高 —— `
+    + '镜像布局下 9 点是高频端（加权 ×1.39），该是圆环上最活跃的');
 });
 
 check('② 用功率（re²+im²），不是 magnitude', () => {
@@ -87,8 +141,12 @@ check('④ 频段加权 2 − e^((1−band/(N−1))−0.5)', () => {
   // 数值要和 WE 的曲线一致
   assert.ok(Math.abs(A.bandWeight(0) - 0.351) < 0.002,
     `band 0 的加权是 ${A.bandWeight(0).toFixed(3)}，WE 是 0.351`);
-  assert.ok(Math.abs(A.bandWeight(127) - 1.393) < 0.002,
-    `band 127 的加权是 ${A.bandWeight(127).toFixed(3)}，WE 是 1.393`);
+  // ⚠️ 顶端是 band **63**（WE 的 64 段），不是 127。
+  // 我曾把分母改成 127 去适配"128 个连续频段" —— 那是同一个错前提的第二个补丁。
+  assert.ok(Math.abs(A.bandWeight(63) - 1.393) < 0.002,
+    `band 63 的加权是 ${A.bandWeight(63).toFixed(3)}，WE 是 1.393`);
+  assert.match(swiftSrc, /Float\(bands - 1\)/,
+    'Swift 的加权分母不是 `bands - 1`（= 63）—— 它曾是 BIN_COUNT-1 = 127');
 });
 
 check('⑤ 两向平滑，系数 0.3', () => {
@@ -106,18 +164,29 @@ check('⑤ 两向平滑，系数 0.3', () => {
 // ⚠️ 频率覆盖范围要和 WE 一致 —— 那是"半个圆环死的"的根因。
 check('频率覆盖和 WE 一致（0-6kHz，不是 0-11kHz）', () => {
   const hzPerBin = 48000 / 2 / 512;
-  // stride 1 ⟹ 段 127 读 bin 128
-  const topHz = 128 * hzPerBin;
+  // ⚠️ 顶端是 **band 63 × stride 2 + 1 = bin 127**（不是 bin 128）。
+  // 这个式子跟着 stride 改过两次 —— 直接从规格算，别写死。
+  const topBin = (A.BANDS - 1) * 2 + 1;
+  const topHz = topBin * hzPerBin;
   assert.ok(topHz < 8000,
     `覆盖到 ${Math.round(topHz)}Hz —— WE 只到 5.4kHz。`
     + '铺太宽会让高频那些段落在音乐几乎没能量的区间 ⟹ 半个圆环不动');
   assert.ok(topHz > 4000,
     `只覆盖到 ${Math.round(topHz)}Hz —— 太窄会丢掉人声和主奏的泛音`);
-  // 而 3 点接缝处的频率跳变要小
-  const seamRatio = (128 * hzPerBin) / (1 * hzPerBin);
-  assert.ok(seamRatio < 200,
-    `圆周接缝处频率差 ${Math.round(seamRatio)} 倍 —— 那必然产生可见的分割线`
-    + '（用户报「3 点是很明显的分割线」）');
+
+  // ⚠️⚠️ **接缝不再是频率跳变问题 —— 镜像布局下 3 点两侧是同一个频段。**
+  //
+  // 旧论证：段 119 的 5.6kHz 紧贴段 0 的 47Hz ⟹ 119 倍跳变 ⟹ 可见分割线。
+  // 那个论证建立在"128 个连续频段"上。镜像布局下：
+  //   段 127 = 右声道 band 0 = **和段 0 同一个频段**
+  //   ⟹ 接缝处频率差 **1 倍**，天然连续。
+  //
+  // ⟹ 这条测试从"频率比值"改成直接查**镜像**（那才是接缝连续的机制）。
+  const mags2 = new Array(512).fill(0).map((_, i) => 100 / Math.sqrt(i + 1));
+  const f2 = A.frameValues(mags2);
+  assert.strictEqual(f2[0], f2[127],
+    `段 0 (${f2[0]}) 和段 127 (${f2[127]}) 不相等 —— 圆环绕回来接不上，`
+    + '那就是用户报了十几轮的「3 点是很明显的分割线」');
 });
 
 console.log('\n  这套算法在真实数据上的效果');
@@ -178,8 +247,8 @@ check('地板：magnitude 贴着 1.0 的段必然输出 0（那不是"小"，是
   assert.strictEqual(A.bandValue(1.0, 60), 0,
     'magnitude=1 ⟹ power=1 ⟹ log10=0 ⟹ 输出必须是 0。'
     + '如果这里非 0，说明公式链和 WE 的 log10 不一致');
-  assert.strictEqual(A.bandValue(0.99, 127), 0,
-    'magnitude<1 时 log10 为负，最大的频段加权（段 127，×1.35）也救不回来 —— '
+  assert.strictEqual(A.bandValue(0.99, A.BANDS - 1), 0,
+    'magnitude<1 时 log10 为负，最大的频段加权（band 63，×1.39）也救不回来 —— '
     + '**加权是乘法，它乘不动 0**。我为"高段不动"调了三轮加权，方向从一开始就错');
   // 地板离满幅多远 —— 那个距离决定了"多弱的成分会被整段丢掉"
   const fullScale = 775;   // 自检实测反推
@@ -252,7 +321,7 @@ check('功率为 0 时输出 0，不是 NaN', () => {
 
 check('输出夹在 0..1（下界也要挡 —— log10 会给负数）', () => {
   for (const m of [0, 0.001, 0.5, 1, 100, 1e6]) {
-    for (const b of [0, 63, 127]) {
+    for (const b of [0, 31, 63]) {
       const v = A.bandValue(m, b);
       assert.ok(v >= 0 && v <= 1,
         `magnitude=${m} band=${b} 输出 ${v} 越界 —— `
@@ -339,9 +408,10 @@ check('去直流：进 FFT 之前先减均值', () => {
 });
 
 check('段 0 不读 bin 0（那是直流不是频率）', () => {
-  // ⚠️ 断言从 `band*2+1` 改成 `band+1` —— stride 从 2 改成 1 了（见上一条）。
-  // 关键是那个 **+1**：它让段 0 读 bin 1 而不是 bin 0。
-  assert.match(swiftCode, /min\(half - 1, band \+ 1\)/,
+  // ⚠️ 这条断言的锚改过两次（`band*2+1` → `band+1` → `band*2+1`），
+  // 而**要守的东西一次没变**：那个 **+1**，它让段 0 读 bin 1 而不是 bin 0。
+  // ⟹ 锚里带 stride 是脆的（stride 会随前提变）。用 `+ 1\)` 收尾更稳。
+  assert.match(swiftCode, /min\(half - 1, band \* 2 \+ 1\)/,
     '段 0 仍然读 bin 0 —— 那是直流分量。去直流是靠"整窗均值"，'
     + '而窗内的极低频（<20Hz 听不见的隆隆声）仍会落进 bin 0/1，那些不该驱动画面');
 });
