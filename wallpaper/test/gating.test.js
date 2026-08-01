@@ -4061,7 +4061,7 @@ check('壁纸墙卡片：定位上下文 / 放不了要常显 / \\n 要有 pre-w
 //   ③「登录界面我们这个只是覆盖了一层什么效果都没有」
 //   ④「摄像头默认开启，登录界面啥都没点就能看到我手的骨架」
 // 这一节守住那四条的修复，重点是**成对的东西**（改一个不改另一个不报错）。
-check('产品外壳：深色标题栏 / 菜单栏图标 / 启动页粒子 / 骨架不压启动页', () => {
+check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨架不压启动页', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const main = codeOnly(mainSrc);
@@ -4080,30 +4080,70 @@ check('产品外壳：深色标题栏 / 菜单栏图标 / 启动页粒子 / 骨�
   assert.ok(!/backgroundColor:\s*nativeTheme/.test(dashWin.slice(0, 900)),
     '面板 backgroundColor 跟 nativeTheme 走 ⟹ 浅色主题下开窗闪一下白');
 
-  // ② 托盘：图标文件要真存在（读不到时 nativeImage 静默返回空 image）
-  const icon = path.join(__dirname, '..', 'assets', 'trayTemplate@2x.png');
-  assert.ok(fs.existsSync(icon), `托盘图标不存在：${icon} ⟹ 菜单栏会是空的`);
-  // ⚠️ 文件名必须带 Template —— 否则 macOS 不按主题上色，深色菜单栏上看不见
-  assert.match(path.basename(icon), /Template/,
-    '托盘图标文件名不带 Template ⟹ macOS 不自动上色，某个主题下看不见');
-  assert.match(main, /new Tray\(/, '没建 Tray ⟹ 关掉窗口后应用没有任何可见入口');
-  assert.match(main, /img\.isEmpty\(\)/,
-    '没查 nativeImage.isEmpty() ⟹ 图标读不到时静默变成空托盘（本项目第七次同形状）');
-  // ⚠️ dock.hide() 必须在确认 tray 建成之后 —— 否则可能既没 Dock 也没菜单栏
-  assert.match(main, /if\s*\(tray\)\s*\{[\s\S]{0,120}?app\.dock\.hide\(\)/,
-    'dock.hide() 没有"托盘建成了吗"的前置判断 ⟹ 托盘失败时应用完全不可见');
-  // dock.hide() 之后光 focus() 不够
-  assert.match(main, /app\.focus\(\{\s*steal:\s*true\s*\}\)/,
-    'dock.hide() 之后没有 app.focus({steal:true}) ⟹ 点菜单栏图标窗口不到前台');
-  assert.match(main, /tray\.destroy\(\)/,
-    '退出时没拆托盘 ⟹ 图标留在菜单栏上，而它正是用户判断"退没退"的凭证');
+  // ②⚠️⚠️ **关闭 = 整个退出**（0.9.47 推翻了 0.9.46 的托盘方案）。
+  //
+  // 0.9.46 我加了菜单栏图标 + app.dock.hide()，那是在**给一个错的前提补台阶**：
+  // 前提是"关窗口 ≠ 退出壁纸"，而用户要的是标准 Mac 行为
+  //   「你正常来说就是应该我点了关闭，那就整个进程关闭都关，
+  //     我缩小了那程序在运行中，我这个 Dock 图标的圆点应该还在的」
+  // ⟹ 这几条断言现在是**反向**的：有 Tray / dock.hide() 就是回归。
+  assert.ok(!/new Tray\(/.test(main),
+    '又加了 Tray ⟹ 0.9.47 定的是标准 Mac 行为（关闭即退出），托盘和"关窗不退出"是配套的，一起撤');
+  assert.ok(!/app\.dock\.hide\(\)/.test(main),
+    '又调了 app.dock.hide() ⟹ Dock 圆点是用户判断"在不在跑"的依据，不能藏');
 
-  // ③ 启动页粒子：canvas 存在、有 dpr 缩放、退出时停 RAF
-  assert.match(html, /id="launch-particles"/, '启动页没有粒子 canvas');
+  // ⚠️ 退出必须挂在面板窗口的 `close` 上，**不能**挂 window-all-closed ——
+  // 壁纸层和骨架层也是 BrowserWindow ⟹ 那个事件在这个应用里永远不触发
+  // （我第一版就挂错了，那是一段死代码：不报错，只是关闭还是不退出）。
+  const dashWinBlock = main.slice(main.indexOf('dashboardWindow = new BrowserWindow'),
+    main.indexOf('// 骨架层'));
+  assert.match(dashWinBlock, /dashboardWindow\.on\('close',[\s\S]{0,120}?hardQuit\(/,
+    '面板窗口的 close 没接 hardQuit ⟹ 点红色 ✕ 关不掉进程（用户报过的原始症状）');
+  // ⚠️ 必须是 'close' 不是 'closed' —— 后者在窗口已经消失之后才触发，
+  // 中间有一帧"窗口没了但壁纸还在"，那正是用户困惑的画面。
+  assert.ok(!/dashboardWindow\.on\('closed',[\s\S]{0,120}?hardQuit\(/.test(dashWinBlock),
+    "退出挂在 'closed' 上 ⟹ 窗口先消失再开始退出，中间那帧壁纸还在");
+  // ⚠️ 走 hardQuit 而不是 app.quit() —— 后者实测不管用
+  assert.ok(!/dashboardWindow\.on\('close',[\s\S]{0,120}?app\.quit\(\)/.test(dashWinBlock),
+    'close 里调了 app.quit() ⟹ 实测不管用（用户报过"点了退出但壁纸还在跑"）');
+  // 最小化要能唤回（最小化状态下 show() 不恢复窗口）
+  assert.match(main, /isMinimized\(\)[\s\S]{0,80}?restore\(\)/,
+    '没处理最小化状态 ⟹ 缩到 Dock 之后点图标/⌃⇧W 唤不回来');
+
+  // ③ 启动页背景（0.9.47 = 极光，不再是点+连线）
+  assert.match(html, /id="launch-particles"/, '启动页没有背景 canvas');
   assert.match(dash, /devicePixelRatio/,
-    '粒子 canvas 没按 devicePixelRatio 缩放 ⟹ Retina 上是模糊的一团');
+    'canvas 没按 devicePixelRatio 缩放 ⟹ Retina 上是模糊的一团');
   assert.match(dash, /cv\.width\s*=/,
     '没显式设 canvas.width ⟹ 默认 300×150，只画在左上角一小块');
+
+  // ⚠️⚠️ **不许回到"点 + 连线"**。用户 2026-08-01 的原话：
+  //   「你这个做得太劣质了，还不如没有呢」「有一种非常廉价的感觉，没有质感」
+  // 那不是参数问题，是形式本身廉价（到处都是的 particles.js 观感）。
+  // ⟹ 这条守的是**设计决定**，不是代码正确性。
+  assert.ok(!/lineTo\(/.test(dash) || !/LINK/.test(dash),
+    '启动页又出现了近邻连线（lineTo + 距离阈值）⟹ 那正是用户判定"廉价"的那一版');
+
+  // 极光的四个承重点：叠加变亮 / 模糊 / blur 乘 dpr / 每帧清屏
+  //
+  // ⚠️⚠️ 这四条都**切到极光那个函数体里**再查，不查全文。
+  // 起因：`clearRect(0, 0, w, h)` 在 dashboard.js:650 早就有一个一模一样的
+  // （别的画布用的）⟹ 只查全文的话，把极光那处删掉守卫**照样绿**
+  // （反向验证第 7 条：报红 0）。锚点撞名第 4 次，上一次是同一轮里的
+  // cancelAnimationFrame —— 所以这里把整组都收窄，而不是只补那一条。
+  const aurora = dash.slice(dash.indexOf('function startLaunchParticles'),
+    dash.indexOf('startLaunchParticles();'));
+  assert.ok(aurora.length > 400, '切不出 startLaunchParticles 函数体 ⟹ 下面四条断言全部失效');
+  assert.match(aurora, /globalCompositeOperation\s*=\s*'lighter'/,
+    "没用 'lighter' 混色 ⟹ 光团只是互相覆盖，缺了极光靠叠加处变亮撑起来的那个观感");
+  assert.match(aurora, /ctx\.filter\s*=\s*`blur\(/,
+    '没给光团做模糊 ⟹ 是五个硬边色盘，不是柔光');
+  // ⚠️ blur 半径要乘 dpr —— ctx.filter 的单位是**设备像素**不是 CSS 像素
+  assert.match(aurora, /blur\(\$\{[^}]*dpr[^}]*\}px\)/,
+    'blur 半径没乘 dpr ⟹ Retina 上模糊只有一半，光团边缘露出来');
+  // ⚠️ 'lighter' 是加法混色 ⟹ 不清屏会几秒内累加成白屏
+  assert.match(aurora, /clearRect\(0,\s*0,\s*w,\s*h\)/,
+    "极光每帧没清屏，而混色是 'lighter'（加法）⟹ 几秒后整块白屏");
   // ⚠️⚠️ 锚 `cancelAnimationFrame(launchRAF)` 而不是光锚函数名 ——
   // dashboard.js:610 **早就有**一个 `cancelAnimationFrame(handle)`（别的动画用的）
   // ⟹ 只锚函数名的话，把粒子那处删掉守卫**照样绿**（反向验证第 9 条：报红 0）。

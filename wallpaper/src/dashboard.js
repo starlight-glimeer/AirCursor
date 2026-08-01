@@ -38,19 +38,33 @@ window.addEventListener('keydown', (e) => {
 setTimeout(enterApp, 2300);
 
 // ---------------------------------------------------------------------------
-// 启动页的粒子背景（0.9.46）
+// 启动页的动态背景：缓慢流动的极光（0.9.47）
 //
-// ⚠️ 用户 2026-08-01：「人家设计好看呀，背景啊，什么半透明怎么粒子效果都很好看」
-// 「我们这个只是覆盖了一层什么效果都没有」
+// ⚠️⚠️ 这是**第二版**。第一版（0.9.46）是"光点 + 近邻连线"，用户的评价是：
+//   「你这个做得太劣质了，还不如没有呢」「有一种非常廉价的感觉，没有质感」
 //
-// 效果 = 慢速上浮的光点 + 近邻连线。连线是关键 —— 光有点只是噪点，
-// 连起来才有"网"的感觉（那也是这类背景常见的做法）。
+// **他说得对。** 点+连线是网页背景里最烂俗的一种（到处都是的
+// particles.js 观感），它的问题不是参数没调好，是**这个形式本身**廉价。
+// ⟹ 换方向：不画"物体"，画**光**。
 //
-// ⚠️ 三个必须做对的地方，否则是"看起来在跑但什么都没有"：
+// 做法 = 五团大面积柔和色斑，各自沿一条很慢的椭圆轨迹漂移，叠加混色。
+//   · `filter: blur()` 把硬边化掉 —— 这是"柔光"和"色块"的分界线
+//   · `globalCompositeOperation = 'lighter'` 让重叠处**变亮**而不是覆盖
+//     ⟹ 那个亮起来的交界处才是极光的观感来源
+//   · 轨迹周期 22~40 秒 ⟹ 慢到"看不出在动，但一眨眼不一样了"
+//
+// ⚠️ 为什么不用纯 CSS（多个 radial-gradient + animation）：
+// CSS 没有 `lighter` 混色（`mix-blend-mode: screen` 要每团一个元素 +
+// 各自的 keyframes ⟹ 五团就是五套动画，而且叠加处的亮度不可控）。
+// canvas 里三行就能做对。
+//
+// ⚠️ 四个必须做对的地方，否则是"看起来在跑但什么都没有"：
 //   ① devicePixelRatio —— 不缩放的话 Retina 上是模糊的一团
 //   ② canvas 的 CSS 尺寸是 100%，而 width/height 属性是像素 ⟹ 必须显式设
 //      （不设默认 300×150，画出来只占左上角一小块）
-//   ③ 拿不到 2d context 时要**安静地放弃**，不能抛 —— 这个文件顶层抛异常
+//   ③ blur 半径要按 dpr 放大 —— ctx.filter 的单位是**设备像素**不是 CSS 像素，
+//      不乘 dpr 的话 Retina 上模糊只有一半，边缘就露出来了
+//   ④ 拿不到 2d context 时要**安静地放弃**，不能抛 —— 这个文件顶层抛异常
 //      会让后面所有开关的绑定全停（这个项目栽过：面板异常表现为"开关点了没反应"）
 // ---------------------------------------------------------------------------
 let launchRAF = null;
@@ -65,14 +79,23 @@ function startLaunchParticles() {
   const ctx = cv.getContext('2d');
   if (!ctx) return;   // 安静放弃：背景是装饰，不该拖垮整个面板
 
+  // 五团光。颜色刻意都偏冷（青/蓝/紫）+ 一点洋红提亮 ——
+  // 和面板的 --accent (#6cc7ff) 同一个色系，不是随机好看的颜色。
+  // ⚠️ alpha 很低（.10~.20）：`lighter` 会累加，高了就成一团白。
+  const blobs = [
+    { hue: '108,199,255', a: 0.20, r: 0.52, cx: 0.30, cy: 0.34, ax: 0.13, ay: 0.09, T: 27, ph: 0.0 },
+    { hue: '120,120,255', a: 0.16, r: 0.46, cx: 0.68, cy: 0.30, ax: 0.11, ay: 0.12, T: 34, ph: 1.7 },
+    { hue: '90,225,220',  a: 0.13, r: 0.40, cx: 0.50, cy: 0.62, ax: 0.15, ay: 0.08, T: 22, ph: 3.1 },
+    { hue: '170,110,255', a: 0.12, r: 0.44, cx: 0.22, cy: 0.68, ax: 0.10, ay: 0.11, T: 40, ph: 4.4 },
+    { hue: '255,140,210', a: 0.09, r: 0.34, cx: 0.78, cy: 0.66, ax: 0.12, ay: 0.10, T: 31, ph: 5.6 },
+  ];
+
   let w = 0;
   let h = 0;
-  const dots = [];
-  const N = 58;          // 58 个点：连线是 O(N²)，58 → 1653 次距离计算/帧，可以忽略
-  const LINK = 108;      // 连线阈值（CSS 像素）。太大就成一团网，太小看不到线
+  let dpr = 1;
 
   function resize() {
-    const dpr = window.devicePixelRatio || 1;
+    dpr = window.devicePixelRatio || 1;
     w = cv.clientWidth;
     h = cv.clientHeight;
     cv.width = Math.round(w * dpr);
@@ -83,58 +106,52 @@ function startLaunchParticles() {
   resize();
   window.addEventListener('resize', resize);
 
-  for (let i = 0; i < N; i += 1) {
-    dots.push({
-      x: Math.random() * w,
-      y: Math.random() * h,
-      // 慢 —— 这是背景，不该抢注意力。上浮为主（vy 偏负），横向轻微飘。
-      vx: (Math.random() - 0.5) * 0.22,
-      vy: -0.10 - Math.random() * 0.22,
-      r: 0.7 + Math.random() * 1.5,
-      a: 0.20 + Math.random() * 0.45,
-    });
-  }
+  // ⚠️ 用 rAF 给的时间戳而不是 Date.now() —— 前者和帧对齐（动画不会跳），
+  // 而且第一帧的值我们拿它当基准，不依赖任何外部时钟。
+  let t0 = null;
 
-  function frame() {
+  function frame(now) {
+    if (t0 === null) t0 = now;
+    const t = (now - t0) / 1000;   // 秒
+
+    // ⚠️ 必须清 —— 不清的话 `lighter` 会把每一帧累加成纯白（几秒就白屏）。
     ctx.clearRect(0, 0, w, h);
 
-    for (const d of dots) {
-      d.x += d.vx;
-      d.y += d.vy;
-      // 飘出去就从另一边回来（上浮 ⟹ 主要从底部重新进入）
-      if (d.y < -6) { d.y = h + 6; d.x = Math.random() * w; }
-      if (d.x < -6) d.x = w + 6;
-      if (d.x > w + 6) d.x = -6;
-    }
+    // ⚠️ 顺序：先 filter 再画。filter 是 ctx 的状态，画完再设没有任何效果
+    // （那是"设了但没生效"的典型 —— 不报错，只是边缘是硬的）。
+    // 半径取短边的比例 ⟹ 窗口拉宽拉高都不会让光团变形。
+    const base = Math.min(w, h);
+    ctx.filter = `blur(${Math.round(base * 0.16 * dpr)}px)`;
+    ctx.globalCompositeOperation = 'lighter';
 
-    // 连线先画（在点下面），线比点淡很多
-    ctx.lineWidth = 1;
-    for (let i = 0; i < dots.length; i += 1) {
-      for (let j = i + 1; j < dots.length; j += 1) {
-        const dx = dots[i].x - dots[j].x;
-        const dy = dots[i].y - dots[j].y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > LINK) continue;
-        // 越近越亮 —— 这是"网在动"的观感来源
-        const alpha = (1 - dist / LINK) * 0.16;
-        ctx.strokeStyle = `rgba(140,205,255,${alpha.toFixed(3)})`;
-        ctx.beginPath();
-        ctx.moveTo(dots[i].x, dots[i].y);
-        ctx.lineTo(dots[j].x, dots[j].y);
-        ctx.stroke();
-      }
-    }
+    for (const b of blobs) {
+      // 椭圆轨迹。x 和 y 用不同的相位（+1.3）⟹ 不是正圆，看起来更随机。
+      const th = (t / b.T) * Math.PI * 2 + b.ph;
+      const x = (b.cx + Math.cos(th) * b.ax) * w;
+      const y = (b.cy + Math.sin(th + 1.3) * b.ay) * h;
+      const r = base * b.r;
 
-    for (const d of dots) {
+      // ⚠️ 径向渐变而不是纯色圆 —— 纯色圆 blur 之后中心还是一个平的盘，
+      // 而渐变让中心亮、边缘化开，那才像光。
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(${b.hue},${b.a})`);
+      g.addColorStop(0.55, `rgba(${b.hue},${(b.a * 0.42).toFixed(3)})`);
+      g.addColorStop(1, `rgba(${b.hue},0)`);
+      ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(180,222,255,${d.a.toFixed(3)})`;
+      ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
     }
 
+    // ⚠️ 复位这两个状态 —— 它们是 ctx 的**持久**状态。不复位的话下一帧
+    // clearRect 也会带着 filter 跑（clearRect 不受 filter 影响，但 composite
+    // 会影响后续任何绘制）。这是"下一帧莫名变样"那类 bug 的来源。
+    ctx.filter = 'none';
+    ctx.globalCompositeOperation = 'source-over';
+
     launchRAF = requestAnimationFrame(frame);
   }
-  frame();
+  launchRAF = requestAnimationFrame(frame);
 }
 
 startLaunchParticles();

@@ -24,41 +24,48 @@
   }
 
   /* ---- 启动页 ----
-     ⚠️⚠️ 用户 2026-08-01：
-       「最开始的时候，我们那个登录界面人家是加载界面，我们这个只是覆盖了一层
-         什么效果都没有」「人家设计好看呀，背景啊，什么半透明怎么粒子效果都很好看」
+     ⚠️⚠️ 用户 2026-08-01：「我们这个只是覆盖了一层什么效果都没有」
 
-     他说得对。原来这里就是 radial-gradient + 三行字 —— 那是"一层蒙层"，
-     不是一个加载界面。⟹ 加三样东西：
-       ① **粒子背景**（canvas，见 launchParticles）—— 慢速上浮的光点 + 近邻连线
+     ⚠️⚠️ 而 0.9.46 的第一版（光点 + 连线）他的评价是：
+       「你这个做得太劣质了，还不如没有呢」「有一种非常廉价的感觉，没有质感」
+     **他说得对** —— 点+连线是网页背景里最烂俗的一种（到处都是的 particles.js
+     观感），问题不在参数，在形式本身。0.9.47 换成**缓慢流动的极光**：
+     五团大面积柔光沿慢速椭圆轨迹漂移、叠加处变亮（见 startLaunchParticles）。
+
+     ⟹ 现在启动页有三样东西：
+       ① 极光背景（canvas）
        ② logo 的呼吸光晕（text-shadow 动画）
        ③ 一条走完就进主界面的进度条 —— 用户知道"它在起，不是卡了"
 
-     ⚠️ 为什么用 canvas 而不是 CSS 粒子：CSS 只能做固定几个元素的动画，
-     而"粒子"要的是几十个 + 随机轨迹 + 连线。连线（两点距离小于阈值就画一条）
-     是这个效果好看的关键，CSS 做不到。
-     ⚠️ 为什么不用 WebGL：canvas 2d 画 60 个点绰绰有余，而 WebGL 要着色器
+     ⚠️ 为什么背景用 canvas 而不是纯 CSS：CSS 没有 `lighter` 混色，
+     而"叠加处亮起来"正是极光的观感来源（`mix-blend-mode: screen` 要每团一个
+     元素 + 各自 keyframes，五团就是五套动画，叠加亮度还不可控）。
+     ⚠️ 为什么不用 WebGL：canvas 2d 画五个渐变圆绰绰有余，而 WebGL 要着色器
      ⟹ 又一个能静默失败的东西（这个项目在"注册成功但功能是死的"上栽过七次）。 */
   #launch {
     position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
-    /* 底色仍然是径向渐变（粒子画在它上面，canvas 是透明的）。
-       比原来更暗、更蓝一点 —— 亮点才显得亮。 */
-    background:
-      radial-gradient(120% 90% at 50% 30%, #1c2030 0%, #12141c 50%, #08090d 100%);
+    /* ⚠️ 底色要**够暗**，否则极光叠上去分不出层次（`lighter` 是加法混色，
+       底色越亮、光团的贡献占比越小 ⟹ 看起来就是一片灰蓝）。
+       几乎纯黑带一点蓝 —— 冷光才显得亮。 */
+    background: #07080c;
     cursor: pointer; transition: opacity .5s ease;
     overflow: hidden;
   }
-  /* 粒子层：铺满，在文字**下面**（z-index 比 .wrap 小） */
+  /* 极光层：铺满，在文字**下面**（z-index 比 .wrap 小） */
   #launch-particles {
     position: absolute; inset: 0; width: 100%; height: 100%;
     display: block; z-index: 0;
   }
-  /* 中心那团柔光 —— 让 logo 从背景里"浮"出来，而不是贴在上面。
+  /* ⚠️ 文字区那层**压暗**的蒙罩（0.9.47 把它从"加光"改成了"减光"）。
+     0.9.46 这里是一团 radial 柔光，用来让 logo 浮起来 —— 但极光本身就在
+     提供光，再加一层只会让中心糊成一片。
+     ⟹ 反过来：中心**微微压暗**，logo 才有对比。这也是"极光在字后面流动"
+        而不是"字浮在极光上"的观感来源。
      ⚠️ pointer-events: none，否则它盖住 #launch 的点击。 */
   #launch::after {
     content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-    background: radial-gradient(38% 30% at 50% 42%,
-                rgba(108,199,255,.10) 0%, rgba(108,199,255,0) 70%);
+    background: radial-gradient(46% 38% at 50% 46%,
+                rgba(4,5,9,.42) 0%, rgba(4,5,9,0) 72%);
   }
   #launch.gone { opacity: 0; pointer-events: none; }
   #launch .wrap { text-align: center; position: relative; z-index: 2; }

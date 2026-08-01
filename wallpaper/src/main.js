@@ -8,7 +8,7 @@
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
 const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, Menu,
-  protocol, net, shell, Tray, nativeImage } = require('electron');
+  protocol, net, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 // spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
@@ -828,11 +828,9 @@ function watchRendererErrors(win, label) {
 function openDashboard() {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.show();
-    // ⚠️⚠️ `app.dock.hide()` 之后（0.9.46）光靠 focus() **不够** ——
-    // accessory 策略下的应用不是"常规应用"，macOS 不会把它的窗口带到前台
-    // ⟹ 症状是点了菜单栏图标，窗口在别的窗口后面，看起来像"没反应"。
-    // `app.focus({steal:true})` 才会真的抢焦点。
-    app.focus({ steal: true });
+    // ⚠️ 从 Dock 图标 / ⌃⇧W 唤回时要真的到前台。
+    // 最小化状态下 show() 不会恢复窗口 ⟹ 要先 restore()。
+    if (dashboardWindow.isMinimized()) dashboardWindow.restore();
     dashboardWindow.focus();
     return;
   }
@@ -878,10 +876,21 @@ function openDashboard() {
     // settings window has no business being fullscreen.
     sendStrategy(dashboardWindow, currentStrategy, wallWindow);
   });
-  // ⚠️ 新建的窗口也要抢焦点 —— 同上，dock.hide() 之后不会自动到前台。
-  dashboardWindow.once('ready-to-show', () => {
-    app.focus({ steal: true });
-    dashboardWindow.show();
+  // ⚠️⚠️⚠️ **点红色 ✕ = 整个退出**（0.9.47）。用户 2026-08-01：
+  //   「点了这个关闭按钮，我是不是所有的程序进程都要结束掉呢？但不是这样子的…
+  //     你正常来说就是应该我点了关闭，那就整个进程关闭都关，
+  //     我缩小了那程序在运行中，我这个 Dock 图标的圆点应该还在的」
+  //
+  // ⚠️ 挂 `close`（关闭前）而不是 `closed`（已关闭）—— 我们要在窗口消失**之前**
+  // 就开始退出流程，否则中间有一帧"窗口没了但壁纸还在"，那正是用户困惑的画面。
+  //
+  // ⚠️ 挂这里而不是 `app.on('window-all-closed')` —— 后者在这个应用里永远
+  // 不触发（壁纸层和骨架层也是 BrowserWindow，见那个 handler 的注释）。
+  //
+  // ⚠️ **最小化不走这里** —— minimize 不发 close 事件，所以"缩小 = 还在跑、
+  // Dock 圆点还在"是自动成立的，不需要额外代码。这正是标准 Mac 行为。
+  dashboardWindow.on('close', () => {
+    hardQuit('关闭面板窗口');
   });
   dashboardWindow.on('closed', () => { dashboardWindow = null; });
 }
@@ -4101,12 +4110,6 @@ function hardQuit(from) {
     stopSweepAudio();
   });
   step('注销全局快捷键', () => globalShortcut.unregisterAll());
-  step('拆掉菜单栏图标', () => {
-    // ⚠️ 托盘不拆的话它会在退出过程中一直挂在菜单栏上 —— 而"图标还在"
-    // 正是用户判断"退没退"的依据（这次加托盘就是为了给他这个凭证）。
-    // ⟹ 它必须是**最先**消失的东西，和"先拆可见的、再做慢活"同一个道理。
-    if (tray) { tray.destroy(); tray = null; }
-  });
   step('拆掉所有窗口', () => {
     for (const win of BrowserWindow.getAllWindows()) {
       // ⚠️ 用 getAllWindows() 而不是我们那四个变量 —— 漏掉任何一个窗口
@@ -4189,22 +4192,10 @@ app.whenReady().then(() => {
   // ⚠️ 菜单要**最先**建 —— 它是退出的兜底路径，而后面任何一步抛异常都会让
   // 应用变成"跑着但退不掉"。先有出口，再做别的。
   buildAppMenu();
-  // ⚠️ 托盘紧跟菜单建 —— 它和菜单一样是"退出的可见出口"，
-  // 后面任何一步抛异常都不该让应用变成"跑着但没有入口"。
-  buildTray();
-  // ⚠️⚠️ 撤掉 Dock 图标（0.9.46）。用户报的"小圆点没了以为退出了"从根上消掉：
-  // 常驻壁纸应用住菜单栏，不该在 Dock 里占一格。
-  //
-  // ⚠️ 必须在 buildTray **之后** —— accessory 策略下如果没有任何托盘/窗口，
-  // 应用就完全不可见了。顺序反了而 buildTray 又失败（图标读不到）的话，
-  // 那就是一个既没 Dock 也没菜单栏的隐形进程，只能强制退出。
-  // ⟹ 所以这里查 tray 是否真建出来了，没建就保留 Dock 图标当兜底。
-  if (tray) {
-    app.dock.hide();
-    console.log('[dock] 已隐藏 Dock 图标（常驻在菜单栏）');
-  } else {
-    console.error('[dock] ⚠️ 托盘没建起来 ⟹ 保留 Dock 图标，否则应用会完全不可见');
-  }
+  // ⚠️⚠️ 这里**没有** buildTray() / app.dock.hide()（0.9.47 撤掉了 0.9.46 加的）。
+  // 见下面 `window-all-closed` 那段 —— 用户要的是标准 Mac 应用：
+  // 点关闭 = 整个退出，最小化 = 还在跑。托盘和"关窗不退出"是配套的，
+  // 一起撤。
   config = readConfig();
   // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
   if (migrateConfig(config)) writeConfig();
@@ -4306,69 +4297,42 @@ app.whenReady().then(() => {
   console.log('  ⌃⇧D 开发者工具    ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });
 
-// ⚠️⚠️ **菜单栏图标**（0.9.46）。用户 2026-08-01 报：
-//   「我点那个关闭吗？他其实不会关闭，但是下面那个应用图片里面的 App 图标
-//     已经没有下面的小圆圈了，就是代表正在运行吗？已经没有了，
-//     我得再点一下那个小件才会出现，然后我通过下面这个点退出」
+// ⚠️⚠️⚠️ **关闭 = 整个退出**（0.9.47）。这条推翻了 0.9.46 的托盘方案。
 //
-// 那个行为**是我们故意的**（`window-all-closed` 空函数：关设置窗口 ≠ 退出壁纸），
-// 但它缺了后半截：关掉窗口之后**没有任何可见的入口**。
-//   · Dock 圆点消失 = macOS 判定进程没窗口了 ⟹ 用户合理地以为它退了
-//   · 而壁纸还在跑 ⟹ 下一次他会去点 Dock 图标 / 强制退出
+// 用户 2026-08-01（第二次说，说得更清楚了）：
+//   「我们契约界面左侧不是有一个关闭按钮吗？那点了这个关闭按钮，
+//     我是不是所有的程序进程都要结束掉呢？但不是这样子的…
+//     你正常来说就是应该我点了关闭，那就整个进程关闭都关，
+//     我缩小了那程序在运行中，我这个 Dock 图标的圆点应该还在的…
+//     就明显存在一些逻辑不一致」
 //
-// ⟹ 一个常驻壁纸应用应该住在**菜单栏**，不是 Dock。加托盘之后：
-//   · 关窗口后菜单栏那个图标就是"它还在跑"的可见凭证
-//   · 点它 = 打开面板；右键 = 有「退出 GestureWall」
-//   · 顺便把 Dock 图标撤掉（LSUIElement）—— 那才是"常驻工具"该有的样子，
-//     而且从根上消掉了"圆点在不在"这个误导源。
+// **他说得对，而且我上一轮修错了方向。**
 //
-// ⚠️ 图标必须是 `template` 命名（trayTemplate@2x.png）—— macOS 只用它的 alpha
-// 自己上色，深浅主题都对。不带 Template 后缀的话浅色菜单栏上是黑图标、
-// 深色菜单栏上还是黑图标 ⟹ 看不见。而"看不见的托盘图标"和没有托盘一样。
-let tray = null;
-
-function trayImage() {
-  // ⚠️⚠️ 用 `__dirname` 而不是 `app.getAppPath()`。
-  // 第一版我写的是 getAppPath()，**是错的**：入口是 `wallpaper/src/main.js`
-  // （package.json 的 `main`）⟹ getAppPath() 返回**仓库根**，而 assets 在
-  // `wallpaper/assets` ⟹ 拼出来的路径不存在 ⟹ createFromPath 静默返回空 image
-  // ⟹ 菜单栏什么都没有，日志一片正常。（这个项目第七次同形状。）
-  // `__dirname` 是 `<app>/wallpaper/src`，往上一级就是 `wallpaper/`，两种运行方式都对。
-  const file = path.join(__dirname, '..', 'assets', 'trayTemplate@2x.png');
-  const img = nativeImage.createFromPath(file);
-  // ⚠️⚠️ **必须查空**。createFromPath 读不到文件时**不抛异常**，返回一个空 image
-  // ⟹ Tray 建出来了、`isEmpty()` 是 true、菜单栏上什么都没有，而日志一片正常。
-  // 这就是这个项目栽过六次的形状（注册成功但功能是死的）。
-  if (img.isEmpty()) {
-    console.error(`[tray] ⚠️ 图标读不到：${file} —— 菜单栏会是空的`);
-    return null;
-  }
-  img.setTemplateImage(true);
-  return img;
-}
-
-function buildTray() {
-  if (tray) return;
-  const img = trayImage();
-  if (!img) return;   // 没图标就不建 —— 一个看不见的托盘比没有更糟（点不到还占位）
-  tray = new Tray(img);
-  tray.setToolTip('GestureWall');
-  const menu = Menu.buildFromTemplate([
-    { label: '打开 GestureWall', click: () => openDashboard() },
-    { type: 'separator' },
-    // ⚠️ 走 hardQuit 而不是 app.quit() —— 后者实测不管用（见 hardQuit 的注释）。
-    { label: '退出 GestureWall', click: () => hardQuit('托盘菜单') },
-  ]);
-  // ⚠️ 不用 setContextMenu —— 那样**左键**也弹菜单，而左键该直接开面板
-  // （用户报的路径就是"我得再点一下才会出现"，多一层菜单是多一步）。
-  tray.on('click', () => openDashboard());
-  tray.on('right-click', () => tray.popUpContextMenu(menu));
-  console.log('[tray] 菜单栏图标已建');
-}
-
-// Deliberately does not quit: closing the settings window is not quitting the
-// wallpaper. 菜单栏图标 / ⌃⇧Q 是出口。
-app.on('window-all-closed', () => {});
+// 原来的设计是「关窗口 ≠ 退出壁纸」，我当时觉得那是对的（壁纸还在桌面上跑），
+// 0.9.46 顺着这个思路加了菜单栏图标 —— 那是在**给一个错的前提补台阶**。
+//
+// 真正的问题是这个前提本身违反 macOS 惯例：
+//   · 点红色 ✕ → 用户预期整个应用结束
+//   · 点最小化 ➖ → 用户预期还在跑、Dock 圆点还在
+// 我们把「关闭」实现成了「隐藏」，于是圆点消失（macOS 判定没窗口了）
+// 但进程还在 ⟹ 两个信号互相矛盾，任何补救（托盘）都只是多一个入口，
+// 不解决「点了关闭却没关」这件事。
+//
+// ⟹ 回到标准行为。撤掉的东西：Tray、app.dock.hide()、
+//    trayImage()、assets/trayTemplate@2x.png。
+//
+// ⚠️ 代价（明确的、用户拍过的）：做不到「只关面板、留壁纸在桌面」——
+//    要留壁纸就得让窗口**最小化**着而不是关掉。这是用户选的，
+//    理由是逻辑一致比多一种用法重要。
+// ⚠️⚠️ **不能挂 `window-all-closed`** —— 它在这个应用里**永远不会触发**。
+// 壁纸层（wallWindow / weWindow）和骨架层（overlayWindow）都是 BrowserWindow，
+// 关掉面板之后它们还在 ⟹ "所有窗口都关了"这个条件不成立。
+// 第一版我就是挂在这里的，那是一段**死代码**（不报错，只是关闭还是不退出）。
+// ⟹ 退出挂在**面板窗口自己的 close 事件**上（见 openDashboard）。
+app.on('window-all-closed', () => {
+  // 留一个空实现：默认行为是退出，而如果哪天壁纸层意外全没了，
+  // 我们不希望应用在那一刻突然自己退掉（那会掩盖真正的问题）。
+});
 // ⚠️ 退出必须**看得见地在发生**，而且不能被任何一步卡住。
 //
 // 用户实测报「点了退出但没真正关掉，壁纸还在跑」。查到两件事：
