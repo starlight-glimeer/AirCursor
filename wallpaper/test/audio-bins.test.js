@@ -687,6 +687,59 @@ check('还没有无出处的幅度系数', () => {
     + '新增的必须先有出处 —— 我这一轮因为"没量就改"被推翻十一次');
 });
 
+// ⚠️⚠️⚠️ **MODULES.md 里关于这一层的 claim 必须和代码一致。**
+//
+// 这类漂移我在同一份文档里踩了三次，而每次都让下一轮往错方向查：
+//   ① 「螺旋是我诊断工具的残影」—— 后来被 stride/镜像证伪，但结论留在文档里
+//   ② 「那是壁纸故意绕 15 圈的设计」—— `main.js:1141` 有映射表把 12→180，证伪
+//   ③ 契约表写「**不做**时间平滑」—— 而 WE 原版就是 `movetowards(…, 0.3f)`，相反
+//
+// ⚠️ ③ 最坏：它是一条**看起来很有道理**的推理（"壁纸自己会平滑，我们再做是双重"），
+// 而它和 WE 的实际行为相反。文档里的错推理比错数字更持久 ——
+// 数字会被实测打脸，推理会被后来的人当前提。
+check('MODULES.md 的音频契约和代码一致', () => {
+  const md = fs.readFileSync(path.join(__dirname, '..', 'MODULES.md'), 'utf8');
+  // 文档不许再出现被证伪的结论
+  const dead = [
+    ['不做时间平滑', 'WE 原版就是 movetowards(cur, target, 0.3f) —— 文档说反了'],
+    ['绕了 15 圈', 'main.js:1141 的映射表把 PolygonAngle 12 → 180，那条论证已证伪'],
+    ['诊断工具造成的残影', '螺旋的真因是 stride + 把 128 当连续频段，不是残影'],
+  ];
+  // ⚠️ 但**引述**一条已推翻的结论是正当的（"我曾经写的是 X，那是错的，因为…"）——
+  // 那正是这份文档最有价值的部分。⟹ 守卫要能区分"当前结论"和"引述"。
+  //
+  // 判别方式：看那句话**前面 40 个字**里有没有推翻标记。
+  // 我第一版没做这个区分 ⟹ 它抓了我自己写的检讨文字（在正确的文档上报红）。
+  const RETRACTED = /曾经|原来|我曾|已证伪|证伪|推翻|错的|那和.{0,6}相反|已经删/;
+  for (const [phrase, why] of dead) {
+    let at = md.indexOf(phrase);
+    while (at >= 0) {
+      const before = md.slice(Math.max(0, at - 40), at);
+      assert.ok(RETRACTED.test(before),
+        `MODULES.md 里「${phrase}」被当成**当前结论**在陈述：${why}\n`
+        + `    上下文：…${before}【${phrase}】…\n`
+        + '    ⟹ 要么删，要么在它前面写清"曾经/已证伪"（引述是正当的，并列不是）');
+      at = md.indexOf(phrase, at + 1);
+    }
+  }
+  // 文档里写的常量必须真的在代码里
+  const claims = [
+    [/VDSP_SCALE[^\n]*0\.5/, /let VDSP_SCALE: Float = 0\.5/, 'VDSP_SCALE'],
+    [/系数 0\.3|0\.3f/, /let SMOOTH: Float = 0\.3/, 'SMOOTH'],
+    [/左 ?64 ?\+ ?右 ?64/, /let bands = BIN_COUNT \/ 2/, '64+64 镜像'],
+  ];
+  for (const [inDoc, inCode, name] of claims) {
+    if (inDoc.test(md)) {
+      assert.match(swiftSrc, inCode,
+        `MODULES.md 说了 ${name}，但代码里找不到 ⟹ 文档和实现漂了。`
+        + '读文档的人（包括失忆后的我）会照文档理解代码');
+    }
+  }
+  // 反过来：代码里有窗函数的话文档也会错
+  assert.ok(!/vDSP_hann_window/.test(swiftSrc) || !md.includes('不加窗函数'),
+    'MODULES.md 写着"不加窗函数"，而代码里有 vDSP_hann_window');
+});
+
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
 
 // ⚠️⚠️ 这一条是实测烧出来的，而且形状很典型。
