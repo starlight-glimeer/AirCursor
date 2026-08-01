@@ -1,6 +1,6 @@
 {
   "name": "aircursor",
-  "version": "0.9.82",
+  "version": "0.9.83",
   "description": "macOS 上的动态壁纸播放器 —— 直接用 Wallpaper Engine 创意工坊的壁纸",
   "author": "starlight-glimeer",
   "main": "wallpaper/src/main.js",
@@ -60,17 +60,21 @@
       "category": "public.app-category.productivity",
       "extendInfo": {
         "NSHumanReadableCopyright": "由 starlight-glimeer 开发 · GestureWall",
-        "NSCameraUsageDescription": "AirCursor uses the camera to recognize your hand gestures.",
-        "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
-        "NSSpeechRecognitionUsageDescription": "AirCursor uses speech recognition for optional local voice commands.",
-        "NSAppleEventsUsageDescription": "AirCursor uses local automation to launch apps you request.",
-        "NSScreenCaptureUsageDescription": "GestureWall captures system audio to drive the audio-reactive wallpaper."
+        "NSCameraUsageDescription": "GestureWall 需要摄像头来识别你的手势。画面只在本机处理，不上传、不保存。",
+        "NSMicrophoneUsageDescription": "GestureWall 需要麦克风来识别语音指令（可选功能）。",
+        "NSSpeechRecognitionUsageDescription": "GestureWall 需要语音识别来处理你的语音指令（可选功能，本机识别）。",
+        "NSAppleEventsUsageDescription": "GestureWall 需要本机自动化来打开你指定的应用、以及设置桌面壁纸。",
+        "NSScreenCaptureUsageDescription": "GestureWall 需要采集系统声音来驱动音频响应的壁纸。"
       },
       "target": [
         "dmg"
       ],
       "identity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "icon": "wallpaper/build/icon.icns"
+    },
+    "dmg": {
+      "icon": "wallpaper/build/icon.icns"
     }
   },
   "devDependencies": {

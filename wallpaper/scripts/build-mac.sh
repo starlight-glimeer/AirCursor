@@ -56,6 +56,25 @@ trap restore EXIT
 # ⚠️ 这台机器没 swiftc 的话它会跳过并说清后果 —— 不会让打包失败。
 bash wallpaper/scripts/prebuild-helpers.sh
 
+# ⚠️⚠️ **用 macOS 自己的 iconutil 重生成 icon.icns**（0.9.83）。
+#
+# 仓库里那个 `wallpaper/build/icon.icns` 是我在 Linux 上**手写二进制**生成的
+# （`icns` magic + 类型码 + PNG 载荷），因为那台机器上没有 iconutil。
+# 结构自校验通过（11 档都能解回合法 PNG），**但"Finder / Dock 认不认"验不了** ——
+# 那是 Apple 的实现细节，不是我读文档能确定的事。
+#
+# ⟹ 在真机上打包时，直接用 Apple 的工具从 iconset 重生成一遍，得到权威产物。
+# ⚠️ 失败**不让打包挂掉**：仓库里那个 icns 至少是个能解析的文件，
+#   最坏情况是图标不对，而不是打不出包。
+if command -v iconutil >/dev/null 2>&1 && [ -d wallpaper/build/icon.iconset ]; then
+  if iconutil -c icns wallpaper/build/icon.iconset -o /tmp/gw-icon.icns 2>/dev/null; then
+    cp /tmp/gw-icon.icns wallpaper/build/icon.icns
+    echo "  ✓ icon.icns 由 iconutil 重生成（$(du -h wallpaper/build/icon.icns | cut -f1)）"
+  else
+    echo "  ⚠️ iconutil 失败 —— 用仓库里那个手写的 icns（图标可能显示不对）"
+  fi
+fi
+
 npx electron-builder --mac dmg
 
 echo ""

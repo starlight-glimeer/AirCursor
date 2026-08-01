@@ -5861,4 +5861,85 @@ check('启动时不碰需要授权的东西（每条链都按需）', () => {
     '骨架层不判 gestures.enabled ⟹ 启动就开摄像头（菜单栏绿点 + 授权框）');
 });
 
+// ⚠️⚠️ **应用图标 + 授权框文案**（0.9.83）。
+//
+// 两件事都是"用户第一眼看到的东西"，而两件都曾是错的：
+//   · 没有 icon ⟹ Dock 和「应用程序」里显示的是 **Electron 默认图标**
+//   · 4 句 UsageDescription 写着 "AirCursor uses the camera…" ⟹
+//     用户点开手势时 macOS **原样显示这句**，应用叫 GestureWall 而框里说
+//     AirCursor 要用摄像头 —— 看起来像被别的程序劫持了，而且是英文。
+check('应用图标接进打包了', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  assert.equal(pkg.build.mac.icon, 'wallpaper/build/icon.icns',
+    'build.mac.icon 没指向 icns ⟹ Dock 里是 Electron 默认图标');
+  assert.equal(pkg.build.dmg && pkg.build.dmg.icon, 'wallpaper/build/icon.icns',
+    'dmg 卷宗图标没设 ⟹ 用户挂载 dmg 看到的是默认磁盘图标');
+
+  const icns = path.join(__dirname, '..', 'build', 'icon.icns');
+  const raw = fs.readFileSync(icns);
+  // ⚠️ 这个 icns 是在 Linux 上**手写二进制**生成的（那台机器没 iconutil）
+  //   ⟹ 至少要保证它结构合法：magic + 总长度字段和实际一致 + 每块能解开。
+  assert.equal(raw.subarray(0, 4).toString(), 'icns', 'icon.icns 的 magic 不对');
+  assert.equal(raw.readUInt32BE(4), raw.length,
+    `icns 总长度字段（${raw.readUInt32BE(4)}）和实际字节数（${raw.length}）不符 ⟹ Finder 会当它损坏`);
+  let off = 8; const kinds = [];
+  while (off < raw.length) {
+    const len = raw.readUInt32BE(off + 4);
+    assert.ok(len >= 8 && off + len <= raw.length, `icns 第 ${kinds.length + 1} 块长度越界`);
+    // 载荷必须是 PNG（现代 icns 的 icp*/ic0*/ic1* 都是 PNG）
+    assert.equal(raw.subarray(off + 8, off + 12).toString('hex'), '89504e47',
+      `icns 的 ${raw.subarray(off, off + 4)} 块载荷不是 PNG`);
+    kinds.push(raw.subarray(off, off + 4).toString()); off += len;
+  }
+  assert.equal(off, raw.length, 'icns 块长度加起来和文件大小不符');
+  // ⚠️ 16px（菜单栏/Finder 列表）和 1024（App Store/预览）都必须在 ——
+  //   缺了 macOS 会拿大图硬缩，小尺寸糊成一团。
+  for (const t of ['icp4', 'ic10']) {
+    assert.ok(kinds.includes(t), `icns 缺 ${t} 档（16px / 1024px）⟹ 那个尺寸会被硬缩`);
+  }
+
+  // ⚠️ iconset 要留在仓库里 —— build-mac.sh 在真机上用 iconutil 从它重生成，
+  //   因为"手写的 icns 真机认不认"我在 Linux 上验不了。
+  const iconset = path.join(__dirname, '..', 'build', 'icon.iconset');
+  assert.ok(fs.existsSync(iconset), '没有 icon.iconset ⟹ 真机上没法用 iconutil 重生成');
+  assert.equal(fs.readdirSync(iconset).filter((f) => f.endsWith('.png')).length, 10,
+    'iconset 不是 10 个 png ⟹ iconutil 会拒绝（它只认 Apple 那套固定命名）');
+  const build = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-mac.sh'), 'utf8');
+  assert.match(build, /iconutil -c icns/,
+    'build-mac.sh 没用 iconutil 重生成 ⟹ 发出去的是我手写的 icns，真机表现没验过');
+  // ⚠️ 而它**不许让打包失败** —— 最坏是图标不对，不是打不出包
+  assert.match(build, /iconutil[\s\S]{0,400}?2>\/dev\/null/,
+    'iconutil 那段没吞错误 ⟹ 它失败会让整个打包挂掉（set -e）');
+});
+
+check('授权框里说的是 GestureWall，不是 AirCursor', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const info = pkg.build.mac.extendInfo;
+  // ⚠️ 这 5 句是 macOS **原样显示在授权框里**的
+  const keys = ['NSCameraUsageDescription', 'NSMicrophoneUsageDescription',
+    'NSSpeechRecognitionUsageDescription', 'NSAppleEventsUsageDescription',
+    'NSScreenCaptureUsageDescription'];
+  for (const k of keys) {
+    const v = info[k];
+    assert.ok(v, `${k} 没了 ⟹ macOS 会直接拒绝那次授权请求（不是"不显示说明"，是崩）`);
+    assert.ok(!/AirCursor/.test(v),
+      `${k} 里还写着 AirCursor ⟹ 用户看到的框上说"AirCursor 要用…"，`
+      + '而应用叫 GestureWall（看起来像被别的程序劫持）');
+    assert.match(v, /GestureWall/, `${k} 没提 GestureWall ⟹ 用户不知道是谁在要权限`);
+  }
+  // helper 自己的 plist —— 语音 helper 弹框用的是**它**，不是主 App 的
+  const plist = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'native', 'AirCursorVoiceInfo.plist'), 'utf8');
+  assert.ok(!/AirCursor uses/.test(plist),
+    'AirCursorVoiceInfo.plist 里的说明还是 AirCursor 的英文原句 ⟹ '
+    + '语音 helper 弹的框走这个 plist，不走 package.json');
+  // ⚠️⚠️ **CFBundleIdentifier 不许动** —— TCC 按 bundle id 记授权，
+  //   改了 macOS 就当成一个全新程序，用户已经给的授权全部失效、要重新授一遍。
+  assert.match(plist, /<string>com\.starlightglimeer\.aircursor\.voice<\/string>/,
+    'helper 的 CFBundleIdentifier 被改了 ⟹ 用户已给的麦克风/语音授权全部失效');
+  assert.equal(pkg.build.appId, 'com.starlightglimeer.aircursor',
+    '主 App 的 appId 被改了 ⟹ 同上，用户已给的所有授权失效（这个字段用户看不见，'
+    + '改它纯亏）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

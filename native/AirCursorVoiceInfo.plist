@@ -5,10 +5,10 @@
   <key>CFBundleIdentifier</key>
   <string>com.starlightglimeer.aircursor.voice</string>
   <key>CFBundleName</key>
-  <string>AirCursor Voice</string>
+  <string>GestureWall 语音</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>AirCursor uses the microphone for optional local voice commands.</string>
+  <string>GestureWall 需要麦克风来识别语音指令（可选功能）。</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>AirCursor uses speech recognition for optional local voice commands.</string>
+  <string>GestureWall 需要语音识别来处理你的语音指令（可选功能，本机识别）。</string>
 </dict>
 </plist>
