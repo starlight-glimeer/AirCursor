@@ -312,6 +312,10 @@ function sendStrategy(win, strategy, frameOf) {
 // Config
 // ---------------------------------------------------------------------------
 const defaultConfig = {
+  // ⚠️ 面板主题（0.9.59）：'dark' | 'light'。用户点名「先做深色和浅色两种」。
+  // ⚠️ 默认 dark 而不是"跟随系统" —— 面板的 CSS 是按深色设计的，
+  //   "跟随系统"意味着两套配色都得经过检查，而浅色那套刚写出来。
+  theme: 'dark',
   wallStrategy: 'desktop',
   layers: {
     // Absolute paths, not copies: the user picked these files, and duplicating

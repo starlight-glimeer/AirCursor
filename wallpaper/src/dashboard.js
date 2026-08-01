@@ -78,17 +78,34 @@ window.addEventListener('keydown', (e) => {
 //   ④ 拿不到 2d context 时要**安静地放弃**，不能抛 —— 这个文件顶层抛异常
 //      会让后面所有开关的绑定全停（这个项目栽过：面板异常表现为"开关点了没反应"）
 // ---------------------------------------------------------------------------
-let launchRAF = null;
+// ⚠️ 每个 canvas 一个 RAF 句柄 —— 共用一个的话进主界面时停启动页那份
+// 会把主界面那份也停掉（而症状是"背景不动了"，不报错）。
+const auroraRAF = {};
 
-function stopLaunchParticles() {
-  if (launchRAF !== null) { cancelAnimationFrame(launchRAF); launchRAF = null; }
+function stopAurora(canvasId) {
+  if (auroraRAF[canvasId] != null) {
+    cancelAnimationFrame(auroraRAF[canvasId]);
+    auroraRAF[canvasId] = null;
+  }
 }
 
-function startLaunchParticles() {
-  const cv = document.getElementById('launch-particles');
+// 兼容名：启动页那处叫这个（enterApp 里调）
+function stopLaunchParticles() { stopAurora('launch-particles'); }
+
+// ⚠️⚠️ **两处在用同一个极光**（0.9.59）：启动页 + 主界面背景。
+// 用户 2026-08-01：「我想给产品一开始那个背景动画也加到打开软件之后，作为背景」
+//
+// ⚠️ `opts.dim` = 主界面那份要**暗得多**（0.28）——
+//   启动页上极光是主角，而主界面上它是背景：卡片和文字要压得住它。
+//   不调暗的话网格上的文字读不清（而那不报错，只是"看起来乱"）。
+// ⚠️ 两份各自一个 RAF 句柄（`auroraRAF` 是个字典）——
+//   共用一个的话进主界面时 `stopAurora('launch-particles')` 会把主界面那份也停掉。
+function startAurora(canvasId, opts) {
+  const cv = document.getElementById(canvasId);
   if (!cv) return;
   const ctx = cv.getContext('2d');
   if (!ctx) return;   // 安静放弃：背景是装饰，不该拖垮整个面板
+  const dim = (opts && opts.dim) || 1;
 
   // 五团光。颜色刻意都偏冷（青/蓝/紫）+ 一点洋红提亮 ——
   // 和面板的 --accent (#6cc7ff) 同一个色系，不是随机好看的颜色。
@@ -158,8 +175,10 @@ function startLaunchParticles() {
       // ⚠️ 径向渐变而不是纯色圆 —— 纯色圆 blur 之后中心还是一个平的盘，
       // 而渐变让中心亮、边缘化开，那才像光。
       const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, `rgba(${b.hue},${b.a})`);
-      g.addColorStop(0.55, `rgba(${b.hue},${(b.a * 0.42).toFixed(3)})`);
+      // ⚠️ `dim` 让主界面那份暗下来（0.28）—— 见函数头的注释。
+      const a = b.a * dim;
+      g.addColorStop(0, `rgba(${b.hue},${a.toFixed(3)})`);
+      g.addColorStop(0.55, `rgba(${b.hue},${(a * 0.42).toFixed(3)})`);
       g.addColorStop(1, `rgba(${b.hue},0)`);
       ctx.fillStyle = g;
       ctx.beginPath();
@@ -173,12 +192,48 @@ function startLaunchParticles() {
     ctx.filter = 'none';
     ctx.globalCompositeOperation = 'source-over';
 
-    launchRAF = requestAnimationFrame(frame);
+    auroraRAF[canvasId] = requestAnimationFrame(frame);
   }
-  launchRAF = requestAnimationFrame(frame);
+  auroraRAF[canvasId] = requestAnimationFrame(frame);
 }
 
-startLaunchParticles();
+startAurora('launch-particles', { dim: 1 });
+startAurora('app-bg', { dim: 0.28 });
+
+// ---------------------------------------------------------------------------
+// 主题：深色 / 浅色（0.9.59）
+//
+// ⚠️⚠️ 用户 2026-08-01：「在设置里多一个主题色彩的选项，可以调整颜色，
+// 先做深色和浅色两种模式就好」
+//
+// ⚠️ 实现是 `<html data-theme="light">` + CSS 变量（见 dashboard.html 的 :root）
+// ⟹ 换主题只改一个属性，不碰任何元素。
+// ⚠️ **要落配置**（`config.theme`）—— 换了主题下次打开还是那个，
+//   否则每次开面板都要重选（而"设置"的意思就是记住）。
+// ⚠️ 而且要在**第一帧之前**应用（见 dashboard.html 里的 inline script）——
+//   等 apply() 从主进程拿到 config 再改的话，浅色主题的用户每次开面板
+//   都会看到深色闪一下。
+function applyTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = t;
+  // ⚠️ 写一份镜像给 <head> 里那段 inline script 用（防第一帧闪深色）。
+  // ⚠️ 它只是镜像，权威是 config.theme —— 见那段 script 的注释。
+  try { localStorage.setItem('gw-theme', t); } catch { /* 隐私模式 */ }
+  for (const b of document.querySelectorAll('[data-theme-pick]')) {
+    b.className = b.dataset.themePick === t ? 'on' : '';
+  }
+}
+
+for (const btn of document.querySelectorAll('[data-theme-pick]')) {
+  btn.onclick = async () => {
+    const t = btn.dataset.themePick;
+    applyTheme(t);
+    // ⚠️ 立刻存 —— 而不是等下次 apply 广播回来。
+    // 那样即使写配置失败，视觉上也已经切了（用户看到反馈），
+    // 而失败的后果只是"下次打开又回到旧主题"。
+    await window.gw.setConfig({ theme: t });
+  };
+}
 
 // ---------------------------------------------------------------------------
 // 红绿灯：默认藏着，鼠标移到顶部才出现（0.9.58）
@@ -200,25 +255,72 @@ startLaunchParticles();
 // ⚠️ 只在状态**变化**时发 IPC —— 每次 mousemove 都发的话，
 //   移动鼠标就是每秒几十次跨进程调用。
 (() => {
-  const ZONE = 56;
+  // ⚠️⚠️ **判定区 34px，不是 56** —— 0.9.58 那版有两个缺陷，用户都撞到了：
+  //   「我发现现在是在"我的壁纸，创意工坊"这些 tab 的下划线那里可以触发红绿灯，
+  //     然后我真的要去点击红绿灯，反而隐藏了，点不了」
+  //
+  // ① **56 包住了 tab 的下划线**（它在 y≈50：让位 10 + 按钮 9+19+10 + 边框 2）
+  //    ⟹ 鼠标划过 tab 就触发。而红绿灯只占 y=13..25 ⟹ 34 够了（底边 25 + 余量）。
+  //
+  // ② ⚠️⚠️ **"点不了"是设计缺陷，不是参数问题。**
+  //    红绿灯是**原生窗口按钮**，不在网页里 ⟹ 鼠标真的移到它们上面时，
+  //    网页收到的是 `mouseleave`（指针离开了文档区域）⟹ 旧代码 `setShown(false)`
+  //    ⟹ **按钮在用户要点的那一刻消失**。
+  //    ⟹ 判据：**藏起来必须有延迟，而且"鼠标在按钮区"要算成"还在顶部"。**
+  //
+  // ⟹ 两条修复：
+  //    · 显示：立刻（鼠标进 34px 就出现，不能等）
+  //    · 隐藏：**延迟 500ms**，而且这 500ms 内鼠标回到顶部就取消
+  //      ⟹ 从 y=30 往上移到 y=18（原生按钮上）的那一路，隐藏被取消
+  const ZONE = 34;
+  const HIDE_DELAY = 500;
   let shown = false;
+  let hideTimer = null;
 
-  function setShown(next) {
-    if (next === shown) return;    // 只在变化时发
-    shown = next;
-    window.gw?.titleBarHover?.(next);
+  function cancelHide() {
+    if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
+  }
+
+  function show() {
+    cancelHide();
+    if (shown) return;
+    shown = true;
+    window.gw?.titleBarHover?.(true);
+  }
+
+  // ⚠️ 延迟隐藏。⚠️ 不能立刻藏 —— 见上面 ②：鼠标移到原生按钮上时网页
+  //   会收到 mouseleave，立刻藏就等于"用户伸手去点，按钮跑了"。
+  function scheduleHide() {
+    if (!shown || hideTimer !== null) return;
+    hideTimer = setTimeout(() => {
+      hideTimer = null;
+      shown = false;
+      window.gw?.titleBarHover?.(false);
+    }, HIDE_DELAY);
   }
 
   document.addEventListener('mousemove', (e) => {
-    setShown(e.clientY <= ZONE);
+    if (e.clientY <= ZONE) show();
+    else scheduleHide();
   });
-  // ⚠️ 鼠标移出窗口时要藏起来 —— 不然它会停在"最后一次在顶部"的状态。
-  //   （从顶部直接移出窗口是很自然的动作：去点别的应用。）
-  document.addEventListener('mouseleave', () => setShown(false));
-  // ⚠️ 窗口失焦也藏 —— macOS 上失焦窗口的红绿灯本来就该是灰的/不显眼，
-  //   而我们藏着更干净。⚠️ 重新获得焦点时**不主动显示**：
-  //   等鼠标真的移到顶部再说（那才是用户的意图）。
-  window.addEventListener('blur', () => setShown(false));
+  // ⚠️ 鼠标移出文档时**不能无条件藏** —— 往上移出去（到原生按钮上）和
+  //   往下/往旁边移出去（去点别的应用）是两件事，而 mouseleave 不区分。
+  //   ⟹ 用最后一次 mousemove 的 y 判断：贴着顶部离开 = 大概是去点按钮了。
+  //   ⚠️ `e.clientY` 在 mouseleave 上是**离开时的坐标**，可能是负数
+  //     （指针已经在文档上方）⟹ `<= ZONE` 天然包含它。
+  document.addEventListener('mouseleave', (e) => {
+    if (e.clientY <= ZONE) return;   // 从顶部离开 ⟹ 留着，让他点
+    scheduleHide();
+  });
+  // ⚠️ 窗口失焦时藏 —— 那时用户已经在别的应用里，红绿灯留着只是噪声。
+  // ⚠️ 这里可以**立刻**藏（不走 scheduleHide）：失焦意味着他没在点我们的按钮
+  //   （点红绿灯不会让窗口失焦）。
+  window.addEventListener('blur', () => {
+    cancelHide();
+    if (!shown) return;
+    shown = false;
+    window.gw?.titleBarHover?.(false);
+  });
 })();
 
 // ---------------------------------------------------------------------------
@@ -897,6 +999,8 @@ let built = false;
 
 function apply(next) {
   config = next;
+  // ⚠️ 主题也跟着 config 走 —— 别处（或下次启动）改了要同步过来。
+  applyTheme(config.theme);
   // ⚠️ 产品形态收缩之后这里只剩两块:创意工坊 + 手势。
   //
   // 删掉的是模板(三层景深的参数)、图库、壁纸与音乐 —— 那三个 tab 连同它们的

@@ -3,7 +3,30 @@
 <head>
 <meta charset="utf-8">
 <title>GestureWall</title>
+<!-- ⚠️⚠️ **主题要在第一帧之前定**（0.9.59）。
+     等 dashboard.js 从主进程 `getConfig()` 拿到配置再改的话（那是异步的），
+     浅色主题的用户每次开面板都会先看到**深色闪一下**。
+     ⟹ 这里用 localStorage 里的镜像先设上（同步、在渲染之前）。
+     ⚠️ localStorage 只是**镜像**，真相仍然是 config.theme
+     （applyTheme 每次都会写回来）—— 两份的话必须有一份是权威的，
+     而"面板自己存的"不能算：换机器/删配置时它会和主进程不一致。 -->
+<script>
+  try {
+    var t = localStorage.getItem('gw-theme');
+    if (t === 'light') document.documentElement.dataset.theme = 'light';
+  } catch (e) { /* 隐私模式下 localStorage 会抛 —— 那就用默认深色 */ }
+</script>
 <style>
+  /* ⚠️⚠️ **主题**（0.9.59）。用户 2026-08-01：「在设置里多一个主题色彩的选项，
+     可以调整颜色，先做深色和浅色两种模式就好」
+
+     ⚠️ 全部颜色走这几个变量 —— 换主题只改这一处。
+     ⚠️ 而 `color-scheme` 也要跟着换：它决定**原生控件**（滚动条、
+        checkbox、select 的下拉面板）的配色。只改我们的变量不改它的话，
+        浅色主题下滚动条和下拉框还是黑的 ⟹ 那种"一半没换过来"最难看。
+     ⚠️ 半透明的那几个（--line / --dim）在两套里**基色不同**：
+        深色下是白色半透明、浅色下是黑色半透明。照抄一套过去的话
+        浅色主题上分隔线会变成"发白的看不见"。 */
   :root {
     color-scheme: dark;
     --bg: #101014;
@@ -14,6 +37,44 @@
     --accent: #6cc7ff;
     --warn: #ffb454;
     --ok: #8affc1;
+    /* 极光背景的可见度 —— 浅色主题下要更淡（深色底上发光，浅色底上是脏色） */
+    --bg-aurora: .5;
+    /* nav 和右侧面板的底色（比 --bg 深一点/浅一点，分出层次） */
+    --nav-bg: #0d0d11;
+    --side-bg: #131318;
+    --card-bg: #15151b;
+    --btn-bg: #22222a;
+    --btn-hover: #2c2c36;
+    /* 图片占位色。⚠️ 深色下是近黑，浅色下要浅灰 —— 一片纯黑方块在
+       白色界面上比"图还没加载"更像"这里坏了"。 */
+    --img-bg: #0b0b10;
+    /* 日志区（等宽字体那几块） */
+    --log-bg: #0d0d0f;
+    --log-fg: #b9c0cc;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --line: rgba(0,0,0,.11);
+    --text: #1c1d21;
+    --dim: rgba(28,29,33,.58);
+    /* ⚠️ accent 要压暗 —— #6cc7ff 在白底上对比度不够（读不清），
+       而它同时用在选中态的文字和边框上。 */
+    --accent: #0a84c8;
+    --warn: #a35a00;
+    --ok: #0f7a4a;
+    /* ⚠️ 浅色下极光几乎要关掉 —— `lighter` 是加法混色，白底上加光
+       只会变成一片灰蒙蒙的脏色（不是"淡淡的好看"）。 */
+    --bg-aurora: .12;
+    --nav-bg: #e9eaee;
+    --side-bg: #eef0f3;
+    --card-bg: #ffffff;
+    --btn-bg: #ffffff;
+    --btn-hover: #e6e8ec;
+    --img-bg: #dcdee3;
+    --log-bg: #f0f1f4;
+    --log-fg: #3a3d45;
   }
   * { box-sizing: border-box; }
   /* ⚠️⚠️ **布局改成"顶部 tab + 内容区"**（0.9.54）。用户 2026-08-01 给了
@@ -31,6 +92,24 @@
     background: var(--bg); color: var(--text);
     font: 400 13px/1.65 -apple-system, "PingFang SC", sans-serif;
   }
+
+  /* 主界面的极光背景（0.9.59）。见 <canvas id="app-bg"> 那段注释。 */
+  /* ⚠️⚠️ `z-index: 0` 而不是 -1。
+     -1 会把它放到 **body 的背景之下** ⟹ 被 `body { background: var(--bg) }`
+     完全盖住，什么都看不见（而那不报错，只是"背景没生效"）。
+     ⟹ 0 = 在 body 背景之上、在所有内容（都有更高 z-index 或在文档流里）之下。
+     ⚠️ 而 nav / .pane-side / .card 的背景色是**不透明**的
+     ⟹ 极光只在它们之间的缝隙和网格背景处露出来。那是有意的：
+        卡片和文字要压得住背景，否则读不清（见 startAurora 的 dim 参数）。 */
+  #app-bg {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    z-index: 0; pointer-events: none; display: block;
+    /* ⚠️ 整体可见度由主题定 —— 浅色主题下几乎要关掉（加法混色在白底上是脏色）。 */
+    opacity: var(--bg-aurora);
+  }
+  /* ⚠️ nav 和 main 要抬到极光之上（它们在文档流里，默认 z-index: auto
+     ⟹ 和 #app-bg 同层，而 #app-bg 在 DOM 里更靠前 ⟹ 会盖住它们）。 */
+  nav, main { position: relative; z-index: 1; }
 
   /* ---- 启动页 ----
      ⚠️⚠️ 用户 2026-08-01：「我们这个只是覆盖了一层什么效果都没有」
@@ -102,14 +181,14 @@
     grid-column: 1 / -1;
     margin: 14px 0 4px; padding-top: 8px;
     border-top: 1px solid rgba(255,255,255,.12);
-    font-size: 12px; font-weight: 600; color: #9aa0a8;
+    font-size: 12px; font-weight: 600; color: var(--dim);
   }
   .we-group:first-child { margin-top: 0; border-top: none; padding-top: 0; }
 
   #build-stamp {
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: #8a8f98;
+    color: var(--dim);
     margin: 2px 0 10px;
     letter-spacing: .2px;
     user-select: text;      /* 要能选中复制给我看 */
@@ -153,7 +232,7 @@
        ⚠️ 历史：40px（0.9.54，我按错的参照算的）→ 30px（0.9.56，用户报空白）
           → 10px（0.9.58，红绿灯藏起来之后就不需要让位了）。 */
     padding: 10px 16px 0 96px;
-    background: #0d0d11; border-bottom: 1px solid var(--line);
+    background: var(--nav-bg); border-bottom: 1px solid var(--line);
     /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。 */
     -webkit-app-region: drag;
   }
@@ -228,7 +307,7 @@
   }
   .pane-side {
     overflow-y: auto; min-height: 0;
-    border-left: 1px solid var(--line); background: #131318;
+    border-left: 1px solid var(--line); background: var(--side-bg);
     padding: 18px 16px 40px;
   }
   /* 窄窗口下详情面板会把网格挤成一列 ⟹ 直接叠成上下两段。
@@ -251,7 +330,7 @@
      长得一样是**有意的**：用户在两个 tab 之间切换时不该有"换了个软件"的感觉。 */
   #side-preview, #wside-preview {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
-    border-radius: 9px; background: #000; display: block;
+    border-radius: 9px; background: var(--img-bg); display: block;
     border: 1px solid var(--line);
   }
   #side-title, #wside-title {
@@ -319,11 +398,11 @@
   .ok { color: var(--ok); }
 
   button.act {
-    appearance: none; border: 1px solid var(--line); background: #22222a;
+    appearance: none; border: 1px solid var(--line); background: var(--btn-bg);
     color: var(--text); border-radius: 7px; padding: 5px 12px;
     font: inherit; font-size: 12px; cursor: pointer;
   }
-  button.act:hover { background: #2c2c36; }
+  button.act:hover { background: var(--btn-hover); }
   button.act.primary { background: var(--accent); color: #06121a; border-color: transparent; font-weight: 600; }
   button.act.danger { color: #ff8b8b; }
   button.act:disabled { opacity: .4; cursor: default; }
@@ -336,7 +415,7 @@
   .modules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .module {
     border: 1px solid var(--line); border-radius: 8px; padding: 10px;
-    cursor: pointer; background: #15151b;
+    cursor: pointer; background: var(--card-bg);
   }
   .module:hover { border-color: rgba(255,255,255,.2); }
   .module.on { border-color: var(--accent); background: rgba(108,199,255,.09); }
@@ -350,7 +429,7 @@
   }
   .asset .pic {
     height: 78px; background-size: cover; background-position: center;
-    background-color: #1e1e26;
+    background-color: var(--btn-bg);
   }
   .asset .meta { padding: 7px 8px; }
   .asset .nm {
@@ -373,7 +452,7 @@
   }
   .layer-row:last-child { border-bottom: 0; }
   .layer-row .thumb {
-    width: 60px; height: 44px; border-radius: 6px; background: #1e1e26;
+    width: 60px; height: 44px; border-radius: 6px; background: var(--btn-bg);
     background-size: cover; background-position: center;
   }
   .layer-row .nm { font-weight: 600; font-size: 12px; }
@@ -405,8 +484,8 @@
   .rec .nm { font-weight: 600; font-size: 12px; }
   .rec .hint2 { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
   .log { max-height: 120px; overflow: auto; margin: 6px 0 0; padding: 6px 8px;
-    background: #0d0d0f; border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
-    color: #b9c0cc; white-space: pre-wrap; }
+    background: var(--log-bg); border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
+    color: var(--log-fg); white-space: pre-wrap; }
   .rec .state { font-family: ui-monospace, monospace; font-size: 10px; margin-top: 4px; }
   /* ⚠️ 诊断区那几块（#match-probe / #overlay-geom）用的也是 `state` 类，但它们**不在
      `.rec` 里**，所以上面那条选择器不生效 —— 它们一直没有任何样式。
@@ -466,7 +545,7 @@
      dashboard 结构，而我们的「我的壁纸」是用户自己下的几十张，一屏看完。 */
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-             background: #15151b; cursor: pointer;
+             background: var(--card-bg); cursor: pointer;
              /* ⚠️ relative 提到这里：原来只有"在播放列表里"的卡片才由 JS 设
                 （dashboard.js 里 card.style.position = 'relative'），
                 而现在标题和角标都要绝对定位 ⟹ 所有卡片都需要。 */
@@ -482,7 +561,7 @@
   /* ⚠️ 图高从 84 → 116：文字不再占独立高度，省下的给图。
      aspect-ratio 更"对"但 GIF 尺寸五花八门（实测 preview.gif 有 1:1 也有 16:9），
      定高 + object-fit: cover 才能保证网格对齐。 */
-  .ws-item img { width: 100%; height: 116px; object-fit: cover; display: block; background: #000; }
+  .ws-item img { width: 100%; height: 116px; object-fit: cover; display: block; background: var(--img-bg); }
   /* 标题压在图底部。渐变而不是纯色块 —— 纯色块的上边缘是一条硬线，
      而壁纸预览图底部亮暗不定，硬线会很显眼。 */
   .ws-item .nm { position: absolute; left: 0; right: 0; bottom: 0;
@@ -526,7 +605,7 @@
      否则"图没加载"和"没有正在放的壁纸"两种状态看起来一样。 */
   #rotate-now-img {
     width: 52px; height: 32px; flex: none; border-radius: 5px;
-    object-fit: cover; background: #0b0b10;
+    object-fit: cover; background: var(--img-bg);
     border: 1px solid var(--line); display: block;
   }
   #rotate-now-text { flex: 1; min-width: 0; }
@@ -611,7 +690,7 @@
   }
   .rs-item:hover { border-color: rgba(255,255,255,.26); }
   .rs-item img {
-    width: 100%; height: 54px; object-fit: cover; display: block; background: #000;
+    width: 100%; height: 54px; object-fit: cover; display: block; background: var(--img-bg);
   }
   .rs-item .rs-nm {
     font-size: 10px; padding: 4px 5px 5px; color: rgba(232,232,238,.72);
@@ -702,6 +781,17 @@
 </style>
 </head>
 <body>
+
+<!-- ⚠️⚠️ **主界面的极光背景**（0.9.59）。用户 2026-08-01：
+     「我想给产品一开始那个背景动画也加到打开软件之后，作为背景」
+
+     ⚠️ `position: fixed` + `z-index: -1` ⟹ 它在**所有内容底下**，
+     不用改任何现有元素的层级。
+     ⚠️ 而 nav / .pane-side / .card 的背景色都是**不透明**的
+     ⟹ 极光只在它们之间的缝隙和网格背景处露出来。那是有意的：
+        卡片和文字要压得住背景，否则读不清（见 startAurora 的 dim 参数）。
+     ⚠️ `pointer-events: none` —— 否则它盖住整个界面的点击。 -->
+<canvas id="app-bg"></canvas>
 
 <div id="launch">
   <!-- 粒子背景。⚠️ 在 .wrap **之前** —— 它靠 DOM 顺序 + z-index 垫在文字底下。 -->
@@ -1043,6 +1133,18 @@
     <div class="sm-head">
       <b id="settings-modal-title">设置</b>
       <button class="act" id="settings-modal-close" type="button" title="关闭（Esc）">✕</button>
+    </div>
+
+    <!-- ⚠️⚠️ **主题**（0.9.59）。用户 2026-08-01：「在设置里多一个主题色彩的选项，
+         可以调整颜色，先做深色和浅色两种模式就好」
+         ⚠️ 「先做两种」⟹ 不做自定义取色器。但配色全走 CSS 变量（见 :root），
+            以后加"跟随系统"或自定义色时不用动别处。 -->
+    <div class="rm-row" style="margin-top:0">
+      <span class="rm-label">主题</span>
+      <div class="we-src" style="margin:0">
+        <button type="button" data-theme-pick="dark">深色</button>
+        <button type="button" data-theme-pick="light">浅色</button>
+      </div>
     </div>
 
     <!-- ⚠️⚠️ **目录那一行自带全部操作**（0.9.31）。
