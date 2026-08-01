@@ -64,18 +64,36 @@ bash wallpaper/scripts/prebuild-helpers.sh
 # 那是 Apple 的实现细节，不是我读文档能确定的事。
 #
 # ⟹ 在真机上打包时，直接用 Apple 的工具从 iconset 重生成一遍，得到权威产物。
-# ⚠️ 失败**不让打包挂掉**：仓库里那个 icns 至少是个能解析的文件，
+#
+# ⚠️⚠️⚠️ **产物写进 dist/，不许覆盖仓库里那个文件**（0.9.84 修）。
+#
+# 0.9.83 我写的是 `cp /tmp/gw-icon.icns wallpaper/build/icon.icns` —— 那是个
+# **被 git 跟踪的文件** ⟹ 每打一次包仓库就脏一次，用户下次 `npm run sync` 直接被挡：
+#   error: Your local changes to the following files would be overwritten by merge:
+#       wallpaper/build/icon.icns
+# 而他还以为是自己动了什么。**构建产物写进被跟踪的路径就是这个后果**，
+# 和"图标对不对"无关。dist/ 在 .gitignore 里，写那儿。
+#
+# ⚠️ 失败**不让打包挂掉**：仓库里那个手写的 icns 至少是个能解析的文件，
 #   最坏情况是图标不对，而不是打不出包。
+ICON_OVERRIDE=""
 if command -v iconutil >/dev/null 2>&1 && [ -d wallpaper/build/icon.iconset ]; then
-  if iconutil -c icns wallpaper/build/icon.iconset -o /tmp/gw-icon.icns 2>/dev/null; then
-    cp /tmp/gw-icon.icns wallpaper/build/icon.icns
-    echo "  ✓ icon.icns 由 iconutil 重生成（$(du -h wallpaper/build/icon.icns | cut -f1)）"
+  mkdir -p dist
+  if iconutil -c icns wallpaper/build/icon.iconset -o dist/icon.icns 2>/dev/null; then
+    ICON_OVERRIDE="dist/icon.icns"
+    echo "  ✓ icon.icns 由 iconutil 重生成（$(du -h dist/icon.icns | cut -f1)，写在 dist/）"
   else
     echo "  ⚠️ iconutil 失败 —— 用仓库里那个手写的 icns（图标可能显示不对）"
   fi
 fi
 
-npx electron-builder --mac dmg
+# electron-builder 读 build.mac.icon。上面那个权威产物在 dist/，用 CLI 覆盖指过去
+# （`-c.mac.icon=` 优先于 package.json，不用改文件）。
+if [ -n "$ICON_OVERRIDE" ]; then
+  npx electron-builder --mac dmg -c.mac.icon="$ICON_OVERRIDE" -c.dmg.icon="$ICON_OVERRIDE"
+else
+  npx electron-builder --mac dmg
+fi
 
 echo ""
 echo "=== 装 ==="

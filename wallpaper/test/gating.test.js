@@ -5929,6 +5929,25 @@ check('应用图标接进打包了', () => {
   const build = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-mac.sh'), 'utf8');
   assert.match(build, /iconutil -c icns/,
     'build-mac.sh 没用 iconutil 重生成 ⟹ 发出去的是我手写的 icns，真机表现没验过');
+  // ⚠️⚠️ **iconutil 的产物不许写回被 git 跟踪的路径**。
+  //   0.9.83 我写的是 `cp /tmp/gw-icon.icns wallpaper/build/icon.icns` ⟹
+  //   每打一次包仓库就脏一次，用户下次 `git pull --ff-only` 直接被挡：
+  //     error: Your local changes to the following files would be overwritten by merge
+  //   而他还以为是自己动了什么。**构建产物写进被跟踪的路径**就是这个后果，
+  //   和"图标对不对"完全无关。dist/ 在 .gitignore 里，写那儿。
+  const iconStep = build.slice(build.indexOf('ICON_OVERRIDE=""'),
+    build.indexOf('npx electron-builder'));
+  assert.ok(iconStep.length > 100, '切不出 iconutil 那段 ⟹ 断言失效');
+  assert.ok(!/wallpaper\/build\/icon\.icns/.test(iconStep.replace(/^\s*#.*$/gm, '')),
+    'iconutil 那段又在写 wallpaper/build/icon.icns ⟹ 那个文件被 git 跟踪，'
+    + '每打一次包仓库就脏一次，用户下次 pull 被挡');
+  assert.match(iconStep, /-o dist\/icon\.icns/,
+    'iconutil 的产物没写进 dist/ ⟹ dist/ 是唯一被 .gitignore 的构建目录');
+  // ⚠️ 写进 dist/ 之后**必须让 electron-builder 真用上它** ——
+  //   package.json 里指的还是仓库那个手写的，不覆盖等于这一步白做（静默失效）。
+  assert.match(build, /-c\.mac\.icon="\$ICON_OVERRIDE"/,
+    'electron-builder 没被指向 dist/icon.icns ⟹ 打进包的还是手写那个，'
+    + 'iconutil 那步白跑了（而且不报错）');
   // ⚠️ 而它**不许让打包失败** —— 最坏是图标不对，不是打不出包
   assert.match(build, /iconutil[\s\S]{0,400}?2>\/dev\/null/,
     'iconutil 那段没吞错误 ⟹ 它失败会让整个打包挂掉（set -e）');
