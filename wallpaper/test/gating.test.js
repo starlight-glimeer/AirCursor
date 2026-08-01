@@ -5743,4 +5743,68 @@ check('ad-hoc 签名在；应用信息不写上游项目名', () => {
     `description 没说清这是什么："${desc}"`);
 });
 
+// ⚠️⚠️ **README 里的安装步骤要和代码对得上**（0.9.81）。
+//
+// 起因：`wallpaper/README.md` 的第一句一直是「三张你自己准备的图按景深排成…」
+// —— 那是**支持 Wallpaper Engine 之前**的形态，而参数 UI 早就删了。
+// 而根 README 整篇是 AirCursor 的旧内容（"Transparent macOS hand overlay"）。
+// ⟹ **过期的说明比没有说明更坏**（它主动误导）。
+//   同一个坑在 UI 文案上犯过：创意工坊页曾写着"scene / video 类不支持"，
+//   而 video 早就支持了 —— 那句话在劝用户别下他其实能用的东西。
+check('README 和代码对得上（壁纸目录 / 预编译 / Gatekeeper / helper 名字）', () => {
+  const root = fs.readFileSync(path.join(__dirname, '..', '..', 'README.md'), 'utf8');
+  const sub = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+
+  // ① 不许是旧内容
+  assert.ok(!/Transparent macOS hand/.test(root),
+    '根 README 又是 AirCursor 的旧内容（"Transparent macOS hand overlay"）');
+  assert.ok(!/三张你自己准备的图/.test(sub.split('\n').slice(0, 6).join('\n')),
+    'wallpaper/README 开头又是"三张图按景深排列"那个已下线的形态');
+
+  // ②⚠️ 壁纸目录：README 里写的必须是代码算出来的那个
+  const dirInCode = codeOnly(mainSrc).match(
+    /path\.join\(app\.getPath\('documents'\), '([^']+)', '([^']+)'\)/);
+  assert.ok(dirInCode, '找不到 defaultWallpaperDir 的实现 ⟹ 断言失效');
+  const shown = `~/Documents/${dirInCode[1]}/${dirInCode[2]}/`;
+  assert.ok(root.includes(shown),
+    `README 里的壁纸目录和代码不一致 —— 代码算出来是 ${shown}`);
+
+  // ③⚠️⚠️ **helper 现在是打包时预编译的** ⟹ README 必须说"不用装 Xcode"。
+  //    这条会随实现变：哪天改回运行时编译，README 就得反过来说"要装"。
+  const prebuilt = fs.existsSync(
+    path.join(__dirname, '..', 'scripts', 'prebuild-helpers.sh'));
+  assert.ok(prebuilt, '预编译脚本不在了 ⟹ README 里"不用装 Xcode"就成了假话');
+  assert.ok(/不用装 Xcode/.test(root),
+    'README 没说"不用装 Xcode 命令行工具" ⟹ 那是这个产品最大的安装摩擦，'
+    + '而我们已经解决了它，不说等于白做');
+
+  // ④⚠️ 没签名 ⟹ 必须写怎么过 Gatekeeper。
+  //    ⚠️ ad-hoc（`identity: "-"`）**不算签名** —— Gatekeeper 仍然会拦。
+  const pkgRaw = fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8');
+  const idMatch = pkgRaw.match(/"identity"\s*:\s*"([^"]*)"/);
+  const hasDeveloperId = !!(idMatch && idMatch[1] && idMatch[1] !== '-');
+  if (!hasDeveloperId) {
+    assert.ok(root.includes('com.apple.quarantine'),
+      '没有 Developer ID，而 README 没写怎么过 Gatekeeper ⟹ 用户第一步就卡住');
+    // ⚠️⚠️ 用户实测发现那个弹框里有个「?」按钮 ——
+    //   点它会引导到隐私设置，然后就能打开。**那是 macOS 自己给的出路**，
+    //   比敲终端命令好得多 ⟹ README 必须先说它。
+    assert.ok(/「\?」|那个「\?」/.test(root),
+      'README 没说那个「?」按钮 ⟹ 那是 macOS 自己给的出路（用户实测的），'
+      + '比让他敲 xattr 命令好得多');
+  }
+
+  // ⑤⚠️ 辅助功能授权列表里显示的是 **helper 的二进制名** ——
+  //    README 里写的那个名字必须和真实文件对得上，否则用户找不到那一项。
+  const mouseHelper = fs.existsSync(
+    path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'));
+  assert.ok(mouseHelper, 'GestureWallMouse.swift 不在了 ⟹ README 里那个名字要改');
+  assert.ok(root.includes('GestureWallMouse'),
+    'README 没说授权列表里找 GestureWallMouse ⟹ 那里显示的是 helper 的二进制名，'
+    + '不是 GestureWall（TCC 按可执行文件记授权）');
+  // ⚠️ 而"要重开应用"也必须说 —— 不说的话用户会"授权了但还是不行"
+  assert.ok(/重开本应用|要重开/.test(root),
+    'README 没说"授权后要重开应用" ⟹ macOS 的授权对已经在跑的进程不生效');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

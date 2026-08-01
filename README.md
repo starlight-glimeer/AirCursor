@@ -1,286 +1,194 @@
-# AirCursor
+# GestureWall
 
-Transparent macOS hand and voice control overlay.
+macOS 上的动态壁纸播放器 —— 直接用 **Wallpaper Engine 创意工坊**的壁纸。
 
-AirCursor uses the webcam to recognize hand landmarks, draws a translucent skeleton-hand overlay, and maps simple gestures to desktop actions.
+- 🖼 **web / video / image 类壁纸**都能放（scene 类是 WE 编辑器的私有格式，暂不支持）
+- 🎵 **跟着系统音频动** —— 音频可视化壁纸的圆环、频谱都会响应
+- 🔁 **播放列表 + 轮播** —— 手选几张，按分钟/小时轮换，顺序或随机
+- 🛒 **内置创意工坊** —— 搜索、筛选、下载，不用开 Steam
+- ✋ 摄像头手势控制（**可选**，见「已知问题」）
 
-## Run
+---
+
+## 安装
+
+### 1. 拖进「应用程序」
+
+打开 `GestureWall-x.y.z-arm64.dmg`，把 GestureWall 拖到「应用程序」。
+
+### 2. 第一次打开：跟着那个「?」走
+
+这个应用**没有 Apple 开发者签名**（那要 $99/年），所以第一次打开时 macOS 会拦一下：
+
+> **Apple 无法验证「GestureWall」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。**
+> 【完成】 【移到废纸篓】 【**?**】
+
+**点那个「?」** —— 它会引导你到「系统设置 → 隐私与安全性」，
+在那里点「**仍要打开**」就行。只需要做一次。
+
+> ⚠️ **别点「移到废纸篓」**。那个弹框说的是"没经过 Apple 认证"，不是"文件坏了"。
+
+**如果你更习惯终端**，一条命令等效：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/GestureWall.app
+```
+
+> 那个 `com.apple.quarantine` 属性是**下载时**打上的、**按文件**算 ——
+> 所以每次重新安装都要再处理一次。
+
+### 3. 不需要装任何东西
+
+**不用装 Xcode 命令行工具** —— 那几个原生 helper（音频采集、鼠标转发、语音）
+是**打包时就编译好**放进 `.app` 的。
+
+> 早期版本是在用户机器上现场编译（要 `swiftc`，来自约 1.5 GB 的 Xcode 命令行工具），
+> 而普通 Mac 上没有 ⟹ 那几个功能会静默失效。现在没这个问题了。
+
+---
+
+## 权限
+
+三条**互相独立**的授权链，用到哪个才需要给哪个：
+
+| 功能 | 需要什么 | 怎么给 | 指示灯 |
+|---|---|---|---|
+| 壁纸跟音乐动 | **不需要授权** | — | 不会显示"正在共享屏幕" |
+| 壁纸收鼠标点击 | **辅助功能** | 开启时会**自动弹框** | 无 |
+| 摄像头手势 | **摄像头** | 开启时会**自动弹框** | 菜单栏绿点 |
+| 语音识别 | 麦克风 + 语音识别 | 自动弹框 | 无 |
+
+**⚠️ 两个容易踩的坑：**
+
+1. **辅助功能要授给 helper，不是主应用。**
+   授权列表里找的是 **`GestureWallMouse`**（语音那项找 `AirCursorVoice`）——
+   那是编译出来的 helper 二进制，而 macOS 按**二进制路径**记授权。
+2. **勾选之后要重开本应用**（`⌃⇧Q` 退出再打开）。
+   那是 macOS 的要求 —— 授权对**已经在跑**的进程不生效。
+   不重开的话你会看到"授权了但还是不行"。
+
+---
+
+## 壁纸放哪
+
+**`~/Documents/GestureWall/Wallpapers/`**（中文系统的 Finder 里显示为「文档」）
+
+首次启动会自动建出来，里面有一个 `把壁纸放这里.txt` 说明格式。
+
+**每个壁纸是一个子目录，里面必须有 `project.json`：**
+
+```
+Wallpapers/
+  3775463674-某个壁纸/
+    project.json      ← 必须有，它说明这是什么类型
+    index.html        ← web 类的入口
+  另一个壁纸/
+    project.json
+    video.mp4         ← video 类的文件
+```
+
+⚠️ **直接把一堆 mp4 扔进 `Wallpapers/` 是认不出来的** —— 没有 `project.json`，
+我们不知道它是壁纸还是普通视频。
+
+从创意工坊下载的会**自动搬进这里**，目录名是「工坊ID-标题」。
+删掉它们不影响 Steam 那边的下载记录。
+
+想换目录：设置里的「更换目录」。⚠️ 只改指向，**不搬文件**。
+
+---
+
+## 创意工坊
+
+**下载需要两样东西：**
+
+1. **Steam API key**（免费）—— 创意工坊页右侧「浏览需要 Steam API key」，
+   点开有申请地址。它只用来**浏览/搜索**，贴 ID 下载不需要它。
+2. **Steam 账号 + steamcmd** —— 你的账号得买过 Wallpaper Engine
+   （工坊内容是文件，和 WE 本体是不是 Windows 版无关）。
+
+**搜索框也吃创意工坊链接和 ID** —— 别人发你一个壁纸 ID，直接贴进去。
+
+---
+
+## 快捷键
+
+| 键 | 做什么 |
+|---|---|
+| `⌃⇧W` | 打开面板 |
+| `⌃⇧L` | 换壁纸层（真壁纸层 / 普通窗口压最底 / 悬浮最上层） |
+| `⌃⇧R` | 复位视角 |
+| `⌃⇧H` | 壁纸调试信息 |
+| `⌃⇧D` | 开发者工具 |
+| `⌃⇧X` | 拆掉骨架层（鼠标点不动时用） |
+| `⌃⇧Q` | 退出 |
+
+---
+
+## 卸载
+
+**拖到废纸篓就行** —— 我们没有装任何系统级的东西（无 LaunchAgents、无守护进程）。
+
+残留的只有两处，和别的应用一样：
+
+- `~/Library/Application Support/GestureWall/` —— 配置和缓存
+- `~/Documents/GestureWall/Wallpapers/` —— **你的壁纸**（想留就留着）
+
+---
+
+## 出问题了
+
+**面板 → ⚙ 设置 → 开发者选项**里有全部诊断：壁纸状态、壁纸层、音源和实际频谱、
+手势的骨架几何和心跳，以及「导出诊断报告」（一个 JSON，里面有各窗口活没活、
+实际尺寸 vs 屏幕尺寸、音频状态、最近 200 条带时间戳的事件）。
+
+**报问题时把那个 JSON 发过来** —— 比文字描述准得多，尤其"黑屏"这种，
+它能分出是没加载、还是在放但看不见。
+
+几个常见的：
+
+| 症状 | 大概是什么 |
+|---|---|
+| 双击说"无法验证是否包含恶意软件" | 见上面「安装」第 2 步 —— 点那个「?」 |
+| 壁纸点不动 | 缺辅助功能授权（授给 `GestureWallMouse`），**而且要重开应用**；或者壁纸层是「普通窗口压最底」 |
+| 壁纸不跟音乐动 | 音源被设成「关」；或者那个壁纸自己没声明要音频 |
+| 手势没反应 | 摄像头授权；或者手势本身就不灵敏（已知问题） |
+| 菜单栏显示"正在共享屏幕" | 音源选了「只抓网易云」⟹ 那条走 ScreenCaptureKit。换成「全系统」走 CoreAudio tap，不需要屏幕录制 |
+
+---
+
+## 开发
 
 ```bash
 npm install
-npm start
+npm start              # 开发模式（⚠️ 拿不到辅助功能授权，鼠标转发要打包才能测）
+npm run dist:mac       # 打 dmg（会先预编译四个 Swift helper）
+npm test               # 跑测试
 ```
 
-The first run opens a normal AirCursor dashboard and a separate transparent overlay. Minimize the dashboard to keep AirCursor running in the background. Real mouse movement/clicking requires macOS Accessibility permission for the terminal or packaged app that launches AirCursor.
+打完包用 `bash wallpaper/scripts/install-dmg.sh` 安装 —— 它走的就是
+**用户拿到 dmg 之后的那条路**（挂载 → 覆盖 → 卸载 → 解 quarantine）。
 
-For the old browser fallback:
+**⚠️ 但它不能用来测 Gatekeeper** —— 那一步会清掉 quarantine。
+要测首次打开的体验，手动拖 dmg，然后模拟"从网上下载"：
 
 ```bash
-npm run web
+xattr -w com.apple.quarantine "0083;00000000;Safari;" /Applications/GestureWall.app
 ```
 
-Then open `http://127.0.0.1:5177`.
+> 本地构建的 dmg **没有** quarantine 属性（那是下载时才打的）
+> ⟹ 不加这一步，你在自己机器上永远撞不到 Gatekeeper。
 
-## Current Gesture
+架构和各模块的设计决定在 **[wallpaper/MODULES.md](wallpaper/MODULES.md)**。
 
-**Nothing is bound out of the box — every gesture is recorded by you.** A fresh
-install waves back at nothing until you record something, and the panel says so
-rather than leaving that to look like a fault.
+---
 
-The actions available to bind: 唤醒控制 / 点击 / 拖拽 / 右键 / 向上滚动 / 向下滚动 /
-切到左边桌面 / 切到右边桌面 / 退出控制, plus one per 常用规则.
+## 已知问题
 
-This replaced a set of built-in hand shapes (pinch, middle-pinch, open palm, fist).
-They worked, but not well, and the ceiling was countable: four shapes for nine
-actions, so `drag` could not be assigned one at all. A template recorded with your
-own hand is a stronger signal than a hand-written shape test — and it is yours, so it
-fits your hand rather than the one the thresholds were written for.
-
-Factory defaults are still planned; they will be recordings from a real hand rather
-than synthesised ones, which would look present and match nothing.
-
-Voice: "启动/控制", "退出/停止", "打开网易云", "点击" — these work without recording,
-since they are text matches rather than shapes.
-
-Click and drag are separate actions rather than one pose that upgrades when the hand
-moves far enough. Holding a button down is a distinct intent, and inferring it from
-movement collided with the motion gestures below, which move the hand on purpose.
-
-The desktop build uses Electron for the transparent always-on-top overlay and a tiny Swift CoreGraphics helper for macOS pointer events.
-
-## Record Your Own Gesture
-
-The four actions above are fixed in code; which gesture triggers each one is yours to record.
-
-1. In 手势规则, pick 单手 or 双手 for the action, then press 开始录制.
-2. A 3 second countdown runs. Get both hands into frame.
-3. Hold the pose still. The progress bar fills over 2 seconds and the template saves itself — no button to press, which is the point when both hands are busy.
-4. Moving out of the pose, dropping a hand, or showing the wrong number of hands restarts the 2 seconds and says why. After 15 seconds it gives up rather than saving something wrong.
-
-Every recorder row draws what it saved, so you can see the recording instead of performing the gesture to find out what it captured. A static gesture draws its pose. A dynamic one **plays the movement back on a loop**, interpolated between keyframes so it reads as the movement rather than a stutter — a dynamic gesture shown as a still frame says nothing at all about what the gesture is. Rows also state what was captured in the terms it was performed in ("抬压到 26°，超过 19° 就滚一段", "7 帧 / 480ms，做完整个动作触发"), because a gesture confirmed only by "已录制" is a gesture you still have to go and test.
-
-The saved template is the median of the frames you held, so one mistracked frame cannot poison it. Matching normalizes translation and scale, so the same pose works closer to or further from the camera; two-hand templates share one origin and one scale across both hands, so the distance between your hands stays part of the signature. A one-hand pose can never match a two-hand template.
-
-Wrist tilt is forgiven up to 旋转容差 (default 20°), measured along wrist to middle-finger base. It is capped rather than unlimited on purpose: full rotation invariance would make thumbs-up and thumbs-down the same gesture. For two hands the tilt is one shared axis, so leaning the whole pose still matches while rotating one hand alone stays a distinct gesture.
-
-Matching weights the worst single finger as heavily as the whole hand. Plain whole-hand RMS dilutes a one-finger difference — the thumb is 4 of 21 landmarks — which put fist and thumbs-up 0.210 apart, under the 0.22 threshold that shipped, meaning they were not distinguishable at all. Weighting the worst finger raises that pair to 0.346 for 13% more noise, so the default threshold is now 0.28.
-
-Which gesture fires is decided once per frame by nearest template, not by whichever consumer asks first. A pose sitting between two templates sticks with the one already held (18% of the threshold in hysteresis) so it cannot flip frame to frame.
-
-A new recording is refused when it lands within one threshold of a gesture you already saved: at that range it is inside the drift of a single held pose, so which one fires would be arbitrary. Pairs between one and two thresholds apart still save — the whole single-hand pose space only spans about 0.21 to 0.54, so refusing that band would reject open-palm vs fist — and the dashboard warns instead.
-
-## Motion Gestures
-
-**Every direction is its own action**: 向上滚动, 向下滚动, 切到左边桌面, 切到右边桌面.
-One "scroll" action deciding up from down by the sign of the tilt was a leftover
-from treating this as a continuous mapping — it meant the recording only ever
-captured one of the two movements and the other was inferred mirrored, which is
-not what "record the movement you want" means, and it denied the obvious choice of
-two unrelated gestures for the two directions. Which direction fires is now which
-action the gesture is bound to, never the sign of the movement.
-
-**Every action has an enable switch.** Turning one off stops it firing and keeps
-its recording — different from 清除, which throws the recording away. The switch is
-enforced inside the matcher rather than per consumer, because the built-in poses
-never go through the custom-gesture resolver: gating only there would have left the
-switch working for recorded gestures and silently doing nothing for the default
-pinch/palm/fist ones. Absent means enabled, so re-enabling deletes the entry rather
-than storing `false`, and an action added later is on by default rather than dead
-for everyone with an existing settings file.
-
-**静态姿势 or 动态动作 is a choice on every row.** It used to be a hardcoded list —
-scroll and desktop switching were dynamic, everything else static — which decided
-for the user twice over: no moving gesture for a rule ("draw a circle to open
-Chrome"), and no still pose where one would do. Any action can now be bound to
-either kind. The two exceptions are scroll and desktop switching, which stay
-dynamic because they need a *direction*, and only a movement carries one.
-
-A dynamic recording stores the movement as **keyframes** — the frames that carry
-its shape, thinned from the raw stream so 30 near-identical frames do not become
-30 stored ones. That is what makes the preview an animation rather than a number
-to imagine, and it is what lets an arbitrary movement drive an action: a gesture
-with no physical law behind it is matched by stepping through its keyframes, and
-fires when the last one is reached. Stepping is monotonic — it only ever asks "has
-the hand reached the next pose yet" — which makes it naturally immune to dropped
-frames, and frame-drop immunity is not optional at a measured 40-60% tracking
-rate.
-
-A sequence gesture's stored pose is the one the movement *starts* from, so it is
-deliberately excluded from static matching. Otherwise striking the starting pose
-would fire the action before the movement had happened at all.
-
-Because a movement is inherently one-shot, the actions that are inherently held
-map onto it differently: a dynamic 拖拽 toggles (perform to pick up, perform again
-to drop) rather than ending the instant the movement does, which would make
-dragging anywhere impossible.
-
-Scrolling and desktop switching go further: they keep a physical law on top of
-the recorded movement, because they need something keyframes cannot express — a
-direction, and the ability to repeat without re-performing the whole movement.
-They are two different laws, deliberately not one mechanism:
-
-**Scrolling is a ratchet.** Park the wrist, tilt the palm up, and one notch of
-scrolling fires; tilt further and nothing more happens until the hand returns to
-the pose it was recorded in, which re-arms it. Scrolling more is one more tilt.
-The alternative — mapping continuous hand displacement onto scroll position — has
-no defined rest position, so the hand has to hover mid-air and there is no moment
-that clearly means "stop".
-
-Recording a movement is deliberately cheap to attempt. An earlier version added a
-guard for every failure mode it could see — a round-trip refusal, a longer settle
-window, a ready beat, a 3s countdown — each defensible on its own, and together they
-made one attempt cost 7.5 seconds with several ways to lose all of it. Reported as
-"现在的录制变得更加困难了". Now: 2s countdown, a 400ms ready beat that ends the moment
-the hand starts moving, and a timed-out attempt that contained a real movement is
-saved rather than discarded, since the rest pose alone took four seconds to capture.
-
-A movement that ends where it began still saves, with a warning on the row. It is
-genuinely harder to recognise — its final pose is reachable without having moved —
-but most people finish a gesture by putting their hand back, so refusing it rejected
-the natural way to record. The risk is handled where it bites: the matcher requires
-the midpoint between keyframes to be crossed.
-
-**Nothing fires while recording.** Not a reduced set — nothing: recorded gestures,
-built-in poses, sequences and voice commands are all frozen for the duration. This
-is not defensive coding, it is a fix: performing a movement takes the hand through
-a lot of intermediate poses, and on a Mac with nine gestures already recorded,
-capturing a new one exited control mode, opened Terminal and scrolled the page
-mid-capture. It gets worse the more gestures exist, since any movement then almost
-certainly passes through one of them. The guard sits at the top of matching rather
-than at each consumer, because "which consumer did I forget" is how the first
-version leaked.
-
-A spurious extra hand no longer discards a capture either. MediaPipe intermittently
-reports a second hand at certain angles — noticed while recording the sideways
-swipes — and treating that as the wrong hand count reset the capture every time it
-blinked. Only *too few* hands resets now, and while recording the pose is built
-from exactly the number of hands being recorded, so a one-hand recording that
-momentarily saw two does not capture a two-hand shape it could never match again.
-
-**Recording a motion gesture has two stages**, plus a beat between them, because
-asking someone to hold a movement still for two seconds is a contradiction. Stage 1 captures the rest
-pose — that one genuinely is static, since it is the position the hand returns to
-in order to re-arm. Stage 2 asks for the action itself: perform the tilt (or the
-swipe), and the extent it reaches becomes this gesture's trigger, at 75% of what
-was demonstrated so repeating the same movement crosses it rather than landing on
-the edge. The beat matters: without it capture began the instant the hold finished, so the
-hand's travel from the rest pose to wherever the movement starts was recorded as
-part of the movement. The stage ends when the movement settles, not on a timer —
-after 900ms of no change, which is longer than a pause inside one gesture (reaching
-the far point, changing direction) but short enough not to feel stuck. 450ms was
-too short against a real hand and ended recordings early, reported as "这个动作本身
-的时间太短了". A dropped frame mid-movement does not discard the capture — at a 40-60% tracking rate a movement is
-guaranteed to have gaps.
-
-So 滚动触发角 and 挥动速度门限 are fallbacks for gestures recorded before this
-existed. "How far do I have to tilt" is a question the recording already
-answered, and one global slider cannot answer it for two differently-recorded
-gestures. 抬压角度 says which of the two is in force.
-
-The tilt is measured against the recorded template's own angle, not against an
-angle captured when the gesture is first recognised: the recorded pose *is* the
-rest position, which avoids both a baseline race and treating an already-tilted
-hand as neutral.
-
-That angle also has a hard ceiling. Matching de-rotates a live pose onto its
-template by at most 旋转容差, and past that the leftover rotation is charged as
-shape error at about 0.0196 distance per degree — so a trigger angle beyond the
-tolerance would make the pose stop matching at exactly the angle it should fire
-at. 滚动触发角 is therefore clamped, and 抬压角度 in the diagnostics panel says so
-when it happens rather than leaving a slider that silently does nothing.
-
-**Desktop switching is a swipe**, one desktop per stroke, sent as Ctrl+Left/Right —
-macOS Spaces have no synthesisable gesture event, so the keyboard shortcut is the
-only route. The hard part is not detecting the stroke, it is the return: swiping
-right means the hand comes back, and that return is a fast leftward stroke. So
-firing again requires both the cooldown to expire and the wrist to actually stop.
-A stroke also has to be sideways and straight — a hand being carried somewhere is
-not a gesture.
-
-Swiping keeps a speed law rather than becoming an ordinary keyframe sequence, and
-that was settled by measurement rather than taste: **a sideways swipe is almost
-pure translation, and templates normalize translation away**, so every frame of a
-swipe measures 0.0000 from the first. Recorded as a sequence it collapses to a
-single keyframe and gets refused as too small a movement. The information in a
-swipe lives in the wrist path, not in the hand's shape.
-
-The two laws never compete for one motion, and not because of a priority order:
-the ratchet requires a wrist below 1.1 palm widths per second, the swipe one
-above 挥动速度门限 (default 2.6), and the dead band between them means no single
-motion satisfies both. Speeds are in palm widths per second rather than pixels so
-a threshold means the same thing at any distance from the camera.
-
-Both gestures need a measurable rotation axis, which two mirrored hands do not
-have — their axes cancel, and `poseAngle` returns null. Recording a two-hand
-mirrored pose for 上下滚动 is refused at save time rather than saving something
-that could never fire.
-
-## Gesture-Triggered Rules
-
-Every rule under 常用规则 takes a gesture too, recorded the same way. Hold a bound gesture for 1.2 seconds and the rule fires; there is a 2.5 second cooldown afterwards, and it works whether or not control mode is on, since opening an app should not require waking the pointer first.
-
-Rules only ever fire from a gesture you recorded — the built-in poses stay reserved for the pointer, so binding one cannot hijack your click. The hold is longer than wake/exit because launching an app by accident is more annoying than a stray cursor move. 清除 removes the binding and the rule goes back to voice-only.
-
-## Diagnostics
-
-Turn on 诊断与调参 in the dashboard (or press Command+D) to get the panel that makes feedback precise.
-
-| Metric | Reads | Amber when |
-| --- | --- | --- |
-| 摄像头帧率 | camera frames delivered per second | < 24 fps |
-| 绘制帧率 | overlay repaint rate | < 50 fps |
-| 推理耗时 | one MediaPipe pass, mean and p95 | > 22 ms |
-| 端到端延迟 | frame capture to finished result | > 45 ms |
-| 静止抖动 | cursor movement while the hand is parked (0 with 静止锁定 means the deadzone is holding it) | > 2.5 px |
-| 跟随滞后 | how far the cursor trails the raw fingertip | > 26 px |
-| 识别率 | share of frames with a hand, plus hand count | < 85% |
-| 手势距离 | distance to the nearest recorded template, the closest seen, and which gesture it is | — |
-| 保持进度 | which gesture is accumulating hold time and for how long, or that a pinch is waiting for release, or that a drag is holding the button | — |
-| 抬压角度 | palm tilt away from the recorded pose, against the trigger angle, and whether that angle was clamped | — |
-| 动态手势 | which scroll and swipe direction was active, why each did nothing this frame, plus wrist speed | — |
-| 动作进度 | how far through a recorded movement the hand has got, and what is blocking it | — |
-
-动态手势 exists because these two gestures have several distinct ways to do
-nothing — the wrist was moving, the hand has not returned to rest, the cooldown is
-running, the pose has no measurable axis, the stroke was not straight enough — and
-every one of them looks identical from the outside: the gesture appears on the
-status line and the screen does not move. That symptom has already cost this
-project three debugging rounds under other causes, so each reason is named.
-Reports carry a tally of these reasons across the whole sample window under
-`motion`, since a single frame's reason is whatever the last frame happened to
-say.
-
-**点击通道 in 运行状态 is the first row to read when nothing happens.** Gesture recognition and mouse delivery are two separate claims, and only 识别 speaks for the first: macOS discards synthesised events from a process without the Accessibility grant, silently — no error, no exception, and the helper cannot tell. So a live gesture, a click animation and a dead mouse are all mutually consistent, and no amount of gesture tuning helps. 正常 means the helper is running and trusted; 无权限 and 异常 raise a red banner that names the fix. Reports carry the same verdict under `pointer`, including which binary is running (`pointer.binary`) and how many commands were written versus dropped.
-
-The helper binary is named after a hash of its Swift source, not the app version, because the Accessibility grant is per binary — a version-keyed name silently revoked the permission on every release, which is why clicking worked up to 0.2.15 and did nothing from 0.2.16 to 0.3.1. `pointer.binary` keeping the same suffix across an upgrade is the check that this stays fixed.
-
-If two bound gestures are too close together, an amber banner in 手势规则 names the pair and their distance — that fault presents as "the action does nothing" because a different action fires instead, so it is called out rather than left to be inferred. Reports carry the same list under `gestureConflicts`.
-
-手势距离 is the number to read while recording: a pose that should fire but does not is a threshold problem if the distance sits just above it, and a template problem if it never comes close. With several gestures bound, the name tells you whether the wrong template is the one winning.
-
-The seven sliders apply instantly, no restart:
-
-- **平滑强度 (minCutoff)** — lower is steadier but syrupy, higher is more responsive but shakier.
-- **快速跟随 (beta)** — how aggressively smoothing backs off when the hand moves fast.
-- **静止死区** — pixels of movement to ignore, which kills hover crawl.
-- **预测提前量** — compensates pipeline latency; too much overshoots.
-- **手势容错阈值** — larger accepts sloppier poses and misfires more. Default 0.28: above the 0.10-0.16 a held pose drifts on real hardware, below the 0.346 that separates the closest distinct pair.
-- **旋转容差** — degrees of wrist tilt to forgive; too large merges gestures that differ only in direction.
-- **推理间隔** — smaller tracks tighter and costs more CPU.
-- **滚动触发角** — degrees of palm tilt per scroll notch, clamped against 旋转容差.
-- **每次滚动量** — notches per tilt; larger scrolls faster and lands less precisely.
-- **挥动速度门限** — how fast a sideways stroke must be to switch desktops. Its floor stays above the wrist speed the ratchet allows, so the two gestures cannot both fire.
-
-恢复默认调参 puts them all back. 重置指标 clears the rolling averages in both processes before a fresh measurement.
-
-To report something, describe the symptom in the note box and press 保存报告. Use 打开报告目录 to reveal the file — it lands under `~/Library/Application Support/<app name>/reports/aircursor-report-<timestamp>.json`, where the folder is `AirCursor` for the packaged app and `aircursor` for a `npm start` run, so opening it beats typing the path. The JSON holds mean/min/max/p95 for every metric over the last 120 samples, the exact tuning in force, app and display info, and the shape of each recorded gesture. 透明层 DevTools opens the overlay's console; with diagnostics on, overlay console output is also mirrored into the panel.
-
-Menu shortcuts: Command+D diagnostics, Command+S save report, Command+Alt+I dashboard DevTools, Command+Alt+O overlay DevTools.
-
-## Package
-
-```bash
-npm run dist:mac
-```
-
-The unsigned DMG is written to `dist/`.
+- **手势不够灵敏**，而且摄像头推理在 Mac 上有明显的性能代价
+  ⟹ 它是**可选功能**，不是这个产品的卖点
+- **scene 类壁纸不支持** —— 那是 WE 编辑器的私有格式（含它自己方言的 shader
+  和粒子），装了也只能看静态图
+- 音频可视化壁纸的少数细节和 Windows 版 WE 有差异（圆环 3 点方向的活跃度、
+  粒子壁纸的孤峰）
+- **未签名 / 未公证** ⟹ 首次打开要过一次 Gatekeeper（见「安装」）
+- **只有 arm64（Apple Silicon）** —— Intel Mac 没打包
