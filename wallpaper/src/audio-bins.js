@@ -19,6 +19,12 @@
 
 const LOG_SCALE = 0.35;   // WE: `0.35f * log10(f2)`
 const SMOOTH = 0.3;       // WE: `movetowards(cur, target, 0.3f)`
+
+// ⚠️ vDSP 的实数 FFT 带 2 倍因子（省了一次除 2）；WE 用 kiss_fftr（标准值）
+// ⟹ 抵消它才和 WE 同尺度。**用户 0.9.13 真机量出来的**：
+//   理论峰值 424.7（手写 DFT，纯数学）vs 实测 849.4 ⟹ 比值 **2.00**
+// ⟹ 身份是"两个 FFT 库的约定差"，不是我调的系数。
+const VDSP_SCALE = 0.5;
 const BIN_COUNT = 128;
 
 // ⚠️⚠️⚠️ **BANDS = 64。128 = 左声道 64 + 右声道 64（右半镜像）。**
@@ -81,7 +87,9 @@ function frameValues(magnitudes, bands = BANDS) {
     // 那个观察对，但**解法错了**：范围翻倍的根源是"用 128 段"这个前提，
     // 不是 stride。前提改成 64+镜像之后，stride 2 就是对的（0-5.4kHz）。
     const index = Math.min(half - 1, band * 2 + 1);
-    const v = bandValue(magnitudes[index] || 0, band, bands);
+    // ⚠️ 抵消 vDSP 的 2 倍因子（见 VDSP_SCALE）—— 这里也要乘，
+    // 否则 JS 规格和 Swift 会漂，而这份规格是云端唯一能跑的验证。
+    const v = bandValue((magnitudes[index] || 0) * VDSP_SCALE, band, bands);
     // ② 镜像：左声道写前半，右声道写后半（倒序）。
     //
     // ⚠️ 我们的输入是双声道**取平均**（一路 PCM）⟹ 两半是同一份数据。
@@ -94,5 +102,5 @@ function frameValues(magnitudes, bands = BANDS) {
 }
 
 module.exports = {
-  LOG_SCALE, SMOOTH, BIN_COUNT, BANDS, bandWeight, bandValue, frameValues,
+  LOG_SCALE, SMOOTH, VDSP_SCALE, BIN_COUNT, BANDS, bandWeight, bandValue, frameValues,
 };

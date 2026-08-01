@@ -77,6 +77,21 @@ let SAMPLE_RATE = 48000
 let LOG_SCALE: Float = 0.35
 let SMOOTH: Float = 0.3
 
+// ⚠️⚠️ **vDSP 的实数 FFT 带 2 倍因子，这个 0.5 是抵消它、对齐 kiss_fftr。**
+//
+// `vDSP_fft_zrip` 为了效率省掉一次除 2 ⟹ 输出是标准 FFT 的 2 倍。
+// WE 用 `kiss_fftr`（标准值）⟹ 不抵消的话我们的 magnitude 是它的两倍，
+// 而 `0.35*log10(power)` 会把那个 2 倍放成 **+0.21 的输出偏移**
+//（乘以频段加权后是 +0.07 ~ +0.29）⟹ 用户报「整体的柱子都太长了」。
+//
+// ⚠️ **量出来的，不是记的**（用户 0.9.13 真机自检）：
+//   理论峰值 424.7（手写 DFT：1kHz @48kHz/1024 矩形窗，纯数学）
+//   实测峰值 849.4（第 21 个 bin，位置也对）⟹ 比值 **2.00**
+//
+// ⟹ 这不是"我调的系数"：它的身份是**两个 FFT 库的约定差**，
+//    大小由实测确定，而判据（能不能从 WE 的行为推出来）通过。
+let VDSP_SCALE: Float = 0.5
+
 func emit(_ dict: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: dict),
           var line = String(data: data, encoding: .utf8) else { return }
@@ -376,7 +391,27 @@ final class Spectrum {
 
             // ② **功率**，不开根。magnitudes 存的是 |X|（vDSP_zvabs 的输出），
             // 平方回去拿功率 —— WE 那边是 `f2 = re*re + im*im`。
-            let magnitude = magnitudes[index]
+            //
+            // ⚠️⚠️⚠️ **VDSP_SCALE：对齐 kiss_fftr 的库约定差，不是调参。**
+            //
+            // `vDSP_fft_zrip` 的实数 FFT 省掉了一次除 2 ⟹ 输出是标准 FFT 的
+            // **2 倍**。而 WE 用 `kiss_fftr`，那个给标准值。
+            // 两边输入都是 ±1（WE 的 `(buf-128)/128` vs 我们的 Float32）、
+            // N 都是 1024 ⟹ 同一信号该给同一 magnitude，差的就是这个因子。
+            //
+            // ⚠️ **这个 2 是用户真机自检量出来的，不是我记的：**
+            //   理论峰值（手写 DFT，1kHz @48kHz/1024 矩形窗）= 424.7
+            //   用户 0.9.13 实测峰值 = **849.4**（第 21 个 bin，位置也对）
+            //   ⟹ 比值 **2.00**
+            //
+            // ⟹ 判据（这一行能不能从 WE 的行为推出来？）——**能**：
+            //    它来自"WE 用 kiss_fftr、我们用 vDSP"这个差异，
+            //    而那个差异的大小是量出来的。
+            //
+            // ⚠️ 我一开始"知道"这件事但没验，而那是承重前提（错了整个方向作废）
+            // ⟹ 我没有提前改代码，而是加了自检 + 守卫禁止自己提前加。
+            // 这次是这一轮里**第一个先量后改**的常量。
+            let magnitude = magnitudes[index] * VDSP_SCALE
             let power = magnitude * magnitude
 
             // ③ **0.35 × log10(功率)**。
@@ -513,6 +548,32 @@ func selfTestFFT(_ spectrum: Spectrum) {
     var wide = 0
     for v in front where v > threshold { wide += 1 }
 
+    // ⚠️⚠️ **泄漏的衰减：近处 vs 远处。矩形窗下这才是有判别力的判据。**
+    //
+    // 用户 0.9.13 实测「主瓣宽 64 段」，而那是**期望行为**：
+    // 矩形窗旁瓣 -13dB、6dB/倍频滚降 ⟹ 泄漏把整条谱抬到 log10 地板之上
+    // （那正是上一轮删 Hann 窗的理由 —— WE 靠泄漏铺满圆环）。
+    // 算术核过：他第 15 段读 0.706 ⟹ 反解 magnitude 27.5，
+    // 而理论泄漏（相隔 10 bin）= 19.2 ⟹ 1.44 倍，同量级。
+    //
+    // ⟹ "有多少段亮"分不出好坏。**能分出好坏的是"远处比近处低多少"**：
+    //   正常：泄漏随距离单调降（6dB/倍频）⟹ 远处明显更低
+    //   异常：远处和近处一样高 ⟹ ctoz 的 stride 错 / 缓冲被写坏 / 索引乱了
+    //         （那些会让频谱变成"到处都是能量"，画面上是一圈等长的柱子）
+    var nearSum: Float = 0
+    var nearN = 0
+    var farSum: Float = 0
+    var farN = 0
+    for i in 0..<front.count {
+        let d = abs(i - peak)
+        if d >= 5 && d <= 10 { nearSum += front[i]; nearN += 1 }
+        if d >= 25 { farSum += front[i]; farN += 1 }
+    }
+    let nearMean = nearN > 0 ? nearSum / Float(nearN) : 0
+    let farMean = farN > 0 ? farSum / Float(farN) : 0
+    // 差值而不是比值：这一层的输出已经过 log10，**差值就是 dB 意义上的比例**。
+    let leakFalloff = nearMean - farMean
+
     // ⚠️ **镜像对不对**：段 i 和段 127−i 必须逐段相等。
     //
     // 这条查的是实现，不是假设：两半是同一份 `value` 写进去的
@@ -585,6 +646,11 @@ func selfTestFFT(_ spectrum: Spectrum) {
         // ⚠️ 这个数是判据：<2 说明主瓣太窄（窗函数或 stride 有问题），
         // 3-6 是正常的 Hann 窗主瓣
         "segsAboveQuarter": wide,
+        // ⚠️ 泄漏衰减 —— 矩形窗下"亮几段"没判别力，"远处比近处低多少"才有。
+        // 输出已过 log10 ⟹ 差值就是 dB 意义上的比例。
+        "leakNear": nearMean,
+        "leakFar": farMean,
+        "leakFalloff": leakFalloff,
         // ⚠️ 稳态信号下的最大跳变。纯音的频谱该是光滑钟形 ⟹ 这个数该很小。
         // 如果它很大，说明分箱/平滑在稳态信号上就产生尖刺（和音乐无关）。
         "maxJump": maxJump,

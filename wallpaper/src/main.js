@@ -3116,8 +3116,36 @@ function syncAudioSource() {
     // 那是"单段孤峰"这个现象的判据，而我为它猜错了十次。
     onSelfTest: (t) => {
       lastSelfTest = t;
-      const ok = t.segsAboveQuarter >= 2 && t.segsAboveQuarter <= 8
-        && Math.abs(t.peakSeg - t.expectSeg) <= 1;
+      // ⚠️⚠️⚠️ **判据改了：删掉"主瓣宽 ≤8"和"主瓣外要干净"。**
+      //
+      // 用户 0.9.13 实测报了两个 ⚠️，而**两个都是判据错、不是代码错**：
+      //   「主瓣宽 64 段」（判据要 ≤8）
+      //   「主瓣外最大值 0.706 ⟹ 尖刺来自分箱/平滑」
+      //
+      // 这两条判据是**为 Hann 窗写的**，而上一轮已经删掉 Hann 窗了
+      //（WE 没有窗函数，泄漏是它铺满圆环的机制）。
+      //
+      // 算术核对（用他的读数）：
+      //   第 15 段读 0.706 ⟹ 反解 magnitude **27.5**
+      //   峰值 magnitude **849.4**（实测）⟹ 相差 **-29.8dB**
+      //   矩形窗理论泄漏（相隔 10 个 bin，-13dB 旁瓣 + 6dB/倍频滚降）
+      //     = 849.4 × 10^(-33/20) = **19.2**
+      //   ⟹ 反解 27.5 / 理论 19.2 = **1.44 倍，同量级 ⟹ 对上了**
+      //
+      // ⟹ 那 64 段就是**矩形窗的泄漏**，而且"主瓣外最大跳变仅 0.044"
+      //    证明它们是一条**平缓的高原**，不是尖刺。WE 那边纯音也这样。
+      //
+      // ⚠️ 而"删掉判据"这件事本身危险 —— 它可能掩盖真问题。
+      // ⟹ 所以不是删掉不看，是**换成矩形窗下有意义的判据**：
+      //    ① 峰值位置对不对（频率映射）—— 这条不受窗影响，保留
+      //    ② 泄漏的**衰减速度**：主瓣外的值该随距离单调降下去。
+      //       如果远处和近处一样高，那才是真问题（ctoz stride 错 / 缓冲写坏）
+      //    ③ 镜像逐段相等（实现自检）
+      const mirrorOk = t.mirrorMaxDiff === undefined || t.mirrorMaxDiff < 0.001;
+      // 泄漏该随距离衰减。远处和近处一样高 ⟹ FFT 那一层坏了
+      // （ctoz stride / 缓冲被写坏），画面上是一圈等长的柱子。
+      const falloffOk = t.leakFalloff === undefined || t.leakFalloff > 0.03;
+      const ok = Math.abs(t.peakSeg - t.expectSeg) <= 1 && mirrorOk && falloffOk;
       const line = `FFT 自检（${t.tone}Hz 纯音）：峰值在第 ${t.peakSeg} 段`
         + `（应该是 ${t.expectSeg}）　主瓣宽 ${t.segsAboveQuarter} 段`
         + `　邻域 ${(t.neighbors || []).map((v) => Number(v).toFixed(3)).join(' ')}`
@@ -3132,9 +3160,28 @@ function syncAudioSource() {
         + (t.outsidePeak !== undefined
           ? `\n　　主瓣外最大值 ${Number(t.outsidePeak).toFixed(3)}（第 ${t.outsideAt} 段）`
             + `　主瓣外最大跳变 ${Number(t.maxJump).toFixed(3)}（第 ${t.jumpAt} 段）`
-            + `${t.outsidePeak > 0.2
-              ? ' ⚠️ 纯音下主瓣外就有明显的值 ⟹ 尖刺来自分箱/平滑，不是音乐'
-              : ' ✅ 主瓣外干净 ⟹ 尖刺来自音乐本身的瞬态（WE 也一样）'}`
+            // ⚠️ 判据换了（见上面那段）：矩形窗下"主瓣外有值"是**期望行为**，
+            // 有问题的是"跳变大"（那才是尖刺）和"远处不衰减"。
+            + `${t.maxJump > 0.25
+              ? ' ⚠️ 主瓣外跳变大 ⟹ 那是真尖刺（矩形窗的泄漏该是平缓的高原）'
+              : ' ✅ 主瓣外平缓 ⟹ 那是矩形窗的泄漏（WE 也一样，'
+                + '而泄漏正是它铺满圆环的机制）'}`
+          : '')
+        + (t.leakFalloff !== undefined
+          ? `\n　　泄漏衰减：近处(±5-10段) ${Number(t.leakNear).toFixed(3)}`
+            + ` → 远处(±25段外) ${Number(t.leakFar).toFixed(3)}`
+            + `　落差 ${Number(t.leakFalloff).toFixed(3)}`
+            + `${t.leakFalloff > 0.03
+              ? ' ✅ 泄漏随距离衰减（矩形窗该有的样子）'
+              : ' ⚠️ 远处和近处一样高 ⟹ FFT 那层坏了'
+                + '（ctoz 的 stride / 缓冲被写坏）—— 画面会是一圈等长的柱子'}`
+          : '')
+        + (t.mirrorMaxDiff !== undefined
+          ? `\n　　镜像逐段差 ${Number(t.mirrorMaxDiff).toFixed(4)}`
+            + `${t.mirrorMaxDiff < 0.001
+              ? ' ✅ 左右两半一致'
+              : `（第 ${t.mirrorAt} 段）⚠️ 镜像下标写错了 —— `
+                + '症状是"圆环接缝处一根突兀的柱子"'}`
           : '')
         // ⚠️⚠️⚠️ **FFT 的绝对尺度** —— 用户报「整体的柱子都太长了」。
         //
@@ -3164,8 +3211,11 @@ function syncAudioSource() {
       broadcast('helper-log', {
         source: 'audio',
         message: `${ok ? '✅' : '⚠️'} ${line}`
-          + (ok ? '' : ' ⟸ 主瓣宽度 <2 说明窗函数或 stride 有问题，'
-            + '峰值位置不对说明频率映射错了'),
+          // ⚠️ 这句提示原来说"主瓣宽度<2 说明窗函数或 stride 有问题"，
+          // 而现在没有窗函数、主瓣宽度也不再是判据 ⟹ 那句话会指向错的方向。
+          // 用户 0.9.13 就同时看到「比值 2.00 ✅」和这句 ⟸ 提示，两者矛盾。
+          + (ok ? '' : ' ⟸ 峰值位置不对 = 频率映射错了（stride / index 算错）；'
+            + '镜像差非 0 = out[] 下标写错了'),
       });
     },
     onStatus: (status) => {
