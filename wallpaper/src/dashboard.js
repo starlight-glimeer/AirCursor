@@ -1559,12 +1559,171 @@ function renderAudioStatus(audio) {
 
 // 控件从 project.json 自动生成 —— 不给每个壁纸手写一遍 UI。
 // 这样支持的不是"这一个壁纸"，是任意 WE 网页壁纸。
+// ⚠️⚠️ **右侧详情面板**（0.9.54）。用户 2026-08-01 给了 WE 的界面截图：
+//   「右边那个就是你点击了哪个壁纸，他的预览图和参数信息」
+//   +「装载加显示壁纸参数」
+//
+// 两页各一个（#mine-side / #we-side），内容不同但形状一致：
+//   我的壁纸：预览 + 标题 + 类型/大小 + 操作 + **参数**（读 project.json）
+//   创意工坊：预览 + 标题 + 类型/大小/订阅数 + 「下载」（还没下载，没有参数）
+//
+// ⚠️ 为什么不做成一个函数带 flag：那两边的数据字段不同（本地有 dir/active，
+// 工坊有 subscriptions/author），塞进一个函数就是一串 if ⟹ 各写一个更清楚。
+// ⚠️ 而**空态**要说清"点左边" —— 一个空白的右半屏看起来像坏了。
+
+function renderMineSide(item) {
+  const empty = document.getElementById('mine-side-empty');
+  const body = document.getElementById('mine-side-body');
+  if (!body) return;
+
+  if (!item) {
+    empty.hidden = false;
+    body.hidden = true;
+    return;
+  }
+  empty.hidden = true;
+  body.hidden = false;
+
+  const img = document.getElementById('side-preview');
+  if (item.preview) {
+    img.src = item.preview;
+    img.style.visibility = 'visible';
+  } else {
+    // ⚠️ visibility 而不是 display —— 留住位置，否则"没缩略图"会让下面的
+    // 内容跳上来（而用户刚点了一下，那个跳动看起来像点错了）。
+    img.removeAttribute('src');
+    img.style.visibility = 'hidden';
+  }
+
+  document.getElementById('side-title').textContent = item.title || item.id || '(未命名)';
+
+  // 类型 / 大小 / 状态。⚠️ 「暂不支持」要在这里也说 —— 用户点了才知道装不上
+  // 的话，他会以为是坏了（而 0.9.53 定的措辞是「暂不支持」不是「放不了」）。
+  const meta = [];
+  if (item.type) meta.push(item.supported ? item.type : `${item.type} · 暂不支持`);
+  if (item.sizeBytes) meta.push(W_FORMAT(item.sizeBytes));
+  if (item.active) meta.push('正在放');
+  const metaEl = document.getElementById('side-meta');
+  metaEl.textContent = meta.join(' · ');
+  if (!item.supported && item.refusal) {
+    metaEl.innerHTML = `${meta.join(' · ')}\n<span class="warn">${item.refusal}</span>`;
+  }
+
+  // 操作：在 Finder 中打开 / 加入或移出播放列表。
+  // ⚠️ **没有「装载」按钮** —— 点卡片就已经装载了（用户定的：「装载加显示壁纸参数」）
+  //   ⟹ 再放一个按钮是同一个动作两个入口。
+  // ⚠️ **也没有「删除」** —— 那是破坏性的，留在右键菜单里（要经过确认）。
+  //   右侧面板是"看和调"，不该有一键删。
+  const actions = document.getElementById('side-actions');
+  actions.innerHTML = '';
+  const openBtn = document.createElement('button');
+  openBtn.className = 'act';
+  openBtn.type = 'button';
+  openBtn.textContent = '在 Finder 中打开';
+  openBtn.onclick = () => window.gw.revealWallpaperDir(item.dir);
+  actions.appendChild(openBtn);
+
+  const list = ((config.we && config.we.rotate) || {}).list || [];
+  const inList = list.includes(item.dir);
+  const listBtn = document.createElement('button');
+  listBtn.className = 'act';
+  listBtn.type = 'button';
+  listBtn.textContent = inList ? '从播放列表移出' : '加入播放列表';
+  listBtn.onclick = () => {
+    setRotate({ list: inList ? list.filter((d) => d !== item.dir) : [...list, item.dir] });
+    renderMine();
+    // ⚠️ 自己也要重渲染 —— 按钮文案要跟着变（"加入"↔"移出"），
+    // 不刷的话用户点了看到文案没变，会以为没生效。
+    renderMineSide({ ...item });
+  };
+  actions.appendChild(listBtn);
+
+  // ⚠️⚠️ 参数只对**正在放的那个**有意义 —— `weControls()` 读的是当前装载的壁纸
+  // （不是"某个目录的 project.json"）⟹ 点的不是当前那张时不能显示参数，
+  // 否则显示的是**别的壁纸的参数**（而那是最难发现的一种错）。
+  const head = document.getElementById('side-props-head');
+  const host = document.getElementById('we-controls');
+  if (item.active) {
+    head.hidden = false;
+    renderWEControls();
+  } else {
+    // 点了但还没装完（renderMine 会重跑并把 active 更新）⟹ 先清掉，别留上一张的
+    head.hidden = true;
+    if (host) host.innerHTML = '';
+  }
+}
+
+// 工坊侧：还没下载 ⟹ 没有 project.json ⟹ 没有参数，只有详情 + 「下载」。
+function renderWeSide(item) {
+  const empty = document.getElementById('we-side-empty');
+  const body = document.getElementById('we-side-body');
+  if (!body) return;
+
+  if (!item) {
+    empty.hidden = false;
+    body.hidden = true;
+    return;
+  }
+  empty.hidden = true;
+  body.hidden = false;
+
+  const img = document.getElementById('wside-preview');
+  if (item.preview) {
+    img.src = item.preview;
+    img.style.visibility = 'visible';
+  } else {
+    img.removeAttribute('src');
+    img.style.visibility = 'hidden';
+  }
+
+  document.getElementById('wside-title').textContent = item.title || item.id || '(未命名)';
+
+  const meta = [];
+  if (item.type) meta.push(item.supported ? item.type : `${item.type} · 暂不支持`);
+  if (item.sizeBytes) meta.push(W_FORMAT(item.sizeBytes));
+  if (item.subscriptions) meta.push(`${item.subscriptions} 订阅`);
+  document.getElementById('wside-meta').textContent = meta.join(' · ');
+
+  // 「下载」。⚠️ 点卡片**不直接下载** —— 几百 MB 的误点很贵。
+  // ⟹ 下载是这个面板上一个明确的按钮，那是"贵操作要有明确动作"。
+  const actions = document.getElementById('wside-actions');
+  actions.innerHTML = '';
+  const dl = document.createElement('button');
+  dl.className = 'act primary';
+  dl.type = 'button';
+  dl.textContent = item.supported === false ? '仍然下载（暂不支持）' : '下载这个壁纸';
+  dl.onclick = () => {
+    // ⚠️ 复用「按 ID 装载」那条路 —— 它已经处理了 steamcmd 登录、清 manifest、
+    // 移动到我们目录、报进度。在这里重写一份就是第二份知识。
+    const idBox = document.getElementById('ws-id');
+    if (idBox) idBox.value = item.id;
+    const manual = document.getElementById('we-side-manual');
+    // ⚠️ 把那个 <details> 展开 —— 下载要 Steam 账号，而它收起来的时候
+    // 用户看不到"为什么没动"（这个项目栽过六次"做了但用户看不到"）。
+    if (manual) manual.open = true;
+    const peek = document.getElementById('ws-peek');
+    if (peek) peek.click();
+  };
+  actions.appendChild(dl);
+
+  const open = document.createElement('button');
+  open.className = 'act';
+  open.type = 'button';
+  open.textContent = '在 Steam 打开';
+  open.onclick = () => window.gw.openExternal(
+    `https://steamcommunity.com/sharedfiles/filedetails/?id=${item.id}`);
+  actions.appendChild(open);
+}
+
 async function renderWEControls() {
   const host = document.getElementById('we-controls');
   if (!host) return;
   const result = await window.gw.weControls();
   if (!result.ok || !result.controls.length) {
-    host.innerHTML = '<span class="hint">装载壁纸后，这里会按它的 project.json 自动生成。</span>';
+    // ⚠️ 0.9.54：这块现在在右侧详情面板里，而面板只在"有壁纸在放"时才显示
+    // ⟹ 走到这里说明**那个壁纸自己没有可调参数**（很多 video 类就没有），
+    //   不是"还没装载"。文案要说对，否则用户会去找一个不存在的装载步骤。
+    host.innerHTML = '<span class="hint">这个壁纸没有可调的参数。</span>';
     return;
   }
   host.innerHTML = '';
@@ -2037,11 +2196,14 @@ async function runBrowse() {
 
   for (const item of result.items) {
     grid.appendChild(workshopCard(item, (picked) => {
-      // 点卡片 = 填到"按 ID 装载"那栏并看详情，不直接下载 ——
-      // ⚠️ 直接下几百 MB 会让误点变成很贵的操作。
-      document.getElementById('ws-id').value = picked.id;
-      renderPeek({ ...picked, ok: true });
-      document.getElementById('ws-id').scrollIntoView({ behavior: 'smooth' });
+      // ⚠️⚠️ 点卡片 = **右侧详情面板出内容**（0.9.54），不直接下载 ——
+      // 直接下几百 MB 会让误点变成很贵的操作。
+      //
+      // ⚠️ 原来是"填到「按 ID 装载」那栏 + renderPeek + scrollIntoView"——
+      // 那三步现在只剩一步：右侧面板本来就在视野里，不用滚过去。
+      // ⟹ `ws-id` 的填充挪到了「下载」按钮里（见 renderWeSide）——
+      //   点卡片不该改那个输入框（用户可能正在手动贴另一个 ID）。
+      renderWeSide(picked);
     }));
   }
 
@@ -2119,6 +2281,14 @@ async function renderMine() {
   // ⚠️ 存下来而不是让轮播自己再调一次 workshopLocal() —— 那要遍历磁盘，
   // 而且两次扫描之间的结果可能不一致（"正在放"的判断就会和网格打架）。
   lastWallpapers = (result.ok && result.items) ? result.items : [];
+  // ⚠️⚠️ 右侧详情跟着**正在放的那张**走（0.9.54）。
+  // 理由：这一版里"选中"和"正在放"是同一个概念（用户定的「装载加显示壁纸参数」）
+  // ⟹ 列表每次刷新都要把右侧同步到 active 那张，否则：
+  //   · 刚点了一个壁纸 → renderMine 重跑 → 右侧还是上一张的参数
+  //   · 重开面板 → 桌面上在放着某个壁纸，而右侧是空的（看起来像没装载）
+  // ⚠️ 没有 active 时传 null ⟹ 显示空态（"点左边任意一个壁纸"），
+  //   而不是留着上一次的内容（那会让人以为那张还在放）。
+  renderMineSide(lastWallpapers.find((w) => w.active) || null);
   // ⚠️ 必须在 lastWallpapers 赋值**之后**渲染 —— 原来 renderRotate() 在
   // `await workshopLocal()` 之前调，那时清单还是空的 ⟹ 摘要行永远显示"—"。
   renderRotate();
@@ -2161,18 +2331,20 @@ async function renderMine() {
       preview: item.preview ? `file://${encodeURI(item.preview)}` : null,
     }, async () => {
       if (item.broken) return;
-      // ⚠️ **左键只做一件事：装载。**
+      // ⚠️⚠️ **左键 = 装载 + 右侧显示它的参数**（0.9.54）。
+      // 用户 2026-08-01（给了 WE 的截图之后）：「装载加显示壁纸参数」
       //
-      // 0.9.37 我让"点当前那张卡片 = 卸载" ⟹ 那是**把一个动作藏在另一个
-      // 动作里**（左键既装载又卸载，看 active 状态），而且要在卡片上常驻
-      // 一行「点击卸载」才不隐藏 ⟹ 界面又吵了。
+      // ⟹ "选中"和"正在放"是**同一个概念** —— 没有"选了但没生效"的中间态。
+      //   那也是为什么右侧面板不需要一个「装载这个壁纸」按钮。
       //
-      // 用户 2026-08-01：「就不能设计成右键点击，然后有一个选项是在资源管理器
-      // 中打开，有一个是卸载吗」—— 他说得对。⟹ 卸载搬到右键菜单。
+      // ⚠️ 历史：0.9.37 我让"点当前那张卡片 = 卸载"，那是**把一个动作藏在
+      // 另一个动作里**（左键既装载又卸载，看 active 状态）⟹ 卸载搬到了右键菜单。
       //
-      // ⚠️ 而"点当前的"现在**什么都不做** —— 那比"重新装载一次"好：
-      // 重新装载会让画面闪一下，而用户点它多半是误触。
-      if (item.active) return;
+      // ⚠️ 而"点当前那张"现在**要先把详情填出来再 return** ——
+      //   原来是无条件 `if (item.active) return;`，那样点正在放的那张
+      //   右侧不会更新（症状："点了没反应"，而这个项目栽过六次同形状）。
+      renderMineSide(item);
+      if (item.active) return;   // 已经在放了，不重新装载（会让画面闪一下）
       const out = await window.gw.workshopLoadLocal(item.dir);
       if (!out.ok) state.innerHTML = `<span class="warn">${out.error}</span>`;
       renderWEStatus();

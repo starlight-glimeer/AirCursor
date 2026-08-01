@@ -2656,14 +2656,29 @@ check('「用壁纸」的四块在「我的壁纸」页签，不在创意工坊'
   const settingsAt = html.indexOf('id="settings-modal"');
   assert.ok(settingsAt > 0, '找不到设置弹窗');
   const settings = html.slice(settingsAt);
-  for (const title of ['壁纸层', '音源', '壁纸自己的参数']) {
+  // ⚠️⚠️ 「壁纸自己的参数」从清单里去掉了（0.9.54）：它不再是一个 `<h3>` 小节，
+  // 而是**右侧详情面板里的一段**（`#side-props-head` + `#we-controls`）——
+  // 用户给了 WE 的截图：「右边那个就是你点击了哪个壁纸，他的预览图和参数信息」。
+  // ⟹ 那两个 id 由下面单独的断言守（查它们在 tab-mine 的右侧面板里）。
+  for (const title of ['壁纸层', '音源']) {
     assert.ok(mine.includes(`<h3>${title}</h3>`) || settings.includes(`<h3>${title}</h3>`),
       `「${title}」既不在「我的壁纸」页签也不在设置弹窗 —— 那是"用壁纸"的功能`);
     assert.ok(!we.includes(`<h3>${title}</h3>`),
       `「${title}」还在「创意工坊」—— 那个页签只该管"找壁纸"`);
   }
-  // 创意工坊要留下"找"相关的
-  assert.ok(we.includes('<h3>浏览创意工坊</h3>'), '创意工坊没有浏览功能了');
+  // 参数那一段：必须在「我的壁纸」的右侧面板里，不许在创意工坊
+  //（工坊壁纸还没下载，读不到 project.json ⟹ 那里放参数是无意义的）
+  assert.ok(mine.includes('id="we-controls"'),
+    '壁纸参数（#we-controls）不在「我的壁纸」页签 —— 那是"用壁纸"的功能');
+  assert.ok(!we.includes('id="we-controls"'),
+    '壁纸参数跑到「创意工坊」了 ⟹ 那边的壁纸还没下载，读不到 project.json');
+  // 创意工坊要留下"找"相关的。
+  // ⚠️ 0.9.54 起判据从"有 `<h3>浏览创意工坊</h3>` 这个标题"改成"**浏览的控件在**" ——
+  // 那个 h3 撤了（tab 条上已经写着「创意工坊」，页面里再写一遍是重复），
+  // 而这条断言的**意图**是"浏览功能还在"，不是"有那个标题"。
+  //（这一轮第 4 次改这类断言：写的是"当时那个位置/那个字"，不是意图。）
+  assert.ok(we.includes('id="br-grid"') && we.includes('id="br-q"'),
+    '创意工坊没有浏览功能了（搜索框 + 结果网格）');
 });
 
 // ⚠️ 用户报：「壁纸存储目录那里应该是自动刷新，不应该是每次我自己手动点击刷新才能看到」。
@@ -3419,7 +3434,15 @@ check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸�
   // ⟹ 右键菜单同时解决两件事：卸载不再藏在左键里、
   //    而「在 Finder 中打开」也不用常驻按钮（它 2026-07-31 因常驻太吵被删过）
   // ⟹ **判据：常驻的东西要少，而不是功能要少。**
-  const j2 = dash.indexOf('function renderMine');
+  // ⚠️⚠️ 锚 `async function renderMine()` 的**完整函数头**，不是名字前缀。
+  // 0.9.54 新加了 `renderMineSide(item)`，而它在文件里**更靠前**
+  // ⟹ `indexOf('function renderMine')` 命中的是它，切出来 2116 字符里
+  //   当然没有 showCardMenu ⟹ **在正确代码上报红**。
+  // 锚点撞名第 7 次（前几次撞注释/字符串/别处同名调用/同类名另一条规则），
+  // 这次撞的是**我自己新加的、名字以它为前缀的函数**。
+  // ⟹ 判据再收紧：锚"函数声明的完整形状"（含 async / 参数列表）。
+  const j2 = dash.indexOf('async function renderMine()');
+  assert.ok(j2 > 0, '找不到 renderMine 的定义 ⟹ 下面那条断言失效');
   const mineFn = dash.slice(j2, dash.indexOf('\nfunction ', j2 + 10));
   assert.match(mineFn, /showCardMenu/,
     '卡片没有右键菜单 ⟹ 用户 2026-08-01 明确要求的形态'
@@ -4559,6 +4582,102 @@ check('package.json 的版本号不落后于代码注释里提到的版本', () 
     `package.json 是 ${cur}，而 ${maxWhere} 里已经在说 ${maxSeen} ⟹ `
     + '打包出来的 dmg 和面板 build 标识都会是旧版本号，'
     + '而那是用户唯一能确认"我装的是哪一版"的东西');
+});
+
+// ⚠️⚠️ **顶部 tab + 网格/详情两列**（0.9.54）。用户 2026-08-01 给了
+// Wallpaper Engine 的界面截图：「我感觉我们也应该应用这种，我们现在的布局
+// 左侧的菜单栏，右侧展示，太 dashboard 了，这个图我看菜单是在左上角，
+// 右边那个就是你点击了哪个壁纸，他的预览图和参数信息」+「装载加显示壁纸参数」
+check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① body 是"上下两行"（tab 条 + 内容），不是"左右两列"
+  const body = html.slice(html.indexOf('  body {'), html.indexOf('}', html.indexOf('  body {')));
+  assert.match(body, /grid-template-rows/,
+    'body 不是"tab 条 + 内容"两行布局 ⟹ 左侧竖栏又回来了（用户点名太 dashboard）');
+  assert.ok(!/grid-template-columns:\s*176px/.test(body),
+    'body 又是左栏 176px + 内容 ⟹ 940px 窗口里网格只剩 ~420px（两列卡片）');
+
+  // ②⚠️⚠️ **hiddenInset 的红绿灯让位**：tab 条要同时让出上方和左方。
+  //    少了横向那份，第一个 tab 会跑到红绿灯底下（点不动，看起来像 tab 坏了）。
+  const nav = html.slice(html.indexOf('  nav {'), html.indexOf('}', html.indexOf('  nav {')));
+  // ⚠️ `0` 可以不带单位（CSS 里 `padding: 40px 16px 0 96px` 是合法的）
+  //   ⟹ 正则不能要求每个值都带 px，否则读不到而"断言失效"（我第一版就是）。
+  const pad = nav.match(/padding:\s*(\d+)(?:px)?\s+(\d+)(?:px)?\s+(\d+)(?:px)?\s+(\d+)(?:px)?/);
+  assert.ok(pad, `nav 的 padding 不是四值形式，读不到让位量：${nav.slice(0, 120)}`);
+  assert.ok(Number(pad[1]) >= 34,
+    `nav 顶部只让了 ${pad[1]}px ⟹ 红绿灯会压在 tab 上（hiddenInset 下按钮区到 y≈36）`);
+  assert.ok(Number(pad[4]) >= 80,
+    `nav 左侧只让了 ${pad[4]}px ⟹ 第一个 tab 跑到红绿灯底下，点不动`);
+  // titleBarStyle 和这个让位是成对的
+  assert.match(codeOnly(mainSrc), /titleBarStyle:\s*'hiddenInset'/,
+    '不用 hiddenInset 了但 nav 还在给红绿灯让位 ⟹ 顶上白留一块');
+
+  // ③⚠️⚠️ **滚动必须在网格列上，不在 main 上**。
+  //    main 滚的话右侧详情面板会跟着滚出视野 —— 而"钉住"正是这个布局的全部意义。
+  const main = html.slice(html.indexOf('  main {'), html.indexOf('}', html.indexOf('  main {')));
+  assert.match(main, /overflow:\s*hidden/,
+    'main 自己在滚 ⟹ 右侧详情面板会跟着滚走（那就白改了这个布局）');
+  assert.match(html, /\.pane-grid\s*\{[^}]*overflow-y:\s*auto/,
+    '网格列不能滚 ⟹ 壁纸多了就看不到后面的');
+  // ⚠️ min-height:0 —— flex/grid 子项默认 min-height:auto ⟹ 内容再高也不出滚动条，
+  //   而是把父容器撑破（"滚不动、整页被撑长"的经典成因）。三处都要。
+  for (const [sel, re] of [
+    ['section', /section\s*\{[^}]*min-height:\s*0/],
+    ['.split', /\.split\s*\{[^}]*min-height:\s*0/],
+    ['.pane-grid', /\.pane-grid\s*\{[^}]*min-height:\s*0/],
+  ]) {
+    assert.match(html, re, `${sel} 少了 min-height: 0 ⟹ 滚动条不出现，父容器被撑破`);
+  }
+
+  // ④ 三个 section 都要有能滚的容器（手势页没有两列模型，但也不能被截断）
+  for (const id of ['tab-mine', 'tab-we', 'tab-gesture']) {
+    const at = html.indexOf(`id="${id}"`);
+    const sec = html.slice(at, html.indexOf('</section>', at));
+    assert.match(sec, /class="pane-grid"/,
+      `#${id} 里没有 .pane-grid ⟹ main 不滚了，这一页的内容会被直接截断（不报错）`);
+  }
+
+  // ⑤ 两页各有右侧详情面板，且**空态要说清"点左边"**（空白的右半屏看起来像坏了）
+  for (const [page, emptyId, bodyId] of [
+    ['我的壁纸', 'mine-side-empty', 'mine-side-body'],
+    ['创意工坊', 'we-side-empty', 'we-side-body'],
+  ]) {
+    assert.ok(html.includes(`id="${emptyId}"`), `${page}的详情面板没有空态`);
+    assert.match(html, new RegExp(`id="${bodyId}"[^>]*hidden`),
+      `${page}的详情内容没有 hidden ⟹ 一开面板就是个空壳`);
+  }
+
+  // ⑥⚠️⚠️ 点卡片的行为：**我的壁纸 = 装载 + 显示参数**（用户原话「装载加显示壁纸参数」），
+  //    而**创意工坊 = 只看详情，不下载**（几百 MB 的误点很贵）。两边不同是有意的。
+  const mineFn = dash.slice(dash.indexOf('async function renderMine()'));
+  assert.match(mineFn.slice(0, 4000), /renderMineSide\(item\)[\s\S]{0,200}?workshopLoadLocal/,
+    '点「我的壁纸」的卡片没有"先填详情再装载" ⟹ 点正在放的那张时右侧不更新');
+  const browseFn = dash.slice(dash.indexOf('async function runBrowse()'));
+  assert.match(browseFn.slice(0, 3000), /renderWeSide\(picked\)/,
+    '点工坊卡片不填右侧详情面板');
+  assert.ok(!/workshopDownload/.test(browseFn.slice(0, 3000)),
+    '点工坊卡片就直接下载了 ⟹ 几百 MB 的误点很贵（下载要走面板上那个明确的按钮）');
+
+  // ⑦⚠️ 参数只对**正在放的那个**有意义 —— weControls() 读的是当前装载的壁纸，
+  //    不是"某个目录的 project.json" ⟹ 点的不是当前那张时不能显示参数，
+  //    否则显示的是**别的壁纸的参数**（最难发现的一种错）。
+  const sideFn = dash.slice(dash.indexOf('function renderMineSide'),
+    dash.indexOf('function renderWeSide'));
+  assert.match(sideFn, /if \(item\.active\) \{[\s\S]{0,160}?renderWEControls\(\)/,
+    '不管是不是正在放都渲染参数 ⟹ 会显示别的壁纸的参数');
+
+  // ⑧ openExternal 三端接线（「在 Steam 打开」按钮）+ 主进程要校验协议
+  assert.match(dash, /window\.gw\.openExternal\(/, '右侧面板用了 openExternal');
+  assert.match(codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8')),
+    /openExternal:/, 'preload 没暴露 openExternal ⟹ 那个按钮点了抛 TypeError');
+  assert.match(codeOnly(mainSrc), /ipcMain\.handle\('open-external'/,
+    'main 没注册 open-external');
+  // ⚠️⚠️ **必须校验协议** —— shell.openExternal 对 file:// 和自定义 scheme 也会执行，
+  //   而这里的 URL 来自 Steam 接口返回（不是我们完全控制的输入）。
+  assert.match(codeOnly(mainSrc), /u\.protocol !== 'http:' && u\.protocol !== 'https:'/,
+    "open-external 没校验协议 ⟹ file:// 能打开本机任意文件、自定义 scheme 能唤起别的应用");
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

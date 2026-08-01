@@ -16,9 +16,18 @@
     --ok: #8affc1;
   }
   * { box-sizing: border-box; }
+  /* ⚠️⚠️ **布局改成"顶部 tab + 内容区"**（0.9.54）。用户 2026-08-01 给了
+     Wallpaper Engine 的界面截图：「我感觉我们也应该应用这种，我们现在的布局
+     左侧的菜单栏，右侧展示，太 dashboard 了，这个图我看菜单是在左上角，
+     右边那个就是你点击了哪个壁纸，他的预览图和参数信息」
+
+     原来是 `grid-template-columns: 176px 1fr`（左栏 + 内容）。
+     ⚠️ 换掉的理由不只是"像 WE"：940px 宽的窗口里，左栏 176 + 右侧详情 340
+     ⟹ 网格只剩 ~420px（两列卡片）。而**壁纸墙的价值就在于一眼看到很多张**。
+     ⟹ 顶部 tab 条只占 44px 高，横向 940px 全留给"网格 + 详情"。 */
   body {
     margin: 0; height: 100vh; overflow: hidden;
-    display: grid; grid-template-columns: 176px 1fr;
+    display: grid; grid-template-rows: auto 1fr;
     background: var(--bg); color: var(--text);
     font: 400 13px/1.65 -apple-system, "PingFang SC", sans-serif;
   }
@@ -117,49 +126,47 @@
   }
   @keyframes breathe { 0%,100% { opacity: .4 } 50% { opacity: .95 } }
 
-  /* ---- 左侧栏 ---- */
+  /* ---- 顶部 tab 条（0.9.54，取代原来左侧 176px 竖栏）----
+     ⚠️⚠️ **顶部 40px 是给 `titleBarStyle: 'hiddenInset'` 的红绿灯让位**。
+     内容延伸到窗口顶部之后，那三个按钮在左上角，会压在第一个 tab 上。
+     ⚠️ 原来这个让位写在 `nav { padding: 42px … }` 和 `main { padding: 42px … }`
+        两处；现在 tab 条在最上面 ⟹ 只需要它一处让位，main 不用了。
+     ⚠️ 这个数字只对 hiddenInset 成立 —— 改回默认标题栏的话它就是白留一块。
+        守卫盯住"两者成对"。 */
   nav {
-    border-right: 1px solid var(--line);
-    /* ⚠️⚠️ 顶部 **42px** 是给 `titleBarStyle: 'hiddenInset'` 的红绿灯让位（0.9.46）。
-       内容延伸到窗口顶部之后，那三个按钮会**压在** brand 上（它们在左上角）。
-       42 = 红绿灯 y 中心 ~18px + 半径 + 呼吸空间；实测 macOS hiddenInset 下
-       按钮区约到 y=36。给 42 是留一点余量，少了会贴脸。
-       ⚠️ 这个数字只对 hiddenInset 成立 —— 改回默认标题栏的话它就是白留一块。
-          守卫盯住"两者成对"。 */
-    padding: 42px 0 18px;
-    display: flex; flex-direction: column; background: #0d0d11;
-    /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。
-       -webkit-app-region 是 Electron 的，nav 设 drag、里面的按钮设 no-drag。 */
+    display: flex; align-items: center; gap: 2px;
+    padding: 40px 16px 0 96px;
+    background: #0d0d11; border-bottom: 1px solid var(--line);
+    /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。 */
     -webkit-app-region: drag;
   }
-  /* ⚠️ `nav .keys` 从这里去掉了（0.9.51 搬进设置弹窗）。
-     ⚠️ `nav button` 已经覆盖齿轮（它就是个 button），不用单列。 */
   nav button, #build-stamp { -webkit-app-region: no-drag; }
-  nav .brand {
-    padding: 0 18px 18px; font-size: 14px; font-weight: 600; letter-spacing: .04em;
-  }
+  /* ⚠️ 96px 左内边距是给红绿灯**横向**让位 —— 它们在 x=13..70 那一带，
+     而 tab 现在是水平排的 ⟹ 第一个 tab 会跑到按钮底下。
+     ⚠️ `.brand` 撤了：窗口标题栏已经写着 GestureWall，tab 条上再写一遍是重复
+        （而横向空间在这个布局里是稀缺的）。 */
   nav button {
     appearance: none; background: none; border: 0; color: var(--dim);
-    text-align: left; padding: 10px 18px; font: inherit; cursor: pointer;
-    border-left: 2px solid transparent;
+    padding: 9px 14px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+    border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
+    /* ⚠️ 下移 1px 补掉 border-bottom 造成的视觉偏移，否则未选中的 tab
+       看起来比选中的高一点。 */
+    margin-bottom: -1px;
   }
-  nav button:hover { color: var(--text); }
+  nav button:hover { color: var(--text); background: rgba(255,255,255,.04); }
   nav button.on {
-    color: var(--text); border-left-color: var(--accent);
+    color: var(--text); border-bottom-color: var(--accent);
     background: rgba(108,199,255,.07);
   }
   nav .spacer { flex: 1; }
-  /* ⚠️ 齿轮按钮：0.9.51 取代了 nav 底部那 7 行快捷键提示（搬进设置弹窗了）。
-     ⚠️ 它复用 `nav button` 的基础样式（那条选择器管所有 nav 里的 button），
-     所以这里只加"在最下面 + 有分隔线"这几点，不重复写一遍字号颜色。 */
-  #settings-open {
-    border-top: 1px solid var(--line);
-    padding-top: 12px; margin-top: 8px;
-  }
+  /* ⚠️ build 标识挪到 tab 条右侧（原来在左栏）—— 它是**来回测试时核对版本的
+     唯一依据**，必须常驻可见。放右侧靠边，不抢 tab 的位置。 */
+  #build-stamp { margin: 0 10px 0 0; }
+  /* 齿轮：tab 条最右。⚠️ 0.9.51 起它是设置的唯一入口。 */
+  #settings-open { padding: 9px 12px 10px; }
   #settings-open .gear {
     display: inline-block; font-size: 13px; margin-right: 3px;
-    /* 悬停时转一下 —— 一个很轻的反馈，说明它是可点的 */
-    transition: transform .3s ease;
+    transition: transform .3s ease;   /* 悬停转一下 —— 说明它可点 */
   }
   #settings-open:hover .gear { transform: rotate(60deg); }
   kbd {
@@ -167,13 +174,86 @@
     font: inherit;
   }
 
-  /* ---- 右侧内容 ---- */
-  /* ⚠️ 顶部 42px 和 nav 对齐 —— hiddenInset 下内容延伸到窗口顶部，
-     22px 会让第一块卡片顶到标题栏区（那一带是可拖拽的，点它不会有反应，
-     看起来像"这个卡片点不动"）。 */
-  main { overflow-y: auto; padding: 42px 26px 60px; -webkit-app-region: no-drag; }
-  section { display: none; }
+  /* ---- 内容区 ----
+     ⚠️ main 自己不滚 —— 滚动交给里面的网格列（`.pane-grid`）。
+     整个 main 滚的话右侧详情面板会跟着滚出视野，而它该**钉住**
+     （那是这个布局的全部意义：一边翻壁纸、一边看当前那张的参数）。 */
+  main { overflow: hidden; -webkit-app-region: no-drag; min-height: 0; }
+  section { display: none; height: 100%; min-height: 0; }
   section.on { display: block; }
+
+  /* ⚠️⚠️ **两列布局**：左网格（滚动）+ 右详情（钉住，也能自己滚）。
+     用户 2026-08-01 给的 WE 截图：「右边那个就是你点击了哪个壁纸，
+     他的预览图和参数信息」
+
+     ⚠️ `min-height: 0` 是**必须**的（三处：section / .split / .pane-grid）——
+     flex/grid 子项的默认 min-height 是 auto ⟹ 内容再高也不会出滚动条，
+     而是把父容器撑破。那是"网格滚不动、整页被撑长"的经典成因。 */
+  .split {
+    display: grid; grid-template-columns: 1fr 340px;
+    height: 100%; min-height: 0;
+  }
+  .pane-grid { overflow-y: auto; min-height: 0; padding: 18px 20px 40px; }
+  .pane-side {
+    overflow-y: auto; min-height: 0;
+    border-left: 1px solid var(--line); background: #131318;
+    padding: 18px 16px 40px;
+  }
+  /* 窄窗口（<820px）下详情面板会把网格挤成一列 ⟹ 直接叠成上下两段。
+     ⚠️ 那比"横向挤扁"好：一列卡片的壁纸墙没有意义。 */
+  @media (max-width: 820px) {
+    .split { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+    .pane-side { border-left: none; border-top: 1px solid var(--line); }
+  }
+
+  /* ---- 右侧详情面板的内容（0.9.54）----
+     ⚠️ 两页共用这套样式（#side-* 和 #wside-* 各一份 id，但样式共用选择器）——
+     长得一样是**有意的**：用户在两个 tab 之间切换时不该有"换了个软件"的感觉。 */
+  #side-preview, #wside-preview {
+    width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
+    border-radius: 9px; background: #000; display: block;
+    border: 1px solid var(--line);
+  }
+  #side-title, #wside-title {
+    font-size: 13.5px; font-weight: 600; margin: 10px 0 2px;
+    /* ⚠️ 工坊标题动辄几十字 ⟹ 允许换行但最多两行，超了打点。
+       不限制的话一个长标题能把整个面板顶下去半屏。 */
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #side-meta, #wside-meta { margin: 0; font-size: 11px; }
+  /* 参数那一段的小标题。⚠️ 只在真有参数时显示（JS 控 hidden）——
+     没有参数的壁纸下面是空的，而一个孤零零的「参数」标题看起来像坏了。 */
+  #side-props-head {
+    font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--dim); font-weight: 600;
+    margin: 16px 0 8px; padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  /* ⚠️ 参数控件原来在一个 `.card` 里（宽 ~590px），现在在 340px 的面板里
+     ⟹ 三列布局（标签/控件/读数）会挤成一团。改成两行式。 */
+  .pane-side .we-row {
+    display: grid; grid-template-columns: 1fr auto;
+    gap: 4px 8px; align-items: center;
+    padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.045);
+  }
+  .pane-side .we-row > label {
+    font-size: 11.5px; color: var(--text); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 滑块/下拉这类控件独占第二行，通栏 —— 340px 里和标签挤一行会太窄 */
+  .pane-side .we-row > input[type=range],
+  .pane-side .we-row > select,
+  .pane-side .we-row > input[type=text] {
+    grid-column: 1 / -1; width: 100%;
+  }
+  .pane-side .we-row > span { font-size: 10px; color: var(--dim); white-space: nowrap; }
+  .pane-side .we-group { margin: 14px 0 6px; font-size: 11px; }
+  /* 面板里的 details（贴 ID / API key）：收起来时只有一行 summary */
+  .pane-side details > summary { cursor: pointer; padding: 4px 0; }
+  .pane-side details[open] > summary { margin-bottom: 6px; }
+  .pane-side .bar-row { flex-wrap: wrap; gap: 6px; }
+  .pane-side input[type=text], .pane-side input[type=password] { min-width: 0; flex: 1; }
   h2 {
     margin: 0 0 4px; font-size: 17px; font-weight: 600;
   }
@@ -591,30 +671,25 @@
 </div>
 
 <nav>
-  <div class="brand">GestureWall</div>
+  <!-- ⚠️ tab 顺序：**「我的壁纸」放第一个**（0.9.54）。
+       原来是「创意工坊」在前，而那是"找壁纸"—— 用户日常打开面板是来**换壁纸**的，
+       找新的是偶尔一次。第一个 tab 该是最常用的那个。
+       ⚠️ 默认选中也跟着换（下面 class="on" 和 section 的 class="on" 要成对，
+          错开的话打开面板是"tab 高亮在 A、内容显示 B"）。 -->
+  <button data-tab="mine" class="on">我的壁纸</button>
+  <button data-tab="we">创意工坊</button>
+  <button data-tab="gesture">手势录制</button>
+  <div class="spacer"></div>
   <!-- ⚠️ build 标识必须放在**常驻可见**的地方。
        第一版我放进了 #launch（开屏页），而那个页会 .gone 淡出 ⟹ 看不见 ——
        用户报「没看到任何类似 v0.9.10 … 的字样」。
-       nav 在所有 tab 下都在，这里才对。
-       打包版没有终端，这是唯一能确认"我跑的是哪个版本"的地方。 -->
+       打包版没有终端，这是唯一能确认"我跑的是哪个版本"的地方。
+       ⚠️ 0.9.54 从左栏挪到 tab 条右侧（靠边，不抢 tab 的位置）。 -->
   <div id="build-stamp"></div>
-  <button data-tab="we" class="on">创意工坊</button>
-  <button data-tab="mine">我的壁纸</button>
-  <button data-tab="gesture">手势录制</button>
-  <div class="spacer"></div>
-  <!-- ⚠️⚠️ **左下角的齿轮**（0.9.51）。用户 2026-08-01：
-       「我有个很棒的设想，左下方来个齿轮按钮是设置，设置打开后弹窗，
-         这个弹窗里有{{我的壁纸目录：… 打开 更换目录 6 个，4 个能跑}}
-         以及之前的开发者选项」
-
-       **这个设想是对的** —— 目录行和开发者选项都不是"每天要看"的东西：
-         · 目录：一次设定，之后几个月不碰
-         · 开发者选项：只在出问题时打开
-       而它们原来都常驻在「我的壁纸」页上 ⟹ 那一页有一半不是壁纸。
-       ⟹ 搬进设置弹窗之后，「我的壁纸」只剩：轮播摘要行 + 壁纸网格。
-
-       ⚠️ 那一串快捷键提示（⌃⇧W/⌃⇧L/…）也搬进去了 —— 它占了 nav 底部 7 行，
-       而它是**参考资料**，不是每天要看的东西。同一个判据。 -->
+  <!-- ⚠️⚠️ **齿轮 = 设置的唯一入口**（0.9.51）。用户当时说的是"左下方"，
+       而 0.9.54 布局改成顶部 tab 条之后左下角不存在了 ⟹ 挪到 tab 条最右。
+       位置变了，**它承载的东西没变**：目录行 / 快捷键 / 开发者选项（含全部诊断）。
+       判据也没变：那些不是"每天要看"的东西。 -->
   <button id="settings-open" type="button" title="设置">
     <span class="gear">⚙</span> 设置
   </button>
@@ -623,250 +698,160 @@
 <main>
 
   <!-- ============ 我的壁纸 ============ -->
-  <section id="tab-mine">
-    <h2>我的壁纸</h2>
-    <!-- ⚠️ 这里原来有一句 lead（「扫存储目录里所有含 project.json 的壁纸 ——
-         不管它是怎么来的…」）—— 0.9.50 删了，用户点名。
-         它说的是**我们怎么实现的**（扫目录、认 project.json），
-         而用户在这一页要做的是挑壁纸。 -->
+  <section id="tab-mine" class="on">
+    <!-- ⚠️⚠️ **两列：左网格 + 右详情**（0.9.54）。用户 2026-08-01 给了
+         Wallpaper Engine 的截图：「右边那个就是你点击了哪个壁纸，
+         他的预览图和参数信息，这个可以做到"我的壁纸"这个界面」
 
-    <!-- ⚠️⚠️ 轮播（0.9.49 重做成"一行摘要 + 点开弹窗"）。
-         用户 2026-08-01：「轮播那里改一下，应该是点击一下出一个弹窗，
-         设计时间，轮播时间，顺序/随机等等，正常的轮播逻辑都要有，
-         并且要有预览图，就是一行，肯定放不下，右滑就行了，
-         然后当前播放的哪个壁纸要有显示」
-
-         ⟹ 面板上只留**一行摘要**（在放哪个 + 状态），设置全进弹窗。
-         那和 0.9.43 那版（间隔/顺序/下一个三个控件常驻）的区别是：
-         常驻的东西从 4 个变成 1 行，而功能反而多了。
-         这是这个项目第四次收到"常驻的东西太多" —— 判据一直是
-         **常驻的东西要少，而不是功能要少**。 -->
-    <div class="card" id="rotate-card">
-      <!-- 摘要行：整行可点 → 开弹窗。左边是"正在放"的缩略图 + 名字。 -->
-      <div id="rotate-summary" role="button" tabindex="0"
-           title="点开设置轮播（间隔、顺序、播放列表）">
-        <img id="rotate-now-img" alt="">
-        <div id="rotate-now-text">
-          <b id="rotate-now-title">—</b>
-          <span id="rotate-now-state" class="hint"></span>
+         ⚠️ `<h2>我的壁纸</h2>` 撤了 —— tab 条上已经写着「我的壁纸」，
+            页面里再写一遍是重复（而这个布局里纵向空间要留给网格）。 -->
+    <div class="split">
+      <div class="pane-grid">
+        <!-- 轮播摘要行（0.9.49）：整行可点 → 弹窗。放网格上面 ——
+             它管的是"这些壁纸怎么放"，而网格是"有哪些壁纸"。 -->
+        <div class="card" id="rotate-card">
+          <div id="rotate-summary" role="button" tabindex="0"
+               title="点开设置轮播（间隔、顺序、播放列表）">
+            <img id="rotate-now-img" alt="">
+            <div id="rotate-now-text">
+              <b id="rotate-now-title">—</b>
+              <span id="rotate-now-state" class="hint"></span>
+            </div>
+            <span id="rotate-chevron">›</span>
+          </div>
         </div>
-        <span id="rotate-chevron">›</span>
+        <div id="mine-state" class="hint" style="margin-bottom:10px"></div>
+        <div id="mine-grid" class="ws-grid"></div>
+      </div>
+
+      <!-- ⚠️⚠️ 右侧详情面板。用户点卡片 = **装载 + 在这里显示它的参数**
+           （用户原话：「装载加显示壁纸参数」）。
+           ⚠️ 所以"选中"和"正在放"是同一个概念 —— 没有"选了但没生效"的中间态。
+              那也是为什么这里不需要「装载这个壁纸」按钮。 -->
+      <div class="pane-side" id="mine-side">
+        <div id="mine-side-empty" class="hint">
+          点左边任意一个壁纸 —— 它会立刻用上，参数出现在这里。
+        </div>
+        <div id="mine-side-body" hidden>
+          <img id="side-preview" alt="">
+          <div id="side-title"></div>
+          <div id="side-meta" class="hint"></div>
+          <div id="side-actions" class="bar-row" style="margin-top:10px"></div>
+          <!-- 壁纸自己的参数（按 project.json 自动生成）。
+               ⚠️ 这一块原来在页面正文里占一整段，现在钉在右侧
+                  ⟹ 一边翻壁纸、一边调当前那张的参数，不用来回滚。 -->
+          <div id="side-props-head" hidden>参数</div>
+          <div id="we-controls"></div>
+        </div>
       </div>
     </div>
-
-    <!-- ⚠️⚠️ 轮播设置弹窗。默认 hidden，点摘要行才出来。
-         ⚠️ 不用 <dialog> —— 它的 ::backdrop 在 Electron 里样式受限，
-         而且 showModal() 会把焦点管理接过去，和我们自己的 Esc/点外关闭打架。
-         一个 fixed 的遮罩 + 一个居中的面板，行为完全可控。 -->
-    <div id="rotate-modal" hidden>
-      <div id="rotate-modal-mask"></div>
-      <div id="rotate-modal-box" role="dialog" aria-modal="true"
-           aria-labelledby="rotate-modal-title">
-        <div class="rm-head">
-          <b id="rotate-modal-title">轮播设置</b>
-          <button class="act" id="rotate-modal-close" type="button" title="关闭（Esc）">✕</button>
-        </div>
-
-        <!-- ① 开关 -->
-        <div class="toggle">
-          <input type="checkbox" id="rotateOn">
-          <label for="rotateOn">开启轮播</label>
-        </div>
-
-        <!-- ② 间隔。⚠️ 数字 + 单位两个控件 —— 用户说"设计时间，轮播时间"，
-             而只给"分钟"的话 2 小时要填 120，那不是正常的轮播设置。 -->
-        <div class="rm-row">
-          <span class="rm-label">每隔</span>
-          <input type="number" id="rotateEvery" min="1" max="1440" step="1" style="width:70px">
-          <select id="rotateUnit" title="分钟或小时">
-            <option value="minute">分钟</option>
-            <option value="hour">小时</option>
-          </select>
-          <span class="rm-label">换一张</span>
-        </div>
-
-        <!-- ③ 顺序 -->
-        <div class="rm-row">
-          <span class="rm-label">顺序</span>
-          <select id="rotateMode" title="顺序：按列表往下走。随机：避开当前和上一张">
-            <option value="order">按列表顺序</option>
-            <option value="random">随机</option>
-          </select>
-          <button class="act" id="rotateNext" type="button"
-                  title="立刻换下一张（不改开关状态，也会重新计时）">立刻换下一张</button>
-        </div>
-
-        <!-- ④ 播放列表：横向一排缩略图，右滑看更多。
-             ⚠️ 用户点名要预览图 + 横滑：「并且要有预览图，就是一行，
-             肯定放不下，右滑就行了」 -->
-        <div class="rm-row" style="justify-content:space-between">
-          <span class="rm-label">播放列表</span>
-          <span id="rotate-list-count" class="hint" style="font-size:11px"></span>
-        </div>
-        <div id="rotate-strip"></div>
-        <div id="rotate-modal-hint" class="hint" style="font-size:11px"></div>
-      </div>
-    </div>
-
-    <!-- ⚠️⚠️ 这里原来有个「让壁纸跟着音乐动」开关（0.9.44 加的）—— 0.9.50 撤了。
-         用户 2026-08-01：「这是什么，这应该是默认的，不需要给选项」
-
-         **他说得对。** 那个开关是我在 0.9.44 把五个音源按钮搬进开发者选项时
-         留下的"2C 版本"，但它给的是一个用户不需要做的决定：
-           · 采集的条件本来就是 `weProject.wantsAudio && audioSource !== 'off'`
-             （main.js:3790）—— **壁纸自己声明要音频**才采集
-           · 默认值已经是 `system`（main.js:413），而且有一条迁移把老配置的
-             `off` 改回 `system`（main.js:569）
-           ⟹ 一个装了音乐可视化壁纸的人，唯一合理的期望就是它跟着音乐动。
-              问他"要不要动"是把实现细节暴露成了选项。
-
-         ⟹ 开发者选项里那五个音源按钮**留着**（netease/system/synth/sweep/off），
-            那是诊断工具；这里不再有 2C 开关。 -->
-    <div id="mine-grid" class="ws-grid"></div>
-      <!-- ⚠️⚠️ 这里原来有一段写死的说明（steamcmd 自动扫 + 两条约束），删了。
-           用户 2026-08-01 指出它和 renderMineDirs 生成的内容**重复显示**
-           （他粘回来的截图里那两条约束出现了两遍）。
-
-           而那两条约束本身有价值（"直接放一堆 mp4 认不出来"是真会撞到的）
-           ⟹ 没有删，它们在 `把壁纸放这里.txt` 里（就在壁纸目录，
-           用户点上面那个「打开」就会看到）。
-           ⟹ **在需要的时候出现，而不是常驻占地方。**
-
-           ⚠️ 教训：同一句说明同时存在于 HTML（静态）和 JS（动态渲染）里，
-           改一处不会让另一处消失 —— 而"重复显示"这种症状看起来像渲染 bug。
-           下次写面板文案前先 grep 那句话在不在另一边。 -->
-    </div>
-  
-  <!-- ⚠️ 这四块是从「创意工坊」搬过来的（用户 2026-07-31）：
-       「已下载的壁纸、壁纸层、音源、壁纸自己的参数这些都不应该在创意工坊这个模块，
-         应该在我的壁纸这个模块」。
-       他说得对 —— 职责是清楚的：
-         创意工坊 = **找**壁纸（浏览、搜索、下载）
-         我的壁纸 = **用**壁纸（有哪些、装哪个、怎么显示、参数）
-       而原来「创意工坊」塞了 7 块、「我的壁纸」只有 1 块。 -->
-  <!-- ⚠️ 这里原来有「已下载的壁纸」（#ws-local）—— **和上面的「我的壁纸」重复了**。
-       用户报（2026-07-31）：「我的壁纸这里，怎么又一个我的壁纸，有一个已经下载的壁纸，
-       这不是重复了吗」。
-       两者调的是同一个 workshopLocal()、显示同一批数据，只是 #ws-local 是旧版
-      （下载后的确认列表，没有筛选/排序/打开目录）。删旧留新。
-       ⟹ 那是我把四块从「创意工坊」搬过来时造成的重复：搬之前它们在两个页签里，
-       各自看起来都合理。**搬动之后要重新审有没有重复**，我漏了这一步。 -->
-    <h3>壁纸自己的参数</h3>
-    <div class="card">
-      <!-- ⚠️ 这里原来有一句「装载壁纸后，这里会按它的 project.json 自动生成。」
-           —— 0.9.51 删了，用户点名。它说的是**我们怎么实现的**，
-           而且没装载壁纸时这一整块本来就是空的（那个空状态自己说明了一切）。 -->
-      <div id="we-controls"></div>
-    </div>
-
-
-
   </section>
 
   <!-- ============ WE 网页壁纸 ============ -->
-  <section id="tab-we" class="on">
-    <h2>Steam 创意工坊</h2>
-    <!-- ⚠️⚠️ 这里原来有一段说明和两个按钮，删了（0.9.32）。用户 2026-08-01 让删的。
-         而那段说明**本身已经过期**：
+  <section id="tab-we">
+    <!-- ⚠️⚠️ **两列**（0.9.54，和「我的壁纸」一致）。用户 2026-08-01：
+         「创意工坊那里我不确定是否支持这样做，能的话也做一下」—— 能做。
+         区别只在右侧面板的内容：工坊壁纸**还没下载**，读不到 project.json
+         ⟹ 没有参数，只有预览图/标题/类型/大小/订阅数 + 「下载」按钮。
 
-           「装载…**网页类**壁纸（project.json 里 type: "Web"）
-             ⚠️ **scene / video 类不支持** —— 那要解 WE 的私有格式。」
-
-         video 和 image/GIF 类早就支持了（真机验过：龙猫视频壁纸正常播放、
-         legacy 单文件走魔数嗅探造 project.json）⟹ 那句话在劝用户别下他其实能用的东西。
-         ⚠️ 教训：**"不支持 X"这类说明会随功能推进过期，而它比没有说明更坏**
-         （它主动误导）。⟹ 能力矩阵只留在 MODULES.md 一处，UI 上不重复。
-
-         两个按钮的去处：
-           「选择壁纸目录…」→ 搬到「我的壁纸」（那才是壁纸的家）
-           「卸载，回到三层景深」→ 同上
-         ⟹ 用户的模型是「我的壁纸」管壁纸、「创意工坊」管下载。 -->
-    <!-- ⚠️ 这里原来是 `#we-state`（壁纸标题 / 路径 / ready 状态 / 要不要音频 /
-         属性送了几项）—— 0.9.52 搬进设置弹窗的开发者模块了。用户点名删掉那几句：
-           「Perfect Wallpaper-完美壁纸【…】-steam独此一家
-             /Users/moon/Documents/GestureWall/Wallpapers/884307090
-             ⏳ 页面加载了，但壁纸还没报 ready —— …
-             这个壁纸要音频
-             ✅ 137 项属性已送到壁纸」
-         那五行全是**诊断**：路径、脚本跑没跑起来、属性送了几项 ——
-         2C 用户装了壁纸看桌面就知道成没成，不需要读这些。
-         ⟹ 但它们**不能删**（那是这几十轮唯一的观测手段）⟹ 搬进开发者模块。 -->
-
-    <h3>浏览创意工坊</h3>
-    <div class="card">
-      <!-- 仿 Steam 创意工坊：搜索框 + 排序 + 类型筛选 + 网格 + 分页。
-           ⚠️ 有些类型我们放不了（scene / application），但**预览图照样能看** ——
-           用户明确说过这点。所以不支持的项不隐藏，只在卡片上标出来。 -->
-      <div class="bar-row">
-        <input id="br-q" type="text" placeholder="搜索壁纸名（留空看热门）">
-        <button class="act primary" id="br-go" type="button">搜索</button>
-      </div>
-      <div id="br-sorts" class="we-src"></div>
-      <!-- 三组筛选：类型 / 年龄分级 / 主题。
-           ⚠️ 「分辨率」那组 0.9.52 删了（用户：「分辨率这个分类不需要，用处不大」）。
-           ⚠️ 全部走 Steam 的 requiredtags，没有独立参数 —— 类型和年龄是同一套机制。
-           ⚠️ 同一组里多选取**并集**（match_all_tags=false）—— 参数名叫 requiredtags，
-              Steam 默认 AND，而一个壁纸不可能同时是「全年龄」和「轻度不适宜」
-              ⟹ 多选必然零结果。见 workshop.js 的 browseParams。
-           ⚠️ 默认只勾「全年龄」：浏览工坊时默认不该出现成人内容。 -->
-      <div id="br-filters"></div>
-      <div id="br-state" class="hint">—</div>
-      <div id="br-grid" class="ws-grid"></div>
-      <div class="bar-row" id="br-pager" style="display:none">
-        <button class="act" id="br-prev" type="button">上一页</button>
-        <span id="br-page" class="hint"></span>
-        <button class="act" id="br-next" type="button">下一页</button>
-      </div>
-      <!-- API key。⚠️ 单独放在最下面：它是"配一次就不用管"的东西，
-           而放在顶上会让人以为不配就不能用（贴 ID 装载是不需要它的）。 -->
-      <details id="br-key-box">
-        <summary class="hint">浏览需要 Steam API key（免费，点开看怎么弄）</summary>
+         ⚠️ `<h2>Steam 创意工坊</h2>` 撤了 —— tab 条上已经写着「创意工坊」。 -->
+    <div class="split">
+      <div class="pane-grid">
+        <!-- 仿 Steam 创意工坊：搜索框 + 排序 + 三组筛选 + 网格 + 分页。
+             ⚠️ 有些类型我们暂不支持（scene / application），但**预览图照样能看** ——
+             用户明确说过这点。所以不支持的项不隐藏，只在卡片上标出来。 -->
         <div class="bar-row">
-          <input id="br-key" type="password" placeholder="粘贴那串 key">
-          <button class="act" id="br-key-save" type="button">保存</button>
+          <input id="br-q" type="text" placeholder="搜索壁纸名（留空看热门）">
+          <button class="act primary" id="br-go" type="button">搜索</button>
         </div>
-        <p class="hint" id="br-key-hint"></p>
-      </details>
+        <div id="br-sorts" class="we-src"></div>
+        <!-- 三组筛选：类型 / 年龄分级 / 主题。
+             ⚠️ 「分辨率」那组 0.9.52 删了（用户：「分辨率这个分类不需要，用处不大」）。
+             ⚠️ 全部走 Steam 的 requiredtags，没有独立参数 —— 类型和年龄是同一套机制。
+             ⚠️ 同一组里多选取**并集**（match_all_tags=false）—— 参数名叫 requiredtags，
+                Steam 默认 AND，而一个壁纸不可能同时是两个分级 ⟹ 多选必然零结果。
+                见 workshop.js 的 browseParams。
+             ⚠️ 默认只勾「全年龄」。 -->
+        <div id="br-filters"></div>
+        <div id="br-state" class="hint">—</div>
+        <div id="br-grid" class="ws-grid"></div>
+        <div class="bar-row" id="br-pager" style="display:none">
+          <button class="act" id="br-prev" type="button">上一页</button>
+          <span id="br-page" class="hint"></span>
+          <button class="act" id="br-next" type="button">下一页</button>
+        </div>
+      </div>
+
+      <!-- ⚠️ 右侧：点工坊卡片 → 这里出详情 + 「下载」。
+           ⚠️ 点卡片**不直接下载** —— 几百 MB 的误点很贵（这条从 0.9.x 起就是）。
+              而「我的壁纸」那边点卡片就直接装载，因为那是本地文件、代价只有重载一次。
+              ⟹ 两边点击行为不同**是有意的**，判据是"这一下有多贵"。 -->
+      <div class="pane-side" id="we-side">
+        <div id="we-side-empty" class="hint">
+          点左边任意一个壁纸 —— 详情和「下载」出现在这里。
+        </div>
+        <div id="we-side-body" hidden>
+          <img id="wside-preview" alt="">
+          <div id="wside-title"></div>
+          <div id="wside-meta" class="hint"></div>
+          <div id="wside-actions" class="bar-row" style="margin-top:10px"></div>
+          <div id="wside-state" class="hint"></div>
+        </div>
+
+        <!-- ⚠️⚠️ 「按 ID 装载」+ 登录字段 + API key 都收进 <details>（0.9.54）。
+             判据和这一路一样：**它们是"配一次就不用管"的东西**，
+             而它们原来占了工坊页一半（三个输入框 + 一段说明常驻）。
+             ⚠️ 但一个都没删 —— 贴 ID 是"工坊搜不到某个壁纸"时唯一的路。 -->
+        <details id="we-side-manual" style="margin-top:16px">
+          <summary class="hint">手动：贴链接/ID + Steam 账号</summary>
+          <p class="hint">
+            你的 Steam 账号买过 Wallpaper Engine，<b>工坊内容就能用</b> ——
+            那些是文件，和 WE 本体是不是 Windows 无关。
+          </p>
+          <div class="bar-row">
+            <input id="ws-id" type="text" placeholder="贴链接或 ID">
+            <button class="act" id="ws-peek" type="button">看看是什么</button>
+          </div>
+          <!-- 预览卡片：贴链接之后先看这个再决定装不装。 -->
+          <div id="ws-peek-card" class="ws-card"></div>
+          <div class="we-row">
+            <label>Steam 用户名</label>
+            <input id="ws-user" type="text" placeholder="登录名，不是昵称">
+            <span></span>
+          </div>
+          <div class="we-row">
+            <label>密码</label>
+            <input id="ws-pass" type="password" placeholder="只存在本机配置里">
+            <span></span>
+          </div>
+          <div class="we-row">
+            <label>Steam Guard 码</label>
+            <input id="ws-guard" type="text" placeholder="要的时候才填，会过期">
+            <span></span>
+          </div>
+          <div id="ws-state" class="hint">—</div>
+        </details>
+
+        <!-- API key。⚠️ 浏览要它，贴 ID 装载不要 ⟹ 收起来，别让人以为不配不能用。 -->
+        <details id="br-key-box" style="margin-top:10px">
+          <summary class="hint">浏览需要 Steam API key（免费，点开看怎么弄）</summary>
+          <div class="bar-row">
+            <input id="br-key" type="password" placeholder="粘贴那串 key">
+            <button class="act" id="br-key-save" type="button">保存</button>
+          </div>
+          <p class="hint" id="br-key-hint"></p>
+        </details>
+      </div>
     </div>
-
-    <h3>按 ID 装载</h3>
-    <div class="card">
-      <p class="hint">
-        你的 Steam 账号买过 Wallpaper Engine，<b>工坊内容就能用</b> ——
-        那些是文件，和 WE 本体是不是 Windows 无关。
-      </p>
-      <div class="bar-row">
-        <input id="ws-id" type="text" placeholder="贴创意工坊页面链接或 ID，先看预览再决定">
-        <button class="act" id="ws-peek" type="button">看看是什么</button>
-      </div>
-
-      <!-- 预览卡片：贴链接之后先看这个再决定装不装。
-           ⚠️ 存在的理由：只给一个填 ID 的输入框等于把命令行搬进 GUI，而工坊的本质是浏览。
-           而且类型标签在这里就能看到 ⟹ scene 类可以在下载 200MB 之前就劝退。 -->
-      <div id="ws-peek-card" class="ws-card"></div>
-      <div class="we-row">
-        <label>Steam 用户名</label>
-        <input id="ws-user" type="text" placeholder="登录名，不是昵称">
-        <span></span>
-      </div>
-      <div class="we-row">
-        <label>密码</label>
-        <input id="ws-pass" type="password" placeholder="只存在本机配置里">
-        <span></span>
-      </div>
-      <div class="we-row">
-        <label>Steam Guard 码</label>
-        <input id="ws-guard" type="text" placeholder="要的时候才填，会过期">
-        <span></span>
-      </div>
-      <div id="ws-state" class="hint">—</div>
-    </div>
-
-
-    </section>
+  </section>
 
   <!-- ============ 手势录制 ============ -->
   <section id="tab-gesture">
+    <!-- ⚠️ 手势页没有"网格 + 详情"的模型（它是一串设置）⟹ 不用 .split，
+         但**必须**有一个能滚的容器：0.9.54 起 main 自己不滚了
+         （滚动交给 .pane-grid，否则右侧详情面板会跟着滚出视野）
+         ⟹ 不套一层的话手势页的内容会被直接截断，而那不报错。 -->
+    <div class="pane-grid">
     <h2>手势</h2>
     <p class="lead" id="ges-lead"></p>
 
@@ -919,8 +904,71 @@
       <div id="gestureTuning"></div>
       <p class="hint">用的是 AirCursor 那套滤波器：<b>平滑强度</b>越大越稳越迟钝；<b>快速跟随</b>越大越跟手但越抖；<b>静止死区</b>是手停住的判定门槛。</p>
     </div>
+      </div>
   </section>
 </main>
+
+<!-- ⚠️⚠️ **轮播设置弹窗**。0.9.54 从 `tab-mine` 里挪到这里（页面级浮层）。
+     ⚠️⚠️ 挪的过程中我**把它整个删掉过** —— 重组 tab-mine 成两列时它在那一段里，
+     而我只顾着新结构没检查旧内容。症状：`getElementById('rotateOn').onchange`
+     直接抛 TypeError ⟹ 后面所有绑定全停 ⟹ 面板上**每个开关都点了没反应**。
+     `node --check` 查不出（语法没错）。
+     ⟹ 靠 "JS 引用的 id 在 HTML 里存不存在" 这个全量检查逮到的。
+     ⟹ 教训：**搬动大块结构之后，要跑一次 DOM 引用全检**，
+        而不是只看新加的东西在不在。 -->
+  <!-- ⚠️⚠️ 轮播设置弹窗。默认 hidden，点摘要行才出来。
+       ⚠️ 不用 <dialog> —— 它的 ::backdrop 在 Electron 里样式受限，
+       而且 showModal() 会把焦点管理接过去，和我们自己的 Esc/点外关闭打架。
+       一个 fixed 的遮罩 + 一个居中的面板，行为完全可控。 -->
+  <div id="rotate-modal" hidden>
+    <div id="rotate-modal-mask"></div>
+    <div id="rotate-modal-box" role="dialog" aria-modal="true"
+         aria-labelledby="rotate-modal-title">
+      <div class="rm-head">
+        <b id="rotate-modal-title">轮播设置</b>
+        <button class="act" id="rotate-modal-close" type="button" title="关闭（Esc）">✕</button>
+      </div>
+
+      <!-- ① 开关 -->
+      <div class="toggle">
+        <input type="checkbox" id="rotateOn">
+        <label for="rotateOn">开启轮播</label>
+      </div>
+
+      <!-- ② 间隔。⚠️ 数字 + 单位两个控件 —— 用户说"设计时间，轮播时间"，
+           而只给"分钟"的话 2 小时要填 120，那不是正常的轮播设置。 -->
+      <div class="rm-row">
+        <span class="rm-label">每隔</span>
+        <input type="number" id="rotateEvery" min="1" max="1440" step="1" style="width:70px">
+        <select id="rotateUnit" title="分钟或小时">
+          <option value="minute">分钟</option>
+          <option value="hour">小时</option>
+        </select>
+        <span class="rm-label">换一张</span>
+      </div>
+
+      <!-- ③ 顺序 -->
+      <div class="rm-row">
+        <span class="rm-label">顺序</span>
+        <select id="rotateMode" title="顺序：按列表往下走。随机：避开当前和上一张">
+          <option value="order">按列表顺序</option>
+          <option value="random">随机</option>
+        </select>
+        <button class="act" id="rotateNext" type="button"
+                title="立刻换下一张（不改开关状态，也会重新计时）">立刻换下一张</button>
+      </div>
+
+      <!-- ④ 播放列表：横向一排缩略图，右滑看更多。
+           ⚠️ 用户点名要预览图 + 横滑：「并且要有预览图，就是一行，
+           肯定放不下，右滑就行了」 -->
+      <div class="rm-row" style="justify-content:space-between">
+        <span class="rm-label">播放列表</span>
+        <span id="rotate-list-count" class="hint" style="font-size:11px"></span>
+      </div>
+      <div id="rotate-strip"></div>
+      <div id="rotate-modal-hint" class="hint" style="font-size:11px"></div>
+    </div>
+  </div>
 
 <!-- ⚠️⚠️ **设置弹窗**（0.9.51）。结构和轮播弹窗一致（遮罩 + 居中面板 +
      ✕/点遮罩/Esc 三条关闭路径）—— 两个弹窗长得一样是**有意的**：

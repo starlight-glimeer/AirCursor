@@ -127,6 +127,11 @@ contextBridge.exposeInMainWorld('gw', {
   // 在 Finder 里打开壁纸目录。⚠️ 壁纸是**文件**，而用户对文件的直觉是"去看看" ——
   // 之前面板上连路径都只是纯文本。
   revealWallpaperDir: (dir) => ipcRenderer.invoke('reveal-wallpaper-dir', dir),
+
+  // ⚠️ 用浏览器打开一个外部链接（0.9.54，右侧详情面板的「在 Steam 打开」用）。
+  // ⚠️ 主进程侧会**校验协议只能是 http/https** —— 渲染进程传什么都可能，
+  // 而 shell.openExternal 对 `file://` / 自定义 scheme 也会执行。
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   ourWallpaperDir: () => ipcRenderer.invoke('our-wallpaper-dir'),
   // 把已经在 Steam 目录里的工坊壁纸搬进我们目录（清 0.9.24-0.9.28 留下的两份）
   importExistingFromSteam: () => ipcRenderer.invoke('import-existing-from-steam'),

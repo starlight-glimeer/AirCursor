@@ -1048,6 +1048,26 @@ ipcMain.handle('launch-dismissed', () => {
   return true;
 });
 
+// ⚠️⚠️ 打开外部链接（0.9.54）。**必须校验协议** ——
+// `shell.openExternal` 会照做渲染进程给的任何 URL，包括 `file://`
+// （能打开本机任意文件）和自定义 scheme（能唤起别的应用）。
+// 而这个面板里的 URL 来自 Steam 的接口返回 ⟹ 不是我们完全控制的输入。
+// ⟹ 只放 http/https，其余直接拒。
+ipcMain.handle('open-external', async (_event, url) => {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      console.error(`[external] 拒绝非 http(s) 链接：${u.protocol}`);
+      return { ok: false, error: '只支持 http/https 链接' };
+    }
+    await shell.openExternal(u.toString());
+    return { ok: true };
+  } catch (error) {
+    // ⚠️ new URL 对畸形字符串会抛 —— 那不该让面板崩，报回去就行
+    return { ok: false, error: `打不开这个链接：${error.message}` };
+  }
+});
+
 ipcMain.handle('get-config', () => config);
 
 ipcMain.handle('set-config', (_event, patch) => {
