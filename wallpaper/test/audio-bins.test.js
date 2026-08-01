@@ -474,6 +474,85 @@ check('自检结果送到面板（打包版没有终端）', () => {
 });
 
 
+// ⚠️⚠️⚠️ **FFT 绝对尺度自检的理论基准，用手写 DFT 算出来核对。**
+//
+// 用户 0.9.12 实测「整体的柱子都太长了」（平均 0.454 ⟹ 柱子 82px）。
+// 而这**不能靠调系数解决** —— 用户明确否过（「我们现在在调节柱子这件事本身就很奇怪」
+// 「我不相信他们做的这么差」）⟹ 只能问"我们的 magnitude 和 WE 的是不是同一尺度"。
+//
+// 两边输入都是 ±1（WE 的 `(buf-128)/128` vs 我们的 Float32），N 都是 1024
+// ⟹ 同一信号应给同一 magnitude。差别只在库：WE 是 `kiss_fftr`，我们是 `vDSP_fft_zrip`。
+//
+// ⚠️ 我"知道"vDSP 的实数 FFT 带 2 倍因子，但**没在真机验过** ——
+// 这是典型的承重前提（若错则整个修复方向作废）⟹ 不写死 0.5，让自检量出来。
+//
+// 而量的基准（理论峰值）是**我算的**，所以它本身要被核：
+check('FFT 尺度自检的理论基准 = 手写 DFT 的真实峰值', () => {
+  // 手写 DFT —— 纯数学，不依赖任何 FFT 库，所以能当基准
+  const N = 1024;
+  const rate = 48000;
+  const freq = 1000;
+  const x = Array.from({ length: N }, (_, i) => Math.sin((2 * Math.PI * freq * i) / rate));
+  let peak = 0;
+  let peakK = 0;
+  for (let k = 15; k <= 28; k += 1) {
+    let re = 0;
+    let im = 0;
+    for (let n = 0; n < N; n += 1) {
+      re += x[n] * Math.cos((-2 * Math.PI * k * n) / N);
+      im += x[n] * Math.sin((-2 * Math.PI * k * n) / N);
+    }
+    const mag = Math.hypot(re, im);
+    if (mag > peak) { peak = mag; peakK = k; }
+  }
+  const coeff = peak / (N / 2);
+  assert.strictEqual(peakK, 21,
+    `1kHz @48kHz/1024 的峰值该在 bin 21（1000/46.875 = 21.33），实测 ${peakK}`);
+  // Swift 里写的系数必须等于这个算出来的值
+  const m = swiftSrc.match(/Float\(FFT_SIZE\) \/ 2\.0 \* ([\d.]+)/);
+  assert.ok(m, 'Swift 里找不到理论峰值的式子 —— 尺度自检没了？');
+  assert.ok(Math.abs(Number(m[1]) - coeff) < 0.002,
+    `Swift 用的系数 ${m[1]}，手写 DFT 算出来是 ${coeff.toFixed(4)}。`
+    + '这个数是用户会看到的**分母** ⟹ 它错了，比值就错，'
+    + '而我会照着一个错的比值去改代码');
+  // 判断阈值要能分开 1 和 2（那是两个相反的结论）
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /scaleRatio/, '面板没显示尺度比值 —— 那用户看不到，等于没测');
+  assert.match(main, /别乘 0\.5/,
+    '面板只说了"该乘 0.5"没说"别乘" ⟹ 比值≈1 时用户拿不到"不要改"这个结论，'
+    + '而那正是我可能记错的那一边');
+});
+
+// ⚠️ 这一层仍然不许有"我调的系数"。乘 0.5 若真要加，它的身份是
+// **对齐 kiss_fftr 的库约定差**，不是调参 —— 判据是"能不能从 WE 的行为推出来"。
+// ⟹ 那也意味着：**只有等自检报出 ≈2 才能加**，现在不许提前加。
+check('还没有 0.5 缩放（要等真机自检报出 ≈2 才能加）', () => {
+  // ⚠️ 反向验证时我第一版正则**没拦住** `magnitudes[index] * 0.5` ——
+  // 我只写了 `magnitude * 0.5` / `vDSP_vsmul…0.5` / `* 0.5f` 三种形式。
+  // ⟹ 一个"禁止某个改动"的守卫，**必须按"任何 0.5"来查**，不是按我想到的写法查。
+  // （枚举写法必然漏，而漏掉的那种正好是最自然的写法。）
+  // ⚠️ 而"任何 0.5"又**太宽**：`FFT_SIZE / 2.0` 和理论峰值的式子里
+  // 都有合法的除 2 ⟹ 第二版正则在正确代码上报红（2 处误报）。
+  // ⟹ 收窄到**作用在 magnitude / power 上**的那些，那才是尺度缩放。
+  // ⚠️ 第三版还漏了 `power = magnitude*magnitude / 4.0` —— **在 power 上除 4
+  // 等价于在 magnitude 上除 2**。⟹ 数学上等价的写法我得一起挡。
+  // 教训：**"禁止某个效果"的守卫要枚举等价形式，不只是我想到的那一种。**
+  // 我这条守卫改了三版，每版都是被自己的反向验证逮到的（而不是靠想）。
+  const halves = (swiftCode.match(
+    new RegExp(
+      '(?:magnitudes?\\[[^\\]]*\\]|magnitude|power)\\s*'
+      + '(?:\\*\\s*0\\.(?:5|25)f?|/\\s*(?:2|4)(?:\\.0f?)?)\\b'
+      // power 上的除 4 / 乘 0.25 等价于 magnitude 上的除 2
+      + '|magnitude \\* magnitude\\s*(?:/\\s*(?:2|4)(?:\\.0f?)?|\\*\\s*0\\.(?:5|25)f?)',
+      'g',
+    ),
+  ) || []);
+  assert.strictEqual(halves.length, 0,
+    `magnitude/power 上出现了 ${halves.length} 处缩放（${halves.join(' ')}）—— `
+    + '但真机自检还没报出尺度比值 ⟹ 那是**凭我的记忆改代码**。'
+    + '我这一轮已经因为"教科书上对的事"（Hann 窗）错过一次');
+});
+
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
 
 // ⚠️⚠️ 这一条是实测烧出来的，而且形状很典型。

@@ -3135,6 +3135,30 @@ function syncAudioSource() {
             + `${t.outsidePeak > 0.2
               ? ' ⚠️ 纯音下主瓣外就有明显的值 ⟹ 尖刺来自分箱/平滑，不是音乐'
               : ' ✅ 主瓣外干净 ⟹ 尖刺来自音乐本身的瞬态（WE 也一样）'}`
+          : '')
+        // ⚠️⚠️⚠️ **FFT 的绝对尺度** —— 用户报「整体的柱子都太长了」。
+        //
+        // 这一行回答的是：**我们的 magnitude 和 WE 的是不是同一个尺度？**
+        // 两边输入都是 ±1、N 都是 1024 ⟹ 同一信号应该给同一个 magnitude。
+        // 而库不同：WE 是 kiss_fftr，我们是 vDSP_fft_zrip。
+        //
+        // ⚠️ 我"知道"vDSP 的实数 FFT 带 2 倍因子（省了一次除 2），
+        // 但**没在这台机器上验过** ⟹ 不写死 0.5，让它量出来：
+        //   ≈1.0 ⟹ 没有那个因子，我记错了，**不要改代码**
+        //   ≈2.0 ⟹ 确认有 ⟹ 乘 0.5 是**对齐 WE**，不是调参
+        //
+        // ⚠️ 报原始值和理论值两个数，不只报比值 ——
+        // 比值的分母是我算的（512 × 0.83），我算错了只看比值发现不了。
+        + (t.scaleRatio !== undefined
+          ? `\n　　FFT 尺度：实测峰值 ${Number(t.peakMagnitude).toFixed(1)}`
+            + `（第 ${t.peakBin} 个 bin）　理论 ${Number(t.theoryPeak).toFixed(1)}`
+            + `　**比值 ${Number(t.scaleRatio).toFixed(2)}**`
+            + `${Math.abs(t.scaleRatio - 2) < 0.35
+              ? ' ⟹ vDSP 确实带 2 倍因子，柱子太长是它 ⟹ 该乘 0.5 对齐 kiss_fftr'
+              : (Math.abs(t.scaleRatio - 1) < 0.35
+                ? ' ⟹ 尺度和标准 FFT 一致 ⟹ **柱子长不是尺度问题，别乘 0.5**'
+                : ' ⚠️ 既不是 1 也不是 2 —— 那我的理论期望算错了，'
+                  + '拿实测峰值和 512 比一下（满幅正弦的标准峰值）')}`
           : '');
       console.log(`[audio] ${ok ? '✅' : '⚠️'} ${line}`);
       broadcast('helper-log', {

@@ -98,6 +98,14 @@ final class Spectrum {
     private var real: [Float]
     private var imag: [Float]
     private var magnitudes: [Float]
+    // ⚠️ 最近一帧 FFT 的原始峰值 magnitude —— **只给尺度自检用**。
+    //
+    // 为什么必须暴露：`process()` 只返回 128 段最终值，那已经过了
+    // log10 + 加权 + clamp ⟹ **反解不回 magnitude**（clamp 会吃掉信息，
+    // 我为此反解过一次得到 775，而那个值是被 min(1.0) 夹过的下界）。
+    // ⟹ 要判"我们的 FFT 尺度和 kiss_fftr 差几倍"，只能看原始值。
+    private(set) var lastPeakMagnitude: Float = 0
+    private(set) var lastPeakBin = 0
     // 上一帧的结果，用来做时间平滑。
     private var smoothed = [Float](repeating: 0, count: BIN_COUNT)
 
@@ -206,6 +214,16 @@ final class Spectrum {
                 }
             }
         }
+
+        // 记下原始峰值（尺度自检要用，正常路径不看它）
+        var pk: Float = 0
+        var pkAt = 0
+        for i in 1..<(FFT_SIZE / 2) where magnitudes[i] > pk {
+            pk = magnitudes[i]
+            pkAt = i
+        }
+        lastPeakMagnitude = pk
+        lastPeakBin = pkAt
 
         // 512 个 bin 降到 128：**按对数频率分组**，不是线性平均。
         //
@@ -508,6 +526,43 @@ func selfTestFFT(_ spectrum: Spectrum) {
         if d > mirrorMaxDiff { mirrorMaxDiff = d; mirrorAt = i }
     }
 
+    // ⚠️⚠️⚠️ **FFT 的绝对尺度：我们的 vDSP 和 WE 的 kiss_fftr 差几倍？**
+    //
+    // 用户 0.9.12 实测「整体的柱子都太长了」，平均 0.454（柱子 82px）。
+    //
+    // ⚠️ 而这**不能靠调系数解决** —— 那正是用户否掉过的做法
+    //（「我们现在在调节柱子这件事本身就很奇怪」「我不相信他们做的这么差」）。
+    // ⟹ 只能问：**我们的 magnitude 和 WE 的 magnitude 是不是同一个尺度？**
+    //
+    // 两边的输入尺度一样（WE 的 `(buf-128)/128` 和我们的 Float32 都是 ±1），
+    // N 也一样（1024）⟹ **同一个信号进去，magnitude 应该相等**。
+    // 而两边用的库不同：WE 是 `kiss_fftr`，我们是 `vDSP_fft_zrip`。
+    //
+    // ⚠️ **vDSP 的实数 FFT 带一个 2 倍因子**（它省掉了一次除 2，
+    // Apple 的文档和 Accelerate 示例都要求输出乘 0.5 才等于标准 FFT）。
+    // 而 kiss_fftr 给的是标准值。
+    //
+    // ⚠️⚠️ **但这条我只是"知道"，没有在这台机器上验过** ——
+    // 而"若错则全盘推翻"的前提必须先证。所以这里不写死 0.5，
+    // 而是**量出来**：
+    //
+    //   理论基准（纯数学，不依赖任何库）：
+    //     满幅正弦、矩形窗、N 点 DFT，峰值 magnitude = N/2 —— 当频率恰好落在
+    //     整数 bin 上时。1kHz @48kHz/1024 落在 bin 21.33 ⟹ 能量分散到邻居
+    //     ⟹ 峰值会低一些（手算 DFT 得 424.7，即 N/2 的 0.83 倍）。
+    //
+    //   ⟹ 期望 = 512 × 0.83 ≈ 425。实测除以它就是**这台机器上的真实因子**。
+    //      ≈1 ⟹ vDSP 没有 2 倍因子，我记错了，不要改代码
+    //      ≈2 ⟹ 确认有，乘 0.5 是**对齐 WE**而不是调参
+    //
+    // ⚠️ 这个数字要报给用户看，而不是我在云端断言 —— 云端跑不了 swiftc。
+    // ⚠️ 那个 0.83 是**算出来的，不是估的**：手写 DFT 跑
+    // 1kHz @48kHz/1024 矩形窗，峰值 424.7，除以 N/2=512 得 **0.8295**
+    //（1kHz 落在 bin 21.33，不是整数 ⟹ 能量分散到邻居 ⟹ 峰值低于 N/2）。
+    // 验算脚本在 test/audio-bins.test.js 里（云端可跑，不需要 swiftc）。
+    let theoryPeak = Float(FFT_SIZE) / 2.0 * 0.8295
+    let scaleRatio = theoryPeak > 0 ? spectrum.lastPeakMagnitude / theoryPeak : 0
+
     // 1kHz 在哪一段：bin = 1000 / (24000/512) ≈ 21 ⟹ 段 = (21-1)/2 = 10
     let expectSeg = Int((freq / (Float(SAMPLE_RATE) / 2.0 / Float(FFT_SIZE / 2)) - 1) / 2)
     emit([
@@ -520,6 +575,13 @@ func selfTestFFT(_ spectrum: Spectrum) {
         // 非 0 = 下标写错了，症状是"圆环接缝处有一根突兀的柱子"。
         "mirrorMaxDiff": mirrorMaxDiff,
         "mirrorAt": mirrorAt,
+        // ⚠️ FFT 的绝对尺度 —— 判"vDSP 和 kiss_fftr 差几倍"。
+        // 报原始值和比值两个，因为比值的分母（理论期望）本身是我算的，
+        // 只报比值的话我算错了就看不出来。
+        "peakMagnitude": spectrum.lastPeakMagnitude,
+        "peakBin": spectrum.lastPeakBin,
+        "theoryPeak": theoryPeak,
+        "scaleRatio": scaleRatio,
         // ⚠️ 这个数是判据：<2 说明主瓣太窄（窗函数或 stride 有问题），
         // 3-6 是正常的 Hann 窗主瓣
         "segsAboveQuarter": wide,
