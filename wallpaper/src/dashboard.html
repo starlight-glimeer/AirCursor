@@ -44,9 +44,9 @@
        ⚠️ 不透明的 --panel / --card-bg 仍然保留：右侧详情面板和弹窗要用
           （那两处内容密集，透了会读不清）。 */
     --panel-a: rgba(23, 23, 29, .72);
-    --card-bg-a: rgba(21, 21, 27, .78);
-    --chip-bg: rgba(21, 21, 27, .66);
-    --btn-bg-a: rgba(34, 34, 42, .70);
+    --card-bg-a: rgba(21, 21, 27, .84);
+    --chip-bg: rgba(21, 21, 27, .80);
+    --btn-bg-a: rgba(34, 34, 42, .82);
     --btn-hover-a: rgba(44, 44, 54, .85);
     --log-bg-a: rgba(13, 13, 15, .62);
     --img-bg: #0b0b10;
@@ -94,8 +94,21 @@
   #app-bg {
     position: fixed; inset: 0; width: 100%; height: 100%;
     z-index: 0; pointer-events: none; display: block;
-    /* ⚠️ 整体可见度由主题定 —— 浅色主题下几乎要关掉（加法混色在白底上是脏色）。 */
     opacity: var(--bg-aurora);
+    /* ⚠️⚠️ **模糊在这里做，不在 canvas 里**（0.9.63）。
+       用户报「手势不跟手了，卡卡的」+「开摄像头也好慢」，根因是
+       `ctx.filter = blur(262px)` 在 canvas 2d 上是**逐 fill 应用**的：
+       画布 4.2M 像素 × 5 个 fill × 60fps = **每秒 1.3 G 像素**的模糊运算，
+       而手势推理只有 9M 像素/秒 —— 差 140 倍，CPU 全被它吃了。
+
+       ⟹ CSS 的 `filter` 由**合成器**做（GPU），而且对整层只做**一次**
+          （不是每个 fill 一次）⟹ 5 遍变 1 遍，且不占主线程。
+       ⚠️ 单位是 CSS 像素，不用乘 dpr（canvas 里那版要乘，因为 ctx.filter
+          的单位是设备像素 —— 那两处的语义不一样，搬的时候别照抄数字）。
+       ⚠️ `will-change: filter` 提示合成器把这一层单独提出来 ——
+          不加的话每帧可能重新合成整个页面。 */
+    filter: blur(80px);
+    will-change: filter;
   }
   /* ⚠️ nav 和 main 要抬到极光之上（它们在文档流里，默认 z-index: auto
      ⟹ 和 #app-bg 同层，而 #app-bg 在 DOM 里更靠前 ⟹ 会盖住它们）。 */
@@ -135,6 +148,11 @@
   #launch-particles {
     position: absolute; inset: 0; width: 100%; height: 100%;
     display: block; z-index: 0;
+    /* ⚠️ 和 #app-bg 一样：模糊在 CSS 里做（0.9.63）——
+       `ctx.filter` 已经从 startAurora 里撤了，两个 canvas 共用那个函数。
+       ⚠️ 启动页这份可以更模糊（它是主角、面积大），而且它只活几秒。 */
+    filter: blur(90px);
+    will-change: filter;
   }
   /* ⚠️ 文字区那层**压暗**的蒙罩（0.9.47 把它从"加光"改成了"减光"）。
      0.9.46 这里是一团 radial 柔光，用来让 logo 浮起来 —— 但极光本身就在
@@ -398,6 +416,15 @@
      ⟹ 卡片有"浮在背景上"的质感，而文字仍然读得清（模糊掉的是花纹不是亮度）。
      ⚠️ 为什么不直接调低 alpha 不加 blur：那样极光的**纹理**会透过来，
         文字压在花纹上就难读了。blur 把纹理化掉、只留下颜色 —— 那是关键。
+
+     ⚠️⚠️ **只有大块用 backdrop-filter**（0.9.63 收窄）。
+     用户报「手势不跟手了」之后我数了一遍：`button.act` + `.we-src button`
+     + `.module` 加起来**40 多个元素**，每个一个 backdrop-filter
+     ⟹ 合成器要为每一个单独取样-模糊-合成。那和极光的 ctx.filter 是同一类错：
+        **把"整层做一次"的效果按元素重复了 N 遍。**
+     ⟹ 小元素（按钮、药丸标签、模块格）改成**只半透明、不模糊**，
+        底色不透明度调高一点（.70~.78）保证文字可读。
+     ⟹ 留 backdrop-filter 的只有：`.card`（几个）和弹窗遮罩（一个）。
      ⚠️ `--panel-a` 是半透明版的 --panel（0.72）；不透明那个还留着，
         右侧详情面板和弹窗要用它（那两处不该透）。 */
   .card {
@@ -411,7 +438,6 @@
 
   button.act {
     appearance: none; border: 1px solid var(--line); background: var(--btn-bg-a);
-    backdrop-filter: blur(8px);
     color: var(--text); border-radius: 7px; padding: 5px 12px;
     font: inherit; font-size: 12px; cursor: pointer;
   }
@@ -429,7 +455,6 @@
   .module {
     border: 1px solid var(--line); border-radius: 8px; padding: 10px;
     cursor: pointer; background: var(--card-bg-a);
-    backdrop-filter: blur(10px);
   }
   .module:hover { border-color: rgba(255,255,255,.2); }
   .module.on { border-color: var(--accent); background: rgba(108,199,255,.09); }
@@ -771,7 +796,6 @@
     border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px;
     background: var(--chip-bg); color: var(--text);
     font: inherit; font-size: 12px; cursor: pointer;
-    backdrop-filter: blur(8px);
   }
   .we-src button:hover { border-color: rgba(255,255,255,.2); }
   .we-src button.on { border-color: var(--accent); background: rgba(108,199,255,.12); }

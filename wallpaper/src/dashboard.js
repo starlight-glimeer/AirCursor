@@ -175,19 +175,43 @@ function startAurora(canvasId, opts) {
   // ⚠️ 用 rAF 给的时间戳而不是 Date.now() —— 前者和帧对齐（动画不会跳），
   // 而且第一帧的值我们拿它当基准，不依赖任何外部时钟。
   let t0 = null;
+  // ⚠️⚠️ **降帧到 ~20fps**（0.9.63）。极光的周期是 11~19 秒 ——
+  // 那是"慢到看不出在动"的东西，60fps 画它是纯浪费（而这个应用常驻，
+  // 浪费会一直累积，和手势推理抢 CPU）。
+  // ⚠️ 仍然挂 rAF（而不是 setInterval）：rAF 在窗口不可见时**自动停**，
+  //   setInterval 不会 —— 那是"最小化了还在烧 CPU"的来源。
+  const MIN_DT = 1000 / 20;
+  let lastDraw = 0;
 
   function frame(now) {
     if (t0 === null) t0 = now;
+    // ⚠️ 跳帧要在**任何绘制之前** return，而 rAF 得继续排 —— 不然动画就停了。
+    if (now - lastDraw < MIN_DT) {
+      auroraRAF[canvasId] = requestAnimationFrame(frame);
+      return;
+    }
+    lastDraw = now;
     const t = (now - t0) / 1000;   // 秒
 
     // ⚠️ 必须清 —— 不清的话 `lighter` 会把每一帧累加成纯白（几秒就白屏）。
     ctx.clearRect(0, 0, w, h);
 
-    // ⚠️ 顺序：先 filter 再画。filter 是 ctx 的状态，画完再设没有任何效果
-    // （那是"设了但没生效"的典型 —— 不报错，只是边缘是硬的）。
-    // 半径取短边的比例 ⟹ 窗口拉宽拉高都不会让光团变形。
-    const base = Math.min(w, h);
-    ctx.filter = `blur(${Math.round(base * 0.16 * dpr)}px)`;
+    // ⚠️⚠️ **模糊搬到 CSS 上了**（0.9.63）—— 这里不再设 `ctx.filter`。
+    //
+    // 用户 2026-08-01 报「手势的部分，不跟手了，卡卡的」+「开启摄像头，
+    // 显示骨架，这个过程也好慢」。
+    //
+    // 根因算得出来：`ctx.filter = blur(262px)` 是**逐 fill 应用**的 ——
+    //   画布 1280×820@2x = 4.2M 像素，5 个 fill ⟹ 每帧 21M 像素的模糊运算，
+    //   60fps ⟹ **每秒 1.3 G 像素**。
+    //   而手势推理（MediaPipe，640×480@30fps）只有 9M 像素/秒 —— **差 140 倍**。
+    //   ⟹ 极光把 CPU 吃光了，手势推理和摄像头启动都在跟它抢。
+    //
+    // ⟹ 两条改动（见 CSS 的 `#app-bg { filter: blur() }` 和下面的降帧）：
+    //   ① 模糊交给**合成器**（CSS filter 走 GPU，而且对整层只做一次，
+    //      不是每个 fill 一次）⟹ 5 遍变 1 遍，且不占主线程
+    //   ② 帧率从 60 降到 ~20（极光是"慢到看不出在动"的东西，60fps 是纯浪费）
+    // ⚠️ 半径也跟着搬 —— CSS 里的 blur 单位是 **CSS 像素**，不用乘 dpr。
     ctx.globalCompositeOperation = 'lighter';
 
     for (const b of blobs) {
@@ -214,7 +238,6 @@ function startAurora(canvasId, opts) {
     // ⚠️ 复位这两个状态 —— 它们是 ctx 的**持久**状态。不复位的话下一帧
     // clearRect 也会带着 filter 跑（clearRect 不受 filter 影响，但 composite
     // 会影响后续任何绘制）。这是"下一帧莫名变样"那类 bug 的来源。
-    ctx.filter = 'none';
     ctx.globalCompositeOperation = 'source-over';
 
     auroraRAF[canvasId] = requestAnimationFrame(frame);

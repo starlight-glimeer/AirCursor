@@ -4259,11 +4259,33 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
     '主界面背景的极光没起，或者 dim 不小于 1（那样文字会被背景干扰）');
   assert.match(aurora, /globalCompositeOperation\s*=\s*'lighter'/,
     "没用 'lighter' 混色 ⟹ 光团只是互相覆盖，缺了极光靠叠加处变亮撑起来的那个观感");
-  assert.match(aurora, /ctx\.filter\s*=\s*`blur\(/,
-    '没给光团做模糊 ⟹ 是五个硬边色盘，不是柔光');
-  // ⚠️ blur 半径要乘 dpr —— ctx.filter 的单位是**设备像素**不是 CSS 像素
-  assert.match(aurora, /blur\(\$\{[^}]*dpr[^}]*\}px\)/,
-    'blur 半径没乘 dpr ⟹ Retina 上模糊只有一半，光团边缘露出来');
+  // ⚠️⚠️ **模糊必须在 CSS 上做，不能在 canvas 里**（0.9.63）。
+  //
+  // 用户报「手势的部分，不跟手了，卡卡的」+「开启摄像头，显示骨架，
+  // 这个过程也好慢」。根因算得出来：`ctx.filter = blur(262px)` 在 canvas 2d 上
+  // 是**逐 fill 应用**的 —— 画布 4.2M 像素 × 5 个 fill × 60fps
+  // = **每秒 1.3 G 像素**的模糊运算，而手势推理（MediaPipe 640×480@30fps）
+  // 只有 9M 像素/秒 —— **差 140 倍**。CPU 全被极光吃了。
+  //
+  // ⟹ CSS 的 filter 由合成器（GPU）做，而且对整层只做**一次**。
+  // ⟹ 断言翻过来：canvas 里**不许**有 ctx.filter，而两个 canvas 的 CSS 里要有 blur。
+  assert.ok(!/ctx\.filter/.test(aurora),
+    'canvas 里又用了 ctx.filter ⟹ 那是逐 fill 的 CPU 模糊，会把手势推理挤死'
+    + '（用户报过"不跟手了、卡卡的"）');
+  for (const id of ['#app-bg', '#launch-particles']) {
+    const rule = html.slice(html.indexOf(`  ${id} {`), html.indexOf('}', html.indexOf(`  ${id} {`)));
+    assert.match(rule, /filter:\s*blur\(\d+px\)/,
+      `${id} 的 CSS 里没有 blur ⟹ 光团是五个硬边色盘，不是柔光`);
+  }
+  // ⚠️ 帧率要降下来 —— 极光周期 11~19 秒，60fps 画它是纯浪费（常驻应用里会累积）
+  assert.match(aurora, /const MIN_DT = 1000 \/ (\d+)/,
+    '极光没有降帧 ⟹ 60fps 画一个周期十几秒的动画，纯浪费 CPU');
+  const fps = Number((aurora.match(/const MIN_DT = 1000 \/ (\d+)/) || [])[1]);
+  assert.ok(fps > 0 && fps <= 30,
+    `极光帧率 ${fps} 太高 ⟹ 它的周期是 11~19 秒，20fps 就够（60 是纯浪费）`);
+  // ⚠️ 仍然要挂 rAF 而不是 setInterval —— rAF 在窗口不可见时自动停
+  assert.match(aurora, /requestAnimationFrame\(frame\)/,
+    '极光改用 setInterval 了 ⟹ 窗口不可见时不会自动停（最小化了还在烧 CPU）');
   // ⚠️ 'lighter' 是加法混色 ⟹ 不清屏会几秒内累加成白屏
   assert.match(aurora, /clearRect\(0,\s*0,\s*w,\s*h\)/,
     "极光每帧没清屏，而混色是 'lighter'（加法）⟹ 几秒后整块白屏");
@@ -5036,6 +5058,49 @@ check('只保留深色主题；极光当主界面背景（紫调、够明显）'
   assert.ok(brightest && !isPurple(brightest),
     `最亮那团光是紫色 rgb(${brightest && [brightest.r, brightest.g, brightest.b]})`
     + ' ⟹ 整体观感就是紫的（用户报"太紫了"）');
+});
+
+// ⚠️⚠️⚠️ **性能：不许把"整层做一次"的效果按元素重复 N 遍**（0.9.63）。
+//
+// 用户 2026-08-01 报「手势的部分，不跟手了，卡卡的」+「开启摄像头，
+// 显示骨架，这个过程也好慢」。两个成因，**同一个错**：
+//   ① `ctx.filter = blur(262px)` 是**逐 fill** 应用的
+//      ⟹ 4.2M 像素 × 5 fill × 60fps = 每秒 1.3 G 像素（手势推理只有 9M/秒）
+//   ② `backdrop-filter` 加在了 40 多个小元素上（按钮/药丸标签/模块格）
+//      ⟹ 合成器要为每一个单独取样-模糊-合成
+//
+// ⟹ 判据：**模糊这类效果要么整层做一次（CSS filter），要么只给少数大块用。**
+//   而"看起来只是加一行 CSS"是它危险的地方 —— 症状出现在**别的功能**上
+//   （手势卡、摄像头慢），而不是"背景卡"。
+check('性能：模糊类效果不许按元素重复（会挤死手势推理）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // ① backdrop-filter 的使用点要**少**，而且只在大块上
+  const users = [...css.matchAll(/([^\n{}]+)\{[^}]*backdrop-filter[^}]*\}/g)]
+    .map((m) => m[1].trim());
+  assert.ok(users.length <= 4,
+    `有 ${users.length} 处用 backdrop-filter（${users.join(' / ')}）⟹ 太多了。`
+    + '每一处都是合成器的一次取样-模糊，而按钮/标签那种小元素会有几十个实例');
+  // ⚠️ 反向锁住那三个"会有几十个实例"的选择器 —— 它们不许用 backdrop-filter
+  for (const sel of ['button.act', '.we-src button', '.module']) {
+    const rule = css.match(new RegExp(
+      `${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`));
+    if (!rule) continue;
+    assert.ok(!/backdrop-filter/.test(rule[0]),
+      `${sel} 用了 backdrop-filter ⟹ 那个选择器会有几十个实例，`
+      + '合成器要为每一个单独模糊（用户报过"手势不跟手了"）');
+  }
+
+  // ② canvas 里不许用 ctx.filter（那是逐 fill 的 CPU 模糊）
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.ok(!/ctx\.filter/.test(dash),
+    'canvas 里用了 ctx.filter ⟹ 逐 fill 的 CPU 模糊，每秒上 G 像素（手势推理只有 9M/秒）');
+
+  // ③ 常驻的动画要降帧 + 挂 rAF（rAF 在窗口不可见时自动停）
+  assert.ok(!/setInterval\([^)]*frame/.test(dash),
+    '动画用 setInterval ⟹ 窗口不可见时不会停（最小化了还在烧 CPU）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
