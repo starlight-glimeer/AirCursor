@@ -1248,6 +1248,17 @@ function renderAudioFrame(frame) {
     //   每帧都在同一段 ⟹ **结构性**问题（我们这一层的 bug）
     //   位置乱跳       ⟹ 音乐本身的瞬态（WE 也一样，不该改）
     // 那两个结论一个要改代码、一个不能改，而只看一帧分不出来。
+    // 左右声道差 —— 判"分声道有没有真起作用"。
+    // ⚠️ 这一行是「9 点方向两根等高最长柱子」那个修复的验收点：
+    // band 63 写到段 63 **和段 64（相邻）**，而它加权 1.393（最大）
+    // ⟹ 两路同一份数据时它们精确相等 ⟹ 折线上一个尖顶。
+    + (frame.channelDiff !== undefined
+      ? `<br>左右声道差 <b>${frame.channelDiff}</b>`
+        + `${frame.channelDiff > 0.005
+          ? ' ✅ 立体声 ⟹ 段 63/64 不再等高（9 点那个尖顶该没了）'
+          : ' ⚠️ 两路一样（单声道音源？）⟹ 段 63/64 仍然等高，'
+            + '而那**不是 bug** —— WE 在单声道下也一样'}`
+      : '')
     + (frame.spikeProfile
       ? `<br>孤峰：<b>${frame.spikeProfile.count}</b> 个（比邻居高 30%+）`
         + (frame.spikeProfile.top.length

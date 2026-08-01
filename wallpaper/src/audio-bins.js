@@ -75,11 +75,16 @@ function bandValue(magnitude, band, bands = BANDS) {
   return Math.min(1, Math.max(0, v * bandWeight(band, bands)));
 }
 
-// 整帧：64 段算出来，镜像成 128。magnitudes 是 FFT 的 |X| 数组。
-function frameValues(magnitudes, bands = BANDS) {
+// **一路声道的 64 段。** magnitudes 是那一路 FFT 的 |X| 数组。
+//
+// ⚠️ 镜像拼接**不在这里** —— 见 `mirror(left, right)`。
+// 原因：两半现在是**两个不同声道**，而不是同一份数据复制两次。
+// 用户 0.9.17 实测「孤峰固定在第59段」+「镜像逐段差 0.0000」⟹
+// band 63 写到段 63 和段 64（相邻），而它加权 1.393（最大）
+// ⟹ 9 点方向两根精确等高的最长柱子紧挨着 ⟹ 折线壁纸上一个尖顶。
+function channelValues(magnitudes, bands = BANDS) {
   const half = magnitudes.length;
-  const total = bands * 2;
-  const out = new Array(total).fill(0);
+  const out = new Array(bands).fill(0);
   for (let band = 0; band < bands; band += 1) {
     // ① 线性取样 **band × 2**（WE 原值），跳过 bin 0（直流分量）。
     //
@@ -89,18 +94,36 @@ function frameValues(magnitudes, bands = BANDS) {
     const index = Math.min(half - 1, band * 2 + 1);
     // ⚠️ 抵消 vDSP 的 2 倍因子（见 VDSP_SCALE）—— 这里也要乘，
     // 否则 JS 规格和 Swift 会漂，而这份规格是云端唯一能跑的验证。
-    const v = bandValue((magnitudes[index] || 0) * VDSP_SCALE, band, bands);
-    // ② 镜像：左声道写前半，右声道写后半（倒序）。
-    //
-    // ⚠️ 我们的输入是双声道**取平均**（一路 PCM）⟹ 两半是同一份数据。
-    // 那和 WE 在单声道音源下一致；立体声下 WE 两半会有细微差别，
-    // 而我们拿不到分声道 FFT ⟹ **已知的简化**，成本是两倍 FFT。
-    out[band] = v;
-    out[total - 1 - band] = v;
+    out[band] = bandValue((magnitudes[index] || 0) * VDSP_SCALE, band, bands);
   }
   return out;
 }
 
+// 把两路 64 段拼成壁纸要的 128：左声道前半，右声道后半（倒序）。
+//
+// ⚠️ **段 63 和段 64 相邻，而它们是 band 63 的左右两路。**
+// band 63 的加权是 1.393（全场最大）⟹ 那两段天然最长。
+// 取平均（两路同一份数据）时它们**精确相等** ⟹ 9 点方向一个等高双柱尖顶。
+// 分声道后立体声下不相等 ⟹ 尖顶消失。
+// ⚠️ 单声道音源下仍然相等 —— 而那**不是 bug**，WE 也一样。
+function mirror(left, right) {
+  const bands = left.length;
+  const out = new Array(bands * 2).fill(0);
+  for (let b = 0; b < bands; b += 1) {
+    out[b] = left[b];
+    out[bands * 2 - 1 - b] = right[b];
+  }
+  return out;
+}
+
+// 兼容旧用法：单路输入 ⟹ 两半用同一份（等于旧行为）。
+// ⚠️ 保留它只为让"取平均会导致等高双柱"这件事可测 —— 生产路径走 mirror()。
+function frameValues(magnitudes, bands = BANDS) {
+  const one = channelValues(magnitudes, bands);
+  return mirror(one, one);
+}
+
 module.exports = {
-  LOG_SCALE, SMOOTH, VDSP_SCALE, BIN_COUNT, BANDS, bandWeight, bandValue, frameValues,
+  LOG_SCALE, SMOOTH, VDSP_SCALE, BIN_COUNT, BANDS,
+  bandWeight, bandValue, channelValues, mirror, frameValues,
 };

@@ -92,6 +92,18 @@ let SMOOTH: Float = 0.3
 //    大小由实测确定，而判据（能不能从 WE 的行为推出来）通过。
 let VDSP_SCALE: Float = 0.5
 
+// 左右声道的平均绝对差 —— 判"分声道有没有真的起作用"。
+//
+// 恒为 0 ⟹ 音源是单声道（或 SCStream 两路给了同一份）
+// ⟹ 那时镜像轴（段 63/64）上的双柱仍然存在，而那**不是 bug**：
+//    WE 在单声道音源下也是左右相同。
+func channelDiff(_ a: [Float], _ b: [Float]) -> Float {
+    guard !a.isEmpty, a.count == b.count else { return 0 }
+    var sum: Float = 0
+    for i in 0..<a.count { sum += abs(a[i] - b[i]) }
+    return sum / Float(a.count)
+}
+
 func emit(_ dict: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: dict),
           var line = String(data: data, encoding: .utf8) else { return }
@@ -393,10 +405,11 @@ final class Spectrum {
         //   覆盖范围  0-5.9kHz（我搞成过 11.2kHz）
         // ⟹ 我过去每一个错，都出自"把 64 段公式适配到 128 段"这个前提。
         //    前提换掉，那些补丁全都不需要了 —— **那本身就是前提对了的信号**。
-        var out = [Float](repeating: 0, count: BIN_COUNT)
-        let half = FFT_SIZE / 2
-        // WE 的一半：64。左右各一份。
+        // ⚠️ 一路 = **64 段**（WE 的 `band < 64`）。128 = 左 64 + 右 64，
+        // 而拼接在上层做（两路各自跑一次 process）。
         let bands = BIN_COUNT / 2
+        var out = [Float](repeating: 0, count: bands)
+        let half = FFT_SIZE / 2
 
         for band in 0..<bands {
             // ① **线性取样 band × 2**（WE 原值），但**跳过 bin 0**。
@@ -463,21 +476,16 @@ final class Spectrum {
             smoothed[band] = smoothed[band] + (v - smoothed[band]) * SMOOTH
             let value = smoothed[band]
 
-            // ⑦ **镜像**：左声道写前半，右声道写后半（倒序）。
+            // ⑦ 这一路（一个声道）的 64 段。**镜像拼接交给上层**。
             //
-            // ⚠️ 我们的输入是**双声道取平均**（一路 PCM）⟹ 两半是同一份数据。
-            // 那和 WE 在单声道音源下的行为一致（左右相同），
-            // 而立体声下 WE 的两半会有细微差别 —— 我们拿不到分声道的 FFT
-            // （`extractSamples` 就把两声道平均了）⟹ **这是一个已知的简化**。
-            //
-            // 要不要真的分左右声道做两次 FFT？暂时不做，理由：
-            //   壁纸消费的是"这个频段有多响"，而立体声的左右差异在圆环上
-            //   表现为"两半略有不同"—— 那是锦上添花，不是"螺旋"这一类的问题。
-            //   而它的成本是两倍 FFT + 改 extractSamples 的接口。
-            // ⟹ 如果用户报"左右两半一模一样，太死板"，那时再做，
-            //    而那个症状和现在要解决的完全不同。
+            // ⚠️ 原来这里写 `out[band]` 和 `out[BIN_COUNT-1-band]` 都写同一个
+            // `value`，注释里说"分声道是锦上添花、暂时不做"。
+            // **那个判断被用户 0.9.17 的实测证伪了**：
+            //   「孤峰固定在第59段(37/60帧)」+「镜像逐段差 0.0000」
+            //   ⟹ band 63 写到段 63 和段 64（**相邻**），而它的加权是 1.393（最大）
+            //   ⟹ 9 点方向必然两根精确等高的最长柱子紧挨着 ⟹ 折线上一个尖顶
+            // ⟹ 取平均的话，那两根柱子**在数学上不可能不相等** ⟹ 必须分声道。
             out[band] = value
-            out[BIN_COUNT - 1 - band] = value
         }
 
         return out
@@ -514,7 +522,12 @@ func selfTestFFT(_ spectrum: Spectrum) {
     // 如果平滑有索引错位之类的问题，单帧看不出。
     //
     // 20 帧 ⟹ 0.7^20 ≈ 0.0008，已经收敛到 99.9%。
-    var bins = [Float](repeating: 0, count: BIN_COUNT)
+    // ⚠️ `process()` 现在返回**64 段**（一路声道），不是 128 ——
+    // 镜像拼接搬到了调用点（两路各跑一次）。
+    // 漏改这里会让下面的 `bins[BIN_COUNT-1-i]` **越界崩溃**，
+    // 而 Swift 的数组越界是 fatalError ⟹ helper 直接死 ⟹ 音频整条链没了，
+    // 用户看到的是"柱子不动"（和没授权同一个画面）。
+    var bins = [Float](repeating: 0, count: BIN_COUNT / 2)
     for _ in 0..<20 {
         bins = spectrum.process(tone)
     }
@@ -533,8 +546,9 @@ func selfTestFFT(_ spectrum: Spectrum) {
     //   峰值段可能落在后半（那时 peakSeg != expectSeg 会误报"频率映射错了"）。
     //
     // ⟹ 判据只跑前 64 段。而"镜像本身对不对"另有一条专门的检查（见下）。
+    // `bins` 已经就是一路的 64 段 ⟹ 不用再切前半（那是 128 时代的写法）
     let bandsHalf = BIN_COUNT / 2
-    let front = Array(bins[0..<bandsHalf])
+    let front = bins
 
     // 峰值段 + 它周围有几段超过峰值的 1/4（那是"主瓣宽度"的粗略度量）
     var peak = 0
@@ -600,10 +614,20 @@ func selfTestFFT(_ spectrum: Spectrum) {
     // ⟹ 任何不相等都说明索引写错了（比如写成 `BIN_COUNT - band` 差一位）。
     // 而那种差一位的错在画面上表现为"接缝处有一根突兀的柱子"，
     // 看起来像音频问题，实际是这里的下标。
+    // ⚠️ **这条检查改了含义。**
+    //
+    // 原来它查 `bins[i] == bins[127-i]`，因为那时 `process()` 自己做镜像
+    //（两半写同一个 value）⟹ 恒等于 0，查的是"下标有没有写错"。
+    //
+    // 现在镜像在调用点用**两路不同声道**拼 ⟹ 自检只跑一路 ⟹ 这里没有可比的两半。
+    // ⟹ 改成查**同一路自己跑两遍是否一致**（确定性检查）：
+    //   纯音 + 同样的平滑状态 ⟹ 结果必须逐段相同。
+    //   不相同 = 有未初始化的内存 / 悬空指针（那类 bug 时好时坏，最难查）。
+    let again = spectrum.process(tone)
     var mirrorMaxDiff: Float = 0
     var mirrorAt = 0
-    for i in 0..<bandsHalf {
-        let d = abs(bins[i] - bins[BIN_COUNT - 1 - i])
+    for i in 0..<min(bins.count, again.count) {
+        let d = abs(bins[i] - again[i])
         if d > mirrorMaxDiff { mirrorMaxDiff = d; mirrorAt = i }
     }
 
@@ -693,8 +717,15 @@ func selfTestFFT(_ spectrum: Spectrum) {
 
 final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
-    private let spectrum = Spectrum()
-    private var pending = [Float]()
+    // **两个 Spectrum 实例，一路一个。**
+    //
+    // 它们各有自己的 `smoothed` 状态 —— 共用一个的话两路会互相污染平滑
+    //（左声道刚把某段推到 0.6，右声道的 0.2 立刻把它拉回来 ⟹ 值来回跳）。
+    // ⚠️ 这类"共享可变状态"的 bug 症状是"数值抖动"，看起来像音频问题。
+    private let spectrumL = Spectrum()
+    private let spectrumR = Spectrum()
+    private var pendingL = [Float]()
+    private var pendingR = [Float]()
     private let targetBundle: String?
 
     init(targetBundle: String?) {
@@ -769,46 +800,54 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,
                 of type: SCStreamOutputType) {
         guard type == .audio, buffer.isValid else { return }
-        guard let samples = pcm(from: buffer) else { return }
-        pending.append(contentsOf: samples)
-        // ⚠️⚠️⚠️ **一次回调发几帧？那决定平滑的节奏稳不稳。**
-        //
-        // 用户 0.9.15 反馈「还是会有一些柱子突兀的长」，而他 0.9.14 的读数里
-        // 最大跳变是 `[23] 0.736→0.367` —— **相邻段差 0.37**，
-        // 在圆环上就是"一根特别长的挨着一根短的"。
-        //
-        // ⚠️ 一个待验的实现差异：
-        //   WE 是 **pull** 模型（渲染循环主动读音频缓冲）⟹ 每渲染帧平滑一次、节奏恒定
-        //   我们是 **push** 模型（`while pending.count >= FFT_SIZE` 有多少发多少）
-        //     ⟹ 一次回调带来 3000 采样就连发 2 帧，两帧间隔**几微秒**
-        //     ⟹ `movetowards` 连做 2 次而时间上没走 ⟹ 平滑速度随批大小漂
-        //     ⟹ 而 PWCircle 只在收到帧时重绘 ⟹ 第一帧被第二帧覆盖 = 等效跳帧
-        //
-        // ⚠️⚠️ **但这是推理，不是观测。** 上一轮的教训就是"没量就改"被推翻十一次，
-        // 而 VDSP_SCALE 是唯一先量后改的、一量就精确命中 2.00。
-        // ⟹ 先报出来：一次回调发几帧、帧间隔多少毫秒。
-        //    若 framesPerCall 恒等于 1 ⟹ 这条假设作废，别改
-        //    若经常 ≥2 ⟹ 节奏确实不稳，而修法是**攒够就发一帧、多的留着**
+        guard let stereo = pcmStereo(from: buffer) else { return }
+        pendingL.append(contentsOf: stereo.left)
+        pendingR.append(contentsOf: stereo.right)
+        // 一次回调发几帧。**用户 0.9.17 实测：0%（恒 1 帧，每批 960 采样）**
+        // ⟹ 我曾怀疑"push 模型下一次回调连发多帧 ⟹ movetowards 连做多次而
+        //    时间没走 ⟹ 平滑速度随批大小漂"—— **那条假设已经被这个数证伪**。
+        // 观测保留（换音源/换设备时批大小会变），但它不再是待查项。
         var framesThisCall = 0
-        while pending.count >= FFT_SIZE {
+        while pendingL.count >= FFT_SIZE && pendingR.count >= FFT_SIZE {
             framesThisCall += 1
-            let chunk = Array(pending.prefix(FFT_SIZE))
-            pending.removeFirst(FFT_SIZE)
-            let bins = spectrum.process(chunk)
-            // ⚠️ 带上输入 RMS —— 判"柱子太长"是系统音量还是我们的实现。
-            // 那是每帧都有的信息，而"该不该降幅度"这个决定靠它。
+            let chunkL = Array(pendingL.prefix(FFT_SIZE))
+            let chunkR = Array(pendingR.prefix(FFT_SIZE))
+            pendingL.removeFirst(FFT_SIZE)
+            pendingR.removeFirst(FFT_SIZE)
+            // 两路各跑一次 FFT。**两个 Spectrum 实例** —— 它们各有自己的
+            // `smoothed` 状态，共用一个的话两路会互相污染平滑（值来回跳）。
+            let left = spectrumL.process(chunkL)
+            let right = spectrumR.process(chunkR)
+            // 拼成 128：左声道前半，右声道后半（倒序）。
+            //
+            // ⚠️ 这就是修「9 点方向两根等高最长柱子」的地方：
+            // band 63 现在写的是 `left[63]`（段 63）和 `right[63]`（段 64），
+            // **两个不同声道的值** ⟹ 立体声下它们不相等 ⟹ 尖顶消失。
+            // 而单声道音源下 pcmStereo 返回同一份 ⟹ 仍然相等（和 WE 一致）。
+            var bins = [Float](repeating: 0, count: BIN_COUNT)
+            let bands = BIN_COUNT / 2
+            for b in 0..<bands {
+                bins[b] = left[b]
+                bins[BIN_COUNT - 1 - b] = right[b]
+            }
             emit([
                 "type": "audio",
                 "bins": bins.map { Double(round($0 * 10000) / 10000) },
-                "rms": Double(round(spectrum.lastRMS * 10000) / 10000),
-                // ⚠️ 这一次回调里这是第几帧 —— 判平滑节奏稳不稳（见上面那段）
+                // RMS 取两路的均值 —— 那代表"整体多响"，判音量用
+                "rms": Double(round((spectrumL.lastRMS + spectrumR.lastRMS) / 2 * 10000) / 10000),
                 "nth": framesThisCall,
-                // 这一批采样有多少个（决定能切出几帧）
-                "batch": samples.count,
+                "batch": stereo.left.count,
+                // 左右声道差多少 —— 判"分声道有没有真的起作用"。
+                // 若恒为 0，说明音源是单声道（或 SCStream 给的两路一样）
+                // ⟹ 那时镜像轴上的双柱仍然存在，而那**不是 bug**（WE 也一样）。
+                "lr": Double(round(channelDiff(left, right) * 10000) / 10000),
             ])
         }
         // 防止上游比我们快时无界堆积。
-        if pending.count > FFT_SIZE * 8 { pending.removeFirst(pending.count - FFT_SIZE) }
+        // ⚠️ 两路都要裁，而且**裁到一样长** —— 只裁一路会让左右错位，
+        // 那时段 63 和段 64 比的是不同时刻的音频（症状：镜像看起来"抖"）。
+        if pendingL.count > FFT_SIZE * 8 { pendingL.removeFirst(pendingL.count - FFT_SIZE) }
+        if pendingR.count > FFT_SIZE * 8 { pendingR.removeFirst(pendingR.count - FFT_SIZE) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -816,8 +855,23 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
         exit(3)
     }
 
-    // 取出单声道 PCM。双声道取平均：壁纸要的是"整体有多响"，左右分开没有用途。
-    private func pcm(from buffer: CMSampleBuffer) -> [Float]? {
+    // 取出 PCM，**左右声道分开**。
+    //
+    // 这里原来的注释是「双声道取平均：壁纸要的是"整体有多响"，左右分开没有用途」——
+    // 那句话被用户 0.9.17 的实测证伪了，而症状很具体：
+    //
+    //   面板报「孤峰固定在 第59段(37/60帧)」+「镜像逐段差 0.0000」
+    //   ⟹ 两半是**同一份数据** ⟹ band 63 写到段 63 和段 64，**它们相邻**
+    //   ⟹ band 63 的加权是 1.393（**全场最大**）
+    //   ⟹ 圆环 9 点方向必然有**两根精确等高的最长柱子**紧挨着，中间没有过渡
+    //   ⟹ 折线壁纸（PWCircle 的 style2/style3 用 lineTo 连 120 点）上就是一个尖顶
+    //
+    // 而真 WE 是左右声道各一份（`g_AudioSpectrum64Left` / `64Right`）
+    // ⟹ 立体声下段 63 和段 64 的值**略有差异** ⟹ 不会是两根等高的柱子。
+    //
+    // ⟹ 分声道不是"锦上添花"，它是镜像轴上那个双柱的**唯一正解**：
+    //    继续取平均的话，那两根柱子在数学上不可能不相等。
+    private func pcmStereo(from buffer: CMSampleBuffer) -> (left: [Float], right: [Float])? {
         guard let desc = buffer.formatDescription?.audioStreamBasicDescription else { return nil }
         let frames = Int(buffer.numSamples)
         guard frames > 0 else { return nil }
@@ -840,20 +894,22 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
             blockBufferOut: &blockBuffer) == noErr else { return nil }
 
         let buffers = UnsafeMutableAudioBufferListPointer(list)
-        var out = [Float](repeating: 0, count: frames)
-        var used = 0
+        // ScreenCaptureKit 给的是**非交错**格式：每声道一个 AudioBuffer。
+        // ⚠️ 但不能假设一定有两个 —— 单声道音源只有一个，而那时左右用同一份
+        //（那和 WE 在单声道下的行为一致）。
+        var chans: [[Float]] = []
         for ab in buffers {
             guard let raw = ab.mData else { continue }
             let count = Int(ab.mDataByteSize) / MemoryLayout<Float>.size
             let ptr = raw.assumingMemoryBound(to: Float.self)
             let n = min(frames, count)
-            for i in 0..<n { out[i] += ptr[i] }
-            used += 1
+            var one = [Float](repeating: 0, count: frames)
+            for i in 0..<n { one[i] = ptr[i] }
+            chans.append(one)
         }
-        if used > 1 {
-            for i in 0..<frames { out[i] /= Float(used) }
-        }
-        return out
+        guard let first = chans.first else { return nil }
+        // 单声道 ⟹ 左右同一份；多于两声道 ⟹ 只取前两个（5.1 的环绕声道不驱动画面）
+        return (left: first, right: chans.count > 1 ? chans[1] : first)
     }
 }
 

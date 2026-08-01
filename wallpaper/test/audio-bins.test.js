@@ -105,9 +105,24 @@ check('① 线性取样 stride 2 —— WE 原值（因为只有 64 段）', () 
 check('128 = 左 64 + 右 64，右半是镜像', () => {
   assert.match(swiftSrc, /let bands = BIN_COUNT \/ 2/,
     'Swift 里没有 `bands = BIN_COUNT / 2` —— 循环还在跑 128 段');
-  assert.match(swiftCode, /out\[BIN_COUNT - 1 - band\] = value/,
-    '没有镜像写入 ⟹ 后半 64 段是 0（半个圆环空的），'
-    + '或者按连续频段填（那必然单向递减 ⟹ 螺旋）');
+  // ⚠️ 断言从 `out[BIN_COUNT-1-band] = value` 改成下面这个 —— 因为镜像
+  // **从 process() 里搬到了调用点**，而且两半现在是**两个不同声道**：
+  //   旧：out[band] 和 out[127-band] 都写同一个 value（两半精确相等）
+  //   新：bins[b] = left[b]，bins[127-b] = right[b]（立体声下不相等）
+  //
+  // ⚠️⚠️ 为什么必须改：用户 0.9.17 实测「孤峰固定在第59段(37/60帧)」+
+  // 「镜像逐段差 0.0000」⟹ band 63 写到段 63 **和段 64（相邻！）**，
+  // 而 band 63 的加权是 **1.393（全场最大）**
+  // ⟹ 9 点方向必然有两根**精确等高的最长柱子**紧挨着、中间没过渡
+  // ⟹ 折线壁纸（PWCircle 的 style2/3 用 lineTo 连 120 点）上就是一个尖顶。
+  // ⟹ 取平均的话那两根在**数学上不可能不相等** ⟹ 分声道是唯一正解。
+  assert.match(swiftCode, /bins\[BIN_COUNT - 1 - b\] = right\[b\]/,
+    '镜像后半不是右声道 ⟹ 段 63 和段 64 会精确相等（band 63 加权 1.393 最大）'
+    + '⟹ 9 点方向两根等高的最长柱子紧挨着 ⟹ 折线上一个尖顶');
+  assert.match(swiftCode, /bins\[b\] = left\[b\]/, '镜像前半不是左声道');
+  assert.match(swiftCode, /let spectrumL = Spectrum\(\)[\s\S]{0,200}let spectrumR = Spectrum\(\)/,
+    '两路没有各自的 Spectrum 实例 ⟹ 共用一个会让两路互相污染 `smoothed`'
+    + '（左声道刚把某段推到 0.6，右声道的 0.2 立刻拉回来 ⟹ 数值来回跳）');
   // JS 规格也要镜像，而且要逐段相等
   const mags = new Array(512).fill(0).map((_, i) => 100 / Math.sqrt(i + 1));
   const f = A.frameValues(mags);
@@ -877,6 +892,52 @@ check('孤峰按多帧稳定性统计（分辨结构性 vs 音乐瞬态）', () 
   assert.match(main, /audioFrames:/,
     '诊断报告里没有原始帧 ⟹ 我只能继续在云端合成信号，'
     + '而合成信号已经骗过我一次（45/64 踩地板 vs 用户实测一个 0 都没有）');
+});
+
+// ⚠️⚠️⚠️ **镜像轴上的等高双柱 —— 用户报的「孤峰」的一个确证来源。**
+//
+// 用户 0.9.17 实测：「孤峰固定在 第59段(37/60帧)」+「镜像逐段差 0.0000」
+// ⟹ 那不是音乐的瞬态，是**结构性**的。
+//
+// 机制（算术，不是推断）：
+//   我的镜像映射是 `out[band]` 和 `out[127-band]`
+//   ⟹ band 63 写到段 **63 和 64** —— **它们相邻**（不像 band 0 分居两端）
+//   ⟹ band 63 的加权 = 2−e^((1−63/63)−0.5) = **1.393，全场最大**
+//   ⟹ 9 点方向必然有两根**最长且精确等高**的柱子紧挨着、中间没有过渡
+//   ⟹ 折线壁纸（PWCircle 的 style2/style3 用 `lineTo` 连 120 点）上就是一个尖顶
+//
+// ⚠️ 而"精确等高"是取平均的**数学必然** —— 两半是同一份数据，不可能不相等。
+// ⟹ 分声道是唯一正解，而它有出处：WE 的 uniform 就是 `64Left`/`64Right`。
+//
+// ⚠️⚠️ 我原来在代码里写「分声道是锦上添花、暂时不做，等用户报'左右一模一样
+// 太死板'再说」—— **那个判断错了**：它的症状不是"死板"，是**镜像轴上一个尖顶**。
+// ⟹ 教训：把一件事记成"已知简化"时，我预测的症状可能和真实症状完全不同
+//    ⟹ 那条"等症状出现再做"的推迟理由就失效了（我不会认出那个症状）。
+check('分声道让镜像轴上的双柱不再等高', () => {
+  const mags = new Array(512).fill(0).map((_, i) => 100 / Math.sqrt(i + 1));
+  // 取平均（旧行为）：段 63 和 64 精确相等
+  const same = A.frameValues(mags);
+  assert.strictEqual(same[63], same[64],
+    'frameValues 单路输入时段 63/64 应该相等（那正是要复现的旧行为）');
+  // 分声道：两路略有差异 ⟹ 段 63/64 不再相等
+  const left = A.channelValues(mags);
+  const right = A.channelValues(mags.map((m, i) => m * (1 + 0.15 * Math.sin(i))));
+  const st = A.mirror(left, right);
+  assert.strictEqual(st.length, 128, `mirror 输出 ${st.length} 段，壁纸要 128`);
+  assert.ok(Math.abs(st[63] - st[64]) > 0.01,
+    `分声道后段 63(${st[63].toFixed(3)}) 和段 64(${st[64].toFixed(3)}) 仍然几乎相等 `
+    + `(差 ${Math.abs(st[63] - st[64]).toFixed(4)}) ⟹ 镜像轴的双柱尖顶没修掉`);
+  // 而两端（band 0）本来就分居圆环两侧，不构成相邻双柱
+  assert.strictEqual(st[0], left[0], '段 0 应该是左声道 band 0');
+  assert.strictEqual(st[127], right[0], '段 127 应该是右声道 band 0');
+  // Swift 侧必须真的用两路
+  assert.match(swiftCode, /pcmStereo/,
+    'Swift 还在用取平均的 pcm() ⟹ 两路是同一份数据 ⟹ 双柱必然等高');
+  assert.ok(!/private func pcm\(from/.test(swiftCode),
+    '旧的取平均 pcm() 还在 ⟹ 死代码，而它会让下一个人以为还能用');
+  assert.match(swiftCode, /channelDiff/,
+    '没报左右声道差 ⟹ 分不出"分声道生效了"和"音源本来就是单声道"，'
+    + '而后者下双柱仍然存在且**不是 bug**（WE 也一样）');
 });
 
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
