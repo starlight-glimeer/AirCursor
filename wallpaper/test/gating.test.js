@@ -3385,14 +3385,38 @@ check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸�
   // ②「卸载」**没有别的入口** ⟹ 不能直接删，搬到了网格里当前那张卡片上
   //   （点一个壁纸装载，点当前那个就取消）
   assert.ok(!/id="we-clear"/.test(htmlCode), 'HTML 里还有「卸载」按钮');
+  // ⚠️⚠️ 「卸载」的入口改过两次，而**判据一直没变**：它必须存在且可发现。
+  //
+  //   0.9.36 之前  常驻按钮「卸载（回到内置壁纸）」
+  //   0.9.37       点当前那张卡片（+ 卡片上一行「点击卸载」提示）
+  //   0.9.38       **右键菜单**
+  //
+  // 0.9.37 那版的问题（用户 2026-08-01 指出）：那是**把一个动作藏在另一个
+  // 动作里**（左键既装载又卸载，看 active 状态），而且要常驻一行提示才不隐藏
+  // ⟹ 界面又吵了。
+  //
+  // ⟹ 右键菜单同时解决两件事：卸载不再藏在左键里、
+  //    而「在 Finder 中打开」也不用常驻按钮（它 2026-07-31 因常驻太吵被删过）
+  // ⟹ **判据：常驻的东西要少，而不是功能要少。**
   const j2 = dash.indexOf('function renderMine');
   const mineFn = dash.slice(j2, dash.indexOf('\nfunction ', j2 + 10));
-  assert.match(mineFn, /if \(item\.active\) \{[\s\S]{0,200}?weClear/,
-    '「卸载」的入口丢了 ⟹ 删掉那个按钮之后用户**回不到内置壁纸**。'
-    + '⟹ 应该是"点当前装载的那张卡片 = 卸载"');
-  // ⚠️ 而那个行为必须**可见** —— 否则用户不会去点已经装载的那个
-  assert.match(mineFn, /点击卸载|点一下卸载/,
-    '"点当前卡片=卸载"没有任何提示 ⟹ 那是个隐藏行为，等于没有入口');
+  assert.match(mineFn, /weClear/,
+    '「卸载」的入口丢了 ⟹ 用户**回不到内置壁纸**');
+  assert.match(mineFn, /showCardMenu/,
+    '卡片没有右键菜单 ⟹ 用户 2026-08-01 明确要求的形态'
+    + '（「右键点击，一个选项是在资源管理器中打开，一个是卸载」）');
+  // ⚠️ 「卸载」只能在**当前装载的那个**上出现 —— 挂在别的卡片上
+  // 会让人以为是"删掉这个壁纸文件"（那是危险操作，我们不做）
+  assert.match(mineFn, /it\.active \?[\s\S]{0,300}?weClear/,
+    '「卸载」不是只在当前装载的卡片上出现 ⟹ 挂在别的卡片上会让人以为'
+    + '是"删掉这个壁纸文件"');
+  // ⚠️ 「在 Finder 中打开」也要在菜单里 —— 那是它 0.9.38 的新家
+  assert.match(mineFn, /Finder 中打开/,
+    '右键菜单里没有「在 Finder 中打开」⟹ 用户明确提到的两项之一');
+  // ⚠️ 而左键**不能**再兼任卸载（那是 0.9.37 被否掉的设计）
+  assert.ok(!/if \(item\.active\) \{\s*await window\.gw\.weClear/.test(mineFn),
+    '左键点当前卡片还在卸载 ⟹ 那是"把一个动作藏在另一个动作里"，'
+    + '用户 2026-08-01 否掉了这个设计');
 });
 
 // ⚠️⚠️⚠️ **「正在共享屏幕」现在有出路了 —— 守卫要跟着翻。**
@@ -3541,6 +3565,59 @@ check('shell 脚本里的引号配对（否则脚本跑不了）', () => {
     + '    ⟹ bash 会报 "unexpected EOF while looking for matching" ⟹ **整个脚本跑不了**\n'
     + '    ⟹ 在字符串里引用文字用 「」，不要用 ASCII 双引号\n'
     + '    （和 Swift 里"中文引号让编译失败"是同一个形状）');
+});
+
+// ⚠️⚠️⚠️ **右键菜单的四个必然会踩的坑。**
+//
+// 用户 2026-08-01 要的形态：「右键点击，一个选项是在资源管理器中打开，
+// 一个是卸载」。而右键菜单这东西有几个"不做就一定出问题"的点：
+check('卡片右键菜单：单实例 / 会关 / 不越界 / 不被自己的监听吃掉', () => {
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① **单实例** —— 每张卡片挂一个 DOM 菜单会在滚动时拖慢，
+  //    而且"关闭"逻辑要写 N 遍
+  assert.match(dash, /let cardMenu = null/,
+    '菜单不是单实例 ⟹ N 张卡片各挂一个 DOM，滚动会卡');
+
+  // ② **点别处/滚动/Esc 都要关** —— 漏一个的话菜单会"粘"在屏幕上，
+  //    而用户会以为界面卡住了
+  for (const [needle, why] of [
+    [/addEventListener\('click', closeCardMenu\)/, '点别处'],
+    [/addEventListener\('scroll', closeCardMenu, true\)/, '滚动'],
+    [/'Escape'/, 'Esc'],
+  ]) {
+    assert.match(dash, needle,
+      `菜单不会因「${why}」关闭 ⟹ 它会粘在屏幕上，用户以为界面卡住了`);
+  }
+  // ⚠️ scroll 要 capture（第三个参数 true）—— 卡片在可滚动容器里，
+  // 而 scroll 事件**不冒泡** ⟹ 不用 capture 就收不到容器的滚动
+  assert.match(dash, /addEventListener\('scroll', closeCardMenu, true\)/,
+    'scroll 监听没用 capture ⟹ scroll 不冒泡，容器滚动时收不到');
+
+  // ③ **贴边要翻转** —— 右下角的卡片必然让菜单跑出屏幕
+  assert.match(dash, /window\.innerWidth/,
+    '菜单没做边界翻转 ⟹ 右边缘的卡片右键时菜单跑到屏幕外（点不到）');
+  assert.match(dash, /window\.innerHeight/, '同上（下边缘）');
+
+  // ④ **oncontextmenu 里要 stopPropagation** ——
+  //    否则冒泡到 document 的 click 监听，菜单开出来立刻被自己关掉
+  const cardFn = dash.slice(dash.indexOf('function workshopCard'),
+    dash.indexOf('\nasync function runBrowse'));
+  assert.match(cardFn, /oncontextmenu[\s\S]{0,200}?stopPropagation/,
+    'oncontextmenu 里没 stopPropagation ⟹ 菜单开出来会被自己的 '
+    + 'document click 监听立刻关掉（症状：右键"没反应"）');
+  assert.match(cardFn, /preventDefault/,
+    '没 preventDefault ⟹ 系统的原生右键菜单会一起弹出来');
+
+  // ⑤ 菜单要**可选** —— 「浏览创意工坊」的卡片没有本地目录，也不该有卸载
+  assert.match(cardFn, /if \(onMenu\)/,
+    '右键菜单不是可选的 ⟹ 「浏览创意工坊」那边的卡片会挂上一个'
+    + '"在 Finder 中打开"（那个壁纸还没下载，没有本地目录）');
+
+  // ⑥ 危险项要能区分 —— 「卸载」和「装载」长得一样的话容易点错
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(html, /\.card-menu-item\.danger/,
+    '菜单里的危险项没有单独样式 ⟹ 「卸载」和「装载」长得一样，容易点错');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

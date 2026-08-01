@@ -1688,7 +1688,69 @@ function renderBrowseControls(meta) {
 }
 
 // 一张工坊卡片。仿 Steam：预览图 + 标题 + 类型 + 订阅数。
-function workshopCard(item, onPick) {
+// ⚠️⚠️⚠️ **右键菜单** —— 用户 2026-08-01 提的：
+//   「我理解这是精准删除，但是就不能设计成右键点击，然后有一个选项是
+//     在资源管理器中打开，有一个是卸载吗」
+//
+// 他说得对，而且这解决了**两个**问题：
+//
+// ① 0.9.37 我把「卸载」做成了"点当前那张卡片" + 卡片上一行「点击卸载」
+//    ⟹ 那是**把一个动作藏在另一个动作里**（左键既是装载又是卸载，看 active 状态）
+//    ⟹ 而且要在卡片上常驻一行提示才不隐藏 ⟹ 界面又吵了
+//
+// ② 「打开目录」2026-07-31 被用户要求删掉（「不是每个壁纸都要显示一下目录的」）
+//    —— 他说得对，那时它是**常驻按钮** × N 张卡片。
+//    而右键菜单里它不占地方 ⟹ **需要时才出现**，那正是它该在的位置。
+//
+// ⟹ 判据：**常驻的东西要少，而不是功能要少。**
+//
+// ⚠️ 只有一个菜单实例（不是每张卡片一个）—— N 张卡片各挂一个 DOM
+// 会在滚动时拖慢，而且关闭逻辑要写 N 遍。
+let cardMenu = null;
+
+function closeCardMenu() {
+  if (cardMenu) { cardMenu.remove(); cardMenu = null; }
+}
+
+// ⚠️ 点别处/滚动/Esc 都要关 —— 漏一个的话菜单会"粘"在屏幕上，
+// 而用户会以为界面卡住了。
+document.addEventListener('click', closeCardMenu);
+document.addEventListener('scroll', closeCardMenu, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCardMenu(); });
+
+// items: [{ label, danger?, onClick }]，label 为 null 表示分隔线
+function showCardMenu(x, y, items) {
+  closeCardMenu();
+  const menu = document.createElement('div');
+  menu.className = 'card-menu';
+  // ⚠️ 用 fixed + clientX/Y —— 卡片在可滚动容器里，用 absolute 会跟着内容跑
+  menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:9999`;
+  for (const it of items) {
+    if (!it || !it.label) {
+      const sep = document.createElement('div');
+      sep.className = 'card-menu-sep';
+      menu.appendChild(sep);
+      continue;
+    }
+    const row = document.createElement('div');
+    row.className = it.danger ? 'card-menu-item danger' : 'card-menu-item';
+    row.textContent = it.label;
+    row.onclick = (e) => {
+      e.stopPropagation();
+      closeCardMenu();
+      it.onClick();
+    };
+    menu.appendChild(row);
+  }
+  document.body.appendChild(menu);
+  // ⚠️ 贴边时要翻转，否则菜单会跑到屏幕外（右下角的卡片必然撞到）
+  const r = menu.getBoundingClientRect();
+  if (r.right > window.innerWidth) menu.style.left = `${window.innerWidth - r.width - 8}px`;
+  if (r.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - r.height - 8}px`;
+  cardMenu = menu;
+}
+
+function workshopCard(item, onPick, onMenu) {
   const card = document.createElement('div');
   card.className = 'ws-item';
   card.title = item.title || item.id;
@@ -1726,6 +1788,16 @@ function workshopCard(item, onPick) {
   // ⟹ 打开目录的入口留在「存储目录」那块（每个根目录一个）。
 
   card.onclick = () => onPick(item);
+  // ⚠️ 右键菜单是**可选的** —— 「浏览创意工坊」那边的卡片没有本地目录，
+  // 也不该有「卸载」⟹ 不传 onMenu 就不挂。
+  if (onMenu) {
+    card.oncontextmenu = (e) => {
+      e.preventDefault();
+      // ⚠️ stopPropagation —— 否则冒泡到 document 的 click 监听把菜单立刻关掉
+      e.stopPropagation();
+      onMenu(item, e.clientX, e.clientY);
+    };
+  }
   return card;
 }
 
@@ -1856,38 +1928,64 @@ async function renderMine() {
       preview: item.preview ? `file://${encodeURI(item.preview)}` : null,
     }, async () => {
       if (item.broken) return;
-      // ⚠️⚠️ **点当前装载的那个 = 卸载**（0.9.37）。
+      // ⚠️ **左键只做一件事：装载。**
       //
-      // 用户 2026-08-01 让删掉「卸载（回到内置壁纸）」那个按钮
-      //（「我们已经有换目录的按钮了，这是冗余的操作」）——
-      // 而「装载别处的目录…」确实冗余，但**「卸载」没有别的入口**
-      // ⟹ 直接删就回不到内置壁纸了。
+      // 0.9.37 我让"点当前那张卡片 = 卸载" ⟹ 那是**把一个动作藏在另一个
+      // 动作里**（左键既装载又卸载，看 active 状态），而且要在卡片上常驻
+      // 一行「点击卸载」才不隐藏 ⟹ 界面又吵了。
       //
-      // ⟹ 搬到这里：点一个壁纸装载，点**当前那个**就取消。
-      //   那比一个常驻按钮更自然，也不占地方。
-      if (item.active) {
-        await window.gw.weClear();
-        renderWEStatus();
-        renderMine();
-        return;
-      }
+      // 用户 2026-08-01：「就不能设计成右键点击，然后有一个选项是在资源管理器
+      // 中打开，有一个是卸载吗」—— 他说得对。⟹ 卸载搬到右键菜单。
+      //
+      // ⚠️ 而"点当前的"现在**什么都不做** —— 那比"重新装载一次"好：
+      // 重新装载会让画面闪一下，而用户点它多半是误触。
+      if (item.active) return;
       const out = await window.gw.workshopLoadLocal(item.dir);
       if (!out.ok) state.innerHTML = `<span class="warn">${out.error}</span>`;
       renderWEStatus();
       renderMine();
+    }, (it, x, y) => {
+      // ⚠️⚠️ **右键菜单** —— 见 showCardMenu 上面那段。
+      //
+      // 「在 Finder 中打开」这一条 2026-07-31 被用户要求删掉过，
+      // 而那时它是**常驻按钮 × N 张卡片**（「不是每个壁纸都要显示一下目录的」）。
+      // 右键菜单里它不占地方 ⟹ **需要时才出现**，那正是它该在的位置。
+      // ⟹ 判据：**常驻的东西要少，而不是功能要少。**
+      showCardMenu(x, y, [
+        it.active ? null : {
+          label: '装载这个壁纸',
+          onClick: async () => {
+            if (it.broken) return;
+            const out = await window.gw.workshopLoadLocal(it.dir);
+            if (!out.ok) state.innerHTML = `<span class="warn">${out.error}</span>`;
+            renderWEStatus();
+            renderMine();
+          },
+        },
+        {
+          label: '在 Finder 中打开',
+          onClick: () => window.gw.revealWallpaperDir(it.dir),
+        },
+        // ⚠️ 「卸载」只在**当前装载的那个**上出现 —— 挂在别的卡片上
+        // 会让人以为是"删掉这个壁纸文件"（那是危险操作，我们不做）。
+        it.active ? { label: null } : null,
+        it.active ? {
+          label: '卸载（回到内置壁纸）',
+          danger: true,
+          onClick: async () => {
+            await window.gw.weClear();
+            renderWEStatus();
+            renderMine();
+          },
+        } : null,
+      ].filter(Boolean));
     });
     // 当前装载的那个标出来 —— 否则一屏缩略图里认不出哪个在用。
-    // ⚠️ 而它现在**还要提示"点我卸载"** —— 否则那个行为是隐藏的
-    //（用户不会去点已经装载的那个，除了误触）。
+    // ⚠️ 而那行「点击卸载」的提示**撤了**（0.9.38）——
+    // 卸载现在在右键菜单里，不需要在卡片上常驻一行字。
     if (item.active) {
       card.style.borderColor = 'var(--accent)';
-      card.title = '这个正在用 —— 点一下卸载（回到内置壁纸）';
-      const badge = document.createElement('div');
-      badge.className = 'hint';
-      badge.style.cssText = 'font-size:10px;text-align:center;padding:2px 0;'
-        + 'color:var(--accent)';
-      badge.textContent = '正在用 · 点击卸载';
-      card.appendChild(badge);
+      card.title = '正在用（右键有更多操作）';
     }
     grid.appendChild(card);
   }

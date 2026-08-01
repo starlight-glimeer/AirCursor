@@ -256,6 +256,23 @@
   .ws-item .nm { font-size: 11px; padding: 6px 8px 2px; overflow: hidden;
                  text-overflow: ellipsis; white-space: nowrap; }
   .ws-item .tp { font-size: 10px; color: var(--dim); padding: 0 8px 7px; }
+
+  /* ⚠️ 卡片右键菜单（0.9.38）。用户 2026-08-01 提的：
+     「就不能设计成右键点击，然后有一个选项是在资源管理器中打开，有一个是卸载吗」
+
+     ⟹ 那解决了两个问题：①「卸载」不再藏在"点当前那张卡片"这个动作里
+     ②「打开目录」不再需要常驻按钮（它 2026-07-31 因为常驻太吵被删过）
+     ⟹ 判据：**常驻的东西要少，而不是功能要少。** */
+  .card-menu { background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 4px; min-width: 168px;
+               box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .card-menu-item { font-size: 12px; padding: 7px 10px; border-radius: 5px;
+                    cursor: pointer; white-space: nowrap; }
+  .card-menu-item:hover { background: rgba(255,255,255,.08); }
+  /* 危险操作单独标色 —— 「卸载」和「装载」长得一样的话容易点错 */
+  .card-menu-item.danger { color: var(--warn); }
+  .card-menu-item.danger:hover { background: rgba(255,180,84,.14); }
+  .card-menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
   .ws-item .tp.no { color: #ffb4b4; }
 
   /* ---- WE 壁纸的自动生成控件 ----
