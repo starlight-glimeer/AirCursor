@@ -46,8 +46,16 @@ function frameValues(magnitudes, binCount = BIN_COUNT) {
   const half = magnitudes.length;
   const out = [];
   for (let band = 0; band < binCount; band += 1) {
-    // ① 线性取样：band × 2（WE 64 段时是 band*2，我们 128 段同样）
-    const index = Math.min(half - 1, band * 2);
+    // ① 线性取样，**stride 1**（不是 WE 的 2）。
+    //
+    // ⚠️ WE 是 64 段 × stride 2 ⟹ 0-5.4kHz。
+    // 照抄 `band*2` 用在 128 段上会让频率范围**翻倍**到 11.2kHz
+    // ⟹ 段 58-119 落在音乐几乎没能量的区间 ⟹ 一半圆环是死的
+    // ⟹ 而 3 点是圆周接缝（段 119 的 11.2kHz 紧贴段 0 的 47Hz，差 239 倍）
+    //   ⟹ 用户报的「3 点是很明显的分割线，上面不活跃下面太活跃」。
+    //
+    // stride 1 ⟹ 128 段覆盖 0-5.95kHz，和 WE 一致，每段间隔是它的一半。
+    const index = Math.min(half - 1, band + 1);
     out.push(bandValue(magnitudes[index] || 0, band, binCount));
   }
   return out;

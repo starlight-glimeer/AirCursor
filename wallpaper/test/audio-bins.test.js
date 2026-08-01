@@ -39,10 +39,24 @@ console.log('\n  五个步骤，每个都有出处');
 // ⚠️ 这五条对应 WE 那段代码的五行。它们**必须一起用** ——
 // 比如"功率不开根"成立是因为后面有 log10（对数已经压缩了动态范围），
 // 我之前"去掉 sqrt 又不加 log"是两头都不对。
-check('① 线性取样 band × 2（不是任何形式的分箱）', () => {
-  assert.match(swiftCode, /band \* 2/,
-    'Swift 里没有 `band * 2` —— WE 是纯线性取样，'
-    + '我猜过对数分箱、线性区+对数区、低频插值，全错');
+// ⚠️ 这条断言改了：原来要求 `band * 2`（照抄 WE 的 stride），而那是错的。
+//
+// WE 是 **64 段** × stride 2 ⟹ 覆盖 0-5.4kHz。
+// 照抄在 **128 段**上 ⟹ 覆盖 0-11.2kHz ⟹ **频率范围翻倍**。
+//
+// 用户 2026-08-01 的描述定死了后果：
+//   「3 点是一个很明显的分割线，上面很明显不活跃，下面太活跃了」
+//   「3 点到 4 点这个区间有反应，其他的反应都很小」
+//
+// 算出来：3-4 点 = 段 0-10 = 47-1000Hz（音乐能量集中）；
+// 段 58-119 = 5.4k-11.2kHz（WE 压根不覆盖）⟹ 那 62 段几乎没能量 ⟹ 半个圆环死的。
+// 而 3 点是圆周接缝：段 119 的 11.2kHz 紧贴段 0 的 47Hz，**差 239 倍**。
+check('① 线性取样 stride 1（照抄 WE 的 2 会让频率范围翻倍）', () => {
+  assert.match(swiftCode, /band \+ 1/,
+    'stride 不是 1 —— WE 用 stride 2 是因为它只有 64 段。'
+    + '128 段用 stride 2 会覆盖到 11.2kHz，而音乐在那儿没能量 ⟹ 半个圆环是死的');
+  assert.ok(!/band \* 2/.test(swiftCode),
+    '还在用 band*2 —— 那让频率范围翻倍（用户报"3 点是分割线"就是它）');
   // 不许再出现我那三个错误模型的痕迹
   assert.ok(!/LINEAR_BINS|USEFUL_BINS|powf\(ratio/.test(swiftCode),
     '还有旧分箱模型的残留（LINEAR_BINS / USEFUL_BINS / powf(ratio…)）');
@@ -86,6 +100,24 @@ check('⑤ 两向平滑，系数 0.3', () => {
     '还有 ATTACK/RELEASE —— WE 两个方向用同一个系数，'
     + '而我曾让上升不插值（理由是"壁纸自己有平滑"），那和 WE 的真实行为相反。'
     + '「颗粒粗、没有波浪感」就是那个的后果');
+});
+
+
+// ⚠️ 频率覆盖范围要和 WE 一致 —— 那是"半个圆环死的"的根因。
+check('频率覆盖和 WE 一致（0-6kHz，不是 0-11kHz）', () => {
+  const hzPerBin = 48000 / 2 / 512;
+  // stride 1 ⟹ 段 127 读 bin 128
+  const topHz = 128 * hzPerBin;
+  assert.ok(topHz < 8000,
+    `覆盖到 ${Math.round(topHz)}Hz —— WE 只到 5.4kHz。`
+    + '铺太宽会让高频那些段落在音乐几乎没能量的区间 ⟹ 半个圆环不动');
+  assert.ok(topHz > 4000,
+    `只覆盖到 ${Math.round(topHz)}Hz —— 太窄会丢掉人声和主奏的泛音`);
+  // 而 3 点接缝处的频率跳变要小
+  const seamRatio = (128 * hzPerBin) / (1 * hzPerBin);
+  assert.ok(seamRatio < 200,
+    `圆周接缝处频率差 ${Math.round(seamRatio)} 倍 —— 那必然产生可见的分割线`
+    + '（用户报「3 点是很明显的分割线」）');
 });
 
 console.log('\n  这套算法在真实数据上的效果');
@@ -203,7 +235,9 @@ check('去直流：加窗之前先减均值', () => {
 });
 
 check('段 0 不读 bin 0（那是直流不是频率）', () => {
-  assert.match(swiftCode, /band \* 2 \+ 1/,
+  // ⚠️ 断言从 `band*2+1` 改成 `band+1` —— stride 从 2 改成 1 了（见上一条）。
+  // 关键是那个 **+1**：它让段 0 读 bin 1 而不是 bin 0。
+  assert.match(swiftCode, /min\(half - 1, band \+ 1\)/,
     '段 0 仍然读 bin 0 —— 那是直流分量。去直流是靠"整窗均值"，'
     + '而窗内的极低频（<20Hz 听不见的隆隆声）仍会落进 bin 0/1，那些不该驱动画面');
 });
