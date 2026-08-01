@@ -834,11 +834,32 @@ function openDashboard() {
     dashboardWindow.focus();
     return;
   }
+  // ⚠️⚠️ **初始尺寸按屏幕算**（0.9.55）。用户 2026-08-01：
+  //   「产品打开的初始大小改一下吧，左侧展示面太小了」
+  //
+  // 940×700 是 0.9.54 之前那个"左栏 + 单列内容"布局的尺寸。
+  // 而现在是"网格 + 右侧详情 340px"⟹ 940 宽下网格只剩 560px（三列卡片），
+  // 而**壁纸墙的价值就在于一眼看到很多张**。
+  //
+  // ⚠️ 但不能写死 1280 —— 那在 MacBook Air 13"（1440×900 逻辑分辨率）上
+  // 已经占了 89% 宽度，而在更小的屏上会被 macOS **夹回可见区**，
+  // 那时候用户看到的是一个"打开就贴满屏幕"的窗口（比小窗更糟）。
+  // ⟹ 取 min(想要的, 工作区的 88%)：想要 1280×820，屏幕小就按比例缩。
+  // ⚠️ 用 workAreaSize 而不是 bounds —— 后者含菜单栏和 Dock 占的那部分，
+  //   按它算出来的窗口会有一截在 Dock 底下。
+  const { workAreaSize } = screen.getPrimaryDisplay();
+  const winW = Math.min(1280, Math.round(workAreaSize.width * 0.88));
+  const winH = Math.min(820, Math.round(workAreaSize.height * 0.88));
+  console.log(`[panel] 窗口 ${winW}×${winH}（工作区 ${workAreaSize.width}×${workAreaSize.height}）`);
+
   dashboardWindow = new BrowserWindow({
-    width: 940,
-    height: 700,
-    minWidth: 780,
-    minHeight: 560,
+    width: winW,
+    height: winH,
+    // ⚠️ minWidth 从 780 提到 900：820 以下会触发 CSS 那条 media query
+    // （详情面板叠到网格下面），而那是**窄窗口的降级形态**，不该是常态。
+    // 900 保证正常情况下总是"网格 + 右侧详情"两列。
+    minWidth: 900,
+    minHeight: 600,
     title: 'GestureWall',
     // ⚠️⚠️ **深色标题栏**（0.9.46）。用户 2026-08-01 报：
     //   「wall 这块是用的 Mac 原生的那个条一个白条，因为我是浅色主题吗？

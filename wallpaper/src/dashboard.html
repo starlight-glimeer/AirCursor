@@ -199,9 +199,17 @@
     border-left: 1px solid var(--line); background: #131318;
     padding: 18px 16px 40px;
   }
-  /* 窄窗口（<820px）下详情面板会把网格挤成一列 ⟹ 直接叠成上下两段。
-     ⚠️ 那比"横向挤扁"好：一列卡片的壁纸墙没有意义。 */
-  @media (max-width: 820px) {
+  /* 窄窗口下详情面板会把网格挤成一列 ⟹ 直接叠成上下两段。
+     ⚠️ 那比"横向挤扁"好：一列卡片的壁纸墙没有意义。
+
+     ⚠️⚠️ 阈值 **880** 而不是 820（0.9.55）：窗口的 `minWidth` 是 900，
+     所以正常情况下这条规则**不会触发** —— 它是给两种真实情况留的：
+       ① 小屏上初始尺寸按 `workAreaSize * 0.88` 算，可能算出比 900 小的值
+          （macOS 会允许小于 minWidth 的初始尺寸吗？不确定 ⟹ 留着兜底）
+       ② 以后 minWidth 被调低
+     ⚠️ 880 < 900 是**有意的**：留 20px 余量，否则"刚好等于 minWidth"时
+        会在拖动边缘反复跳（两列⇄一列闪烁）。 */
+  @media (max-width: 880px) {
     .split { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
     .pane-side { border-left: none; border-top: 1px solid var(--line); }
   }

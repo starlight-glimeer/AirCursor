@@ -4668,7 +4668,28 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
   assert.match(sideFn, /if \(item\.active\) \{[\s\S]{0,160}?renderWEControls\(\)/,
     '不管是不是正在放都渲染参数 ⟹ 会显示别的壁纸的参数');
 
-  // ⑧ openExternal 三端接线（「在 Steam 打开」按钮）+ 主进程要校验协议
+  // ⑧⚠️⚠️ **窗口初始尺寸按屏幕算，不写死**（0.9.55）。用户：「产品打开的初始大小
+  //    改一下吧，左侧展示面太小了」—— 940 宽下网格只剩 560px（三列卡片），
+  //    而壁纸墙的价值就在于一眼看到很多张。
+  //    但写死 1280 会在小屏上被 macOS **夹回可见区** ⟹ 打开就贴满屏幕（比小窗更糟）。
+  const win = codeOnly(mainSrc).slice(codeOnly(mainSrc).indexOf('dashboardWindow = new BrowserWindow'));
+  assert.ok(!/width:\s*\d{3,4},/.test(win.slice(0, 400)),
+    '面板窗口又写死了宽度 ⟹ 小屏上会被 macOS 夹回可见区（打开就贴满屏幕）');
+  assert.match(codeOnly(mainSrc), /const winW = Math\.min\(\d+, Math\.round\(workAreaSize\.width/,
+    '窗口宽度没按屏幕工作区算');
+  // ⚠️ 必须用 workAreaSize 而不是 bounds —— 后者含菜单栏和 Dock 占的那部分，
+  //   按它算出来的窗口会有一截在 Dock 底下。
+  assert.ok(!/const \{ bounds \} = screen\.getPrimaryDisplay\(\);\s*\n\s*const winW/
+    .test(codeOnly(mainSrc)),
+    '用 bounds 算面板尺寸 ⟹ 窗口会有一截在 Dock 底下（要用 workAreaSize）');
+  // ⚠️ media query 的阈值要**小于** minWidth，否则拖到边缘时两列⇄一列反复跳
+  const mw = Number((codeOnly(mainSrc).match(/minWidth:\s*(\d+)/) || [])[1]);
+  const mq = Number((html.match(/@media \(max-width:\s*(\d+)px\)/) || [])[1]);
+  assert.ok(mw > 0 && mq > 0, `读不到 minWidth(${mw}) 或 media query 阈值(${mq}) ⟹ 断言失效`);
+  assert.ok(mq < mw,
+    `media query 阈值 ${mq} ≥ minWidth ${mw} ⟹ 拖到窗口边缘时两列⇄一列反复跳`);
+
+  // ⑨ openExternal 三端接线（「在 Steam 打开」按钮）+ 主进程要校验协议
   assert.match(dash, /window\.gw\.openExternal\(/, '右侧面板用了 openExternal');
   assert.match(codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8')),
     /openExternal:/, 'preload 没暴露 openExternal ⟹ 那个按钮点了抛 TypeError');
