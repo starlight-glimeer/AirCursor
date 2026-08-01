@@ -5463,4 +5463,116 @@ check('用户可见的文案不写上游项目名（但真实标识符要保留�
   }
 });
 
+// ⚠️⚠️⚠️ **打包时预编译 helper**（0.9.75）。
+//
+// 四个 helper（音频采集 / 鼠标转发 / 全局鼠标 / 语音）原来在**用户机器上
+// 现场编译**（`/usr/bin/swiftc`），而那只有装了 Xcode 命令行工具（约 1.5 GB）
+// 的机器才有 ⟹ 普通用户拿到 dmg 会发现那几个功能全不可用，
+// 而症状是"某个功能没反应"，不是一句清楚的错误。
+//
+// ⟹ 改成打包时编译（`scripts/prebuild-helpers.sh`），放进
+//   `.app/Contents/Resources/prebuilt-helpers/`，运行时优先用它。
+check('预编译 helper：四个都编 / 名字规则两边一致 / swiftc 那条兜底没被动', () => {
+  const sh = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'prebuild-helpers.sh'), 'utf8');
+
+  // ① 四个 helper 都要编 —— 漏一个就是那个功能在用户机器上不可用
+  for (const name of ['AirCursorPointer', 'GestureWallMouse',
+    'GestureWallAudio', 'AirCursorVoice']) {
+    assert.ok(sh.includes(name), `预编译脚本漏了 ${name} ⟹ 那个功能在用户机器上不可用`);
+  }
+
+  // ②⚠️⚠️ **名字规则必须和运行时一致** —— 那是这次改动唯一的技术约束。
+  //   运行时：`<HelperName>-<源码 sha256 前 12 位>`，而且**文件存在就直接用**。
+  //   算错的后果**不是报错**，是静默地重新编译 ⟹ 回到没有预编译的状态
+  //   （而那时用户看到的还是"功能没反应"，我们却以为修好了）。
+  // ⚠️⚠️ **数次数**，不是"有一处就行"。
+  //   `shasum -a 256` 和 `cut -c1-12` 在这个脚本里**各出现两次**
+  //   （单文件的 hash_of 一处 + Voice 那个双文件一处）
+  //   ⟹ 改坏一处另一处还在 ⟹ `assert.match` 照样通过
+  //   （反向验证第 2、3 条：报红 0）。
+  //   "锚点太弱"第 12 次，而这次栽在**最重要的那条守卫**上。
+  const shaCount = (sh.match(/shasum -a 256/g) || []).length;
+  assert.strictEqual(shaCount, 2,
+    `预编译脚本里 sha256 有 ${shaCount} 处（该有 2：单文件 + Voice 的双文件）`
+    + ' ⟹ 名字和运行时算的不一致，而后果是**静默地重新编译**（不报错）');
+  const cutCount = (sh.match(/cut -c1-12/g) || []).length;
+  assert.strictEqual(cutCount, 2,
+    `预编译脚本里"取前 12 位"有 ${cutCount} 处（该有 2）⟹ 同上`);
+  // 运行时那两处也要还是 sha256 + 12 位
+  const sb = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  assert.match(sb, /createHash\("sha256"\)[\s\S]{0,300}?slice\(0, 12\)/,
+    'system-bridge 的 hash 规则变了 ⟹ 预编译脚本要跟着改（否则静默失效）');
+
+  // ③⚠️ Voice 的 hash 算**两个文件**（源码 + Info.plist）——
+  //   `helperBinaryPath(name, ...sources)` 逐个 update。
+  //   脚本里要用同样的顺序拼（`cat a b | shasum`），顺序反了 hash 就不同。
+  assert.match(sh, /cat native\/AirCursorVoice\.swift native\/AirCursorVoiceInfo\.plist/,
+    'Voice 的 hash 没按"源码 + plist"的顺序算 ⟹ 名字对不上，预编译白做');
+
+  // ④⚠️⚠️ **`swiftc` 那条兜底一行都不许动。**
+  //
+  // 上一轮我为了加一句"缺 Xcode 工具链"的提示，把 system-bridge.js 里的
+  // `if (result.status !== 0)` 改成 `|| result.error`，**把手势整个弄坏了**
+  // （用户报"摄像头没法正常使用"，只能整版回退）。
+  // ⟹ 判据：**加新路径可以，改老路径不行** —— 老路径是一直在工作的代码，
+  //   而"为了锦上添花去改承重代码"是这次事故的全部原因。
+  // ⚠️⚠️⚠️ **两处都要数** —— system-bridge.js 里有**两个** swiftc 调用
+  //   （Pointer 和 Voice），而破坏一处另一处还在 ⟹ 只查"有没有"照样绿
+  //   （反向验证第 5 条：报红 0）。
+  //   而这是这一节**最重要**的一条：它守的就是上一轮把手势弄坏的那个改动。
+  //   一条永久绿的守卫在最该拦住事故的地方失效 —— 比没有守卫更糟。
+  const okCount = (sb.match(/if \(result\.status !== 0\) \{/g) || []).length;
+  assert.strictEqual(okCount, 2,
+    `system-bridge 里"编译成功"的判断有 ${okCount} 处（该有 2：Pointer + Voice）`
+    + ' ⟹ 被改过。上一轮就是这么把手势弄坏的：`|| result.error` 让编译成功的'
+    + ' helper 被当成失败抛出去，用户报"摄像头没法正常使用"，只能整版回退');
+  // ⚠️ 反向也守：那两处**不许**带 `|| result.error`
+  assert.ok(!/if \(result\.status !== 0 \|\| result\.error\)/.test(sb),
+    'system-bridge 的 swiftc 判断又加了 `|| result.error` ⟹ 那正是弄坏手势的改动');
+  // 而三处都要有"预编译优先"这条新路径
+  // ⚠️ 同样数次数 —— 两个 helper（Pointer / Voice）各要查一次，
+  //   漏一个就是那个功能在用户机器上还得编译（反向验证第 6 条：报红 0）。
+  const preCount = (sb.match(/findPrebuilt\(path\.basename\(helperBinary\)\)/g) || []).length;
+  assert.strictEqual(preCount, 2,
+    `system-bridge 查预编译的地方有 ${preCount} 处（该有 2：Pointer + Voice）`
+    + ' ⟹ 漏掉的那个在用户机器上仍然要 swiftc');
+  for (const rel of ['src/audio-source.js', 'src/mouse-bridge.js']) {
+    const src = codeOnly(fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'));
+    assert.match(src, /findPrebuilt\(/, `${rel} 没查预编译的 helper`);
+    // ⚠️ 顺序：预编译的判断要在 swiftc **之前**，否则永远走不到
+    const preAt = src.indexOf('findPrebuilt(');
+    const swAt = src.indexOf("'/usr/bin/swiftc'");
+    assert.ok(preAt > 0 && swAt > preAt,
+      `${rel} 里 findPrebuilt 在 swiftc 之后 ⟹ 预编译的永远用不上`);
+  }
+
+  // ⑤⚠️ `extraResources` 要把那个目录打进包，而**目录必须先建出来**——
+  //   electron-builder 对不存在的 `from` 会直接报错 ⟹ 整个打包失败。
+  const pkg = fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8');
+  assert.match(pkg, /"from":\s*"dist\/prebuilt-helpers"/,
+    'package.json 没把预编译目录打进包 ⟹ 编了但用户拿不到');
+  assert.match(sh, /mkdir -p "\$OUT"/,
+    '预编译脚本不建目录 ⟹ 没有 swiftc 的机器上 electron-builder 会因为'
+    + '"from 不存在"整个打包失败');
+  // ⚠️ 没有 swiftc 时要**跳过而不是失败** —— 那台机器仍然能打出可用的包
+  assert.match(sh, /command -v swiftc[\s\S]{0,400}?exit 0/,
+    '没有 swiftc 时预编译脚本不是优雅跳过 ⟹ 打包会失败');
+
+  // ⑥ 构建脚本要调它，而且在 electron-builder **之前**
+  const build = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'build-mac.sh'), 'utf8');
+  // ⚠️⚠️ 锚**真正的调用行**而不是那个词 —— `electron-builder` 在这个脚本的
+  //   注释里出现四次（第 6 行「为什么不直接 electron-builder」就是第一处）
+  //   ⟹ `indexOf('electron-builder')` 命中注释、算出"它在预编译之前"
+  //   ⟹ **在正确代码上报红**（第 14 次同形状，这次撞的是 shell 注释）。
+  //   ⟹ 用 `npx electron-builder` 这个完整的调用形状。
+  const pbAt = build.indexOf('bash wallpaper/scripts/prebuild-helpers.sh');
+  const ebAt = build.indexOf('npx electron-builder');
+  assert.ok(pbAt > 0, 'build-mac.sh 没调预编译脚本');
+  assert.ok(ebAt > pbAt,
+    '预编译在 electron-builder 之后跑 ⟹ 打包时那个目录还是空的');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

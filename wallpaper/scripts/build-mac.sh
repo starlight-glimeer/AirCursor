@@ -49,6 +49,13 @@ restore() {
 }
 trap restore EXIT
 
+# ⚠️⚠️ **预编译 Swift helper**（0.9.75）——
+# 四个 helper 原来是在**用户机器上**现场编译的（要 Xcode 命令行工具，约 1.5 GB）
+# ⟹ 普通用户拿到 dmg 会发现音频/鼠标转发/语音全不可用。
+# ⟹ 在这里编好，打进 .app 的 Resources/prebuilt-helpers/。
+# ⚠️ 这台机器没 swiftc 的话它会跳过并说清后果 —— 不会让打包失败。
+bash wallpaper/scripts/prebuild-helpers.sh
+
 npx electron-builder --mac dmg
 
 echo ""

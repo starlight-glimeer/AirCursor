@@ -8,6 +8,8 @@
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+// ⚠️ 打包时预编译的 helper —— 见 prebuilt-helper.js 顶部那段。
+const { findPrebuilt } = require('./prebuilt-helper.js');
 
 // 网易云音乐的 bundle id。用户明确说音源就是网易云。
 //
@@ -130,6 +132,13 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
     .update(source).digest('hex').slice(0, 12);
   const binary = path.join(outDir, `GestureWallAudio-${hash}`);
   if (fs.existsSync(binary)) return { ok: true, binary, cached: true };
+
+  // ⚠️⚠️ **先看打包时预编译好的在不在**（0.9.75）——
+  // 在就直接用，用户机器上不需要 Xcode 命令行工具。
+  // ⚠️ 不在就**原样往下走 swiftc**（下面那段一行没改）——
+  //   那是一直在工作的代码，而这次改动的全部风险都在"我动了它"。
+  const pre = findPrebuilt(`GestureWallAudio-${hash}`);
+  if (pre) return { ok: true, binary: pre, cached: true, prebuilt: true };
 
   fs.mkdirSync(outDir, { recursive: true });
   const result = run('/usr/bin/swiftc', [

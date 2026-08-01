@@ -26,6 +26,7 @@
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { findPrebuilt } = require('./prebuilt-helper.js');
 const crypto = require('node:crypto');
 
 // helper 一行一个 JSON。逐行解析而不是攒 buffer：它永不结束，
@@ -107,6 +108,10 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
     .update(fs.readFileSync(sourcePath)).digest('hex').slice(0, 12);
   const binary = path.join(outDir, `GestureWallMouse-${hash}`);
   if (fs.existsSync(binary)) return { ok: true, binary, cached: true };
+
+  // ⚠️ 同 audio-source.js：预编译的在就用，不在原样走 swiftc（0.9.75）。
+  const pre = findPrebuilt(`GestureWallMouse-${hash}`);
+  if (pre) return { ok: true, binary: pre, cached: true, prebuilt: true };
 
   fs.mkdirSync(outDir, { recursive: true });
   const result = run('/usr/bin/swiftc', [

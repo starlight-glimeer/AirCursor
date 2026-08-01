@@ -22,6 +22,8 @@ const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+// ⚠️ 打包时预编译的 helper —— 见 prebuilt-helper.js 顶部那段。
+const { findPrebuilt } = require("./prebuilt-helper.js");
 const { app, systemPreferences } = require('electron');
 
 // 源码位置:打包后在 resources/native/,开发时在仓库的 native/。
@@ -84,7 +86,17 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
     // so a file at that path cannot be stale. mtime comparison would rebuild on
     // every `git checkout`, which is what made this churn constantly.
     if (fs.existsSync(helperBinary)) return { helperBinary, compiled: false };
-  
+
+    // ⚠️⚠️ **先看打包时预编译好的在不在**（0.9.75）——
+    // 在就直接用，用户机器上不需要 Xcode 命令行工具。
+    // ⚠️⚠️ 不在就**原样往下走**（下面 swiftc 那段一行没改）。
+    //   那是有意的：上一轮我为了加一句提示把这个文件里的
+    //   `if (result.status !== 0)` 改成 `|| result.error`，
+    //   **把手势整个弄坏了**（用户报"摄像头没法正常使用"，只能整版回退）。
+    //   ⟹ 这次只加不改。
+    const prebuiltPointer = findPrebuilt(path.basename(helperBinary));
+    if (prebuiltPointer) return { helperBinary: prebuiltPointer, compiled: false };
+
     const result = spawnSync("/usr/bin/swiftc", [helperSource, "-o", helperBinary], {
       encoding: "utf8",
     });
@@ -206,6 +218,10 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
     const extraInputs = binaryName === "AirCursorVoice" ? [voiceInfoSource] : [];
     const helperBinary = helperBinaryPath(binaryName, source, ...extraInputs);
     if (fs.existsSync(helperBinary)) return helperBinary;
+
+    // ⚠️ 同上：预编译的在就用，不在原样走 swiftc（0.9.75）。
+    const prebuilt = findPrebuilt(path.basename(helperBinary));
+    if (prebuilt) return prebuilt;
   
     const args = [source, "-o", helperBinary];
     if (binaryName === "AirCursorVoice") {
