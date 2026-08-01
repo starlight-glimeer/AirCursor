@@ -4520,4 +4520,45 @@ check('工坊：排序按钮的选中状态会更新 / 多选取并集 / 没有�
     '筛选标签点了不重渲染 ⟹ 蓝框不跟着变');
 });
 
+// ⚠️⚠️ **package.json 的版本号要跟得上代码里提到的最新版本**。
+//
+// 起因（2026-08-01）：我在 0.9.45~0.9.53 一路写注释和 commit 说"0.9.4x 改了什么"，
+// 而 `package.json` **一直停在 0.9.44** ⟹ 用户每次打包出来的 dmg 都叫
+// `GestureWall-0.9.44-arm64.dmg`，面板上的 build 标识也是 v0.9.44。
+//
+// 后果不是"数字不好看"：**它是用户唯一能确认"我装的是哪一版"的东西**。
+// 这一轮已经因此浪费过一整轮 —— 用户报"没看出变化"，而真相是我 commit 了没 push，
+// 那次靠 commit hash 才分辨出来。版本号本该是第一道。
+//
+// ⚠️ 判据不是"必须等于某个值"（那样每次改版本都要改测试），
+// 而是"**代码里出现的最大版本号 ≤ package.json 的版本号**"。
+check('package.json 的版本号不落后于代码注释里提到的版本', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const cur = String(pkg.version || '');
+  assert.match(cur, /^\d+\.\d+\.\d+$/, `package.json 的版本号不是 x.y.z：${cur}`);
+
+  // 扫源码里所有 `0.9.NN` 形式的版本号（注释里写的"（0.9.49）"那种）
+  const files = ['src/main.js', 'src/dashboard.js', 'src/dashboard.html',
+    'src/workshop.js', 'src/we-host.js'];
+  let maxSeen = null;
+  let maxWhere = '';
+  const toNum = (v) => v.split('.').map(Number)
+    .reduce((acc, n) => acc * 10000 + n, 0);
+  for (const rel of files) {
+    const text = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    for (const m of text.matchAll(/\b(\d+\.\d+\.\d+)\b/g)) {
+      const v = m[1];
+      // ⚠️ 只看 0.9.x —— 源码里还有别的三段数字（比如 macOS 14.2、
+      //   Electron 版本、色值不会但尺寸可能）。写死这个前缀比"猜哪些是版本号"可靠。
+      if (!v.startsWith('0.9.')) continue;
+      if (maxSeen === null || toNum(v) > toNum(maxSeen)) { maxSeen = v; maxWhere = rel; }
+    }
+  }
+  assert.ok(maxSeen, '源码里一个 0.9.x 版本号都没找到 ⟹ 这条断言失效了');
+  assert.ok(toNum(cur) >= toNum(maxSeen),
+    `package.json 是 ${cur}，而 ${maxWhere} 里已经在说 ${maxSeen} ⟹ `
+    + '打包出来的 dmg 和面板 build 标识都会是旧版本号，'
+    + '而那是用户唯一能确认"我装的是哪一版"的东西');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
