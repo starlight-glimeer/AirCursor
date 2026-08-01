@@ -116,13 +116,21 @@ check('128 = 左 64 + 右 64，右半是镜像', () => {
   // ⟹ 9 点方向必然有两根**精确等高的最长柱子**紧挨着、中间没过渡
   // ⟹ 折线壁纸（PWCircle 的 style2/3 用 lineTo 连 120 点）上就是一个尖顶。
   // ⟹ 取平均的话那两根在**数学上不可能不相等** ⟹ 分声道是唯一正解。
-  assert.match(swiftCode, /bins\[BIN_COUNT - 1 - b\] = right\[b\]/,
-    '镜像后半不是右声道 ⟹ 段 63 和段 64 会精确相等（band 63 加权 1.393 最大）'
-    + '⟹ 9 点方向两根等高的最长柱子紧挨着 ⟹ 折线上一个尖顶');
-  assert.match(swiftCode, /bins\[b\] = left\[b\]/, '镜像前半不是左声道');
-  assert.match(swiftCode, /let spectrumL = Spectrum\(\)[\s\S]{0,200}let spectrumR = Spectrum\(\)/,
-    '两路没有各自的 Spectrum 实例 ⟹ 共用一个会让两路互相污染 `smoothed`'
-    + '（左声道刚把某段推到 0.6，右声道的 0.2 立刻拉回来 ⟹ 数值来回跳）');
+  // ⚠️⚠️ 这条断言反过来过一次：先要求 `= value`（两半同一份），改成
+  // `= right[b]`（分左右声道），**现在回到同一份**。理由是 WE 源码：
+  //     addUniform ("g_AudioSpectrum64Left",  recorder.audio64, 64);
+  //     addUniform ("g_AudioSpectrum64Right", recorder.audio64, 64);
+  //                                          ^^^^^^^^^^^^^^^^ **同一个数组**
+  // ⟹ WE 的"左右"就是同一份数据，而且 `spec.channels = 1`（只抓单声道）。
+  //
+  // ⟹ 于是段 63/64（相邻，band 63 加权 1.393 最大）**精确相等** ——
+  //    在折线壁纸上是一个尖顶，而**那个尖顶在真 WE 上也存在**。
+  //    我曾为它做分声道，那让画面离作者调好的效果**更远**。
+  assert.match(swiftCode, /bins\[BIN_COUNT - 1 - b\] = one\[b\]/,
+    '镜像后半不是同一份数据 —— WE 的 64Left 和 64Right 传的是同一个 audio64');
+  assert.match(swiftCode, /bins\[b\] = one\[b\]/, '镜像前半不对');
+  assert.ok(!/spectrumL|spectrumR|pcmStereo/.test(swiftCode),
+    '还有分左右声道的残留 —— WE 的 `spec.channels = 1`，只抓单声道');
   // JS 规格也要镜像，而且要逐段相等
   const mags = new Array(512).fill(0).map((_, i) => 100 / Math.sqrt(i + 1));
   const f = A.frameValues(mags);
@@ -154,7 +162,10 @@ check('② 用功率（re²+im²），不是 magnitude', () => {
   // ⚠️ 断言从 `magnitude * magnitude` 改成 `m * m` —— 因为改成了**主瓣求和**：
   // 单点取值时是 `power = magnitude²`，现在是三个 bin 的功率相加。
   // （功率可加，magnitude 不可加 —— 那是能量守恒，不是风格选择。）
-  assert.match(swiftCode, /power \+= m \* m/,
+  // ⚠️ 这条锚点改过两次：`magnitude * magnitude` → `power += m * m`（主瓣求和）
+  // → 现在回到 `power = m * m`（单点）。**每次都是前提变了，不是摇摆。**
+  // 最后这次的依据是 WE 源码逐字：`f2 = f1 * f1 + f2 * f2`，单点取值。
+  assert.match(swiftCode, /let power = m \* m/,
     '没有把 magnitude 平方回功率 —— WE 用的是 `f2 = f1*f1 + f2*f2`');
   assert.ok(!/sqrtf\(/.test(swiftCode),
     '还在开根 —— 那和 WE 相反（它用功率，因为后面要 log10）');
@@ -588,7 +599,7 @@ check('VDSP_SCALE = 0.5，且注释里带真机实测出处', () => {
   // ⚠️ **必须真的乘在 magnitude 上** —— 定义了不用等于没有
   //（我这一轮已经栽过"定义了不调用"：selfTestFFT）。
   // ⚠️ 锚点跟着改成主瓣求和里的那一行
-  assert.match(swiftCode, /magnitudes\[k\] \* VDSP_SCALE/,
+  assert.match(swiftCode, /magnitudes\[index\] \* VDSP_SCALE/,
     'VDSP_SCALE 定义了但没乘在 magnitude 上 —— 定义了不用等于没有');
   // ⚠️ 出处必须写在代码里。这个数是"库约定差"还是"我调的系数"，
   // 唯一的区别就是**有没有那个实测依据** ⟹ 依据丢了它就退化成魔数。
@@ -748,6 +759,10 @@ check('MODULES.md 的音频契约和代码一致', () => {
     ['不做时间平滑', 'WE 原版就是 movetowards(cur, target, 0.3f) —— 文档说反了'],
     ['绕了 15 圈', 'main.js:1141 的映射表把 PolygonAngle 12 → 180，那条论证已证伪'],
     ['诊断工具造成的残影', '螺旋的真因是 stride + 把 128 当连续频段，不是残影'],
+    // ⚠️ 2026-08-01 下午拿到完整源码后新增的两条 —— 它们推翻了我当天做的两个修复
+    ['分声道是唯一正解', 'WE 的 spec.channels = 1（单声道），64Left/64Right 传同一个 audio64'],
+    ['本来就是降级的', '「这个壁纸不用管」和「为这个壁纸特调」是同一个错的两面 —— '
+      + '作者在真 WE 上看着效果满意才发布的'],
   ];
   // ⚠️ 但**引述**一条已推翻的结论是正当的（"我曾经写的是 X，那是错的，因为…"）——
   // 那正是这份文档最有价值的部分。⟹ 守卫要能区分"当前结论"和"引述"。
@@ -771,6 +786,9 @@ check('MODULES.md 的音频契约和代码一致', () => {
     [/VDSP_SCALE[^\n]*0\.5/, /let VDSP_SCALE: Float = 0\.5/, 'VDSP_SCALE'],
     [/系数 0\.3|0\.3f/, /let SMOOTH: Float = 0\.3/, 'SMOOTH'],
     [/左 ?64 ?\+ ?右 ?64/, /let bands = BIN_COUNT \/ 2/, '64+64 镜像'],
+    // 采样率：文档说 44100 就必须真的是 44100（两处都要）
+    [/44100/, /let SAMPLE_RATE = 44100/, '采样率 44100'],
+    [/单声道|channels = 1/, /config\.channelCount = 1/, '单声道'],
   ];
   for (const [inDoc, inCode, name] of claims) {
     if (inDoc.test(md)) {
@@ -888,16 +906,15 @@ check('孤峰按多帧稳定性统计（分辨结构性 vs 音乐瞬态）', () 
     'sticky 的判据没挂在帧数上 ⟹ 一两帧就下结论');
   const dash = dashCode();
   assert.match(dash, /\bspikeProfile\b/, '面板没显示 ⟹ 用户看不到 = 等于没测');
-  // ⚠️ 左右声道差的判据必须是**相对量**，不能是我拍的绝对阈值。
-  // 用户 0.9.18 实测差 0.001，而我原来写死 `> 0.005` ⟹ 正好卡在边上
-  // ⟹ 同一行文案一会说立体声一会说单声道。
-  // ⟹ 教训：**阈值要么有出处，要么做成比例**。拍一个数出来，
-  //    症状是"提示自相矛盾"，而用户会以为是数据在抖。
-  assert.ok(!/channelDiff\s*>\s*0\.\d+/.test(dash),
-    '左右声道差还在用写死的绝对阈值 ⟹ 音量变化时判断会翻来翻去。'
-    + '要和平均幅度比（相对量）');
-  assert.match(dash, /channelDiff \/ frame\.mean/,
-    '没把左右差除以平均幅度 ⟹ 绝对值在小音量下必然很小，判据失效');
+  // ⚠️ 左右声道差那一行已经删了（分声道整个撤了，WE 是单声道）。
+  // ⟹ 守卫从"判据要是相对量"改成"不许留死代码"。
+  //
+  // ⚠️ 但那次的**教训要留**：我原来写死 `channelDiff > 0.005`，
+  // 而用户实测差 0.001 ⟹ 正好卡在阈值边上 ⟹ 同一行文案一会说立体声
+  // 一会说单声道。**阈值要么有出处，要么做成比例** ——
+  // 拍一个数出来，症状是"提示自相矛盾"，而用户会以为是数据在抖。
+  assert.ok(!/channelDiff/.test(dash),
+    '面板还在显示左右声道差 —— 分声道已经撤了（WE 单声道），那是死代码');
   // 两个方向的结论都要在面板上
   assert.match(dash, /音乐本身的瞬态/,
     '面板只说了"结构性问题"没说"是音乐瞬态、不该改" ⟹ '
@@ -908,135 +925,109 @@ check('孤峰按多帧稳定性统计（分辨结构性 vs 音乐瞬态）', () 
     + '而合成信号已经骗过我一次（45/64 踩地板 vs 用户实测一个 0 都没有）');
 });
 
-// ⚠️⚠️⚠️ **镜像轴上的等高双柱 —— 用户报的「孤峰」的一个确证来源。**
+// ⚠️⚠️⚠️ **镜像轴上的等高双柱：那不是 bug，真 WE 也有。别再"修"它。**
 //
-// 用户 0.9.17 实测：「孤峰固定在 第59段(37/60帧)」+「镜像逐段差 0.0000」
-// ⟹ 那不是音乐的瞬态，是**结构性**的。
+// 用户 0.9.17 实测「孤峰固定在第59段(37/60帧)」+「镜像逐段差 0.0000」
+// ⟹ 我判定为结构性问题，做了**分左右声道两次 FFT**去修它。
 //
-// 机制（算术，不是推断）：
-//   我的镜像映射是 `out[band]` 和 `out[127-band]`
-//   ⟹ band 63 写到段 **63 和 64** —— **它们相邻**（不像 band 0 分居两端）
-//   ⟹ band 63 的加权 = 2−e^((1−63/63)−0.5) = **1.393，全场最大**
-//   ⟹ 9 点方向必然有两根**最长且精确等高**的柱子紧挨着、中间没有过渡
-//   ⟹ 折线壁纸（PWCircle 的 style2/style3 用 `lineTo` 连 120 点）上就是一个尖顶
+// ⚠️ **然后 WE 源码证伪了那个修复**（`/tmp/lwe`，即 linux-wallpaperengine）：
+//     PulseAudioPlaybackRecorder.cpp:106-108
+//       spec.format   = PA_SAMPLE_U8;
+//       spec.rate     = 44100;
+//       spec.channels = **1**;          ← **单声道**
+//     CPass.cpp:889-890
+//       addUniform ("g_AudioSpectrum64Left",  recorder.audio64, 64);
+//       addUniform ("g_AudioSpectrum64Right", recorder.audio64, 64);
+//                                            ^^^^^^^^^^^^^^^^ **同一个数组**
 //
-// ⚠️ 而"精确等高"是取平均的**数学必然** —— 两半是同一份数据，不可能不相等。
-// ⟹ 分声道是唯一正解，而它有出处：WE 的 uniform 就是 `64Left`/`64Right`。
+// ⟹ WE 只抓单声道，"左右"是同一份数据
+// ⟹ 段 63 和段 64（相邻，band 63 加权 1.393 最大）**在真 WE 上也精确相等**
+// ⟹ 那个尖顶是 WE 的固有行为，而壁纸作者是**在它存在的情况下**调好效果的
+// ⟹ **"修掉"它意味着画面和作者调好的效果不一样。**
 //
-// ⚠️⚠️ 我原来在代码里写「分声道是锦上添花、暂时不做，等用户报'左右一模一样
-// 太死板'再说」—— **那个判断错了**：它的症状不是"死板"，是**镜像轴上一个尖顶**。
-// ⟹ 教训：把一件事记成"已知简化"时，我预测的症状可能和真实症状完全不同
-//    ⟹ 那条"等症状出现再做"的推迟理由就失效了（我不会认出那个症状）。
-check('分声道让镜像轴上的双柱不再等高', () => {
+// ⚠️ 用户的第一性原理（他为这条纠正了我三次，最后一次很直接）：
+//   「WE 是闭源的，作者必然不知道软件内部。这些壁纸那么多人创作，
+//     他们怎么调出效果这么好的？这个版本是他们调出效果 OK 的，
+//     那我们根据这个反推出来一个**不用动的渲染器**才是根本。」
+//
+// ⟹ 判据：这一行能不能从 WE 的行为推出来？分声道 —— **不能** ⟹ 已撤。
+check('不分左右声道（WE 的 spec.channels = 1）', () => {
+  assert.ok(!/pcmStereo|spectrumL|spectrumR|pendingL|pendingR/.test(swiftCode),
+    '又在分左右声道 —— WE 源码 `spec.channels = 1`（单声道），'
+    + '而 shader 的 64Left/64Right 传的是同一个 audio64。'
+    + '⟹ 镜像轴上的等高双柱在真 WE 上也存在，"修"它会让画面偏离作者调好的效果');
+  assert.match(swiftCode, /private func pcm\(from/,
+    '取平均的单声道 pcm() 不在了');
+  // JS 规格里 mirror() 保留，但两半必须能是同一份
   const mags = new Array(512).fill(0).map((_, i) => 100 / Math.sqrt(i + 1));
-  // 取平均（旧行为）：段 63 和 64 精确相等
-  const same = A.frameValues(mags);
-  assert.strictEqual(same[63], same[64],
-    'frameValues 单路输入时段 63/64 应该相等（那正是要复现的旧行为）');
-  // 分声道：两路略有差异 ⟹ 段 63/64 不再相等
-  const left = A.channelValues(mags);
-  const right = A.channelValues(mags.map((m, i) => m * (1 + 0.15 * Math.sin(i))));
-  const st = A.mirror(left, right);
-  assert.strictEqual(st.length, 128, `mirror 输出 ${st.length} 段，壁纸要 128`);
-  assert.ok(Math.abs(st[63] - st[64]) > 0.01,
-    `分声道后段 63(${st[63].toFixed(3)}) 和段 64(${st[64].toFixed(3)}) 仍然几乎相等 `
-    + `(差 ${Math.abs(st[63] - st[64]).toFixed(4)}) ⟹ 镜像轴的双柱尖顶没修掉`);
-  // 而两端（band 0）本来就分居圆环两侧，不构成相邻双柱
-  assert.strictEqual(st[0], left[0], '段 0 应该是左声道 band 0');
-  assert.strictEqual(st[127], right[0], '段 127 应该是右声道 band 0');
-  // Swift 侧必须真的用两路
-  assert.match(swiftCode, /pcmStereo/,
-    'Swift 还在用取平均的 pcm() ⟹ 两路是同一份数据 ⟹ 双柱必然等高');
-  assert.ok(!/private func pcm\(from/.test(swiftCode),
-    '旧的取平均 pcm() 还在 ⟹ 死代码，而它会让下一个人以为还能用');
-  assert.match(swiftCode, /channelDiff/,
-    '没报左右声道差 ⟹ 分不出"分声道生效了"和"音源本来就是单声道"，'
-    + '而后者下双柱仍然存在且**不是 bug**（WE 也一样）');
+  const one = A.channelValues(mags);
+  const m = A.mirror(one, one);
+  assert.strictEqual(m.length, 128, `mirror 输出 ${m.length} 段，壁纸要 128`);
+  assert.strictEqual(m[63], m[64],
+    '两半传同一份数据时段 63/64 应该相等 —— 那是 WE 的行为（不是缺陷）');
+  assert.strictEqual(m[0], one[0], '段 0 应该是 band 0');
+  assert.strictEqual(m[127], one[0], '段 127 也应该是 band 0（镜像两端）');
 });
 
-// ⚠️⚠️⚠️ **主瓣求和：细高刺的根因是 stride 2 丢掉一半的 bin。**
+// ⚠️⚠️⚠️ **单点取值，不做主瓣求和。WE 就是单点。**
 //
-// 用户 0.9.19 在**两个完全不同的壁纸**上都看到细高刺
-//（圆环壁纸 2-4 点那块「一直很坚挺」、粒子壁纸满屏孤立高柱）
-// ⟹ 那是输入数据的性质，不是某个壁纸的渲染。
+// 我曾在这里加"三个 bin 求功率和"，理由是**两个都成立的观察**：
+//   ① stride 2 丢一半 bin —— 实测 200Hz 谐波列里最强的 bin4=144.6 完全丢了
+//      ⟹ 段值 `0.48 / 0.09 / 0.49 / 0.06` 奇偶交替
+//   ② 单点采样本身抖 —— 同一正弦落在 bin 正中 vs bin 中间时，
+//      邻居 bin 的值在 **0% 和 98%** 之间跳，只取决于"频率落在哪"
+// 而云端实测它把孤峰从 13.8 降到 5.8 个。**观察和效果都是真的。**
 //
-// 实测坐实（云端手写 DFT，不需要真机）：
-//   200Hz 谐波列：bin3=37.9 / **bin4=144.6（最强）** / bin5=42.8
-//   stride 2 只读奇数 bin ⟹ **bin4 那个峰完全丢了**
-//   ⟹ 段值 `0.48 / 0.09 / 0.49 / 0.06 / 0.46` —— **奇偶交替**
+// ⚠️ **但 WE 没有这一步。** 源码逐字（PulseAudioPlaybackRecorder.cpp）：
+//     int index = band * 2;
+//     float f1 = this->m_FFTinfo[index].r;
+//     float f2 = this->m_FFTinfo[index].i;
+//     f2 = f1 * f1 + f2 * f2;
+// **单点取值，一个 bin。**
 //
-// ⚠️ 更基本的问题：**单点采样本身就抖**（不依赖 stride）。
-// 实测矩形窗，同一正弦落在不同位置时邻居 bin 的相对值：
-//     频率在 bin 20.00 ⟹ [19]0%   [20]100% [21]0%
-//     频率在 bin 20.50 ⟹ [19]34%  [20]100% [21]98%
-// ⟹ 邻居在 0% 和 98% 之间跳，只取决于频率落在哪 ⟹ 柱子高度无故抖动
+// ⟹ 那两个观察正说明**真 WE 的柱子也那样抖**，而壁纸作者是在那个抖动上
+//    调效果的。我"修好"它，画面离作者看到的更远，不是更近。
+// ⟹ 和 Hann 窗那次是**同一个错**：教科书上对的事，在别的场景完全正确，
+//    但不是 WE 的行为。这一轮我犯了两次（Hann 窗、主瓣求和）。
+check('单点取值，不做主瓣求和（WE 是单点）', () => {
+  // 禁止在 bin 区间上循环求和
+  assert.ok(!/for k in lo\.\.\.hi|power \+= m \* m/.test(swiftCode),
+    '又在做主瓣求和 —— WE 源码是 `f2 = m_FFTinfo[index].r² + .i²`，单点取值。'
+    + '"单点会抖"这个观察本身对，但那说明真 WE 也抖，而作者是在那个抖动上调效果的');
+  assert.match(swiftCode, /let m = magnitudes\[index\] \* VDSP_SCALE/,
+    '不是单点取值');
+  assert.strictEqual(typeof A.bandValueFromLobe, 'undefined',
+    'JS 规格里还有 bandValueFromLobe —— 主瓣求和已撤，那是死代码');
+});
+
+// ⚠️⚠️ **采样率 44100 和单声道，都是对齐 WE 源码。**
 //
-// ⟹ 三个 bin = **矩形窗主瓣的物理宽度**，能从"WE 不加窗"推出来。
-//   判据（这一行能不能从 WE 的行为推出来）—— **能**。
+// `spec.rate = 44100` / `spec.channels = 1`（PulseAudioPlaybackRecorder.cpp:106-108）
 //
-// ⚠️⚠️ 而"三个"不是随手挑的，反向实测过：
-//   单点 13.8 → 2bin 取 max 13.5 → 2bin 求和 13.3 → **3bin 求和 5.8**
-//   ⟹ 差一个 bin 就几乎没用（必须覆盖整个主瓣）
-//   ⟹ 而 4 个会开始把相邻段的能量混进来（那才是真的抹平频谱结构）
-check('在主瓣宽度上求功率和，不是单点取值', () => {
-  assert.match(swiftCode, /power \+= m \* m/,
-    'Swift 不是在求功率和 —— 单点取值时同一个音的柱子高度会因"频率落在哪"'
-    + '而在 0% 和 98% 之间抖（实测），而 stride 2 还会整个丢掉落在偶数 bin 的谐波');
-  assert.match(swiftCode, /for k in lo\.\.\.hi/,
-    'Swift 没有在 bin 区间上循环');
-  assert.match(swiftCode, /index - 1/, '求和区间不含 index-1 ⟹ 没覆盖主瓣左半');
-  assert.match(swiftCode, /index \+ 1/, '求和区间不含 index+1 ⟹ 没覆盖主瓣右半');
-  // JS 规格必须一致，而且要**数值上**验证有效
-  assert.strictEqual(typeof A.bandValueFromLobe, 'function',
-    'JS 规格没有主瓣求和 ⟹ 云端唯一能跑的验证失效了');
-  // 用手写 DFT 造谐波列，量孤峰数 —— 这是这条修复的效果判据
-  const N = 1024;
-  const RATE = 48000;
-  const dft = (x, mb) => {
-    const m = new Array(mb).fill(0);
-    for (let k = 0; k < mb; k += 1) {
-      let re = 0;
-      let im = 0;
-      for (let n = 0; n < N; n += 1) {
-        const a = (-2 * Math.PI * k * n) / N;
-        re += x[n] * Math.cos(a);
-        im += x[n] * Math.sin(a);
-      }
-      m[k] = Math.hypot(re, im);
-    }
-    return m;
-  };
-  const harm = (f0) => {
-    const x = new Array(N).fill(0);
-    for (let n = 0; n < N; n += 1) {
-      let v = 0;
-      for (let h = 1; h <= 20; h += 1) v += Math.sin((2 * Math.PI * f0 * h * n) / RATE) / h;
-      x[n] = v * 0.3;
-    }
-    return x;
-  };
-  const countSpikes = (a) => {
-    let n = 0;
-    for (let i = 1; i < a.length - 1; i += 1) {
-      if (a[i] > a[i - 1] * 1.3 && a[i] > a[i + 1] * 1.3 && a[i] > 0.15) n += 1;
-    }
-    return n;
-  };
-  let lobe = 0;
-  let single = 0;
-  for (const f0 of [150, 200, 262, 330]) {
-    const mags = dft(harm(f0), 140);
-    lobe += countSpikes(A.channelValues(mags));
-    const one = [];
-    for (let b = 0; b < 64; b += 1) {
-      one.push(A.bandValue((mags[Math.min(139, b * 2 + 1)] || 0) * A.VDSP_SCALE, b));
-    }
-    single += countSpikes(one);
-  }
-  // 主瓣求和必须明显少于单点 —— 否则这个改动白做
-  assert.ok(lobe < single * 0.7,
-    `主瓣求和孤峰 ${(lobe / 4).toFixed(1)} 个，单点 ${(single / 4).toFixed(1)} 个 —— `
-    + '没有明显改善 ⟹ 求和区间可能没覆盖主瓣（实测应该从 13.8 降到 5.8）');
+// 采样率决定每个 bin 对应多少 Hz：
+//     44100/1024 = 43.07 Hz/bin  （WE）
+//     48000/1024 = 46.88 Hz/bin  （我们之前）
+// ⟹ 我们每一段对应的频率比 WE **高 8.8%**
+// ⟹ 壁纸作者是对着 WE 的频率映射调效果的（哪一段对应人声、哪一段对应鼓）
+//    ⟹ 偏 8.8% 意味着他调好的"这一圈对应什么"整体挪了位置。
+//
+// ⚠️ 直接让 SCStream 给 44100，不自己重采样 —— 重采样要插值，
+//    那会引入 WE 没有的滤波（同一个形状的错第三次）。
+check('采样率 44100、单声道，和 SCStream 配置一致', () => {
+  assert.match(swiftSrc, /let SAMPLE_RATE = 44100/,
+    'SAMPLE_RATE 不是 44100 —— WE 源码 `spec.rate = 44100`');
+  assert.match(swiftCode, /config\.sampleRate = 44100/,
+    'SCStream 没配 44100 ⟹ 实际拿到 48000，而常量说 44100 '
+    + '⟹ **自检报的频率是假的**（我曾因此把 1kHz 的期望段算错）');
+  assert.match(swiftCode, /config\.channelCount = 1/,
+    'SCStream 还在要 2 声道 —— WE 的 `spec.channels = 1`');
+  // 常量和配置必须一致，否则频率标注全错
+  const m1 = swiftSrc.match(/let SAMPLE_RATE = (\d+)/);
+  const m2 = swiftCode.match(/config\.sampleRate = (\d+)/);
+  assert.ok(m1 && m2, '找不到采样率的两处定义');
+  assert.strictEqual(m1[1], m2[1],
+    `SAMPLE_RATE=${m1[1]} 而 config.sampleRate=${m2[1]} —— 不一致 ⟹ `
+    + '自检和面板报的频率会是假的');
 });
 
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');

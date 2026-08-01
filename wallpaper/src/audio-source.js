@@ -168,10 +168,6 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
           // 而 PWCircle 只在收帧时重绘 ⟹ 前面那些帧被覆盖 = 等效跳帧。
           nth: typeof msg.nth === 'number' ? msg.nth : undefined,
           batch: typeof msg.batch === 'number' ? msg.batch : undefined,
-          // 左右声道的平均绝对差 —— 判分声道有没有真的起作用。
-          // 恒为 0 ⟹ 音源是单声道 ⟹ 镜像轴上的双柱仍然存在，
-          // 而**那不是 bug**（WE 在单声道下也是左右相同）。
-          lr: typeof msg.lr === 'number' ? msg.lr : undefined,
         });
       } else if (msg.type === 'selftest') {
         // ⚠️ FFT 自检结果 —— 现在的判据是**峰值位置 + 泄漏衰减 + 镜像**。

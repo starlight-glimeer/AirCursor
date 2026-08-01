@@ -40,7 +40,10 @@ let FFT_SIZE = 1024
 // ⚠️ 教训：回退一个改动时，要检查**有没有别的地方依赖它引入的东西**。
 // 我回退的是"分箱模型"，而它顺带引入的常量被后来的代码用上了。
 // 而 `node --check` 查不出 Swift 的问题 —— 那一层在云端只能靠人看。
-let SAMPLE_RATE = 48000
+// ⚠️ **44100 对齐 WE**（`spec.rate = 44100`），而且 `config.sampleRate` 也设成它
+// ⟹ 这个常量必须和 SCStreamConfiguration 里那个一致，
+//    否则自检报的频率是假的（我曾因此把 1kHz 期望段算错）。
+let SAMPLE_RATE = 44100
 
 // ⚠️ 这里原来有一大段注释，讲我从 PWCircle.js 反推出的三个"契约"
 //（只用 arr[0..119] / 它自己有平滑 / 上限 1.2 / 柱子长度 = w1*range*100）。
@@ -91,18 +94,6 @@ let SMOOTH: Float = 0.3
 // ⟹ 这不是"我调的系数"：它的身份是**两个 FFT 库的约定差**，
 //    大小由实测确定，而判据（能不能从 WE 的行为推出来）通过。
 let VDSP_SCALE: Float = 0.5
-
-// 左右声道的平均绝对差 —— 判"分声道有没有真的起作用"。
-//
-// 恒为 0 ⟹ 音源是单声道（或 SCStream 两路给了同一份）
-// ⟹ 那时镜像轴（段 63/64）上的双柱仍然存在，而那**不是 bug**：
-//    WE 在单声道音源下也是左右相同。
-func channelDiff(_ a: [Float], _ b: [Float]) -> Float {
-    guard !a.isEmpty, a.count == b.count else { return 0 }
-    var sum: Float = 0
-    for i in 0..<a.count { sum += abs(a[i] - b[i]) }
-    return sum / Float(a.count)
-}
 
 func emit(_ dict: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: dict),
@@ -422,70 +413,41 @@ final class Spectrum {
             // 仍会落进 bin 0/1，那些不该驱动画面。
             let index = min(half - 1, band * 2 + 1)
 
-            // ② **功率**。⚠️ 但**在主瓣宽度上求和，不是单点取值。**
+            // ② **功率**，不开根。magnitudes 存的是 |X|（vDSP_zvabs 的输出），
+            // 平方回去拿功率 —— WE 那边是 `f2 = f1*f1 + f2*f2`。
             //
-            // 用户 0.9.19 在**两个完全不同的壁纸**上都看到细高刺
-            //（圆环壁纸 2-4 点那块「一直很坚挺」、粒子壁纸满屏孤立高柱）
-            // ⟹ 那是输入数据的性质，不是某个壁纸的渲染。
+            // ⚠️⚠️⚠️ **这里曾经是"在主瓣宽度上求三个 bin 的功率和"，撤了。**
             //
-            // ⚠️⚠️ 根因是 **stride 2 丢掉一半的 bin**，实测坐实：
-            //   200Hz 基频的谐波列，bin 3=37.9 / **bin 4=144.6（最强）** / bin 5=42.8
-            //   而 stride 2 只读奇数 bin ⟹ **bin 4 那个峰完全丢了**
-            //   ⟹ 段值序列变成 `0.48 / 0.09 / 0.49 / 0.06 / 0.46` —— **奇偶交替**
-            //   ⟹ 那在折线壁纸上是一排细高刺，在粒子壁纸上是孤立高柱
+            // 我加它的理由：单点采样会抖（实测同一正弦落在 bin 正中 vs bin 中间时，
+            // 邻居 bin 的值在 0% 和 98% 之间跳）⟹ 柱子高度无故抖动。
+            // 而云端实测它确实把孤峰从 13.8 降到 5.8 个。
             //
-            // ⚠️ 而更基本的问题是**单点采样本身就抖**（这条不依赖 stride）：
-            //   实测矩形窗，同一个正弦频率落在不同位置时邻居 bin 的相对值：
-            //     频率在 bin 20.00 ⟹ [19]0%   [20]100% [21]0%
-            //     频率在 bin 20.50 ⟹ [19]34%  [20]100% [21]98%
-            //   ⟹ 邻居在 0% 和 98% 之间跳，**只取决于频率落在哪**
-            //   ⟹ 同一个音，画面上的柱子高度会因为"落格"与否而抖
+            // ⚠️ **但 WE 没有这一步。** 源码（`/tmp/lwe`，即
+            // `linux-wallpaperengine/src/WallpaperEngine/Audio/Drivers/Recorders/
+            //  PulseAudioPlaybackRecorder.cpp`）逐字是：
             //
-            // ⟹ **在主瓣宽度上求功率和**：`[index-1, index, index+1]`。
-            //   三个 bin 是矩形窗主瓣的实际宽度（实测 off=0 时
-            //   [19][20][21] 就覆盖了全部能量）⟹ 不管频率落哪都拿到同样的总能量。
+            //     int index = band * 2;
+            //     float f1 = this->m_FFTinfo[index].r;
+            //     float f2 = this->m_FFTinfo[index].i;
+            //     f2 = f1 * f1 + f2 * f2;
             //
-            // ⚠️⚠️ **这不是"我调的窗口大小"** —— 它是矩形窗主瓣的物理宽度，
-            //   能从"WE 不加窗"这个事实推出来（矩形窗的主瓣就是 2 个 bin 宽，
-            //   加上两侧各半个 bin 的过渡 = 3 个采样点）。
-            //   判据（能不能从 WE 的行为推出来）—— **能**。
+            // **单点取值，一个 bin。**
             //
-            // 效果（云端实测，4 个基频取平均，覆盖频率不变）：
-            //   单点采样   孤峰 13.8 个
-            //   3 bin 求和 孤峰 **5.8 个**（降 58%）
+            // ⟹ 用户 2026-08-01 的第一性原理（他为这条纠正了我三次）：
+            //   「WE 是闭源的，壁纸作者看不到渲染器内部。他们只能在真 WE 上
+            //     看效果来调，而那些壁纸在真 WE 上效果 OK —— 那是已验证的事实。
+            //     ⟹ 我们要做的是反推出一个不用动的渲染器，
+            //        不是针对某个壁纸做适配。」
             //
-            // ⚠️ 我也试过"2 个 bin 取 max"（13.5）和"2 个 bin 求和"（13.3）——
-            //   几乎没用。**必须覆盖整个主瓣**，差一个 bin 就不行。
-            //   ⟹ 那反过来验证了"3 个"不是随手挑的：2 个不够，而 4 个会开始
-            //      把相邻段的能量混进来（那才是真的抹平频谱结构）。
+            // ⟹ 判据：**这一行能不能从 WE 的行为推出来？** 主瓣求和 —— **不能**。
+            //   它是"我知道的正确做法"，和 Hann 窗那次犯的错**一模一样**：
+            //   教科书上对的事，在别的场景下完全正确，但不是 WE 的行为。
             //
-            // ⚠️⚠️⚠️ **VDSP_SCALE：对齐 kiss_fftr 的库约定差，不是调参。**
-            //
-            // `vDSP_fft_zrip` 的实数 FFT 省掉了一次除 2 ⟹ 输出是标准 FFT 的
-            // **2 倍**。而 WE 用 `kiss_fftr`，那个给标准值。
-            // 两边输入都是 ±1（WE 的 `(buf-128)/128` vs 我们的 Float32）、
-            // N 都是 1024 ⟹ 同一信号该给同一 magnitude，差的就是这个因子。
-            //
-            // ⚠️ **这个 2 是用户真机自检量出来的，不是我记的：**
-            //   理论峰值（手写 DFT，1kHz @48kHz/1024 矩形窗）= 424.7
-            //   用户 0.9.13 实测峰值 = **849.4**（第 21 个 bin，位置也对）
-            //   ⟹ 比值 **2.00**
-            //
-            // ⟹ 判据（这一行能不能从 WE 的行为推出来？）——**能**：
-            //    它来自"WE 用 kiss_fftr、我们用 vDSP"这个差异，
-            //    而那个差异的大小是量出来的。
-            //
-            // ⚠️ 我一开始"知道"这件事但没验，而那是承重前提（错了整个方向作废）
-            // ⟹ 我没有提前改代码，而是加了自检 + 守卫禁止自己提前加。
-            // 这次是这一轮里**第一个先量后改**的常量。
-            // 主瓣求和：功率相加（能量可加，magnitude 不可加）
-            var power: Float = 0
-            let lo = max(0, index - 1)
-            let hi = min(half - 1, index + 1)
-            for k in lo...hi {
-                let m = magnitudes[k] * VDSP_SCALE
-                power += m * m
-            }
+            // ⚠️ 而"单点采样会抖"这个观察**本身是对的** —— 那正说明
+            //   真 WE 的柱子也会那样抖，而壁纸作者是**在那个抖动上**调效果的。
+            //   我把它"修好"，反而离作者看到的画面更远。
+            let m = magnitudes[index] * VDSP_SCALE
+            let power = m * m
 
             // ③ **0.35 × log10(功率)**。
             // ⚠️ power ≤ 0 时 log10 是 -inf ⟹ 必须挡（WE 也判了 f2 > 0）。
@@ -757,15 +719,10 @@ func selfTestFFT(_ spectrum: Spectrum) {
 
 final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
-    // **两个 Spectrum 实例，一路一个。**
-    //
-    // 它们各有自己的 `smoothed` 状态 —— 共用一个的话两路会互相污染平滑
-    //（左声道刚把某段推到 0.6，右声道的 0.2 立刻把它拉回来 ⟹ 值来回跳）。
-    // ⚠️ 这类"共享可变状态"的 bug 症状是"数值抖动"，看起来像音频问题。
-    private let spectrumL = Spectrum()
-    private let spectrumR = Spectrum()
-    private var pendingL = [Float]()
-    private var pendingR = [Float]()
+    // 一个 Spectrum —— WE 是单声道（`spec.channels = 1`）。
+    // ⚠️ 这里曾经是两个（分左右声道），撤了，理由见 pcm() 上面那段。
+    private let spectrum = Spectrum()
+    private var pending = [Float]()
     private let targetBundle: String?
 
     init(targetBundle: String?) {
@@ -809,8 +766,24 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
 
             let config = SCStreamConfiguration()
             config.capturesAudio = true
-            config.sampleRate = 48000
-            config.channelCount = 2
+            // ⚠️⚠️ **44100 和 1 声道都是对齐 WE，不是我挑的。**
+            //
+            // 源码（`/tmp/lwe/…/PulseAudioPlaybackRecorder.cpp:106-108`）：
+            //     spec.format   = PA_SAMPLE_U8;
+            //     spec.rate     = **44100**;
+            //     spec.channels = **1**;
+            //
+            // 采样率决定每个 FFT bin 对应多少 Hz：
+            //     44100/1024 = 43.07 Hz/bin   （WE）
+            //     48000/1024 = 46.88 Hz/bin   （我们之前）
+            // ⟹ 我们每一段对应的频率比 WE **高 8.8%**
+            // ⟹ 壁纸作者是对着 WE 的频率映射调效果的（哪个段对应人声、哪个对应鼓）
+            //    ⟹ 偏 8.8% 意味着他调好的"这一圈对应什么"整体挪了位置。
+            //
+            // ⚠️ 直接让 SCStream 给 44100，而不是自己重采样 ——
+            // 重采样要插值，那会引入 WE 没有的滤波（同一个形状的错第三次）。
+            config.sampleRate = 44100
+            config.channelCount = 1
             // 视频我们不要，但 SCStream 仍会产帧 —— 压到最小省电。
             config.width = 2
             config.height = 2
@@ -840,54 +813,52 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,
                 of type: SCStreamOutputType) {
         guard type == .audio, buffer.isValid else { return }
-        guard let stereo = pcmStereo(from: buffer) else { return }
-        pendingL.append(contentsOf: stereo.left)
-        pendingR.append(contentsOf: stereo.right)
+        guard let samples = pcm(from: buffer) else { return }
+        pending.append(contentsOf: samples)
         // 一次回调发几帧。**用户 0.9.17 实测：0%（恒 1 帧，每批 960 采样）**
         // ⟹ 我曾怀疑"push 模型下一次回调连发多帧 ⟹ movetowards 连做多次而
         //    时间没走 ⟹ 平滑速度随批大小漂"—— **那条假设已经被这个数证伪**。
         // 观测保留（换音源/换设备时批大小会变），但它不再是待查项。
         var framesThisCall = 0
-        while pendingL.count >= FFT_SIZE && pendingR.count >= FFT_SIZE {
+        while pending.count >= FFT_SIZE {
             framesThisCall += 1
-            let chunkL = Array(pendingL.prefix(FFT_SIZE))
-            let chunkR = Array(pendingR.prefix(FFT_SIZE))
-            pendingL.removeFirst(FFT_SIZE)
-            pendingR.removeFirst(FFT_SIZE)
-            // 两路各跑一次 FFT。**两个 Spectrum 实例** —— 它们各有自己的
-            // `smoothed` 状态，共用一个的话两路会互相污染平滑（值来回跳）。
-            let left = spectrumL.process(chunkL)
-            let right = spectrumR.process(chunkR)
-            // 拼成 128：左声道前半，右声道后半（倒序）。
+            let chunk = Array(pending.prefix(FFT_SIZE))
+            pending.removeFirst(FFT_SIZE)
+            let one = spectrum.process(chunk)
+            // 拼成 128：**同一份 64 段镜像两次**。
             //
-            // ⚠️ 这就是修「9 点方向两根等高最长柱子」的地方：
-            // band 63 现在写的是 `left[63]`（段 63）和 `right[63]`（段 64），
-            // **两个不同声道的值** ⟹ 立体声下它们不相等 ⟹ 尖顶消失。
-            // 而单声道音源下 pcmStereo 返回同一份 ⟹ 仍然相等（和 WE 一致）。
+            // ⚠️ 这里曾经是"左声道前半 + 右声道后半"，撤了 ——
+            // WE 的 shader uniform `g_AudioSpectrum64Left` 和 `64Right`
+            // 传的是**同一个 `recorder.audio64`**（`CPass.cpp:889-890`）
+            // ⟹ WE 的"左右"就是同一份数据。
+            //
+            // ⚠️⚠️ 于是段 63 和段 64（相邻，band 63 加权 1.393 最大）**精确相等**，
+            // 在折线壁纸上是一个尖顶 —— 而**那个尖顶在真 WE 上也存在**。
+            // 我曾为它做分声道，那让画面离作者调好的效果**更远**，不是更近。
+            //
+            // ⚠️ "128 = 左64+右64" 这个布局本身仍是我的**推测**：
+            // WE 只有 audio16/32/64，而网页壁纸的 `wallpaperRegisterAudioListener`
+            // 收到 128 个数 —— 而 linux-wallpaperengine 的 `CWeb.cpp`
+            // **压根没接音频** ⟹ 这份逆向源码答不了那 128 段的真实格式。
+            // 支撑它的是壁纸侧的三条间接证据（`getRingArray` 从两端削、
+            // `PWLine.js:147` 的 `iv=(120-密度)/2` 从中心取、uniform 名字带 Left/Right），
+            // 而用户实测「镜像 + 64 段让画面明显变好」⟹ 暂时保留。
             var bins = [Float](repeating: 0, count: BIN_COUNT)
             let bands = BIN_COUNT / 2
             for b in 0..<bands {
-                bins[b] = left[b]
-                bins[BIN_COUNT - 1 - b] = right[b]
+                bins[b] = one[b]
+                bins[BIN_COUNT - 1 - b] = one[b]
             }
             emit([
                 "type": "audio",
                 "bins": bins.map { Double(round($0 * 10000) / 10000) },
-                // RMS 取两路的均值 —— 那代表"整体多响"，判音量用
-                "rms": Double(round((spectrumL.lastRMS + spectrumR.lastRMS) / 2 * 10000) / 10000),
+                "rms": Double(round(spectrum.lastRMS * 10000) / 10000),
                 "nth": framesThisCall,
-                "batch": stereo.left.count,
-                // 左右声道差多少 —— 判"分声道有没有真的起作用"。
-                // 若恒为 0，说明音源是单声道（或 SCStream 给的两路一样）
-                // ⟹ 那时镜像轴上的双柱仍然存在，而那**不是 bug**（WE 也一样）。
-                "lr": Double(round(channelDiff(left, right) * 10000) / 10000),
+                "batch": samples.count,
             ])
         }
         // 防止上游比我们快时无界堆积。
-        // ⚠️ 两路都要裁，而且**裁到一样长** —— 只裁一路会让左右错位，
-        // 那时段 63 和段 64 比的是不同时刻的音频（症状：镜像看起来"抖"）。
-        if pendingL.count > FFT_SIZE * 8 { pendingL.removeFirst(pendingL.count - FFT_SIZE) }
-        if pendingR.count > FFT_SIZE * 8 { pendingR.removeFirst(pendingR.count - FFT_SIZE) }
+        if pending.count > FFT_SIZE * 8 { pending.removeFirst(pending.count - FFT_SIZE) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -895,23 +866,31 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
         exit(3)
     }
 
-    // 取出 PCM，**左右声道分开**。
+    // 取出**单声道** PCM（多声道取平均）。
     //
-    // 这里原来的注释是「双声道取平均：壁纸要的是"整体有多响"，左右分开没有用途」——
-    // 那句话被用户 0.9.17 的实测证伪了，而症状很具体：
+    // ⚠️⚠️⚠️ **这里曾经改成分左右声道，撤了。WE 抓的是单声道。**
     //
-    //   面板报「孤峰固定在 第59段(37/60帧)」+「镜像逐段差 0.0000」
-    //   ⟹ 两半是**同一份数据** ⟹ band 63 写到段 63 和段 64，**它们相邻**
-    //   ⟹ band 63 的加权是 1.393（**全场最大**）
-    //   ⟹ 圆环 9 点方向必然有**两根精确等高的最长柱子**紧挨着，中间没有过渡
-    //   ⟹ 折线壁纸（PWCircle 的 style2/style3 用 lineTo 连 120 点）上就是一个尖顶
+    // 源码定案（`/tmp/lwe/…/PulseAudioPlaybackRecorder.cpp` 第 106-108 行）：
+    //     spec.format   = PA_SAMPLE_U8;
+    //     spec.rate     = 44100;
+    //     spec.channels = **1**;        ← 单声道
     //
-    // 而真 WE 是左右声道各一份（`g_AudioSpectrum64Left` / `64Right`）
-    // ⟹ 立体声下段 63 和段 64 的值**略有差异** ⟹ 不会是两根等高的柱子。
+    // 而 shader 那边（`CPass.cpp:889-890`）：
+    //     addUniform ("g_AudioSpectrum64Left",  recorder.audio64, 64);
+    //     addUniform ("g_AudioSpectrum64Right", recorder.audio64, 64);
+    //                                          ^^^^^^^^^^^^^^^^ **同一个数组**
+    // ⟹ WE 的"左右"是同一份数据，不是两次 FFT。
     //
-    // ⟹ 分声道不是"锦上添花"，它是镜像轴上那个双柱的**唯一正解**：
-    //    继续取平均的话，那两根柱子在数学上不可能不相等。
-    private func pcmStereo(from buffer: CMSampleBuffer) -> (left: [Float], right: [Float])? {
+    // ⚠️ 我做分声道的理由是"修镜像轴上的等高双柱"（band 63 写到相邻的段 63/64，
+    // 加权 1.393 最大 ⟹ 两根等高最长柱子紧挨着 ⟹ 折线上一个尖顶）。
+    // **但那个尖顶在真 WE 上也存在** —— 既然 64Left == 64Right，
+    // 任何按"左右拼接"消费 128 的壁纸在真 WE 上都会看到同样的双柱。
+    // ⟹ 那不是我们的 bug，而"修掉"它意味着**画面和作者调好的效果不一样**。
+    //
+    // ⟹ 用户的第一性原理（他为这条纠正了我三次）：
+    //   壁纸在真 WE 上效果 OK 是已验证的事实 ⟹ 我们要反推一个不用动的渲染器。
+    //   ⟹ 判据：这一行能不能从 WE 的行为推出来？分声道 —— **不能**。
+    private func pcm(from buffer: CMSampleBuffer) -> [Float]? {
         guard let desc = buffer.formatDescription?.audioStreamBasicDescription else { return nil }
         let frames = Int(buffer.numSamples)
         guard frames > 0 else { return nil }
@@ -935,21 +914,22 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let buffers = UnsafeMutableAudioBufferListPointer(list)
         // ScreenCaptureKit 给的是**非交错**格式：每声道一个 AudioBuffer。
-        // ⚠️ 但不能假设一定有两个 —— 单声道音源只有一个，而那时左右用同一份
-        //（那和 WE 在单声道下的行为一致）。
-        var chans: [[Float]] = []
+        // 取平均降成单声道 —— WE 的 `spec.channels = 1`。
+        var out = [Float](repeating: 0, count: frames)
+        var used = 0
         for ab in buffers {
             guard let raw = ab.mData else { continue }
             let count = Int(ab.mDataByteSize) / MemoryLayout<Float>.size
             let ptr = raw.assumingMemoryBound(to: Float.self)
             let n = min(frames, count)
-            var one = [Float](repeating: 0, count: frames)
-            for i in 0..<n { one[i] = ptr[i] }
-            chans.append(one)
+            for i in 0..<n { out[i] += ptr[i] }
+            used += 1
         }
-        guard let first = chans.first else { return nil }
-        // 单声道 ⟹ 左右同一份；多于两声道 ⟹ 只取前两个（5.1 的环绕声道不驱动画面）
-        return (left: first, right: chans.count > 1 ? chans[1] : first)
+        guard used > 0 else { return nil }
+        if used > 1 {
+            for i in 0..<frames { out[i] /= Float(used) }
+        }
+        return out
     }
 }
 

@@ -75,39 +75,6 @@ function bandValue(magnitude, band, bands = BANDS) {
   return Math.min(1, Math.max(0, v * bandWeight(band, bands)));
 }
 
-// 一段的输出，**在主瓣宽度上求功率和**（三个 bin），而不是单点取值。
-//
-// ⚠️⚠️ 为什么不能单点：**stride 2 丢掉一半的 bin**，而那是"细高刺"的根因。
-// 实测 200Hz 谐波列：bin3=37.9 / **bin4=144.6（最强）** / bin5=42.8
-// ⟹ 只读奇数 bin ⟹ bin4 那个峰完全丢了
-// ⟹ 段值序列 `0.48 / 0.09 / 0.49 / 0.06 / 0.46` —— **奇偶交替**
-// ⟹ 折线壁纸上一排细高刺，粒子壁纸上满屏孤立高柱（用户在两个壁纸上都看到了）
-//
-// ⚠️ 更基本的问题：**单点采样本身就抖**（这条不依赖 stride）。
-// 实测矩形窗，同一正弦落在不同位置时邻居 bin 的相对值：
-//     频率在 bin 20.00 ⟹ [19]0%   [20]100% [21]0%
-//     频率在 bin 20.50 ⟹ [19]34%  [20]100% [21]98%
-// ⟹ 邻居在 0% 和 98% 之间跳，**只取决于频率落在哪** ⟹ 柱子高度无故抖动
-//
-// ⟹ 三个 bin = 矩形窗主瓣的物理宽度（不是我调的窗口大小）。
-// 云端实测（4 个基频取平均）：单点 13.8 个孤峰 → **3bin 求和 5.8 个**。
-// 而 2bin 取 max（13.5）/ 2bin 求和（13.3）几乎没用 ⟹ **必须覆盖整个主瓣**，
-// 而 4 个会开始把相邻段的能量混进来（那才是真的抹平频谱结构）。
-//
-// 功率相加而不是 magnitude 相加 —— 能量可加、幅度不可加（能量守恒）。
-function bandValueFromLobe(magnitudes, index, band, bands = BANDS) {
-  const half = magnitudes.length;
-  let power = 0;
-  const lo = Math.max(0, index - 1);
-  const hi = Math.min(half - 1, index + 1);
-  for (let k = lo; k <= hi; k += 1) {
-    const m = (magnitudes[k] || 0) * VDSP_SCALE;
-    power += m * m;
-  }
-  const v = power > 0 ? LOG_SCALE * Math.log10(power) : 0;
-  return Math.min(1, Math.max(0, v * bandWeight(band, bands)));
-}
-
 // **一路声道的 64 段。** magnitudes 是那一路 FFT 的 |X| 数组。
 //
 // ⚠️ 镜像拼接**不在这里** —— 见 `mirror(left, right)`。
@@ -127,7 +94,29 @@ function channelValues(magnitudes, bands = BANDS) {
     const index = Math.min(half - 1, band * 2 + 1);
     // ⚠️ 抵消 vDSP 的 2 倍因子（见 VDSP_SCALE）—— 这里也要乘，
     // 否则 JS 规格和 Swift 会漂，而这份规格是云端唯一能跑的验证。
-    out[band] = bandValueFromLobe(magnitudes, index, band, bands);
+    //
+    // ⚠️⚠️⚠️ **这里曾经是"在主瓣宽度上求三个 bin 的功率和"，撤了。**
+    //
+    // 理由（我加它时的）：stride 2 丢一半 bin —— 实测 200Hz 谐波列里最强的
+    // bin4=144.6 完全丢了 ⟹ 段值 0.48/0.09/0.49/0.06 奇偶交替；
+    // 而单点采样本身也抖（同一正弦落在 bin 正中 vs 中间时，邻居 0% vs 98%）。
+    // 云端实测把孤峰从 13.8 降到 5.8 个 —— **观察和效果都是真的**。
+    //
+    // ⚠️ **但 WE 没有这一步。** 源码（`PulseAudioPlaybackRecorder.cpp`）逐字：
+    //     int index = band * 2;
+    //     float f1 = m_FFTinfo[index].r;  float f2 = m_FFTinfo[index].i;
+    //     f2 = f1 * f1 + f2 * f2;
+    // **单点取值，一个 bin。**
+    //
+    // ⟹ 用户 2026-08-01 的第一性原理（他为这条纠正了我三次）：
+    //   壁纸作者看不到闭源渲染器内部，只能在真 WE 上看效果调 ——
+    //   那些壁纸在真 WE 上效果 OK 是**已验证的事实**
+    //   ⟹ 我们要反推一个不用动的渲染器，不是针对某个壁纸做适配。
+    //
+    // ⟹ "单点采样会抖"这个观察本身对，**那正说明真 WE 的柱子也那样抖**，
+    //    而作者是在那个抖动上调效果的。"修好"它反而离作者的画面更远。
+    //    和 Hann 窗那次同一个错：教科书上对的事，不是 WE 的行为。
+    out[band] = bandValue((magnitudes[index] || 0) * VDSP_SCALE, band, bands);
   }
   return out;
 }
@@ -158,5 +147,5 @@ function frameValues(magnitudes, bands = BANDS) {
 
 module.exports = {
   LOG_SCALE, SMOOTH, VDSP_SCALE, BIN_COUNT, BANDS,
-  bandWeight, bandValue, bandValueFromLobe, channelValues, mirror, frameValues,
+  bandWeight, bandValue, channelValues, mirror, frameValues,
 };
