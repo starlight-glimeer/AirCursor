@@ -1340,13 +1340,34 @@ console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
 // ⟹ 用一个粗糙但有效的检查兜住最常见的一类：**全大写常量用了没定义**。
 // （Swift 里全大写是常量约定，而"删了定义留下引用"正是回退改动时的典型失误。）
 check('Swift 里全大写常量都有定义（回退改动最容易漏这个）', () => {
+  // ⚠️⚠️ **要剥掉字符串字面量**，不只是注释。
+  //
+  // 0.9.36 我在错误文案里写了 `"tap UID 是 nil"` ⟹ 这条守卫把 `UID`
+  // 当成未定义的常量 ⟹ **在正确代码上报红**。
+  //
+  // ⚠️ 这是"注释让守卫误判"的**近亲**（今天已经踩五次注释了）——
+  // 同一个根因：**把非代码的文本当代码查**。
+  // ⟹ 规则升级：查代码要剥 ①注释 ②字符串字面量。
+  //
+  // ⚠️ 剥字符串用的正则是粗糙的（不处理转义引号），但这一层够用 ——
+  // Swift 里 `\"` 在我们的文案里没出现过，而真出现时它会少剥一点，
+  // 那只会让守卫更严（假阳性），不会漏。
   const code = swiftSrc.split('\n')
     .filter((l) => !l.trim().startsWith('//'))
-    .join('\n');
+    .join('\n')
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""');
   const used = new Set([...code.matchAll(/\b([A-Z][A-Z_0-9]{2,})\b/g)].map((m) => m[1]));
   const defined = new Set([...code.matchAll(/let ([A-Z][A-Z_0-9]+)\s*[:=]/g)].map((m) => m[1]));
   // Swift / Darwin 自带的
-  const builtin = new Set(['FFT_FORWARD', 'FFT_INVERSE', 'M_E', 'M_PI']);
+  // Swift / Darwin 自带的。⚠️ 这个白名单会随代码用到的系统符号增长 ——
+  // 而"漏一个"的症状是**在正确代码上报红**（0.9.36 加信号处理时踩了：
+  // SIGTERM/SIGINT/SIG_IGN 都是 Darwin 的）。
+  // ⟹ 加新的系统符号时记得加进来，而它报红时先想"这是不是系统自带的"。
+  const builtin = new Set([
+    'FFT_FORWARD', 'FFT_INVERSE', 'M_E', 'M_PI',
+    // 信号（Darwin）
+    'SIGTERM', 'SIGINT', 'SIG_IGN', 'SIG_DFL',
+  ]);
   const missing = [...used].filter((x) => !defined.has(x) && !builtin.has(x));
   assert.deepStrictEqual(missing, [],
     `这些全大写标识符用了但没定义：${missing.join(', ')} ⟹ swiftc 会报 `

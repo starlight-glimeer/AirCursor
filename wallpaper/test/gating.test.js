@@ -3380,84 +3380,120 @@ check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸�
     + '⟹ 用户在「我的壁纸」点的按钮，错误显示在另一个页签');
 });
 
-// ⚠️⚠️⚠️ **「正在共享屏幕」那个指示要说清楚 —— 用户会自己发现并起疑。**
+// ⚠️⚠️⚠️ **「正在共享屏幕」现在有出路了 —— 守卫要跟着翻。**
 //
-// 用户 2026-08-01：「为什么这个壁纸运行的时候会显示 gwsturewall 正在共享屏幕啊」
+// 用户 2026-08-01 的两句话推动了这整条：
+//   ①「为什么这个壁纸运行的时候会显示 GestureWall 正在共享屏幕啊」
+//   ②「真的吗，必须要这个屏幕录制？我之前的手势那里我记得也操作桌面了，
+//      就没有用到这个什么屏幕共享啊」—— **他是对的**
 //
-// 那是 macOS 对**任何** ScreenCaptureKit 会话都亮的隐私指示，**关不掉**。
-// 而我们非用它不可：macOS 上抓**系统输出**没有别的免安装 API ——
-//   `AVAudioEngine`      只能抓输入设备（麦克风）
-//   CoreAudio 进程 tap   14.2+ 才有，**而且同样要屏幕录制权限**
-//   虚拟声卡              要用户装内核扩展（BlackHole 那类）
+// 我原来答「CoreAudio 的进程 tap 同样要屏幕录制权限」——
+// **那句话是凭印象说的、从没验过**，而它恰好挡住了一条真出路。
 //
-// ⚠️ 而这条说明和"不支持 scene/video"那种**过期说明**是相反的性质：
-//   过期说明会主动误导 ⟹ 删掉
-//   这条是**用户必然会撞到、而且会怀疑我们在偷录屏**的事实 ⟹ 必须主动说
-// ⟹ 判据不是"说明越少越好"，是"用户会不会撞到 + 撞到时能不能自己解释"。
-check('说清「正在共享屏幕」是抓音频的必然副作用', () => {
+// ⟹ 写了两个探针，真机量出四个前提：
+//   不需要屏幕录制（`tapErr 0` + `screenRecordingGranted false`）
+//   能拿到音频（98% 非零、RMS 0.2013）
+//   格式是交错立体声（`bufChannels 2` + `bufBytes 4096` ⟹ 512 帧/声道）
+//   音量之前（音量 26%→53% 而 RMS 只涨 6.7%）
+//
+// ⟹ 0.9.36 换过去了。守卫从"说清那个指示关不掉"翻成
+//    "**说清什么时候有、什么时候没有**"。
+check('说清两条采集路径的差别（哪条会显示"正在共享屏幕"）', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const htmlCode = html.replace(/<!--[\s\S]*?-->/g, '');
-  assert.match(htmlCode, /正在共享屏幕/,
-    '没说菜单栏会出现「正在共享屏幕」⟹ 用户会以为我们在偷录屏'
-    + '（他 2026-08-01 就是这么问的）');
-  assert.match(htmlCode, /关不掉|无法关闭/,
-    '没说那个指示关不掉 ⟹ 用户会去找开关然后找不到');
-  // ⚠️ 必须给出路 —— 说"关不掉"而不给替代方案等于甩锅
-  assert.match(htmlCode, /合成测试音/,
-    '没说"切成关或合成测试音就没有了" ⟹ 只讲了限制没给出路');
-  // ⚠️ 而"为什么非得用它"要有依据，否则读起来像借口
-  assert.match(htmlCode, /AVAudioEngine/,
-    '没说清为什么非用 ScreenCaptureKit ⟹ 读起来像"我们懒得找别的办法"');
 
-  // ⚠️⚠️⚠️ **必须说清这只影响音频** —— 用户 2026-08-01 的反问：
-  //   「真的吗，必须要这个屏幕录制？我之前的手势那里我记得也操作桌面了，
-  //     就没有用到这个什么屏幕共享啊」
-  // **他是对的**，而我上一条把"抓系统音频"的限制说成了整个应用的必然：
-  //   手势（摄像头）   → 摄像头权限，菜单栏亮绿点
-  //   鼠标转发         → 辅助功能权限，**不亮任何指示**
-  //   系统音频         → 屏幕录制权限，亮"正在共享屏幕"
-  // ⟹ 不说清的话，用户会以为整个应用都在录屏。
+  // ⚠️ 主路径不需要屏幕录制 —— 这是这次改动的全部意义
+  assert.match(htmlCode, /不需要屏幕录制权限/,
+    '没说「全系统」音源不需要屏幕录制 ⟹ 用户不知道我们修了这个');
+  // ⚠️ 而**退回的两种情况必须说** —— 否则用户看到那个指示会以为我们没改
+  assert.match(htmlCode, /只抓网易云/,
+    '没说「只抓网易云」会退回 ScreenCaptureKit ⟹ 用户选了它看到指示会困惑');
+  assert.match(htmlCode, /14\.2/,
+    '没说旧系统会退回 ⟹ 那也是会看到指示的情况');
+  // ⚠️ 而"当前用哪条"必须能看到 —— 光说规则不够
+  assert.match(htmlCode, /状态会写清当前用的是哪条|状态会说原因/,
+    '没指向那行状态 ⟹ 用户没法判断自己现在走的是哪条路');
+
+  // ⚠️ 这只影响音频 —— 用户的原始困惑就是"以为整个应用在录屏"
   assert.match(htmlCode, /手势走.{0,6}摄像头/,
-    '没说清"这只影响音频，手势/鼠标是别的权限" ⟹ '
-    + '用户会以为整个应用都在录屏（他 2026-08-01 就这么反问的，而他是对的）');
+    '没说清"这只影响音频，手势/鼠标是别的权限"');
   assert.match(htmlCode, /不亮任何指示/,
     '没说鼠标转发那条不亮指示 ⟹ 那正是用户记忆里"操作桌面没有共享屏幕"的部分');
 
-  // ⚠️⚠️ **不许把没验过的话当依据。**
-  //
-  // 我原来在面板上写「CoreAudio 的进程 tap 要 14.2+ **而且同样要屏幕录制权限**」
-  // —— 前半是事实（API 版本），**后半是我凭印象说的、从没验过**。
-  // 而它恰好是"能不能避开屏幕共享"的关键 ⟹ 拿它当"没有别的路"的依据，
-  // 等于用一个未验证的假设关掉了一条可能的出路。
-  // ⟹ 已删，并写了真机探针（`GestureWallAudioTapProbe.swift`）去定案。
+  // ⚠️ 不许再出现那句没验过的话
   assert.ok(!/进程 tap 要 14\.2\+[^<]*同样要屏幕录制/.test(htmlCode),
-    '面板上还写着"进程 tap 同样要屏幕录制权限" —— **那句话没验过**，'
-    + '而它是"有没有出路"的关键 ⟹ 不能当依据');
-  const probe = path.join(__dirname, '..', 'native', 'GestureWallAudioTapProbe.swift');
-  assert.ok(fs.existsSync(probe),
-    '没有 CoreAudio tap 的探针 ⟹ "进程 tap 要不要屏幕录制"这个问题永远悬着，'
-    + '而它决定用户到底要不要看那个"正在共享屏幕"');
-  const probeSrc = fs.readFileSync(probe, 'utf8');
-  // ⚠️ 探针必须报**屏幕录制授权状态**做对照 —— 否则"tap 建成功"在已授权的
-  // 机器上无法区分"不需要它"和"靠它成功"，而那正是我上一条犯的错
-  assert.match(probeSrc, /CGPreflightScreenCaptureAccess/,
-    '探针没报屏幕录制授权状态 ⟹ "tap 能建"在已授权的机器上分不清原因');
-  assert.match(probeSrc, /AudioHardwareDestroyProcessTap/,
-    '探针建了 tap 却不销毁 ⟹ 在系统里留下音频对象，可能影响用户后续的音频');
+    '面板上还写着"进程 tap 同样要屏幕录制权限" —— **那句话已被真机证伪**');
+});
 
-  // ⚠️ 而那条出路必须真的成立：synth 不能碰 SCStream
-  const src = codeOnly(mainSrc);
-  const synthAt = src.indexOf('function startSynthAudio');
-  const synthFn = src.slice(synthAt, src.indexOf('\nfunction ', synthAt + 10));
-  assert.ok(!/SCStream|AudioSource\.start/.test(synthFn),
-    '「合成测试音」这条路碰了 ScreenCaptureKit ⟹ 面板上说它没有那个指示是假的');
-  // ⚠️ 音源关掉时 SCStream 必须真的停 —— 否则"切成关就没有了"也是假的
-  const syncAt = src.indexOf('function syncAudioSource');
-  const syncFn = src.slice(syncAt, src.indexOf('\nfunction ', syncAt + 10));
-  assert.match(syncFn, /audioSource !== 'off'/,
-    'syncAudioSource 没判 off ⟹ 音源关掉后 SCStream 还在跑，指示灯不会消');
-  assert.match(syncFn, /audioTap\.stop\(\)/,
-    '不 want 时没停 audioTap ⟹ 同上');
+// ⚠️⚠️⚠️ **CoreAudio tap 那条路的四个实现坑，都会「建成功但不工作」。**
+//
+// 探针 2 一共踩了四个，每个都 `noErr` + 功能死：
+//   ① `&裸CFString` 取地址 ⟹ UID 读成空 ⟹ tap 挂不上（swiftc **只给警告**）
+//   ② `CATapDescription(stereoMixdownOfProcesses: [])` —— 我以为空数组=全部，
+//      实际是「混音**这些**进程」⟹ 空 = **没有进程** ⟹ 正解是黑名单那个
+//   ③ aggregate device 的 `SubDeviceList` 给空 ⟹ **没有时钟** ⟹ 没有 IO 周期
+//   ④ 默认输出设备的 UID 也差点踩 ①
+//
+// ⟹ 这些都是**纯文本特征**，云端能查 ⟹ 做成守卫比"下次注意"可靠。
+check('CoreAudio tap 的四个静默失效点都防住了', () => {
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallAudio.swift'), 'utf8',
+  );
+  const code = swift.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+  // ① 全局 tap 用黑名单初始化器（白名单传空 = 没有源）
+  assert.match(code, /stereoGlobalTapButExcludeProcesses/,
+    'tap 用的不是黑名单初始化器 ⟹ `stereoMixdownOfProcesses([])` 是白名单，'
+    + '空数组 = **没有进程** ⟹ tap 建成功但不监听任何东西（零回调）');
+  assert.ok(!/stereoMixdownOfProcesses/.test(code),
+    '代码里还有白名单初始化器 —— 那个传空会让 tap 没有源');
+
+  // ② aggregate device 必须有 subdevice（提供时钟）
+  assert.match(code, /kAudioSubDeviceUIDKey/,
+    'aggregate device 没有 subdevice ⟹ **没有时钟** ⟹ 不产生 IO 周期（零回调）');
+  assert.match(code, /kAudioAggregateDeviceMainSubDeviceKey/,
+    '没设 MainSubDevice ⟹ 时钟基准不确定');
+
+  // ③ 交错格式要降成单声道（真机实测 bufChannels=2）
+  assert.match(code, /f \* ch \+ c/,
+    'tap 的交错格式没降成单声道 ⟹ 真机实测 `bufChannels: 2`，'
+    + '按单声道读会让**采样率算错一倍** ⟹ 每个 FFT bin 的频率翻倍 '
+    + '⟹ 整圈频率映射错位（而那是"画面看着还行但对不上音乐"，最难发现）');
+
+  // ④ 静音行为要显式 unmuted —— 否则 tap 把音频截走，用户听不到声音
+  assert.match(code, /muteBehavior = \.unmuted/,
+    '没显式设 unmuted ⟹ 万一默认变了，tap 会把音频截走 '
+    + '⟹ 症状是"壁纸能动但没声音"，用户会以为播放器坏了');
+
+  // ⑤ SIGTERM 要清理 —— 上层用 child.kill() 停我们
+  // ⚠️ 锚**定义的完整形状** —— 只写 `/func installSignalCleanup/` 时，
+  // 把定义改名成 `…X` 后**调用点**仍然匹配 ⟹ 守卫绿着而代码是坏的。
+  // （这一轮已经因为"名字子串"栽过一次：clearWorkshopManifest。）
+  assert.match(code, /func installSignalCleanup\s*\(\s*\)/,
+    '没有信号清理 ⟹ 上层 `child.kill()`（SIGTERM）时 Swift 直接退出，'
+    + 'tap 和 aggregate device 留在系统里。而每次切音源都会重启这条链 '
+    + '⟹ 残留**累积** ⟹ 可能影响用户的系统音频');
+  assert.match(code, /signalSources\.append/,
+    'DispatchSource 没被持有 ⟹ 释放后就不再触发（又一个"注册成功但不工作"）');
+  // 而它必须在启动采集之前调
+  const installAt = code.indexOf('installSignalCleanup()');
+  const startAt = code.lastIndexOf('await tap.start()');
+  assert.ok(installAt > 0 && startAt > 0 && installAt < startAt,
+    'installSignalCleanup 没在启动采集之前调 ⟹ "启动瞬间就被 kill"'
+    + '（用户快速切音源）仍会留下残留');
+
+  // ⑥ 退回时要报出来，不能静默
+  assert.match(code, /退回 ScreenCaptureKit/,
+    'tap 起不来时静默退回 ⟹ 用户看到「正在共享屏幕」会以为我们没改，'
+    + '而真因是 tap 起不来');
+
+  // ⑦ 两条路必须共用同一个处理入口，否则必然漂
+  assert.match(code, /func feed\(_ mono: \[Float\], batch: Int\)/,
+    '两条采集路径没共用处理入口 ⟹ 乘音量/攒帧/FFT 各写一遍必然漂');
+  // JS 侧要能看到用的哪条
+  const as = fs.readFileSync(path.join(__dirname, '..', 'src', 'audio-source.js'), 'utf8');
+  assert.match(as, /coreaudio-tap/,
+    'audio-source.js 不认 backend ⟹ 面板上看不到当前用的哪条路');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

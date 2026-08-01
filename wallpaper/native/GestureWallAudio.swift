@@ -898,6 +898,241 @@ func selfTestFFT(_ spectrum: Spectrum) {
 
 
 
+// ⚠️⚠️⚠️ **进程被 kill 时要清掉 tap 和 aggregate device。**
+//
+// 上层停 helper 用的是 `child.kill()`（SIGTERM），而 Swift 默认对 SIGTERM
+// 是**直接退出、不跑任何清理** ⟹ tap 和 aggregate device 留在系统里。
+//
+// ⚠️ 而它们留下的后果是**用户级的**：aggregate device 挂着默认输出设备，
+// 残留多了可能影响系统音频（症状是「某个应用没声音」，而谁也想不到是我们留的）。
+// 而每次切音源/装载壁纸都会重启这条链 ⟹ 残留会**累积**。
+//
+// ⟹ 装 SIGTERM / SIGINT 处理器，清完再退。
+//
+// ⚠️ 用 `DispatchSource.makeSignalSource` 而不是 `signal()` 的 handler ——
+// 后者里只能调 async-signal-safe 的函数，而 CoreAudio 的销毁不是。
+// 那种违规不一定崩，但可能**死锁在信号上下文里** —— 比不清理更糟。
+//
+// ⚠️ 而 DispatchSource **必须被持有** —— 释放了就不再触发。
+// 那又是一个「注册成功但不工作」（这一轮已经数到第五个了）。
+var globalCoreTapForCleanup: AnyObject?
+var signalSources: [DispatchSourceSignal] = []
+
+func installSignalCleanup() {
+    for sig in [SIGTERM, SIGINT] {
+        // ⚠️ 先 ignore 默认行为，否则进程在 DispatchSource 收到之前就死了
+        signal(sig, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+        src.setEventHandler {
+            if #available(macOS 14.2, *) {
+                (globalCoreTapForCleanup as? CoreAudioTap)?.stop()
+            }
+            exit(0)
+        }
+        src.resume()
+        signalSources.append(src)
+    }
+}
+
+// ⚠️⚠️⚠️ **CoreAudio 进程 tap —— 不需要屏幕录制权限的那条路（macOS 14.2+）。**
+//
+// 用户 2026-08-01 问「为什么显示 GestureWall 正在共享屏幕」，而我答了一句
+// **凭印象、没验过**的话：「CoreAudio 的进程 tap 同样要屏幕录制权限」。
+// 他反问「真的吗，我之前的手势那里就没有用到这个什么屏幕共享」——**他是对的**。
+//
+// ⟹ 写了两个探针去定案，四个前提**全部真机量过**：
+//   ① 不需要屏幕录制：`tapErr: 0` + `screenRecordingGranted: **false**`
+//   ② 能拿到音频：258 次回调、264192 采样、**98% 非零**、RMS 0.2013
+//   ③ 格式：`bufChannels: 2` + `bufBytes: 4096` ⟹ **交错立体声**，512 帧/声道
+//   ④ 音量前后：音量 26%→53% 而 RMS 0.1749→0.1866（涨 6.7%）⟹ **音量之前**
+//
+// ⟹ 这是这一轮**唯一一次"先量后改"四个前提全齐**的改动。
+//
+// ⚠️ 而探针 2 一共踩了**四个「建成功但不工作」**，每个都 `noErr` + 功能死：
+//   ① `&裸CFString` 取地址 ⟹ UID 读成空 ⟹ tap 挂不上（**只给警告**）
+//   ② `CATapDescription(stereoMixdownOfProcesses: [])` ——
+//      我以为空数组=全部，实际是「混音**这些**进程」⟹ 空 = **没有进程**
+//      ⟹ 正解是 `stereoGlobalTapButExcludeProcesses`（黑名单语义）
+//   ③ aggregate device 的 `SubDeviceList` 给空 ⟹ **没有时钟** ⟹ 没有 IO 周期
+//   ④ 默认输出设备的 UID 也差点踩 ①
+// ⟹ 这些坑全部体现在下面的代码里，改动它之前先读那四条。
+@available(macOS 14.2, *)
+final class CoreAudioTap {
+    private var tapID = AudioObjectID(kAudioObjectUnknown)
+    private var aggID = AudioObjectID(kAudioObjectUnknown)
+    private var procID: AudioDeviceIOProcID?
+    // 拿到 PCM 后交给谁 —— 那是 AudioTap.feed（两条采集路径共用的入口）
+    private let sink: ([Float], Int) -> Void
+
+    init(sink: @escaping ([Float], Int) -> Void) {
+        self.sink = sink
+    }
+
+    // 返回 nil = 成功；否则是给用户看的失败原因。
+    //
+    // ⚠️ **每一步失败都要单独说** —— 这条链五步，而失败在哪一步决定
+    // 是"退回 ScreenCaptureKit"还是"这台机器有别的问题"。
+    // 只报"失败了"的话上层只能退回，而用户看不到为什么。
+    func start() -> String? {
+        // ① tap（全局，不排除任何进程）
+        //
+        // ⚠️ **必须用 `stereoGlobalTapButExcludeProcesses`**（黑名单语义）。
+        // `stereoMixdownOfProcesses: []` 是白名单 ⟹ 空数组 = 没有进程
+        // ⟹ tap 建成功但**不监听任何东西** ⟹ 零回调（探针 2 踩过）。
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        desc.name = "GestureWall audio tap"
+        desc.isPrivate = true
+        // ⚠️ 不能静音 —— tap 会把音频截走，用户就听不到声音了。
+        // 症状是"壁纸能动但没声音"，而用户会以为播放器坏了。
+        desc.muteBehavior = .unmuted
+        let tErr = AudioHardwareCreateProcessTap(desc, &tapID)
+        if tErr != noErr || tapID == AudioObjectID(kAudioObjectUnknown) {
+            return "建 tap 失败（\(tErr)）"
+        }
+
+        // ② tap 的 UID
+        //
+        // ⚠️⚠️ **CF 引用类型必须用 `Unmanaged` 接收**，不能 `&裸CFString`。
+        // 那样 swiftc 只给警告，而后果是读到空 UID ⟹ aggregate device
+        // 挂了个不存在的 tap ⟹ 下游全 `noErr` 而**零回调**（探针 2 踩过）。
+        var uidAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uidRef: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        if AudioObjectGetPropertyData(tapID, &uidAddr, 0, nil, &uidSize, &uidRef) != noErr {
+            stop()
+            return "读 tap UID 失败"
+        }
+        guard let uidVal = uidRef else { stop(); return "tap UID 是 nil" }
+        let tapUID = uidVal.takeRetainedValue()
+        // ⚠️ 空 UID 会让 aggregate device"建成功但没有源" ⟹ 挡在这里，
+        // 让它变成可见的失败而不是静默的零回调。
+        if (tapUID as String).isEmpty { stop(); return "tap UID 是空串" }
+
+        // ③ 默认输出设备（**只为提供时钟**）
+        //
+        // ⚠️ aggregate device 的 IO 周期靠 subdevice 的时钟驱动
+        // ⟹ `SubDeviceList` 给空 = 没有时钟 = **不产生 IO 周期** = 零回调。
+        var outAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var defOut = AudioDeviceID(0)
+        var outSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        if AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &outAddr, 0, nil, &outSize, &defOut
+        ) != noErr || defOut == 0 {
+            stop()
+            return "读默认输出设备失败（aggregate device 需要它提供时钟）"
+        }
+        var outUIDAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        // ⚠️ 同 tap UID：Unmanaged 接收
+        var outUIDRef: Unmanaged<CFString>?
+        var outUIDSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        if AudioObjectGetPropertyData(
+            defOut, &outUIDAddr, 0, nil, &outUIDSize, &outUIDRef
+        ) != noErr {
+            stop()
+            return "读默认输出设备 UID 失败"
+        }
+        guard let outUIDVal = outUIDRef else { stop(); return "输出设备 UID 是 nil" }
+        let outUID = outUIDVal.takeRetainedValue()
+
+        // ④ aggregate device
+        //
+        // ⚠️ UID 要**唯一** —— 撞名会让第二次启动失败（换音源时会重启这条链）。
+        let aggUID = "com.gesturewall.audiotap.\(ProcessInfo.processInfo.processIdentifier)"
+        let aggDesc: [String: Any] = [
+            kAudioAggregateDeviceNameKey as String: "GestureWall Audio Tap",
+            kAudioAggregateDeviceUIDKey as String: aggUID,
+            // private = 不出现在用户的声音设置里
+            kAudioAggregateDeviceIsPrivateKey as String: true,
+            kAudioAggregateDeviceIsStackedKey as String: false,
+            kAudioAggregateDeviceTapAutoStartKey as String: true,
+            kAudioAggregateDeviceSubDeviceListKey as String: [
+                [kAudioSubDeviceUIDKey as String: outUID],
+            ],
+            kAudioAggregateDeviceMainSubDeviceKey as String: outUID,
+            kAudioAggregateDeviceTapListKey as String: [
+                [kAudioSubTapUIDKey as String: tapUID,
+                 kAudioSubTapDriftCompensationKey as String: true],
+            ],
+        ]
+        let aErr = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggID)
+        if aErr != noErr || aggID == AudioObjectID(kAudioObjectUnknown) {
+            stop()
+            return "建 aggregate device 失败（\(aErr)）"
+        }
+
+        // ⑤ IOProc
+        //
+        // ⚠️ tap 给的是**交错**格式（L,R,L,R…）—— 探针 2 实测
+        // `bufChannels: 2`、`bufBytes: 4096` ⟹ 1024 个 Float = **512 帧/声道**。
+        // ⟹ 必须每两个取平均降成单声道，否则采样率算错一倍
+        //    ⟹ **每个 FFT bin 的频率翻倍** ⟹ 整圈频率映射错位。
+        // ⚠️ 而那是"画面看着还行但对不上音乐"，最难发现的一类。
+        let localSink = sink
+        let ioErr = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) {
+            (_, inInput, _, _, _) in
+            let bufs = UnsafeMutableAudioBufferListPointer(
+                UnsafeMutablePointer(mutating: inInput))
+            for buf in bufs {
+                guard let raw = buf.mData else { continue }
+                let floats = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+                let ch = max(1, Int(buf.mNumberChannels))
+                let p = raw.assumingMemoryBound(to: Float.self)
+                // 交错 ⟹ 每 ch 个一组取平均
+                let frames = floats / ch
+                var mono = [Float](repeating: 0, count: frames)
+                if ch == 1 {
+                    for i in 0..<frames { mono[i] = p[i] }
+                } else {
+                    for f in 0..<frames {
+                        var sum: Float = 0
+                        for c in 0..<ch { sum += p[f * ch + c] }
+                        mono[f] = sum / Float(ch)
+                    }
+                }
+                localSink(mono, frames)
+                // ⚠️ 只处理第一个 buffer —— tap 的交错格式下所有声道都在里面，
+                // 而多 buffer 的情况（非交错）我们没见过。多处理一次会重复喂数据。
+                break
+            }
+        }
+        if ioErr != noErr { stop(); return "挂 IOProc 失败（\(ioErr)）" }
+
+        let sErr = AudioDeviceStart(aggID, procID)
+        if sErr != noErr { stop(); return "启动设备失败（\(sErr)）" }
+        return nil
+    }
+
+    // ⚠️ 销毁顺序：IOProc → aggregate device → tap
+    //（后者被前者引用着，反了会留下孤儿对象影响用户后续的音频）
+    func stop() {
+        if let pid = procID, aggID != AudioObjectID(kAudioObjectUnknown) {
+            AudioDeviceStop(aggID, pid)
+            AudioDeviceDestroyIOProcID(aggID, pid)
+            procID = nil
+        }
+        if aggID != AudioObjectID(kAudioObjectUnknown) {
+            AudioHardwareDestroyAggregateDevice(aggID)
+            aggID = AudioObjectID(kAudioObjectUnknown)
+        }
+        if tapID != AudioObjectID(kAudioObjectUnknown) {
+            AudioHardwareDestroyProcessTap(tapID)
+            tapID = AudioObjectID(kAudioObjectUnknown)
+        }
+    }
+}
+
 final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     // 一个 Spectrum —— WE 是单声道（`spec.channels = 1`）。
@@ -910,6 +1145,11 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     // 供发帧定时器上报用的观测量（FFT 回调里更新，定时器里读）
     private var lastBatch = 0
     private var lastFramesPerCall = 0
+    // CoreAudio 进程 tap（macOS 14.2+，**不需要屏幕录制权限**）。
+    // nil = 走 ScreenCaptureKit 那条路（旧系统 / 或 tap 起不来）。
+    private var coreTap: AnyObject?
+    // 当前用的哪条路 —— 要报给面板（"柱子不动"时第一件要知道的事）
+    private var backend = "screencapturekit"
     private var emitTimer: DispatchSourceTimer?
 
     // ⚠️⚠️ **60fps 发帧定时器 —— 对齐 WE 的渲染主循环。**
@@ -975,6 +1215,51 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func start() async {
+        // ⚠️⚠️⚠️ **先试 CoreAudio 进程 tap —— 它不需要屏幕录制权限。**
+        //
+        // 用户 2026-08-01：「为什么显示 GestureWall 正在共享屏幕」
+        // ⟹ 那是 macOS 对**任何** SCStream 会话都亮的隐私指示，关不掉。
+        // ⟹ 而 CoreAudio tap 这条路真机验过**不要那个权限**（探针 1+2，
+        //    四个前提全量过：不要权限 / 98% 非零 / 交错立体声 / 音量之前）。
+        //
+        // ⚠️ **但 tap 抓不了单个 App。** `CATapDescription` 的白名单初始化器
+        // 要的是 `AudioObjectID`（进程对象），而从 bundle id 到那个 ID 又是
+        // 三步链（找 pid → TranslatePIDToProcessObject → 建 tap），
+        // 每步都可能静默失败。
+        // ⟹ **决策**：「全系统」走 tap，「只抓网易云」仍走 ScreenCaptureKit。
+        //    那样这次改动只碰默认路径（也是用户实际在用的那个），范围可控。
+        if targetBundle == nil, #available(macOS 14.2, *) {
+            let ct = CoreAudioTap(sink: { [weak self] mono, batch in
+                self?.feed(mono, batch: batch)
+            })
+            if let err = ct.start() {
+                // ⚠️ **失败要报出来再退回** —— 静默退回的话用户看到
+                // 「正在共享屏幕」会以为我们没改，而真因是 tap 起不来。
+                emitStatus("warning", [
+                    "message": "CoreAudio tap 起不来（\(err)）⟹ 退回 ScreenCaptureKit"
+                        + "（那会让菜单栏显示「正在共享屏幕」）",
+                    "backend": "screencapturekit",
+                ])
+            } else {
+                coreTap = ct
+                // ⚠️ 让信号处理器能拿到它 —— 见 installSignalCleanup 那段：
+                // SIGTERM 时不清的话 tap 和 aggregate device 会在系统里累积。
+                globalCoreTapForCleanup = ct
+                backend = "coreaudio-tap"
+                startEmitTimer()
+                emitStatus("running", [
+                    "filtered": false,
+                    "bundle": NSNull(),
+                    "bins": BIN_COUNT,
+                    // ⚠️ 报出用的哪条路 —— 那决定用户会不会看到「正在共享屏幕」，
+                    // 而"看到了"和"没看到"都需要能解释。
+                    "backend": "coreaudio-tap",
+                    "needsScreenRecording": false,
+                ])
+                return
+            }
+        }
+
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false, onScreenWindowsOnly: false)
@@ -1053,6 +1338,9 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
                 "filtered": filtered,
                 "bundle": targetBundle ?? NSNull(),
                 "bins": BIN_COUNT,
+                // ⚠️ 报出这条路要屏幕录制 ⟹ 面板能解释那个「正在共享屏幕」
+                "backend": "screencapturekit",
+                "needsScreenRecording": true,
             ])
         } catch {
             // 没给屏幕录制权限就会落到这里。**必须报出来** —— 否则上层看到的是
@@ -1064,14 +1352,30 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,
-                of type: SCStreamOutputType) {
-        guard type == .audio, buffer.isValid else { return }
-        guard var samples = pcm(from: buffer) else { return }
+    // ⚠️⚠️⚠️ **两条采集路径的共用入口。**
+    //
+    // 0.9.36 起有两条路拿系统音频：
+    //   ① **CoreAudio 进程 tap**（macOS 14.2+）—— **不需要屏幕录制权限**
+    //   ② ScreenCaptureKit —— 旧系统的兜底，会让菜单栏显示「正在共享屏幕」
+    //
+    // ⟹ 两条路的差别只在"怎么拿到 PCM"，拿到之后的处理**完全一样**
+    //   （乘音量 → 攒够 1024 → FFT 更新 target）
+    // ⟹ 抽成这个函数，避免两处各写一遍（那必然漂）。
+    //
+    // ⚠️ 调用方必须已经把采样降成**单声道**：
+    //   ScreenCaptureKit 给非交错（每声道一个 AudioBuffer）⟹ 跨 buffer 平均
+    //   CoreAudio tap 给**交错**（L,R,L,R…）⟹ 每两个平均
+    //   真机实测（探针 2）：tap 的 `bufChannels: 2`、`bufBytes: 4096`
+    //   ⟹ 1024 个 Float = **512 帧/声道** ⟹ 按单声道读会让频率映射整体翻倍
+    func feed(_ mono: [Float], batch: Int) {
+        var samples = mono
         // ⚠️⚠️ **乘系统音量** —— 见 `systemOutputVolume()` 上面那段：
         // WE 抓的 PulseAudio `.monitor` 是**音量之后**的信号，
-        // 而 ScreenCaptureKit 抓的是音量之前的 ⟹ 补上这一乘才和 WE 同尺度。
-        // 用户实测坐实：系统音量调到 0，柱子还在动。
+        // 而**两条路都是音量之前**的 ⟹ 补上这一乘才和 WE 同尺度。
+        //
+        // ScreenCaptureKit：用户实测坐实（系统音量调到 0，柱子还在动）
+        // CoreAudio tap：探针 2 实测坐实（音量 26%→53%，RMS 0.1749→0.1866
+        //   ⟹ 涨 2.05 倍而 RMS 只涨 1.067 倍 = 几乎没变 ⟹ 音量之前）
         //
         // ⚠️ 每 10 帧读一次而不是每帧 —— CoreAudio 的属性查询有开销，
         // 而音量是人手动调的（10 帧 ≈ 0.2 秒，感知不到延迟）。
@@ -1099,15 +1403,20 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
             // WE 的结构：`update()` 里 movetowards 在 `fullFrameReady` 判断**之前**
             // ⟹ FFT 更新 target（43 次/秒）和 movetowards 追 target（渲染帧率
             //    60 次/秒）是**两个频率** ⟹ 柱子在两次 FFT 之间继续插值。
-            //
-            // ⟹ 我们原来在这里直接发帧 ⟹ 画面只有 43fps 且每 23ms 一跳，
-            //    而不是滑动 ⟹ 那让孤峰显得更醒目（用户 0.9.24 仍报"还有噪点"）。
             _ = spectrum.process(chunk)
-            lastBatch = samples.count
+            lastBatch = batch
             lastFramesPerCall = framesThisCall
         }
         // 防止上游比我们快时无界堆积。
         if pending.count > FFT_SIZE * 8 { pending.removeFirst(pending.count - FFT_SIZE) }
+    }
+
+    // ScreenCaptureKit 的回调 —— 只负责提取单声道 PCM，处理交给 `feed`。
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,
+                of type: SCStreamOutputType) {
+        guard type == .audio, buffer.isValid else { return }
+        guard let samples = pcm(from: buffer) else { return }
+        feed(samples, batch: samples.count)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -1232,6 +1541,14 @@ if probeOnly {
     //
     // 输出会进 CloudWatch/终端，打包版里也会进面板的日志区。
     selfTestFFT(Spectrum())
+
+    // ⚠️ **在启动采集之前装信号处理器** —— 见 installSignalCleanup 那段：
+    // 上层用 SIGTERM 停我们，而 Swift 默认不跑清理
+    // ⟹ CoreAudio 的 tap 和 aggregate device 会留在系统里累积。
+    //
+    // ⚠️ 顺序：必须在 `tap.start()` 之前 —— 之后装的话，
+    // "启动瞬间就被 kill"那种情况（用户快速切音源）仍会留下残留。
+    installSignalCleanup()
 
     let tap = AudioTap(targetBundle: targetBundle)
     Task { await tap.start() }

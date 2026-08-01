@@ -63,16 +63,32 @@ function permissionHint(packaged) {
 function describeStatus(msg, packaged = true) {
   if (!msg || msg.type !== 'status') return null;
   switch (msg.state) {
-    case 'running':
+    case 'running': {
+      // ⚠️⚠️ **报出用的哪条采集路径** —— 那决定用户会不会看到
+      // 菜单栏的「正在共享屏幕」，而"看到了"和"没看到"都要能解释。
+      //
+      // 0.9.36 起有两条：
+      //   `coreaudio-tap`      macOS 14.2+，**不需要屏幕录制** ⟹ 没有那个指示
+      //   `screencapturekit`   旧系统 / 或「只抓网易云」⟹ 有那个指示
+      //
+      // ⚠️ 不报的话，用户看到指示会以为我们没改（而真因可能是 tap 起不来
+      // 退回去了，或者他选了「只抓网易云」）。
+      const viaTap = msg.backend === 'coreaudio-tap';
+      const how = viaTap
+        ? '（CoreAudio tap ⟹ **不需要屏幕录制**，菜单栏不会显示"正在共享屏幕"）'
+        : '（ScreenCaptureKit ⟹ 要屏幕录制权限，菜单栏会显示"正在共享屏幕"）';
       return {
         ok: true,
         // filtered=false 意味着抓的是全系统混音，别的 App 出声也会驱动画面。
         // 这个区别必须说出来，否则用户会以为"只跟网易云联动"已经生效。
-        text: msg.filtered
+        text: (msg.filtered
           ? '正在抓网易云的音频'
-          : '正在抓全系统音频（网易云之外的声音也会影响画面）',
+          : '正在抓全系统音频（网易云之外的声音也会影响画面）') + how,
         filtered: !!msg.filtered,
+        backend: msg.backend || 'screencapturekit',
+        needsScreenRecording: msg.needsScreenRecording !== false,
       };
+    }
     case 'warning':
       return { ok: true, text: msg.message || '有警告', filtered: false };
     case 'denied':
