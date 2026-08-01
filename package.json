@@ -8,7 +8,6 @@
     "start": "bash wallpaper/scripts/check-tree.sh; electron .",
     "web": "node server.js",
     "check": "node --check electron/main.js && node --check public/pose.js && node --check public/motion.js && node --check public/tracking.js && for f in wallpaper/src/*.js; do node --check $f || exit 1; done",
-    "uninstall": "bash wallpaper/scripts/uninstall-clean.sh",
     "dist:mac": "bash wallpaper/scripts/build-mac.sh",
     "build:mac": "bash wallpaper/scripts/build-mac.sh",
     "test": "node wallpaper/test/run.js",
