@@ -319,7 +319,9 @@ check('onTrack 同时喂给 WE 壁纸的 media 通道', () => {
 // WE 壁纸的每个 IPC 通道都要在 preload 里有对应出口，否则面板调不到。
 check('WE 的 IPC 通道 preload 里都有出口', () => {
   const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
-  for (const channel of ['we-pick', 'we-clear', 'we-controls', 'we-status',
+  // ⚠️ `we-pick` 0.9.37 整条链删了（用户说它和「换目录…」冗余）
+  // ⟹ 从清单里去掉。留着的话这条守卫会要求我们保留死代码。
+  for (const channel of ['we-clear', 'we-controls', 'we-status',
     'we-set-property', 'we-set-audio-source']) {
     assert.ok(preload.includes(channel), `preload 缺 ${channel}`);
     assert.ok(mainSrc.includes(channel), `main.js 没注册 ${channel}`);
@@ -3359,25 +3361,38 @@ check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸�
     'dashboard.js 里还有"三层景深" —— 那是内部对内置壁纸的叫法'
     + '（templates.js 的"背景+主体+漂浮碎片"），用户从没见过那个词');
 
-  // ⚠️ 两个按钮搬到了「我的壁纸」——**必须真的能点到**，
-  // 否则"装载别处的目录"和"卸载"就没有入口了
-  const mineAt = htmlCode.indexOf('id="mine-grid"');
-  const weTabAt = htmlCode.indexOf('id="tab-we"');
-  const pickAt = htmlCode.indexOf('id="we-pick"');
-  assert.ok(pickAt > 0, '「装载别处的目录」按钮不在了 ⟹ 那个功能没入口了');
-  assert.ok(pickAt < weTabAt,
-    '「装载别处的目录」还在创意工坊页签里 ⟹ 用户的模型是'
-    + '「我的壁纸」管壁纸、「创意工坊」管下载');
-  assert.ok(htmlCode.indexOf('id="we-clear"') < weTabAt,
-    '「卸载」还在创意工坊页签里');
+  // ⚠️⚠️ **那两个按钮 0.9.37 删了** —— 用户 2026-08-01：
+  //   「这两个不需要，我们已经有换目录的按钮了，这是冗余的操作」
+  //
+  // ⟹ 守卫从"必须能点到"翻成"**必须删干净 + 卸载要有别的入口**"。
+  //
+  // ①「装载别处的目录…」**确实冗余，还更差**：那条路装载的壁纸
+  //   **不在网格里** ⟹ 用户看不到它、也没法切回来。
+  //   而「换目录…」换完之后新目录里的壁纸会出现在网格里。
+  //   ⟹ 删的是**整条链**（HTML + dashboard 绑定 + preload + IPC）——
+  //     只删按钮的话剩下的是死代码，而死代码会让下一个人以为
+  //     "功能还在只是入口丢了"，然后把入口加回来。
+  assert.ok(!/id="we-pick"/.test(htmlCode), 'HTML 里还有「装载别处的目录」按钮');
+  assert.ok(!/wePick/.test(dash), 'dashboard.js 里还有 wePick 调用');
+  const pre = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8'));
+  assert.ok(!/wePick/.test(pre), 'preload 里还有 wePick ⟹ 死代码');
+  // ⚠️ 这条测试里读 main.js 的变量是 `mainSrc`（全局），不是 `src` ——
+  // 我第一版写了 `src` ⟹ `ReferenceError: src is not defined`
+  // ⟹ 而那不是"断言失败"，是**测试自己崩了**（错误信息完全不同方向）。
+  assert.ok(!/'we-pick'/.test(codeOnly(mainSrc)),
+    'main.js 里还有 we-pick 的 IPC ⟹ 死代码');
 
-  // ⚠️ 而状态要报到**新位置**那块 —— 报到 we-state 的话用户点了按钮
-  // 却要切页签才看到错误（"做了但用户看不到"，这个项目栽过六次）
-  const pickFn = dash.slice(dash.indexOf("getElementById('we-pick')"),
-    dash.indexOf("getElementById('we-clear')"));
-  assert.match(pickFn, /getElementById\('mine-state'\)/,
-    '「装载别处的目录」失败时把错误报到 we-state（创意工坊页签）'
-    + '⟹ 用户在「我的壁纸」点的按钮，错误显示在另一个页签');
+  // ②「卸载」**没有别的入口** ⟹ 不能直接删，搬到了网格里当前那张卡片上
+  //   （点一个壁纸装载，点当前那个就取消）
+  assert.ok(!/id="we-clear"/.test(htmlCode), 'HTML 里还有「卸载」按钮');
+  const j2 = dash.indexOf('function renderMine');
+  const mineFn = dash.slice(j2, dash.indexOf('\nfunction ', j2 + 10));
+  assert.match(mineFn, /if \(item\.active\) \{[\s\S]{0,200}?weClear/,
+    '「卸载」的入口丢了 ⟹ 删掉那个按钮之后用户**回不到内置壁纸**。'
+    + '⟹ 应该是"点当前装载的那张卡片 = 卸载"');
+  // ⚠️ 而那个行为必须**可见** —— 否则用户不会去点已经装载的那个
+  assert.match(mineFn, /点击卸载|点一下卸载/,
+    '"点当前卡片=卸载"没有任何提示 ⟹ 那是个隐藏行为，等于没有入口');
 });
 
 // ⚠️⚠️⚠️ **「正在共享屏幕」现在有出路了 —— 守卫要跟着翻。**

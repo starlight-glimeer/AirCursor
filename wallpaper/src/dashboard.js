@@ -1507,28 +1507,21 @@ async function renderWEControls() {
   }
 }
 
-// ⚠️ 这两个按钮 0.9.32 从「创意工坊」页签搬到了「我的壁纸」——
-// id 没变，所以绑定不用改，只是它们现在在另一个页签里。
+// ⚠️⚠️ 这里原来是 `we-pick` / `we-clear` 两个按钮的绑定 ——
+// HTML 里删了（0.9.37，用户说那两个操作冗余），绑定必须跟着删。
 //
-// ⚠️ 而**状态要报到 `mine-state`**（新位置那块）而不是 `we-state`
-// —— 后者还在创意工坊页签，用户点了按钮却在另一个页签看错误信息，
-// 那等于没报（这个项目栽过六次"做了但用户看不到"）。
-document.getElementById('we-pick').onclick = async () => {
-  const result = await window.gw.wePick();
-  if (!result.ok && result.error) {
-    const st = document.getElementById('mine-state');
-    if (st) st.innerHTML = `<span class="warn">${result.error}</span>`;
-    return;
-  }
-  renderWEStatus();
-  renderMine();
-};
-
-document.getElementById('we-clear').onclick = async () => {
-  await window.gw.weClear();
-  renderWEStatus();
-  renderMine();
-};
+// ⚠️ 留着的后果不是"没反应"，是 **`null.onclick` 抛 TypeError**
+// ⟹ 这个文件在那一行**中断** ⟹ 后面所有初始化都不跑。
+//
+// 这个项目为**同一个形状**栽过三次：
+//   ① 收缩页签时删了三个开关的 HTML，而 `bind('music')` 等留着
+//   ② 0.9.31 删「刷新/加目录」按钮时留了绑定（守卫当场逮到）
+//   ③ 这次
+// ⟹ 守卫（gating.test.js）查的就是"每个 getElementById 的 id 必须在 HTML 里存在"。
+//
+// ⚠️ `weClear` 那个 IPC **保留** —— 它现在被"点当前壁纸卡片"调
+//（见 renderMine 里 `item.active` 那段）。preload 里的 `weClear` 也留着。
+// 而 `wePick` 那条**没人调了** ⟹ 见下面那条注释。
 
 // ---------------------------------------------------------------------------
 // 创意工坊
@@ -1863,13 +1856,39 @@ async function renderMine() {
       preview: item.preview ? `file://${encodeURI(item.preview)}` : null,
     }, async () => {
       if (item.broken) return;
+      // ⚠️⚠️ **点当前装载的那个 = 卸载**（0.9.37）。
+      //
+      // 用户 2026-08-01 让删掉「卸载（回到内置壁纸）」那个按钮
+      //（「我们已经有换目录的按钮了，这是冗余的操作」）——
+      // 而「装载别处的目录…」确实冗余，但**「卸载」没有别的入口**
+      // ⟹ 直接删就回不到内置壁纸了。
+      //
+      // ⟹ 搬到这里：点一个壁纸装载，点**当前那个**就取消。
+      //   那比一个常驻按钮更自然，也不占地方。
+      if (item.active) {
+        await window.gw.weClear();
+        renderWEStatus();
+        renderMine();
+        return;
+      }
       const out = await window.gw.workshopLoadLocal(item.dir);
       if (!out.ok) state.innerHTML = `<span class="warn">${out.error}</span>`;
       renderWEStatus();
       renderMine();
     });
     // 当前装载的那个标出来 —— 否则一屏缩略图里认不出哪个在用。
-    if (item.active) card.style.borderColor = 'var(--accent)';
+    // ⚠️ 而它现在**还要提示"点我卸载"** —— 否则那个行为是隐藏的
+    //（用户不会去点已经装载的那个，除了误触）。
+    if (item.active) {
+      card.style.borderColor = 'var(--accent)';
+      card.title = '这个正在用 —— 点一下卸载（回到内置壁纸）';
+      const badge = document.createElement('div');
+      badge.className = 'hint';
+      badge.style.cssText = 'font-size:10px;text-align:center;padding:2px 0;'
+        + 'color:var(--accent)';
+      badge.textContent = '正在用 · 点击卸载';
+      card.appendChild(badge);
+    }
     grid.appendChild(card);
   }
 }

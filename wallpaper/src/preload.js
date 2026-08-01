@@ -44,7 +44,9 @@ contextBridge.exposeInMainWorld('gw', {
   // 预设
 
   // WE 网页壁纸
-  wePick: () => ipcRenderer.invoke('we-pick'),
+  // ⚠️ `wePick`（「装载别处的目录…」）0.9.37 整条链删了 ——
+  // 用户说它和「换目录…」冗余，而且它装载的壁纸不在网格里（更差）。
+  // ⟹ 这里不留桩，否则就是死代码。
   weClear: () => ipcRenderer.invoke('we-clear'),
   weControls: () => ipcRenderer.invoke('we-controls'),
   weStatus: () => ipcRenderer.invoke('we-status'),

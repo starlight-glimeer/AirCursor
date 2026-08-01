@@ -1894,21 +1894,17 @@ ipcMain.on('we-mouse-seen', (_event, payload) => {
   pageMouseSeen = { ...payload, at: Date.now() };
 });
 
-ipcMain.handle('we-pick', async () => {
-  const result = await dialog.showOpenDialog(dashboardWindow || undefined, {
-    title: '选择 Wallpaper Engine 壁纸目录（含 project.json）',
-    properties: ['openDirectory'],
-    buttonLabel: '装载',
-  });
-  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
-  const out = setWEWallpaper(result.filePaths[0]);
-  if (out.ok) {
-    config.we.dir = weProject.dir;
-    writeConfig(config);
-    broadcast('config', config);
-  }
-  return out;
-});
+// ⚠️⚠️ 这里原来有 `we-pick`（「装载别处的目录…」）—— **整条链删了**（0.9.37）。
+//
+// 用户 2026-08-01：「这两个不需要，我们已经有换目录的按钮了，这是冗余的操作」
+//
+// ⚠️ 而它**确实冗余，还更差**：那条路装载的壁纸**不在网格里**
+// ⟹ 用户看不到它、也没法切回来。而「换目录…」换完之后，
+//    新目录里的壁纸会出现在网格里 —— 那才符合「我的壁纸」这个模型。
+//
+// ⟹ 删的是**整条链**（HTML 按钮 + dashboard 绑定 + preload + 这个 IPC）。
+// 只删按钮的话 preload 和 IPC 就是死代码，而死代码会让下一个人以为
+// "这个功能还在，只是入口丢了"，然后把入口加回来。
 
 ipcMain.handle('we-clear', () => {
   const out = setWEWallpaper(null);
