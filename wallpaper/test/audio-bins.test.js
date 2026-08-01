@@ -1263,6 +1263,51 @@ check('Swift 里没有字符串内的中文引号（编译会失败）', () => {
     + "cannot find '…' in scope。用 「」 代替");
 });
 
+// ⚠️⚠️⚠️ **CoreFoundation 引用类型不能用 `&` 取地址接收。**
+//
+// 探针 2 第一版零回调的根因（用户 2026-08-01 真机）：
+//     var tapUID: CFString = "" as CFString
+//     AudioObjectGetPropertyData(…, &tapUID)     ← 错
+//
+// swiftc 只给**警告**：
+//     forming 'UnsafeMutableRawPointer' to a variable of type 'CFString';
+//     this is likely incorrect because 'CFString' may contain an object reference
+//
+// ⟹ `&tapUID` 取的是 Swift 变量本身的地址，而 CFString 是引用类型
+//    ⟹ 读出来是垃圾/空 ⟹ aggregate device 挂了个**不存在的 tap**
+//    ⟹ 建设备 `noErr`、挂 IOProc `noErr`、Start `noErr`，
+//       **但设备没有输入源 ⟹ 回调一次都不触发**
+//
+// ⚠️ 这是这个项目**第三个「API 返回成功但不工作」**：
+//   ① addGlobalMonitorForEvents 返回非 nil 但零回调（NSApplication 没初始化）
+//   ② Timer.scheduledTimer 注册成功但不触发（没有主 RunLoop）
+//   ③ aggregate device 建成功但没有源（UID 是空的）
+//   共同点：**每一步都 noErr，而功能是死的**。
+//
+// ⟹ 正解：`Unmanaged<CFString>?` 接收 + `takeRetainedValue()`。
+// ⚠️ 而这是**纯文本特征**，云端能查 ⟹ 做成守卫比"下次注意"可靠
+//   （swiftc 只给警告，而警告在 `&& /tmp/x` 的命令里很容易被忽略 ——
+//    用户就是先看到警告、然后看到零回调的 JSON）。
+check('Swift 里 CF 引用类型不用 & 取地址（会静默失效）', () => {
+  const dir = path.join(__dirname, '..', 'native');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.swift'))) {
+    const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (line.trim().startsWith('//')) return;
+      // 声明成 CF 引用类型的变量
+      const decl = line.match(/var (\w+)\s*:\s*(CFString|CFArray|CFDictionary|CFURL)\b/);
+      if (decl) bad.push(`${f}:${i + 1} 把 ${decl[1]} 声明成裸 ${decl[2]}`);
+    });
+  }
+  assert.deepStrictEqual(bad, [],
+    `${bad.join('; ')}\n`
+    + '    ⟹ CoreFoundation 引用类型要用 `Unmanaged<CFString>?` 接收，\n'
+    + '       再 `takeRetainedValue()`（copy 语义）或 `takeUnretainedValue()`（get 语义）。\n'
+    + '    ⚠️ 用 `&裸CFString变量` 时 swiftc **只给警告**，而后果是**静默失效**：\n'
+    + '       读出来是空 ⟹ 下游每一步都 noErr 而功能是死的（探针 2 零回调就是这个）');
+});
+
 check('Swift 里没有嵌套三元拼字符串（编译器会超时）', () => {
   const dir = path.join(__dirname, '..', 'native');
   const bad = [];

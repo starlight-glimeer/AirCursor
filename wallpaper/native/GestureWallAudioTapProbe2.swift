@@ -93,16 +93,59 @@ if tapErr != noErr || tapID == AudioObjectID(kAudioObjectUnknown) {
 // **不用 defer**：`exit()` 会跳过 defer，而 fail() 里就是 exit。
 createdTap = tapID
 
-// tap 的 UID —— 挂到 aggregate device 上要用它
+// tap 的 UID —— 挂到 aggregate device 上要用它。
+//
+// ⚠️⚠️⚠️ **这一段是探针 2 第一版零回调的根因。**
+//
+// 我原来写的是：
+//     var tapUID: CFString = "" as CFString
+//     AudioObjectGetPropertyData(tapID, &addr, 0, nil, &size, &tapUID)
+//
+// swiftc 给了警告（用户 2026-08-01 真机看到的）：
+//     warning: forming 'UnsafeMutableRawPointer' to a variable of type 'CFString';
+//     this is likely incorrect because 'CFString' may contain an object reference
+//
+// ⟹ `&tapUID` 取的是**Swift 变量本身的地址**，而 `CFString` 是引用类型
+//    （变量里存的是指针）。CoreAudio 要往那里写一个 `CFStringRef`，
+//    而它写进去之后 Swift 这边的 ARC 语义已经乱了 ⟹ 读出来是垃圾/空。
+//
+// ⚠️⚠️ 而后果**不是崩溃，是静默失效**：
+//   UID 是空的 ⟹ aggregate device 挂了一个**不存在的 tap**
+//   ⟹ 建设备成功（`noErr`）、挂 IOProc 成功、`AudioDeviceStart` 成功
+//   ⟹ 但那个设备**没有任何输入源** ⟹ **回调一次都不触发**
+//
+//   观测到的正是这个：`callbacks: 0`，而每一步的错误码都是 0。
+//
+// ⚠️ 这是这个项目的**第三个「API 返回成功但不工作」**：
+//   ① `addGlobalMonitorForEvents` 返回非 nil 但零回调（NSApplication 没初始化）
+//   ② `Timer.scheduledTimer` 注册成功但不触发（没有主 RunLoop）
+//   ③ 这次：aggregate device 建成功但没有源
+//   ⟹ 共同点：**每一步都 noErr，而功能是死的** ⟹ 只查返回码不够，
+//      必须有"真的读到数据了吗"这一层观测（这个探针就是为此存在的）。
+//
+// ⟹ 正解：用 `Unmanaged<CFString>` 接收 —— 那是"CoreFoundation 对象指针"
+//    在 Swift 里的正确类型，`takeRetainedValue()` 再交给 ARC。
 var tapUIDAddr = AudioObjectPropertyAddress(
     mSelector: kAudioTapPropertyUID,
     mScope: kAudioObjectPropertyScopeGlobal,
     mElement: kAudioObjectPropertyElementMain
 )
-var tapUID: CFString = "" as CFString
-var uidSize = UInt32(MemoryLayout<CFString>.size)
-let uidErr = AudioObjectGetPropertyData(tapID, &tapUIDAddr, 0, nil, &uidSize, &tapUID)
+var uidRef: Unmanaged<CFString>?
+var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+let uidErr = AudioObjectGetPropertyData(tapID, &tapUIDAddr, 0, nil, &uidSize, &uidRef)
 if uidErr != noErr { fail("读 tap UID", uidErr) }
+// ⚠️ `kAudioTapPropertyUID` 是 **copy** 语义（调用方拥有）⟹ takeRetainedValue。
+// 用 takeUnretainedValue 会过度释放 ⟹ 崩溃或用后即焚。
+guard let uidRefValue = uidRef else {
+    fail("读 tap UID", -1, "UID 是 nil —— 那正是上一版静默失效的形态")
+    exit(1)
+}
+let tapUID = uidRefValue.takeRetainedValue()
+// ⚠️ **UID 不能是空串** —— 空 UID 的 aggregate device 会"建成功但没有源"，
+// 而那就是零回调。⟹ 这里挡住它，让失败变成可见的错误而不是静默。
+if (tapUID as String).isEmpty {
+    fail("读 tap UID", -2, "UID 是空串 ⟹ aggregate device 会没有输入源（零回调）")
+}
 
 // ── 2. 建 aggregate device，把 tap 挂进去 ───────────────────────────────
 //
