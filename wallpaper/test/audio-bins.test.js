@@ -32,6 +32,25 @@ const SWIFT = path.join(__dirname, '..', 'native', 'GestureWallAudio.swift');
 const swiftSrc = fs.readFileSync(SWIFT, 'utf8');
 const swiftCode = swiftSrc.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 
+// ⚠️⚠️⚠️ **剥注释后再查代码。这一轮我因为漏了这一步，反向验证三次假阴性。**
+//
+// 形状：守卫写 `assert.match(main, /sticky/)`，而 `sticky` 这个词**也出现在注释里**
+// ⟹ 把字段改名成 `stickyX` 后断言照样绿 ⟹ **守卫没有判别力**。
+//
+// 三次分别是：`multiPct`（改名后绿）、`rawFrames`（改名后绿）、
+// `音乐本身的瞬态`（删掉面板文案后绿，因为注释里也写了这句）。
+// ⚠️ 而 `gating.test.js` 里**早就有 `codeOnly`**（第 176 行）——
+// 我在这个文件里重复造了三次同样的洞，而解药在隔壁文件里躺着。
+// ⟹ 教训：**写守卫前先看隔壁的守卫怎么写的**（"改前查兄弟分支"的同一个形状）。
+//
+// ⚠️ 注意 Swift 侧的 `swiftCode` 一开始就做了这件事，只有 JS 侧漏了。
+function codeOnly(source) {
+  return source.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+}
+// 三个 JS 源的"只有代码"版本 —— 查"有没有这个字段/文案"一律用它们
+const mainCode = () => codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8'));
+const dashCode = () => codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
 console.log('\nWE 音频算法');
 
 console.log('\n  五个步骤，每个都有出处');
@@ -463,7 +482,7 @@ check('自检报出全部观测量（宽度/峰值/邻域都还在）', () => {
 });
 
 check('自检结果送到面板（打包版没有终端）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   assert.match(main, /onSelfTest/, '主进程没接自检回调');
   // ⚠️ 切到块尾，不用固定长度 —— 我往这个回调里加了"稳态跳变"的判断，
   // 900 字符的切片就把断言要找的东西推走了 ⟹ 在正确代码上报红。
@@ -473,8 +492,14 @@ check('自检结果送到面板（打包版没有终端）', () => {
   assert.match(block, /broadcast\('helper-log'/,
     '自检结果只写 console ⟹ 打包版里看不到（这是我这轮第五次踩这个）');
   // 要给出判断，不只报数字
-  assert.match(block, /窗函数或 stride/,
-    '不说"这个数不对意味着什么" ⟹ 用户拿到数字也不知道下一步');
+  // ⚠️ 这条断言原来查 `/窗函数或 stride/`，而**剥注释后才发现它一直是假阴性**：
+  // 我改判据时把代码里那句删了（窗已经不存在了），只剩注释在解释历史
+  // ⟹ 守卫一直绿，而面板实际上少了"这个数不对该查什么"的指引。
+  // ⟹ 改成查现在真实的那句。
+  assert.match(block, /峰值位置不对 = 频率映射错了/,
+    '不说"这个数不对意味着什么" ⟹ 用户拿到数字也不知道下一步。'
+    + '⚠️ 而这句话要跟着判据改 —— 判据换了而提示没换，会把用户指向错的方向'
+    + '（他 0.9.13 就同时看到「比值 2.00 ✅」和一句说"窗函数有问题"的提示）');
 });
 
 
@@ -520,7 +545,7 @@ check('FFT 尺度自检的理论基准 = 手写 DFT 的真实峰值', () => {
     + '这个数是用户会看到的**分母** ⟹ 它错了，比值就错，'
     + '而我会照着一个错的比值去改代码');
   // 判断阈值要能分开 1 和 2（那是两个相反的结论）
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   assert.match(main, /scaleRatio/, '面板没显示尺度比值 —— 那用户看不到，等于没测');
   assert.match(main, /别乘 0\.5/,
     '面板只说了"该乘 0.5"没说"别乘" ⟹ 比值≈1 时用户拿不到"不要改"这个结论，'
@@ -572,7 +597,7 @@ check('VDSP_SCALE = 0.5，且注释里带真机实测出处', () => {
 // 否则正确的代码会一直报 ⚠️，而用户看到 ⚠️ 就会以为没修好 ——
 // 那比没有判据更坏（我这一轮已经因为"恒绿的守卫"栽过一次，这次是恒红）。
 check('自检判据适配矩形窗（不再要求主瓣窄、主瓣外干净）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   const at = main.indexOf('onSelfTest');
   const block = main.slice(at, main.indexOf('\n    },', at));
   assert.ok(!/segsAboveQuarter\s*[<>]=?\s*\d/.test(block),
@@ -605,7 +630,7 @@ check('自检判据适配矩形窗（不再要求主瓣窄、主瓣外干净）'
 //
 // ⟹ 分段必须按 band（前半 64 就够，后半镜像一模一样）。
 check('面板的低频/高频按 band 取，不是按镜像后的段号', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   // ⚠️ 切到**结构边界**，不用固定长度 —— 我刚写这条守卫时用了
   // `slice(at, at + 400)`，而那被"禁止固定长度切片"那条守卫当场逮到
   //（它只挡增长，基线 22 处，我一加就变 23）。
@@ -622,7 +647,7 @@ check('面板的低频/高频按 band 取，不是按镜像后的段号', () => 
       + `段 ${to - 1} 实际是 band ${127 - (to - 1)}。`
       + '按段号分低高频在镜像下必然报错的结论（用户 0.9.14 就看到"像白噪声"）');
   }
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const dash = dashCode();
   assert.ok(!/高频段\(80-119\)/.test(dash),
     '面板还在显示"高频段(80-119)" —— 那个区间是 band 47..8，不是高频');
 });
@@ -652,7 +677,7 @@ check('面板的低频/高频按 band 取，不是按镜像后的段号', () => 
 // ⟹ **先量后改。** 这一轮我因为"没量就改"被推翻十一次，
 //    而 VDSP_SCALE 是第一个先量后改的 —— 一量就精确命中 2.00。
 check('面板报动态范围和输入电平（"该不该降幅度"的依据）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   assert.match(main, /\bdynRange\b/,
     '没报动态范围 —— 那是"柱子太长/太平"的量化判据（真 WE 预览图约 4.4 倍）');
   assert.match(main, /\binputRMS\b/,
@@ -662,7 +687,7 @@ check('面板报动态范围和输入电平（"该不该降幅度"的依据）',
   const swift = swiftSrc;
   assert.match(swift, /vDSP_rmsqv/, 'Swift 没算 RMS');
   assert.match(swift, /"rms"/, 'Swift 算了 RMS 但没发出来 —— 算了不发等于没有');
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const dash = dashCode();
   assert.match(dash, /\binputRMS\b/, '面板没显示输入电平 ⟹ 用户看不到 = 等于没测');
   assert.match(dash, /\bdynRange\b/, '面板没显示动态范围');
   // ⚠️ 两个方向的结论都要写在面板上，包括"不是实现问题" ——
@@ -788,7 +813,7 @@ check('不做空间平滑（相邻段差大是音乐常态，WE 也一样）', (
 check('报帧节奏（判 push 模型的批大小抖动）', () => {
   assert.match(swiftSrc, /framesThisCall/, 'Swift 没数一次回调发几帧');
   assert.match(swiftSrc, /"nth"/, '数了但没发出来 —— 算了不发等于没有');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   assert.match(main, /\bframeRhythm\b/, '主进程没统计帧节奏');
   // ⚠️ 必须统计**分布**而不是记最后一个值 ——
   // "最后一次是 1" 和 "平均 1.02" 是完全不同的结论，
@@ -800,12 +825,58 @@ check('报帧节奏（判 push 模型的批大小抖动）', () => {
   assert.match(main, /multiPct:\s*Number\(/,
     '没统计"发多帧的比例" —— 只记最后一个值分不出节奏稳不稳'
     + '（"最后一次是 1"和"平均 1.02"是完全不同的结论）');
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const dash = dashCode();
   assert.match(dash, /\bmultiPct\b/, '面板没显示 ⟹ 用户看不到 = 等于没测');
   // 两个方向的结论都要在面板上，包括"不是这个原因"
   assert.match(dash, /不是这个原因/,
     '面板只说了"节奏不稳"没说"节奏稳 ⟹ 不是这个原因" ⟹ '
     + '那种情况用户拿不到"这条假设作废"的结论');
+});
+
+// ⚠️⚠️⚠️ **孤峰要看"在多帧里稳不稳"，不是单帧的位置。**
+//
+// 用户 0.9.16：「有些本来应该是一个高峰的，很突兀，就是一个噪点一样，
+// 波浪那个壁纸尤为明显」。而他 0.9.14 的读数里已经有证据：
+//   段21=0.446  **段22=0.736**  段23=0.367  ⟹ 段 22 比两边都高 = **单段孤峰**
+//
+// ⚠️ 我上一轮那条「相邻段隔 94Hz、差 2 倍是常态」解释的是**单调渐变**
+//（0.7→0.5→0.35），而孤峰是 0.45→0.74→0.37 ⟹ **答错了问题**。
+//
+// ⚠️⚠️ 而"孤峰"有两个完全不同的结论，需要不同的处理：
+//   固定在同几段 ⟹ **结构性**（我们这层的 bug，要改）
+//   位置乱跳     ⟹ 音乐本身的瞬态（WE 也一样，不该改）
+// ⟹ **只看一帧分不出来**，所以必须统计多帧的稳定性。
+//
+// ⚠️ 我为这个现象试过两条路，都在云端被自己否掉了：
+//   ① 8-bit 量化假设（WE 的输入精度只有 1/128 ⟹ 有量化噪声垫底）
+//      → 云端实测：量化前后**完全一样**（孤峰数、踩地板数都相同）⟹ **证伪**
+//   ② 合成"像音乐"的信号复现 → 跑出"45/64 段踩地板"，以为找到根因
+//      → 而用户实测的 9 个采样点**一个 0 都没有** ⟹ 真实音乐下谱是满的
+//      ⟹ **合成信号的结论不适用**（我造不出连续谱：真音乐的打击乐/齿音/混响
+//         都是宽带的，我的合成是 14 个纯正弦 + 白噪，其余 bin 全靠泄漏）
+//
+// ⟹ 判"孤峰是不是真的"**只能用真实帧** ⟹ 留环形缓冲 + 报稳定性。
+check('孤峰按多帧稳定性统计（分辨结构性 vs 音乐瞬态）', () => {
+  const main = mainCode();
+  assert.match(main, /\brawFrames\b/,
+    '没留原始帧 ⟹ 孤峰只能靠 9 个抽样点看，而孤峰的定义需要**连续**的段');
+  assert.match(main, /spikeProfile:/, '没报孤峰画像');
+  // ⚠️ 必须报**多帧的稳定性**，只报位置分不出两个结论
+  assert.match(main, /sticky:/,
+    '没判"孤峰是否固定在同几段" ⟹ 分不出"结构性 bug"和"音乐瞬态"，'
+    + '而那两个结论一个要改代码、一个不能改');
+  assert.match(main, /rawFrames\.length \* 0\.5|rawFrames\.length >= 10/,
+    'sticky 的判据没挂在帧数上 ⟹ 一两帧就下结论');
+  const dash = dashCode();
+  assert.match(dash, /\bspikeProfile\b/, '面板没显示 ⟹ 用户看不到 = 等于没测');
+  // 两个方向的结论都要在面板上
+  assert.match(dash, /音乐本身的瞬态/,
+    '面板只说了"结构性问题"没说"是音乐瞬态、不该改" ⟹ '
+    + '那种情况用户拿不到"这条不用管"的结论');
+  // 原始帧也要进诊断报告 —— 那样我能在云端重放真实数据而不是再合成一个假的
+  assert.match(main, /audioFrames:/,
+    '诊断报告里没有原始帧 ⟹ 我只能继续在云端合成信号，'
+    + '而合成信号已经骗过我一次（45/64 踩地板 vs 用户实测一个 0 都没有）');
 });
 
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
@@ -868,12 +939,14 @@ check('自检量稳态跳变（纯音的频谱该是光滑钟形）', () => {
   assert.match(fn, /maxJump/,
     '不量稳态跳变 ⟹ 分不清"尖刺来自我们这一层"和"来自音乐的瞬态"。'
     + '纯音是稳态的，它的频谱该是光滑钟形 ⟹ 跳变大就说明问题在分箱/平滑');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const main = mainCode();
   // ⚠️ 判据的文案改过一次（第一版看全局跳变，必然误报）——
   // 断言锚在"结论"而不是某句具体的话。
   assert.match(main, /主瓣外/,
     '面板不解释那个数意味着什么 ⟹ 用户拿到数字也不知道结论');
-  assert.match(main, /尖刺来自分箱\/平滑|尖刺来自音乐/,
+  // ⚠️ 同上，这条也是剥注释后暴露的假阴性：原文案「尖刺来自分箱/平滑」
+  // 是 Hann 时代的判据，删窗时换成了"主瓣外平缓 ⟹ 矩形窗的泄漏"。
+  assert.match(main, /主瓣外平缓|主瓣外跳变大/,
     '不给结论 ⟹ 那个数字要用户自己判断');
 });
 

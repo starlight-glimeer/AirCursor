@@ -1242,6 +1242,23 @@ function renderAudioFrame(frame) {
     // WE 是 pull 模型（渲染循环主动读）⟹ 节奏恒定；
     // 我们是 push（有多少发多少）⟹ 一次回调连发多帧时 movetowards 连做多次
     // 而时间没走 ⟹ 平滑速度漂，且前面那些帧被 PWCircle 的重绘覆盖 = 等效跳帧。
+    // **孤峰**（比左右邻居高 30% 以上）—— 用户 0.9.16 报的「突兀的高、像噪点」。
+    //
+    // 为什么要报"在 60 帧里出现几次"而不只报位置：
+    //   每帧都在同一段 ⟹ **结构性**问题（我们这一层的 bug）
+    //   位置乱跳       ⟹ 音乐本身的瞬态（WE 也一样，不该改）
+    // 那两个结论一个要改代码、一个不能改，而只看一帧分不出来。
+    + (frame.spikeProfile
+      ? `<br>孤峰：<b>${frame.spikeProfile.count}</b> 个（比邻居高 30%+）`
+        + (frame.spikeProfile.top.length
+          ? `　最常出现：${frame.spikeProfile.top.map(
+            (t) => `第${t.seg}段(${t.n}/${frame.spikeProfile.frames}帧)`,
+          ).join('　')}`
+          : '')
+        + `${frame.spikeProfile.sticky
+          ? ' ⚠️ 固定在同几段 ⟹ 结构性问题，是我们这层'
+          : ' ✅ 位置在变 ⟹ 音乐本身的瞬态（WE 也一样）'}`
+      : '')
     + (frame.rhythm
       ? `<br>帧节奏：一次回调发多帧的比例 <b>${frame.rhythm.multiPct}%</b>`
         + `（最多 ${frame.rhythm.max} 帧）　每批采样 ${frame.rhythm.batchAvg}`

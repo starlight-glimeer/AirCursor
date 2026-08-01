@@ -2927,8 +2927,20 @@ check('频谱上报带尖刺量化（相邻段跳变）', () => {
     '没报尖刺 ⟹ "很多个高度差很大的柱子"只能靠用户描述，'
     + '而我为它猜了两次都错');
   assert.match(src, /avgJump/, '没报平均跳变 —— 那是整体连续性的判据');
-  const i = src.indexOf('spikes:');
-  const block = src.slice(i, i + 700);
+  // ⚠️⚠️ **锚点撞名**：我后来在 `export-diagnostics` 的报告里也加了一个
+  // `spikes:` 字段（统计 60 帧原始帧里的孤峰），而它在文件里**更靠前**
+  // ⟹ `indexOf('spikes:')` 找到的是**那一个**，切片里当然没有 `prev:`
+  // ⟹ **在正确的代码上报红**。
+  //
+  // ⚠️ 这不是"切片太短"（那是我这一轮栽过四次的形状，我第一反应又是它）——
+  // 是**同名字段出现在两处**。加长切片治不了，`indexOf` 还是找错那个。
+  // ⟹ 教训：位置锚要锚在**唯一**的东西上。这里用 `reportAudioFrame` 这个
+  //    函数名定位，再在函数体内找 —— 函数名是唯一的。
+  const fnAt = src.indexOf('function reportAudioFrame');
+  assert.ok(fnAt >= 0, '找不到 reportAudioFrame —— 改名了？');
+  const fnEnd = src.indexOf('\nfunction ', fnAt + 10);
+  const block = src.slice(fnAt, fnEnd > 0 ? fnEnd : undefined);
+  assert.match(block, /spikes:/, 'reportAudioFrame 里没有 spikes');
   // 要报前后值 —— 分辨"这段太高"和"旁边太低"
   assert.match(block, /prev:/,
     '只报跳变大小不报前后值 ⟹ 分不清是"这段异常高"还是"旁边异常低"');

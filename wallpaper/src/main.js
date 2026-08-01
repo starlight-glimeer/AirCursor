@@ -2557,6 +2557,47 @@ ipcMain.handle('export-diagnostics', () => {
   const report = {
     v: 1,
     at: new Date().toISOString(),
+    // **音频原始帧**：最近 60 帧的 128 段序列 + 孤峰统计。
+    //
+    // 为什么在报告里而不是面板上：孤峰要看**连续的段**（"比左右邻居高 30%"），
+    // 而面板只报 9 个抽样点 => 看不出孤峰。而我在云端合成信号复现失败过
+    //（合成的谱有 45/64 段踩地板，用户实测一个 0 都没有）
+    // => 判"孤峰是不是真的"只能用真实帧。
+    audioFrames: rawFrames.length ? {
+      count: rawFrames.length,
+      // 孤峰：比左右邻居都高 30% 以上。统计它在 60 帧里**出现的稳定性** ——
+      // 每帧都在同一段 = 结构性问题；位置乱跳 = 音乐本身的瞬态。
+      spikes: (() => {
+        const bySeg = new Map();
+        for (const f of rawFrames) {
+          for (let i = 1; i < 63; i += 1) {
+            if (f[i] > f[i - 1] * 1.3 && f[i] > f[i + 1] * 1.3 && f[i] > 0.15) {
+              const e = bySeg.get(i) || { seg: i, n: 0, maxV: 0, sample: null };
+              e.n += 1;
+              if (f[i] > e.maxV) {
+                e.maxV = f[i];
+                e.sample = [f[i - 2], f[i - 1], f[i], f[i + 1], f[i + 2]];
+              }
+              bySeg.set(i, e);
+            }
+          }
+        }
+        return [...bySeg.values()].sort((x, y) => y.n - x.n).slice(0, 12);
+      })(),
+      // 有多少段踩地板（输出恒 0）—— 折线壁纸下那是"平地拔起的刺"的成因
+      floorSegs: (() => {
+        const counts = new Array(64).fill(0);
+        for (const f of rawFrames) {
+          for (let i = 0; i < 64; i += 1) if (f[i] === 0) counts[i] += 1;
+        }
+        return {
+          alwaysZero: counts.filter((c) => c === rawFrames.length).length,
+          everZero: counts.filter((c) => c > 0).length,
+        };
+      })(),
+      // 前 3 帧的完整序列 —— 让我能在云端重放，而不是再合成一个假信号
+      raw: rawFrames.slice(0, 3),
+    } : null,
     app: {
       version: app.getVersion(),
       // ⚠️ packaged 必须在最前面：它决定权限类结论是否可信
@@ -2952,6 +2993,34 @@ function reportAudioFrame(data, source) {
     // ⚠️ 帧节奏 —— 判"柱子突兀的长"是不是 push 模型的批大小抖动。
     //   multiPct ≈ 0  ⟹ 一次回调只发一帧 ⟹ 节奏稳 ⟹ **这条假设作废，别改**
     //   multiPct 明显 >0 ⟹ 连发多帧，间隔几微秒 ⟹ 平滑速度随批大小漂
+    // 孤峰画像 —— 判"突兀的柱子"是结构性的还是音乐的瞬态。
+    // ⚠️ 关键是**在多帧里的稳定性**，不是单帧的位置：
+    //   固定在同几段 ⟹ 结构性（我们这层的 bug）
+    //   位置乱跳     ⟹ 音乐的瞬态（WE 也一样，不该改）
+    // 只看一帧分不出来，而那两个结论一个要改代码、一个不能改。
+    spikeProfile: rawFrames.length >= 10 ? (() => {
+      const bySeg = new Map();
+      let total = 0;
+      for (const f of rawFrames) {
+        for (let i = 1; i < 63; i += 1) {
+          if (f[i] > f[i - 1] * 1.3 && f[i] > f[i + 1] * 1.3 && f[i] > 0.15) {
+            bySeg.set(i, (bySeg.get(i) || 0) + 1);
+            total += 1;
+          }
+        }
+      }
+      const top = [...bySeg.entries()]
+        .map(([seg, n]) => ({ seg, n }))
+        .sort((a, b) => b.n - a.n)
+        .slice(0, 3);
+      return {
+        frames: rawFrames.length,
+        count: Number((total / rawFrames.length).toFixed(1)),
+        top,
+        // 最常出现的那段占了一半以上的帧 ⟹ 固定 ⟹ 结构性
+        sticky: top.length > 0 && top[0].n > rawFrames.length * 0.5,
+      };
+    })() : undefined,
     rhythm: frameRhythm.total > 0 ? {
       multiPct: Number((frameRhythm.multi / frameRhythm.total * 100).toFixed(1)),
       max: frameRhythm.max,
@@ -3277,6 +3346,21 @@ let lastAudioSilentAt = 0;
 let lastInputRMS = 0;
 // 帧节奏统计（判"突兀的柱子"是不是 push 模型的批大小抖动造成的）
 let frameRhythm = { total: 0, multi: 0, max: 0, batchSum: 0, batchMax: 0 };
+// 最近 N 帧的原始 128 段序列。**用户报"孤峰/噪点"时我需要的真值。**
+//
+// 为什么必须留原始帧：用户 0.9.16 报「有些柱子突兀的高，像噪点」，
+// 而我在云端**合成了"像音乐"的信号去复现**，跑出"45/64 段踩地板"
+// 就以为找到了根因。而他的实测采样点 `[0]0.414 [10]0.317 … [119]0.4`
+// **一个 0 都没有** => 真实音乐下谱是满的 => **合成信号的结论不适用**。
+//
+// => 我造不出像真音乐的信号（真音乐是连续谱：打击乐/齿音/混响都是宽带的，
+//    而我的合成是 14 个纯正弦 + 白噪，其余 bin 全靠泄漏）。
+// => 判"孤峰是不是真的"只能用真实帧，而面板的 9 个采样点看不出孤峰
+//    （孤峰的定义是"比左右邻居高 30%"，需要**连续**的段）。
+//
+// 环形缓冲 60 帧（约 1.3 秒）—— 够看清一个孤峰是稳定存在还是一帧的抖动。
+const RAW_FRAMES_CAP = 60;
+const rawFrames = [];
 // 被闸门丢掉的帧数，按 owner 分。⚠️ 报到面板用 —— 打包版看不到终端。
 const droppedFrames = {};
 
@@ -3352,6 +3436,11 @@ function pushWEAudio(frame, meta) {
   const result = WE.normalizeAudioFrame(frame);
   // ⚠️ 走闸门 —— 音源已经切走时这一帧会被丢掉（并报一次）。
   if (!sendAudioFrame(result.data, 'capture')) return;
+  // 留原始帧给诊断报告用。**在闸门之后** —— 只留真的送出去了的那些，
+  // 否则报告里会混进被丢掉的帧，而那正是我上一轮误判的形状：
+  //「状态行说扫描在工作，而它的帧被闸门丢了」。
+  rawFrames.push(result.data.map((v) => Number(v.toFixed(4))));
+  if (rawFrames.length > RAW_FRAMES_CAP) rawFrames.shift();
   // ⚠️ 把真实频谱抽样送到面板。**这是我早就该做的事。**
   //
   // 我为"幅度/形状不对"改了三轮参数，而**从没看过那 128 个数长什么样** ——
