@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('gw', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   setConfig: (patch) => ipcRenderer.invoke('set-config', patch),
 
+  // ⚠️⚠️ 用户点了启动页、进主界面了（0.9.48）。
+  // 骨架层靠这个信号才建 —— 它是 alwaysOnTop:'screen-saver' 的独立窗口，
+  // 会压在启动页上（用户报过：「登录界面啥都没点的时候，我都能看到我手的骨架」）。
+  // ⚠️ 0.9.47 是用 setTimeout(2600) 挡的，而 0.9.48 撤掉了自动进入 ⟹
+  // 启动页会**停留到用户点击为止**（可能几分钟），定时器就挡不住了。
+  launchDismissed: () => ipcRenderer.invoke('launch-dismissed'),
+
   // 三层图片
 
   // 图库

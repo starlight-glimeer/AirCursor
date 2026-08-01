@@ -4065,6 +4065,7 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const main = codeOnly(mainSrc);
+  const preloadSrc = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8'));
 
   // ① hiddenInset 和给红绿灯让位的 padding 是**成对**的。
   //    只设 titleBarStyle：红绿灯压在 brand 上。
@@ -4109,6 +4110,11 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   // 最小化要能唤回（最小化状态下 show() 不恢复窗口）
   assert.match(main, /isMinimized\(\)[\s\S]{0,80}?restore\(\)/,
     '没处理最小化状态 ⟹ 缩到 Dock 之后点图标/⌃⇧W 唤不回来');
+  // ⚠️⚠️ **点 Dock 图标要能唤回** —— macOS 发的是 `activate`，Electron 不会
+  // 自动帮我们恢复窗口。这是 0.9.47 漏的一块：撤掉 dock.hide() 之后图标回来了，
+  // 但点它没反应 ⟹ 那正是用户说的"App 和 GUI 中间这个状态不一致"的最后一块。
+  assert.match(main, /app\.on\('activate'/,
+    "没处理 'activate' ⟹ 点 Dock 图标窗口不回来，只能靠 ⌃⇧W（标准 Mac 应用必须有）");
 
   // ③ 启动页背景（0.9.47 = 极光，不再是点+连线）
   assert.match(html, /id="launch-particles"/, '启动页没有背景 canvas');
@@ -4152,18 +4158,32 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   assert.match(dash, /cancelAnimationFrame\(launchRAF\)/,
     '进主界面后没停粒子的 requestAnimationFrame ⟹ 常驻应用里白烧 CPU');
 
-  // ④ 三个时长必须**成对递增**：CSS 进度条 < JS 自动进入 < 骨架层出现。
-  //    任何一个单独改都不报错，症状分别是"条走完还卡着"/"条没走完就切了"/
-  //    "骨架压在启动页上"或"手势开着但没骨架"。
-  const cssMs = Number((html.match(/animation:\s*launchLoad\s+([\d.]+)s/) || [])[1]) * 1000;
-  const jsMs = Number((dash.match(/setTimeout\(enterApp,\s*(\d+)\)/) || [])[1]);
-  const overlayMs = Number((main.match(/syncOverlayVisibility\(\);\s*\n\s*\},\s*(\d+)\)/) || [])[1]);
-  assert.ok(cssMs > 0 && jsMs > 0 && overlayMs > 0,
-    `三个时长没都读到（css=${cssMs} js=${jsMs} overlay=${overlayMs}）⟹ 断言失效`);
-  assert.ok(jsMs >= cssMs,
-    `自动进入(${jsMs}ms)早于进度条走完(${cssMs}ms) ⟹ 条还没满就切走了`);
-  assert.ok(overlayMs > jsMs,
-    `骨架层(${overlayMs}ms)不晚于进入主界面(${jsMs}ms) ⟹ 骨架会压在启动页上`);
+  // ④⚠️⚠️ **没有强制等待**（0.9.48）。用户 2026-08-01：
+  //   「开局什么强行等待呀，然后什么点击跳过这些都不要…设计上应该是出现主界面，
+  //     然后你点一下进去，不用强行让用户等这个时间」
+  //
+  // 0.9.46 加的那条 2.2s 进度条是**假进度**（我们没有可测的加载阶段），
+  // 而代价是每次启动真的等 2.2 秒。⟹ 这几条断言是**反向**的。
+  assert.ok(!/setTimeout\(enterApp/.test(dash),
+    '又加了自动进入启动页的定时器 ⟹ 用户点名不要强制等待');
+  assert.ok(!/launchLoad/.test(html),
+    '又加了假进度条动画 ⟹ 我们没有可测的加载阶段，那只是让用户白等');
+
+  // ⑤⚠️⚠️ 骨架层的闸门。0.9.47 用 setTimeout(2600) 挡住"骨架压在启动页上"，
+  // 而 0.9.48 撤掉自动进入之后启动页会**停留到用户点击为止**（可能几分钟）
+  // ⟹ 定时器挡不住了，必须改成等面板信号。
+  assert.match(main, /ipcMain\.handle\('launch-dismissed'/,
+    "没有 'launch-dismissed' 通道 ⟹ 骨架层靠定时器建，而启动页会一直等用户点，那个 bug 会回来");
+  assert.match(dash, /launchDismissed\?\.\(\)|launchDismissed\(\)/,
+    '面板进主界面时没通知主进程 ⟹ 骨架层只能等 20 秒兜底才出现，手势看起来是坏的');
+  assert.match(preloadSrc, /launchDismissed:/,
+    'preload 没暴露 launchDismissed ⟹ 面板调它是 undefined，信号永远发不出去');
+  // ⚠️ 兜底定时器**必须留着** —— 面板 JS 挂了信号永远不来，手势就永久废
+  assert.match(main, /overlayGate = setTimeout\(/,
+    '骨架层没有兜底定时器 ⟹ 面板 JS 一挂手势就永久不可用（比骨架早出现糟得多）');
+  // ⚠️ 放行时要清定时器，否则一切正常也会打出那条 warn
+  assert.match(main, /clearTimeout\(overlayGate\)/,
+    '放行骨架层时没清兜底定时器 ⟹ 正常情况下也会打出"面板可能挂了"的警告');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -1028,6 +1028,26 @@ function syncOverlayVisibility() {
 // IPC
 // ---------------------------------------------------------------------------
 
+// ⚠️⚠️ 骨架层的"闸门"（0.9.48）—— 见 whenReady 里那段注释。
+// 启动页在的时候不建骨架（它会压在启动页上），等面板说"用户进来了"才放行。
+let overlayGate = null;
+
+function releaseOverlayGate() {
+  // ⚠️ 幂等：两条路径都会调（面板信号 + 20 秒兜底定时器），而且面板每次
+  // 重开都会再发一次信号。重复调 syncOverlayVisibility 是安全的
+  //（它自己按 gestures.enabled 建拆），但定时器必须清 —— 不清的话
+  // 20 秒后那条 console.warn 会在一切正常的情况下也打出来，
+  // 而"日志里有警告但其实没事"会让下次排查走错方向。
+  if (overlayGate !== null) { clearTimeout(overlayGate); overlayGate = null; }
+  syncOverlayVisibility();
+}
+
+// 面板：用户点掉启动页了 ⟹ 可以建骨架层。
+ipcMain.handle('launch-dismissed', () => {
+  releaseOverlayGate();
+  return true;
+});
+
 ipcMain.handle('get-config', () => config);
 
 ipcMain.handle('set-config', (_event, patch) => {
@@ -4212,28 +4232,27 @@ app.whenReady().then(() => {
   // 放前面的话第一次切换会从列表开头开始（症状：重启后壁纸跳到第一个）。
   syncRotate();
   openDashboard();
-  // ⚠️⚠️ **骨架层要等启动页放完再建**（0.9.46）。用户 2026-08-01 报：
+  // ⚠️⚠️ **骨架层要等用户离开启动页再建**。用户 2026-08-01 报：
   //   「如果我把那个摄像头默认是开启状态，我刚看到我那个登录界面啥都没点的时候，
   //     我都能看到我手的骨架吧」
   //
   // 根因：骨架层是 `alwaysOnTop: 'screen-saver'` 的独立窗口（那是它的设计 ——
   // 见 ensureOverlay 的注释，它必须盖过一切，否则在最需要它的时刻被挡住），
   // 而启动页只是面板窗口里的一个 div ⟹ 骨架必然压在启动页上。
+  // 这不是"层级设错了"，是**时序**：启动页那段时间骨架没有任何用途。
   //
-  // ⟹ 这不是"层级设错了"，是**时序**：启动页那 2.3 秒里骨架没有任何用途
-  //   （用户还没进主界面，更不可能在录手势），而它出现在那里破坏的正是
-  //   "第一眼看到的是什么"。
+  // ⚠️⚠️ 0.9.47 是 `setTimeout(2600)` 挡的，而 0.9.48 撤掉了"自动进入"
+  // （用户点名不要强制等待）⟹ 启动页会**停留到用户点击为止**，可能几分钟
+  // ⟹ 定时器挡不住了，那个 bug 会原样回来。
+  // ⟹ 改成等面板的 `launch-dismissed` 信号（见 ipcMain.handle）。
   //
-  // ⚠️ 2600ms 对齐 dashboard.js 里 `setTimeout(enterApp, 2300)` + 淡出 .5s 的一半。
-  //    早了会在淡出过程中闪进来，晚了手势会有一段"开着但没骨架"的空窗
-  //    （而那正是这个项目最怕的形状：功能是活的但用户以为死了）。
-  // ⚠️ 用 setTimeout 而不是等面板发信号：面板 JS 挂了的话信号永远不来
-  //    ⟹ 手势永久不可用，而那比"骨架早出现 2 秒"糟得多。
-  //    定时器最坏情况只是早一点，不会永久失效。
-  setTimeout(() => {
-    // syncOverlayVisibility 自己按 gestures.enabled 建拆,不用在这里重复判断。
-    syncOverlayVisibility();
-  }, 2600);
+  // ⚠️ 但**定时器要留着当兜底**：面板 JS 挂了的话信号永远不来 ⟹ 手势永久
+  // 不可用，而那比"骨架早出现"糟得多。20 秒 —— 长到正常用户早就点进去了，
+  // 短到不会让"面板挂了"变成"手势永远坏了"。
+  overlayGate = setTimeout(() => {
+    console.warn('[overlay] ⚠️ 20 秒没收到 launch-dismissed（面板 JS 可能挂了）—— 兜底建骨架层');
+    releaseOverlayGate();
+  }, 20000);
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.
@@ -4332,6 +4351,19 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // 留一个空实现：默认行为是退出，而如果哪天壁纸层意外全没了，
   // 我们不希望应用在那一刻突然自己退掉（那会掩盖真正的问题）。
+});
+
+// ⚠️⚠️ **点 Dock 图标要能唤回窗口**（0.9.48）。
+//
+// 这是 0.9.47 漏的一块：撤掉 dock.hide() 之后 Dock 图标回来了，但**点它没反应** ——
+// macOS 点 Dock 图标发的是 `activate`，Electron 不会自动帮我们恢复窗口。
+// 症状：最小化之后点 Dock 图标，窗口不回来，只能靠 ⌃⇧W。
+// ⟹ 那正是用户一直在说的"App 和 GUI 中间这个状态不一致"的最后一块。
+//
+// ⚠️ openDashboard 自己处理了 isMinimized/restore 和"窗口已销毁就重建"，
+// 所以这里直接调它就够 —— 不要在这里重写一份判断（同一个事实两个来源会漂）。
+app.on('activate', () => {
+  openDashboard();
 });
 // ⚠️ 退出必须**看得见地在发生**，而且不能被任何一步卡住。
 //

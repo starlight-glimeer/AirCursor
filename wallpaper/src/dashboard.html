@@ -35,7 +35,9 @@
      ⟹ 现在启动页有三样东西：
        ① 极光背景（canvas）
        ② logo 的呼吸光晕（text-shadow 动画）
-       ③ 一条走完就进主界面的进度条 —— 用户知道"它在起，不是卡了"
+       ③ 「点击进入」—— ⚠️ 0.9.48 撤掉了原来那条 2.2s 进度条：
+          我们没有可测的加载阶段，那是**假进度**，代价是每次启动真的等 2.2 秒。
+          用户点名不要（「开局什么强行等待呀，然后什么点击跳过这些都不要」）。
 
      ⚠️ 为什么背景用 canvas 而不是纯 CSS：CSS 没有 `lighter` 混色，
      而"叠加处亮起来"正是极光的观感来源（`mix-blend-mode: screen` 要每团一个
@@ -62,10 +64,13 @@
      ⟹ 反过来：中心**微微压暗**，logo 才有对比。这也是"极光在字后面流动"
         而不是"字浮在极光上"的观感来源。
      ⚠️ pointer-events: none，否则它盖住 #launch 的点击。 */
+  /* ⚠️ 0.9.48 把压暗从 .42 减到 .24 —— 极光亮度提了一大截（a .20→.46），
+     原来那个压暗会把中心刚加强的光又吃掉，而中心正是用户第一眼看的地方。
+     logo 的对比靠它自己的 text-shadow 和字重，不需要背景让这么多。 */
   #launch::after {
     content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-    background: radial-gradient(46% 38% at 50% 46%,
-                rgba(4,5,9,.42) 0%, rgba(4,5,9,0) 72%);
+    background: radial-gradient(52% 42% at 50% 46%,
+                rgba(4,5,9,.24) 0%, rgba(4,5,9,0) 76%);
   }
   #launch.gone { opacity: 0; pointer-events: none; }
   #launch .wrap { text-align: center; position: relative; z-index: 2; }
@@ -80,21 +85,6 @@
     0%, 100% { text-shadow: 0 0 18px rgba(108,199,255,.16); }
     50%      { text-shadow: 0 0 34px rgba(108,199,255,.42); }
   }
-  /* 进度条：细、宽度固定、居中。走完 → 自动进主界面。
-     ⚠️ 它不是真进度（我们没有可测的加载阶段）—— 是**一段固定时长的过场**。
-     那仍然比"点击进入"好：用户不需要做动作，而且它明确表示"在起"。
-     ⚠️ 但「点击进入」要**保留** —— 不耐烦的人（比如来回测试的我们）
-     能立刻跳过。两条路径都通到同一个 enter()。 */
-  #launch .track {
-    width: 190px; height: 2px; margin: 34px auto 0;
-    background: rgba(255,255,255,.10); border-radius: 2px; overflow: hidden;
-  }
-  #launch .track i {
-    display: block; height: 100%; width: 0;
-    background: linear-gradient(90deg, rgba(108,199,255,.5), #6cc7ff);
-    animation: launchLoad 2.2s ease-out forwards;
-  }
-  @keyframes launchLoad { to { width: 100%; } }
   /* build 标识：小、灰，但必须**清晰可读** —— 它是来回测试时核对版本的唯一依据，
      看不清等于没有。所以不用 .hint 的默认色，单独定一个。 */
   /* 分组标题（project.json 里 type=text 的项）。⚠️ 不是装饰 —— 作者用它把
@@ -119,10 +109,10 @@
     margin-top: 14px; font-size: 11px; letter-spacing: .34em;
     text-transform: uppercase; color: var(--dim);
   }
-  /* 「点击进入」改成进度条下面一行更轻的提示 —— 它现在是**可选**的快捷路径
-     （进度条走完会自动进），所以不该像原来那样是唯一的行动号召。 */
+  /* ⚠️ 0.9.48 撤掉了进度条（假进度 + 强制等待 2.2s，用户点名不要）
+     ⟹ 「点击进入」重新成为唯一的行动号召，间距和字号跟着调回来。 */
   #launch .go {
-    margin-top: 16px; font-size: 11px; color: rgba(232,232,238,.34);
+    margin-top: 44px; font-size: 12px; color: rgba(232,232,238,.42);
     animation: breathe 2.6s ease-in-out infinite;
   }
   @keyframes breathe { 0%,100% { opacity: .4 } 50% { opacity: .95 } }
@@ -461,8 +451,7 @@
   <div class="wrap">
     <h1>Gesture<b>Wall</b></h1>
     <div class="sub">gesture music wallpaper</div>
-    <div class="track"><i></i></div>
-    <div class="go">点击跳过</div>
+    <div class="go">点击进入</div>
   </div>
 </div>
 
