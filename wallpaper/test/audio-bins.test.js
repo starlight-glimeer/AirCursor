@@ -596,6 +596,97 @@ check('自检判据适配矩形窗（不再要求主瓣窄、主瓣外干净）'
     '⟸ 提示还在说"窗函数有问题" —— 窗已经删了，那句话指向错的方向');
 });
 
+// ⚠️⚠️⚠️ **面板的"低频/高频"口径在镜像之后错了 —— 这条守卫锁住它。**
+//
+// 用户 0.9.14 看到「⚠️ 低高频差不多 —— 大概是白噪声或者加权把差异抹平了」，
+// **那句话是我的口径错，不是数据的事**（他在放正常音乐）：
+//   镜像下段 i 对应 band `i<64 ? i : 127-i`
+//   ⟹ 面板取的"高频段(80-119)"实际是 **band 47..8 = 中低频**
+//
+// ⟹ 分段必须按 band（前半 64 就够，后半镜像一模一样）。
+check('面板的低频/高频按 band 取，不是按镜像后的段号', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  // ⚠️ 切到**结构边界**，不用固定长度 —— 我刚写这条守卫时用了
+  // `slice(at, at + 400)`，而那被"禁止固定长度切片"那条守卫当场逮到
+  //（它只挡增长，基线 22 处，我一加就变 23）。
+  // ⟹ 自己的守卫抓自己，这次它对了：往 lowMean 上面加注释就会把切片撑走。
+  const at = main.indexOf('lowMean:');
+  const block = main.slice(at, main.indexOf('dynRange:', at));
+  // 两个切片都必须落在前半 64（band 区间），不能跨到镜像那半
+  const slices = [...block.matchAll(/arr\.slice\((\d+),\s*(\d+)\)/g)]
+    .map((m) => [Number(m[1]), Number(m[2])]);
+  assert.ok(slices.length >= 2, `只解析出 ${slices.length} 个切片，正则失效了`);
+  for (const [from, to] of slices) {
+    assert.ok(to <= 64,
+      `切片 [${from}, ${to}) 越过了镜像轴（64）—— 段 64 之后是右声道的倒序，`
+      + `段 ${to - 1} 实际是 band ${127 - (to - 1)}。`
+      + '按段号分低高频在镜像下必然报错的结论（用户 0.9.14 就看到"像白噪声"）');
+  }
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.ok(!/高频段\(80-119\)/.test(dash),
+    '面板还在显示"高频段(80-119)" —— 那个区间是 band 47..8，不是高频');
+});
+
+// ⚠️⚠️ **动态范围 + 输入电平：这两个是"柱子太长"的判据，而它们不是猜的。**
+//
+// 真 WE 的预览图（`884307090/preview.png`，作者用真 WE 跑的，唯一独立真值）：
+//   柱子长度 = `w1 × range × 100`，而 `range = 9/5 = 1.8` ⟹ w1 × 180px；
+//   圆环半径 = `radius/100 × minW/2` = 0.4 × 400 = 160px（预览图 800×800）
+//   ⟹ **比例可算，不靠目测绝对像素**：
+//     大多数柱子 ≈ 半径的 4-6%  ⟹ w1 ≈ **0.045**
+//     最长的     ≈ 半径的 20-25% ⟹ w1 ≈ **0.20**
+//   ⟹ 真 WE 的动态范围 ≈ **4.4 倍**，而用户 0.9.14 只有 **2.4 倍**（0.31→0.736）
+//
+// ⚠️ 而这里有一个**算术上的关键洞见**：`0.35*log10` 的动态范围**是位置的函数**。
+//   贴地板时（magnitude 1.2→2.0，只差 1.7 倍）输出差 **4.4 倍**；
+//   离地板远时（magnitude 2.8→12，差 4.3 倍）输出只差 **2.4 倍**。
+//   ⟹ **"太长"和"太平"是同一个原因**：整体偏大 ⟹ 离地板远 ⟹ 压缩把差异抹平。
+//   ⟹ 而降低整体幅度会**同时**修好两个（地板截断底部，等于放大动态范围）。
+//
+// ⚠️⚠️ **但绝对幅度不能用预览图定标。** magnitude 差 12dB = 音量差 4 倍，
+// 完全在"作者录预览图时的音量 vs 用户现在的音量"范围内。
+// ⟹ 分开这两种可能的唯一办法是**报出输入 PCM 的 RMS**：
+//   0.03-0.1（−30..−20dBFS）= 正常听感 ⟹ 我们的实现偏大
+//   0.3+（−10dBFS 以上）    = 音量开得大 ⟹ 不是实现问题
+//
+// ⟹ **先量后改。** 这一轮我因为"没量就改"被推翻十一次，
+//    而 VDSP_SCALE 是第一个先量后改的 —— 一量就精确命中 2.00。
+check('面板报动态范围和输入电平（"该不该降幅度"的依据）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert.match(main, /\bdynRange\b/,
+    '没报动态范围 —— 那是"柱子太长/太平"的量化判据（真 WE 预览图约 4.4 倍）');
+  assert.match(main, /\binputRMS\b/,
+    '没报输入电平 ⟹ 分不开"音量大"和"实现偏大"，'
+    + '而那两个结论一个要改代码、一个不能改');
+  assert.match(main, /vDSP_rmsqv|inputRMS/, 'RMS 没有来源');
+  const swift = swiftSrc;
+  assert.match(swift, /vDSP_rmsqv/, 'Swift 没算 RMS');
+  assert.match(swift, /"rms"/, 'Swift 算了 RMS 但没发出来 —— 算了不发等于没有');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  assert.match(dash, /\binputRMS\b/, '面板没显示输入电平 ⟹ 用户看不到 = 等于没测');
+  assert.match(dash, /\bdynRange\b/, '面板没显示动态范围');
+  // ⚠️ 两个方向的结论都要写在面板上，包括"不是实现问题" ——
+  // 那是我可能弄错的那一边（我倾向于认为是自己的实现问题，而那是偏见）。
+  assert.match(dash, /不是实现/,
+    '面板只说了"是实现偏大"没说"可能不是实现问题" ⟹ '
+    + '音量大的那种情况用户拿不到"不用改"这个结论');
+});
+
+// ⚠️ 而"降低幅度"这件事**现在还不许做** —— 要等真机 RMS 报回来。
+// 若 RMS 显示正常听感音量，那时的修法也不能是"我调一个系数"，
+// 而要有出处（比如 WE 的 8-bit 量化、或某个我们漏掉的归一化步骤）。
+check('还没有无出处的幅度系数', () => {
+  // 允许的常量：LOG_SCALE(WE) / SMOOTH(WE) / VDSP_SCALE(真机量出 2.00)
+  const consts = [...swiftSrc.matchAll(/^let ([A-Z_]+): Float = ([\d.]+)/gm)]
+    .map((m) => m[1]);
+  const allowed = new Set(['LOG_SCALE', 'SMOOTH', 'VDSP_SCALE']);
+  const extra = consts.filter((c) => !allowed.has(c));
+  assert.strictEqual(extra.length, 0,
+    `多了这些 Float 常量：${extra.join(', ')}。这一层只许有三个：`
+    + 'LOG_SCALE / SMOOTH（WE 原值）、VDSP_SCALE（真机量出 2.00）。'
+    + '新增的必须先有出处 —— 我这一轮因为"没量就改"被推翻十一次');
+});
+
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
 
 // ⚠️⚠️ 这一条是实测烧出来的，而且形状很典型。

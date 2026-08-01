@@ -121,6 +121,8 @@ final class Spectrum {
     // ⟹ 要判"我们的 FFT 尺度和 kiss_fftr 差几倍"，只能看原始值。
     private(set) var lastPeakMagnitude: Float = 0
     private(set) var lastPeakBin = 0
+    // 输入 PCM 的 RMS —— 判"柱子太长"是系统音量还是我们的实现（见 process 里的注释）
+    private(set) var lastRMS: Float = 0
     // 上一帧的结果，用来做时间平滑。
     private var smoothed = [Float](repeating: 0, count: BIN_COUNT)
 
@@ -229,6 +231,24 @@ final class Spectrum {
                 }
             }
         }
+
+        // ⚠️⚠️⚠️ **输入电平（RMS）—— 判"柱子太长"是音量还是实现。**
+        //
+        // 真 WE 的预览图（作者用真 WE 跑的，唯一独立真值）反解出的 magnitude
+        // 只有 **1.2-2.0**，而我们是 **2.8-12** ⟹ 差 12dB。
+        //
+        // ⚠️ 而 12dB = 音量差 4 倍 ⟹ **完全可能是"作者录预览图时音量小"**。
+        // ⟹ 那意味着预览图**定不了绝对幅度**，只能定形状（动态范围）。
+        //
+        // ⟹ 唯一能分开"音量差"和"实现差"的，是**报出输入 PCM 的 RMS**：
+        //   RMS ≈ 0.03-0.1（−30..−20dBFS）= 正常听感音量 ⟹ 我们的实现偏大
+        //   RMS ≈ 0.3+（−10dBFS 以上）    = 用户音量开得很大 ⟹ 不是实现问题
+        //
+        // ⚠️ 这条**必须先报再改**。我这一轮已经因为"没量就改"被推翻十一次，
+        // 而 VDSP_SCALE 是第一个先量后改的 —— 那次一量就精确命中 2.00。
+        var rms: Float = 0
+        vDSP_rmsqv(input, 1, &rms, vDSP_Length(FFT_SIZE))
+        lastRMS = rms
 
         // 记下原始峰值（尺度自检要用，正常路径不看它）
         var pk: Float = 0
@@ -755,7 +775,13 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
             let chunk = Array(pending.prefix(FFT_SIZE))
             pending.removeFirst(FFT_SIZE)
             let bins = spectrum.process(chunk)
-            emit(["type": "audio", "bins": bins.map { Double(round($0 * 10000) / 10000) }])
+            // ⚠️ 带上输入 RMS —— 判"柱子太长"是系统音量还是我们的实现。
+            // 那是每帧都有的信息，而"该不该降幅度"这个决定靠它。
+            emit([
+                "type": "audio",
+                "bins": bins.map { Double(round($0 * 10000) / 10000) },
+                "rms": Double(round(spectrum.lastRMS * 10000) / 10000),
+            ])
         }
         // 防止上游比我们快时无界堆积。
         if pending.count > FFT_SIZE * 8 { pending.removeFirst(pending.count - FFT_SIZE) }

@@ -1222,7 +1222,28 @@ function renderAudioFrame(frame) {
     + `<br>最大 ${frame.max}　平均 ${frame.mean}`
     + `　${frame.max > 1.5 ? '<span class="warn">⚠️ 顶天了，NORMALIZE 要调小</span>'
       : (frame.max < 0.05 ? '<span class="warn">⚠️ 太小，NORMALIZE 要调大</span>' : '')}`
-    + `<br>低频段(0-39) ${frame.lowMean}　高频段(80-119) ${frame.highMean}　${shape}`
+    // ⚠️ 段号改了：镜像下段 80-119 是 band 47..8（中低频），不是高频。
+    // 现在按 **band** 取前半：低频 band 0-19、高频 band 44-63。
+    + `<br>低频(band 0-19) ${frame.lowMean}　高频(band 44-63) ${frame.highMean}　${shape}`
+    // ⚠️⚠️ 动态范围 —— 真 WE 预览图是 **4.4 倍**（大多数柱子 0.045、最长 0.20）。
+    // 我们 0.9.14 只有 2.4 倍 ⟹ 太平 ⟹ 底被抬起来了（那和"太长"是同一件事）。
+    // ⚠️⚠️ 输入电平 —— 判"柱子太长"是系统音量还是我们的实现。
+    // 真 WE 预览图反解 magnitude 1.2-2.0，我们 2.8-12 ⟹ 差 12dB，
+    // 而 12dB = 音量差 4 倍 ⟹ 完全可能是作者录预览图时音量小。
+    + (frame.inputRMS !== undefined
+      ? `<br>输入电平 RMS <b>${frame.inputRMS}</b>（${frame.inputDbfs} dBFS）`
+        + `${frame.inputRMS > 0.25
+          ? ' ⚠️ 音量很大 ⟹ 柱子长可能是音量，不是实现'
+          : (frame.inputRMS > 0.02
+            ? ' ✅ 正常听感音量 ⟹ 柱子长就是我们的实现偏大'
+            : ' ⚠️ 几乎没有声音 —— 是不是没在放歌')}`
+      : '')
+    + (frame.dynRange !== undefined
+      ? `<br>动态范围 <b>${frame.dynRange}</b> 倍（真 WE 预览图约 4.4 倍）`
+        + `${frame.dynRange >= 3.5
+          ? ' ✅ 有层次'
+          : ' ⚠️ 太平 —— 底被抬起来了，柱子会显得又长又齐'}`
+      : '')
     // ⚠️ 按钟点报 —— 用户十几轮都在用钟表描述，而我一直报段号，
     // 两边说的不是同一种坐标，每次都要换算（而我换算错过好几次）。
     + (frame.clock ? `<br><b>按钟点</b>（你看到的位置）：<br>`

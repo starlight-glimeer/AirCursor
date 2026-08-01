@@ -2922,8 +2922,43 @@ function reportAudioFrame(data, source) {
       return out;
     })(),
     // 前 40 段（线性区，鼓/低音）和后面的对比 —— 形状对不对看这个
-    lowMean: Number((arr.slice(0, 40).reduce(sum, 0) / 40).toFixed(3)),
-    highMean: Number((arr.slice(80, 120).reduce(sum, 0) / 40).toFixed(3)),
+    // ⚠️⚠️⚠️ **口径在镜像之后错了：段 80-119 不是高频。**
+    //
+    // 镜像布局下段 i 对应 band `i<64 ? i : 127-i`
+    // ⟹ 段 80-119 = **band 47..8** = 中低频，而面板管它叫"高频段"
+    // ⟹ 用户 0.9.14 看到「⚠️ 低高频差不多 —— 大概是白噪声」——
+    //    **那句话是我的口径错，不是数据的事**（他在放正常音乐）。
+    //
+    // 正确的分段按 **band**：低频 band 0-19，高频 band 44-63。
+    // 而 band 在圆环上各占两段（镜像）⟹ 只取前半 64 就够（后半一模一样）。
+    lowMean: Number((arr.slice(0, 20).reduce(sum, 0) / 20).toFixed(3)),
+    highMean: Number((arr.slice(44, 64).reduce(sum, 0) / 20).toFixed(3)),
+    // ⚠️⚠️ **动态范围** —— 这是"柱子太长/太平"的真判据。
+    //
+    // 真 WE 的预览图（作者用真 WE 跑的，唯一独立真值）：
+    //   大多数柱子 w1≈0.045，最长 w1≈0.20 ⟹ **动态范围 4.4 倍**
+    // 用户 0.9.14 实测：底 0.31（9点）峰 0.736 ⟹ **只有 2.4 倍**
+    //
+    // ⟹ 我们**太平**，而"太平"和"太长"是同一件事：**底被抬起来了**。
+    // ⟹ 那不是乘一个系数能修的（乘 0.1 会让峰 0.07，比真 WE 的底还低）。
+    //
+    // ⚠️ 而绝对幅度**不能**用预览图定标：magnitude 差 3-6 倍 = 音量差 10-16dB，
+    // 完全在"作者录预览图时的音量和用户现在的音量不同"的范围内。
+    // ⟹ 预览图只能定**形状**（动态范围），不能定"该乘多少"。
+    // ⚠️ 输入电平 —— 这是"该不该降幅度"这个决定的依据。
+    //   RMS 0.03-0.1（−30..−20dBFS）= 正常听感 ⟹ 我们的实现偏大
+    //   RMS 0.3+（−10dBFS 以上）    = 音量开得很大 ⟹ 不是实现问题
+    inputRMS: Number(lastInputRMS.toFixed(4)),
+    inputDbfs: lastInputRMS > 0 ? Number((20 * Math.log10(lastInputRMS)).toFixed(1)) : -99,
+    dynRange: (() => {
+      const front = arr.slice(0, 64).filter((v) => v > 0);
+      if (front.length < 8) return 0;
+      const sorted = [...front].sort((a, b) => a - b);
+      // 用 10% / 90% 分位而不是 min/max —— 极值对单帧噪声太敏感
+      const lo = sorted[Math.floor(sorted.length * 0.1)];
+      const hi = sorted[Math.floor(sorted.length * 0.9)];
+      return Number((hi / Math.max(1e-6, lo)).toFixed(2));
+    })(),
   });
 }
 
@@ -3229,6 +3264,8 @@ function syncAudioSource() {
 }
 
 let lastAudioSilentAt = 0;
+// 最近一帧输入 PCM 的 RMS（判"柱子太长"是音量还是实现，见 pushWEAudio）
+let lastInputRMS = 0;
 // 被闸门丢掉的帧数，按 owner 分。⚠️ 报到面板用 —— 打包版看不到终端。
 const droppedFrames = {};
 
@@ -3280,8 +3317,12 @@ function sendAudioFrame(data, owner) {
   return true;
 }
 
-function pushWEAudio(frame) {
+function pushWEAudio(frame, rms) {
   if (!weWindow || weWindow.isDestroyed()) return;
+  // ⚠️ 输入 PCM 的 RMS —— 判"柱子太长"是系统音量还是我们的实现。
+  // 真 WE 预览图反解 magnitude 1.2-2.0，我们 2.8-12（差 12dB = 音量差 4 倍）
+  // ⟹ 不量 RMS 就改幅度 = 又一次凭猜调系数。
+  if (typeof rms === 'number') lastInputRMS = rms;
   const result = WE.normalizeAudioFrame(frame);
   // ⚠️ 走闸门 —— 音源已经切走时这一帧会被丢掉（并报一次）。
   if (!sendAudioFrame(result.data, 'capture')) return;

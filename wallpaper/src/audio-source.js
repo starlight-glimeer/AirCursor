@@ -156,14 +156,17 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
     buffer = tail;
     for (const msg of messages) {
       if (msg.type === 'audio' && Array.isArray(msg.bins)) {
-        onFrame(msg.bins);
+        // ⚠️ 第二个参数是输入 PCM 的 RMS —— 判"柱子太长"是系统音量还是实现。
+        // 真 WE 预览图反解的 magnitude 是 1.2-2.0，我们 2.8-12（差 12dB），
+        // 而 12dB = 音量差 4 倍 ⟹ 完全可能是作者录预览图时音量小。
+        // ⟹ 不量出 RMS 就改幅度，等于又一次凭猜调系数。
+        onFrame(msg.bins, typeof msg.rms === 'number' ? msg.rms : undefined);
       } else if (msg.type === 'selftest') {
-        // ⚠️ FFT 自检结果 —— 那是"单段孤峰"这个现象的判据。
+        // ⚠️ FFT 自检结果 —— 现在的判据是**峰值位置 + 泄漏衰减 + 镜像**。
         //
-        // 用户实测的尖刺全是单段孤峰，而 FFT + Hann 窗的主瓣宽约 4 个 bin
-        // ⟹ 真实音乐不可能产生单段孤峰 ⟹ FFT 这一层有问题。
-        // 自检用 1kHz 纯音直接量出主瓣宽度，比我推理靠谱
-        //（这个现象我已经猜错十次）。
+        // ⚠️ 原来这里写"主瓣宽约 4 个 bin ⟹ 单段孤峰不可能来自音乐"——
+        // 那个论证依赖 Hann 窗，而窗已经删了（WE 没有窗函数，泄漏是它
+        // 铺满圆环的机制）。矩形窗下纯音会点亮几十段，那是**期望行为**。
         onSelfTest(msg);
       } else if (msg.type === 'status') {
         const described = describeStatus(msg, packaged);
