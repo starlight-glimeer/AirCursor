@@ -181,6 +181,47 @@ function startLaunchParticles() {
 startLaunchParticles();
 
 // ---------------------------------------------------------------------------
+// 红绿灯：默认藏着，鼠标移到顶部才出现（0.9.58）
+//
+// ⚠️⚠️ 用户 2026-08-01：「mac 的红绿灯不能做成隐藏的吗…我鼠标在顶部想要点
+// 再显示呗，很多的产品都是这样设计的，而已一开始的 gesturewall 那个界面，
+// 左上角突兀的红绿灯真的很违和」
+//
+// ⚠️ 判定区是**窗口顶部 56px**，不是"tab 条本身" —— 红绿灯在 y=13..25，
+// 而鼠标从窗口外往下移进来时要在**碰到按钮之前**就让它们出现，
+// 否则用户看到的是"移过去了才冒出来"（那比一直显示更让人分神）。
+// ⚠️ 也不能太大：整个 tab 条区域（40px 让位 + 38px 按钮）都算的话，
+// 点 tab 时红绿灯会跟着冒出来 —— 那正是用户抱怨的「我有点什么操作，
+// 这个红绿灯就显示出来」。56 = 让位 30 + 按钮区 ~26。
+//
+// ⚠️ 用 mousemove 而不是某个元素的 mouseenter/mouseleave：
+//   ① tab 条上有按钮，鼠标在按钮之间移动会反复触发 enter/leave
+//   ② 而"离开顶部"要在**整个文档**上判断（鼠标往下移到网格里）
+// ⚠️ 只在状态**变化**时发 IPC —— 每次 mousemove 都发的话，
+//   移动鼠标就是每秒几十次跨进程调用。
+(() => {
+  const ZONE = 56;
+  let shown = false;
+
+  function setShown(next) {
+    if (next === shown) return;    // 只在变化时发
+    shown = next;
+    window.gw?.titleBarHover?.(next);
+  }
+
+  document.addEventListener('mousemove', (e) => {
+    setShown(e.clientY <= ZONE);
+  });
+  // ⚠️ 鼠标移出窗口时要藏起来 —— 不然它会停在"最后一次在顶部"的状态。
+  //   （从顶部直接移出窗口是很自然的动作：去点别的应用。）
+  document.addEventListener('mouseleave', () => setShown(false));
+  // ⚠️ 窗口失焦也藏 —— macOS 上失焦窗口的红绿灯本来就该是灰的/不显眼，
+  //   而我们藏着更干净。⚠️ 重新获得焦点时**不主动显示**：
+  //   等鼠标真的移到顶部再说（那才是用户的意图）。
+  window.addEventListener('blur', () => setShown(false));
+})();
+
+// ---------------------------------------------------------------------------
 // 左栏切换
 // ---------------------------------------------------------------------------
 for (const button of document.querySelectorAll('nav button[data-tab]')) {
@@ -200,8 +241,26 @@ for (const button of document.querySelectorAll('nav button[data-tab]')) {
     //
     // ⚠️ 只在切到那个页签时扫，不做轮询：扫描要遍历磁盘（Steam 那个目录 639MB），
     // 每隔几秒扫一次会一直占着 IO。
-    if (button.dataset.tab === 'mine') renderMine();
+    renderTab(button.dataset.tab);
   };
+}
+
+// ⚠️⚠️ 切到某个页签时要做的事。**启动时和点击切换共用这一个函数**（0.9.58）——
+// 原来这段逻辑内联在 onclick 里，而启动路径没有它
+// ⟹ 默认页签（0.9.54 起是「我的壁纸」）打开时是空的。
+// ⟹ 两条路径走同一个函数，加新页签的刷新逻辑时不会漏掉启动那条。
+let bootRendered = false;
+
+function renderTab(tab) {
+  // ⚠️ 切到「我的壁纸」就重扫。
+  //
+  // 用户报（2026-07-31）：「壁纸存储目录那里应该是自动刷新，不应该是每次我自己
+  // 手动点击刷新才能看到」—— 他说得对，理由比"方便"更硬：壁纸目录是**磁盘上的
+  // 东西**，用户会在 Finder 里往里拖文件、删文件，那些变化面板压根不知道。
+  //
+  // ⚠️ 只在切过去时扫，不做轮询：扫描要遍历磁盘（Steam 那个目录 639MB），
+  // 每隔几秒扫一次会一直占着 IO。
+  if (tab === 'mine') renderMine();
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +922,26 @@ function apply(next) {
   }
   if (!config.gestures.enabled) {
     document.getElementById('live').textContent = '手势未开启';
+  }
+
+  // ⚠️⚠️ **启动时渲染当前页签**（0.9.58）。用户 2026-08-01：
+  //   「每次打开的时候，我的壁纸这里是空白，要过一阵，并且我自己点一下
+  //     才会出来东西，这是咋回事」
+  //
+  // 根因：`renderMine()` **只挂在页签切换的 onclick 上**（dashboard.js:203）。
+  // 而 0.9.54 把「我的壁纸」改成了**默认页签** ⟹ 打开面板时那个 onclick
+  // 从来没触发过 ⟹ 网格是空的，要点一次别的页签再点回来才出来。
+  //
+  // ⚠️ `apply` 里原来只调 `renderMineDirs()`（画目录行，**不重扫磁盘**）——
+  // 所以目录路径出来了、网格没有 ⟹ 看起来像"加载很慢"而不是"没触发"。
+  //
+  // ⟹ 判据：**默认页签也是"切到"了** —— 初次显示和点击切换应该走同一条路。
+  // ⚠️ 只在 `!built` 时做（第一次 apply）—— 主进程每次改配置都会广播 apply，
+  //   每次都重扫磁盘的话，调一个参数就触发一次全盘扫描。
+  if (!bootRendered) {
+    bootRendered = true;
+    const active = document.querySelector('nav button[data-tab].on');
+    if (active) renderTab(active.dataset.tab);
   }
 }
 

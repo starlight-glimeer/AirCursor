@@ -2685,14 +2685,35 @@ check('「用壁纸」的四块在「我的壁纸」页签，不在创意工坊'
 //
 // 理由比"方便"更硬：壁纸目录是**磁盘上的东西**，用户会在 Finder 里拖文件、删文件 ——
 // 那些变化面板压根不知道。
-check('切到「我的壁纸」自动刷新', () => {
+check('切到「我的壁纸」自动刷新，而且**启动时也刷**', () => {
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  const i = dash.indexOf("button[data-tab]");
-  assert.ok(i > 0, '找不到页签切换逻辑');
-  const block = dash.slice(i, i + 900);
-  assert.match(block, /dataset\.tab === 'mine'/,
-    '切页签时不刷新「我的壁纸」⟹ 用户要手动点，而目录内容随时可能被 Finder 改');
-  assert.match(block, /renderMine\(\)/, '没调 renderMine');
+
+  // ⚠️⚠️ 0.9.58 把这段逻辑从 onclick 里抽成了 `renderTab(tab)` ——
+  // 原来的断言是 `dash.slice(i, i + 900)` 里查 `dataset.tab === 'mine'`，
+  // 抽出去之后那个字符串不在那 900 字符里了 ⟹ **在正确代码上报红**。
+  // （固定长度切片 + 锚具体写法，这一轮第 6 次改这类断言。）
+  // ⟹ 改成查它的**意图**：有一个函数管"切到某页签要做什么"，而它会调 renderMine。
+  const fn = dash.slice(dash.indexOf('function renderTab('),
+    dash.indexOf('\n}', dash.indexOf('function renderTab(')));
+  assert.ok(fn.length > 20, '找不到 renderTab —— 切页签的刷新逻辑在哪？');
+  assert.match(fn, /tab === 'mine'/, "renderTab 里没有 'mine' 的分支");
+  assert.match(fn, /renderMine\(\)/, 'renderTab 不调 renderMine ⟹ 切过去看到的是旧数据');
+  // 页签按钮要走这个函数（而不是各自内联一份）
+  const click = dash.slice(dash.indexOf("nav button[data-tab]"));
+  assert.match(click.slice(0, 700), /renderTab\(button\.dataset\.tab\)/,
+    '页签按钮没走 renderTab ⟹ 两条路径各写一份，加新页签时会漏掉一条');
+
+  // ⚠️⚠️ **启动时也要渲染当前页签**（0.9.58 修的 bug）。用户报：
+  //   「每次打开的时候，我的壁纸这里是空白，要过一阵，并且我自己点一下才会出来」
+  // 根因：renderMine 只挂在 onclick 上，而 0.9.54 把「我的壁纸」改成了默认页签
+  // ⟹ 那个 onclick 从来没触发过。
+  // ⟹ 判据：**默认页签也是"切到"了** —— 初次显示和点击切换走同一条路。
+  assert.match(dash, /if \(!bootRendered\)[\s\S]{0,240}?renderTab\(/,
+    '启动时不渲染当前页签 ⟹ 默认页签（我的壁纸）打开是空的，要点一下才出来');
+  // ⚠️ 只在第一次 apply 时做 —— 主进程每次改配置都广播 apply，
+  //   每次都重扫磁盘的话，调一个参数就触发一次全盘扫描。
+  assert.match(dash, /bootRendered = true/,
+    'bootRendered 没置位 ⟹ 每次 apply 都重扫磁盘（调一个参数就全盘扫一次）');
 });
 
 // ⚠️ 更贴合真实动作的时机：点「打开」进 Finder → 拖文件 → 切回面板。
@@ -4139,12 +4160,28 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   // ① hiddenInset 和给红绿灯让位的 padding 是**成对**的。
   //    只设 titleBarStyle：红绿灯压在 brand 上。
   //    只留 padding：白留一块。两个都不报错。
-  const hasInset = /titleBarStyle:\s*'hiddenInset'/.test(main);
-  assert.ok(hasInset, '面板没设 titleBarStyle: hiddenInset ⟹ 用系统标题栏，浅色主题下是白条');
-  assert.match(html, /nav\s*\{[\s\S]{0,400}?padding:\s*42px/,
-    'nav 顶部没给红绿灯让位（hiddenInset 下按钮会压在 brand 上）');
-  assert.match(html, /main\s*\{[^}]*padding:\s*42px/,
-    'main 顶部没给标题栏让位 ⟹ 第一块卡片落在可拖拽区，点它没反应');
+  // ⚠️⚠️ 0.9.58：`hiddenInset` → `hidden` + `setWindowButtonVisibility(false)`
+  //（红绿灯默认藏起来，鼠标移到顶部才出现 —— 用户点名）。
+  // 两者都能达到"标题栏由我们的 CSS 画"，判据是**不许用系统默认标题栏**
+  //（那个跟系统主题走，浅色主题下是白条压在深色面板上）。
+  assert.match(main, /titleBarStyle:\s*'hidden(?:Inset)?'/,
+    '面板没设 titleBarStyle ⟹ 用系统标题栏，浅色主题下是白条');
+  // ⚠️ 红绿灯要默认藏起来 + 有地方能把它显示回来（否则用户找不到关闭按钮）
+  assert.match(main, /setWindowButtonVisibility\(false\)/,
+    '红绿灯没藏起来 ⟹ 左上角那三个圆点很违和（用户点名）');
+  assert.match(main, /ipcMain\.handle\('title-bar-hover'/,
+    '没有让红绿灯重新出现的通道 ⟹ 藏了就再也点不到关闭按钮了');
+  // ⚠️ 而 `main` 的顶部让位撤了（0.9.54 起 tab 条在最上面，main 不用让）
+  // ⚠️⚠️ 必须**同时剥 HTML 注释和 CSS 注释**。
+  // 第一版我只剥了 `<!-- -->`，而那段历史写在 `/* */` 里
+  //（「原来这个让位写在 nav { padding: 42px … } 和 main { padding: 42px … }」）
+  // ⟹ 断言在正确代码上报红，而我还先误判成"真有个 42px 没删"。
+  // 第 10 次"注释骗过守卫"，而这次的新形状是：**一个 .html 文件里有两种注释语法**。
+  const htmlNoAnyComment = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/main\s*\{[^}]*padding:\s*42px/.test(htmlNoAnyComment),
+    'main 还在给标题栏让位 ⟹ 那是左栏布局时代的（现在 tab 条在最上面）');
   // backgroundColor 不能再跟 nativeTheme 走（CSS 是写死深色的）
   const dashWin = main.slice(main.indexOf('dashboardWindow = new BrowserWindow'));
   assert.ok(!/backgroundColor:\s*nativeTheme/.test(dashWin.slice(0, 900)),
@@ -4611,23 +4648,27 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
   //   ⟹ 正则不能要求每个值都带 px，否则读不到而"断言失效"（我第一版就是）。
   const pad = nav.match(/padding:\s*(\d+)(?:px)?\s+(\d+)(?:px)?\s+(\d+)(?:px)?\s+(\d+)(?:px)?/);
   assert.ok(pad, `nav 的 padding 不是四值形式，读不到让位量：${nav.slice(0, 120)}`);
-  // ⚠️⚠️ 这个下界 0.9.56 从 34 降到 **26**，因为**我上一轮算错了参照**：
-  // 我写的是"hiddenInset 下按钮区到 y≈36"，而实测（用户截图）红绿灯的
-  // **垂直中心在 y≈19、直径 12** ⟹ 占 y=13..25。
-  // 40px 是多让了 15px ⟹ 用户报「我们的菜单栏离上方太远了，有比较突兀的空白」。
-  // ⟹ 26 = 红绿灯底边 25 + 1px 余量。低于它才真的会压上去。
-  // ⚠️ 教训：**"我算的安全余量"和"用户看到的空白"是两回事** ——
-  //    那个 36 是我凭对 macOS 的印象写的，没有任何实测支撑，
-  //    而它直接变成了一条"锁死错误值"的守卫。
-  assert.ok(Number(pad[1]) >= 26,
-    `nav 顶部只让了 ${pad[1]}px ⟹ 红绿灯会压在 tab 上（它占 y=13..25）`);
-  assert.ok(Number(pad[1]) <= 34,
-    `nav 顶部让了 ${pad[1]}px ⟹ 红绿灯只占到 y=25，多出来的是"突兀的空白"（用户报过）`);
+  // ⚠️⚠️ **纵向和横向的约束不一样**（0.9.58）：
+  //
+  // 0.9.58 起红绿灯**默认藏着**（setWindowButtonVisibility(false)，
+  // 鼠标移到顶部才出现）⟹ **纵向不需要给它让位了** ——
+  // 用户报过两次"上方有突兀的空白"（40px → 30px → 现在 10px）。
+  // ⟹ 纵向只查上界：多让就是空白。
+  //
+  // ⚠️ 但**横向必须留着** —— 红绿灯出现时占 x=13..70，
+  // tab 从 x=16 开始的话它们会**压在第一个 tab 上** ⟹ 那个 tab 点不动
+  //（而症状是"这个 tab 坏了"）。
+  // ⟹ 判据：**藏起来能省掉纵向让位，但省不掉横向** —— 它出现时仍然要有位置。
+  //   我改的时候差点把两个方向一起收掉。
+  assert.ok(Number(pad[1]) <= 16,
+    `nav 顶部让了 ${pad[1]}px ⟹ 红绿灯默认藏着，不需要让位，多出来的是空白（用户报过两次）`);
   assert.ok(Number(pad[4]) >= 80,
-    `nav 左侧只让了 ${pad[4]}px ⟹ 第一个 tab 跑到红绿灯底下，点不动`);
+    `nav 左侧只让了 ${pad[4]}px ⟹ 红绿灯出现时会压在第一个 tab 上（那个 tab 点不动）`);
   // titleBarStyle 和这个让位是成对的
-  assert.match(codeOnly(mainSrc), /titleBarStyle:\s*'hiddenInset'/,
-    '不用 hiddenInset 了但 nav 还在给红绿灯让位 ⟹ 顶上白留一块');
+  // ⚠️ 0.9.58 起是 `hidden`（红绿灯藏起来），而横向让位仍然必需
+  //（它出现时占 x=13..70）⟹ 这条只确认"标题栏是我们自己画的"。
+  assert.match(codeOnly(mainSrc), /titleBarStyle:\s*'hidden(?:Inset)?'/,
+    '不用自定义标题栏了但 nav 还在给红绿灯让位 ⟹ 那 96px 就是白留的');
 
   // ③⚠️⚠️ **滚动必须在网格列上，不在 main 上**。
   //    main 滚的话右侧详情面板会跟着滚出视野 —— 而"钉住"正是这个布局的全部意义。
@@ -4776,6 +4817,46 @@ check('340px 面板里的区块：预览卡片已撤 / 输入框通栏 / 贴 ID 
     + '，改成 :not([type=checkbox]) 反向排除');
   assert.match(rule[0], /grid-column:\s*1 \/ -1/,
     '输入框没有通栏 ⟹ 在 `1fr auto` 的第二列里被压成一条');
+});
+
+// ⚠️⚠️ **红绿灯默认藏着，鼠标移到顶部才出现**（0.9.58）。用户 2026-08-01：
+//   「mac 的红绿灯不能做成隐藏的吗…我鼠标在顶部想要点再显示呗，
+//     很多的产品都是这样设计的，而已一开始的 gesturewall 那个界面，
+//     左上角突兀的红绿灯真的很违和」
+check('红绿灯：默认藏 / 顶部悬停才显 / 三端接线 / 只在状态变化时发', () => {
+  const main = codeOnly(mainSrc);
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const pre = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8'));
+
+  // ① 三端接线（少一端就是"藏了但再也显不出来" —— 那时候用户找不到关闭按钮）
+  assert.match(main, /setWindowButtonVisibility\(false\)/, '建窗口时没藏红绿灯');
+  assert.match(main, /ipcMain\.handle\('title-bar-hover'/, 'main 没注册显隐通道');
+  assert.match(pre, /titleBarHover:/, 'preload 没暴露 titleBarHover');
+  assert.match(dash, /titleBarHover\?\.\(|titleBarHover\(/, '面板没调 titleBarHover');
+
+  // ②⚠️⚠️ `setWindowButtonVisibility` 是 **macOS 专用**，别的平台上调会抛。
+  //    而这里是在 `new BrowserWindow` 之后、`loadFile` 之前 ⟹ 抛了会让窗口白屏。
+  assert.match(main, /try \{\s*\n\s*dashboardWindow\.setWindowButtonVisibility\(false\)/,
+    'setWindowButtonVisibility 没被 try 包住 ⟹ 非 macOS 上会抛，把 loadFile 挡在后面（白窗口）');
+
+  // ③ 只在状态**变化**时发 IPC —— 每次 mousemove 都发的话，
+  //    移动鼠标就是每秒几十次跨进程调用。
+  const zone = dash.slice(dash.indexOf('const ZONE ='));
+  assert.ok(zone.length > 200, '找不到红绿灯悬停那段');
+  assert.match(zone.slice(0, 900), /if \(next === shown\) return/,
+    '每次 mousemove 都发 IPC ⟹ 移动鼠标就是每秒几十次跨进程调用');
+  // ⚠️ 鼠标移出窗口 / 窗口失焦都要藏 —— 否则会停在"最后一次在顶部"的状态
+  assert.match(zone.slice(0, 1600), /mouseleave/,
+    '鼠标移出窗口时不藏 ⟹ 红绿灯停在显示状态');
+  assert.match(zone.slice(0, 1600), /'blur'/, '窗口失焦时不藏');
+
+  // ④ 判定区不能太大 —— 整个 tab 条都算的话，点 tab 时红绿灯会跟着冒出来，
+  //    而那正是用户抱怨的「我有点什么操作，这个红绿灯就显示出来」。
+  const z = Number((dash.match(/const ZONE = (\d+)/) || [])[1]);
+  assert.ok(z > 0, '读不到 ZONE ⟹ 断言失效');
+  assert.ok(z >= 30 && z <= 70,
+    `悬停判定区 ${z}px 不合理 ⟹ 太小会"移过去了才冒出来"，`
+    + '太大则点 tab 时红绿灯跟着出现（用户抱怨过后者）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

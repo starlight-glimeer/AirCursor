@@ -132,6 +132,10 @@ contextBridge.exposeInMainWorld('gw', {
   // ⚠️ 主进程侧会**校验协议只能是 http/https** —— 渲染进程传什么都可能，
   // 而 shell.openExternal 对 `file://` / 自定义 scheme 也会执行。
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
+  // ⚠️ 红绿灯的显隐（0.9.58）—— 鼠标进/出窗口顶部那条区域时调。
+  // 用户：「我鼠标在顶部想要点再显示呗，很多的产品都是这样设计的」
+  titleBarHover: (visible) => ipcRenderer.invoke('title-bar-hover', visible),
   ourWallpaperDir: () => ipcRenderer.invoke('our-wallpaper-dir'),
   // 把已经在 Steam 目录里的工坊壁纸搬进我们目录（清 0.9.24-0.9.28 留下的两份）
   importExistingFromSteam: () => ipcRenderer.invoke('import-existing-from-steam'),

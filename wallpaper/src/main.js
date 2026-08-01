@@ -869,14 +869,30 @@ function openDashboard() {
     // 根因：原来没设 titleBarStyle ⟹ 用系统默认标题栏，而它跟**系统主题**走。
     // 用户是浅色主题 ⟹ 白条压在我们 #101014 的深色面板上，两截。
     //
-    // `hiddenInset` = 标题栏透明、红绿灯按钮内缩、内容延伸到顶部
-    // ⟹ 顶部那条由**我们的 CSS** 画（dashboard.html 里 body 的 padding-top
-    //    给红绿灯让位）。这样它必然和面板同色，因为就是同一块。
+    // `hidden` = 标题栏透明、内容延伸到顶部 ⟹ 顶部那条由**我们的 CSS** 画。
+    // 这样它必然和面板同色，因为就是同一块。
     //
-    // ⚠️ 不用 `frame: false` —— 那会连红绿灯一起没有，我们就得自己画三个按钮，
-    // 而"自己画的关闭按钮"是另一个能出 bug 的地方（而且这个项目刚因为
-    // 关窗口行为被用户报过问题）。`hiddenInset` 保留原生按钮和拖拽。
-    titleBarStyle: 'hiddenInset',
+    // ⚠️⚠️ **红绿灯默认藏起来，鼠标移到顶部才出现**（0.9.58）。用户 2026-08-01：
+    //   「mac 的红绿灯不能做成隐藏的吗，我看现在还是为了这个，上方留了空白，
+    //     并且我有点什么操作，这个红绿灯就显示出来，不应该这样的，
+    //     我鼠标在顶部想要点再显示呗，很多的产品都是这样设计的，
+    //     而已一开始的 gesturewall 那个界面，左上角突兀的红绿灯真的很违和」
+    //
+    // ⟹ `hidden` + `setWindowButtonVisibility(false)`，再由渲染进程在
+    //   鼠标进入/离开顶部区域时切换（见 ipcMain.handle('title-bar-hover')）。
+    //
+    // ⚠️ 为什么不用 `titleBarStyle: 'customButtonsOnHover'` —— 它**正好**是这个
+    // 行为（文档：「the traffic light buttons will display when being hovered over」），
+    // 但文档同时标着「**This option is currently experimental**」，
+    // 而且没说那三个按钮是原生的还是 Electron 自绘的。
+    // ⟹ 这个项目栽过七次"注册成功但功能是死的"，而实验性 API 正是那种形状。
+    //   `hidden` + `setWindowButtonVisibility` 两个都是稳定 API，
+    //   代价只是"什么时候显示"要我们自己判断 —— 那是可控的。
+    //
+    // ⚠️ 不用 `frame: false` —— 那会连红绿灯一起没掉，我们就得自己画三个按钮，
+    // 而"自己画的关闭按钮"是另一个能出 bug 的地方（这个项目刚因为关窗口行为
+    // 被用户报过问题）。`hidden` 保留原生按钮，只是先藏起来。
+    titleBarStyle: 'hidden',
     // ⚠️ backgroundColor 不能再跟 nativeTheme 走 —— 面板 CSS 是**写死深色**的
     // （`color-scheme: dark` + `--bg: #101014`）。跟着系统给浅色的后果：
     // 窗口出现的那一瞬间闪一下白（CSS 还没生效），而那正是"像终端"的感觉来源之一。
@@ -887,6 +903,17 @@ function openDashboard() {
       nodeIntegration: false,
     },
   });
+  // ⚠️⚠️ **建完立刻藏红绿灯**（0.9.58）。
+  // ⚠️ 必须在 `new BrowserWindow` **之后**调 —— 它是实例方法，不是构造选项。
+  // ⚠️ 用 try 包住：`setWindowButtonVisibility` 是 macOS 专用，
+  //   在别的平台上调会抛，而那会把后面的初始化全停掉
+  //   （包括 loadFile ⟹ 白窗口）。这个项目为"一处抛异常挡住后面全部"栽过。
+  try {
+    dashboardWindow.setWindowButtonVisibility(false);
+  } catch (error) {
+    console.warn('[panel] 藏红绿灯失败（非 macOS？）：', error.message);
+  }
+
   // ⚠️ 面板的异常最误导：它一抛，后面的初始化全停（包括绑定所有开关），
   // 表现为"某个开关点了完全没反应"—— 而那看起来像那个功能坏了。
   watchRendererErrors(dashboardWindow, 'dashboard');
@@ -1086,6 +1113,24 @@ ipcMain.handle('open-external', async (_event, url) => {
   } catch (error) {
     // ⚠️ new URL 对畸形字符串会抛 —— 那不该让面板崩，报回去就行
     return { ok: false, error: `打不开这个链接：${error.message}` };
+  }
+});
+
+// ⚠️⚠️ 红绿灯的显隐（0.9.58）—— 渲染进程在鼠标进入/离开顶部区域时调。
+//
+// ⚠️ 为什么由渲染进程判断而不是主进程监听全局鼠标：
+//   ① 主进程要拿鼠标位置得轮询 `screen.getCursorScreenPoint()`（我们已经有
+//      mouseTap 那条链，但它是给壁纸用的、要辅助功能授权）
+//   ② 而"鼠标在窗口顶部 60px 内"这件事，CSS/JS 天然就知道（mouseenter）
+// ⟹ 渲染进程报事实，主进程只负责调那个 macOS API。
+ipcMain.handle('title-bar-hover', (_event, visible) => {
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+  try {
+    dashboardWindow.setWindowButtonVisibility(!!visible);
+    return true;
+  } catch {
+    // 非 macOS 上这个方法不存在 —— 静默失败就行（红绿灯本来也是 mac 的东西）
+    return false;
   }
 });
 
