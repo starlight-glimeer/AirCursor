@@ -1227,6 +1227,59 @@ check('平滑跑在 60fps 定时器上，不是每个 FFT 帧', () => {
     + '⟹ tickSmooth 的实现不对（那是"两次 FFT 之间继续插值"的全部意义）');
 });
 
+// ⚠️⚠️⚠️ **两类 Swift 编译坑，云端只能靠文本检查兜住。**
+//
+// 用户 2026-08-01 真机编译探针时同时撞到两个：
+//
+// **① 中文引号在字符串里没转义**
+//   我写了 `"…不会看到"正在共享屏幕"。"` —— 那个 `"` 是 U+201C/201D，
+//   Swift 把它当**字符串结束** ⟹ `正在共享屏幕` 变成标识符
+//   ⟹ `error: cannot find '正在共享屏幕' in scope`
+//   ⟹ 规则：Swift 字符串里引用中文一律用 「」，不用中文引号。
+//
+// **② 嵌套三元 + 字符串拼接让类型检查超时**
+//   `error: the compiler is unable to type-check this expression in reasonable time`
+//   那不是语法错 —— 是 Swift 的类型推导在 `?:` 嵌套 + `+` 重载上爆炸。
+//   ⟹ 规则：长文案用 if/else 逐步赋值，别在三元里拼。
+//
+// ⚠️ 这两个**云端都查不出**（跑不了 swiftc）= 一轮真机往返。
+// 而它们都是**纯文本特征**，所以能用守卫兜住 —— 这比"下次注意"可靠。
+check('Swift 里没有字符串内的中文引号（编译会失败）', () => {
+  const dir = path.join(__dirname, '..', 'native');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.swift'))) {
+    const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (line.trim().startsWith('//')) return;   // 注释里随便写
+      // 同一行里既有 ASCII 引号（字符串边界）又有中文引号 ⟹ 大概率在字符串内
+      if (/"/.test(line) && /[\u201c\u201d]/.test(line)) {
+        bad.push(`${f}:${i + 1}`);
+      }
+    });
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些行的 Swift 字符串里有中文引号（U+201C/201D）：${bad.join(', ')}\n`
+    + '    ⟹ Swift 把它当字符串结束 ⟹ 后面的中文变成标识符 ⟹ '
+    + "cannot find '…' in scope。用 「」 代替");
+});
+
+check('Swift 里没有嵌套三元拼字符串（编译器会超时）', () => {
+  const dir = path.join(__dirname, '..', 'native');
+  const bad = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.swift'))) {
+    const code = fs.readFileSync(path.join(dir, f), 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    // 一个表达式（不跨语句）里出现两个 ? 再跟一个 :
+    const hits = code.match(/\?[^\n;]{0,200}\?[^\n;]{0,200}:/g);
+    if (hits) bad.push(`${f}(${hits.length} 处)`);
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些文件里有嵌套三元：${bad.join(', ')}\n`
+    + '    ⟹ Swift 的类型检查在「?: 嵌套 + 字符串拼接」上会超时\n'
+    + '    （the compiler is unable to type-check this expression in reasonable time）\n'
+    + '    ⟹ 改成 if/else 逐步赋值');
+});
+
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
 
 // ⚠️⚠️ 这一条是实测烧出来的，而且形状很典型。
