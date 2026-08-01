@@ -48,6 +48,9 @@ contextBridge.exposeInMainWorld('gw', {
   // 用户说它和「换目录…」冗余，而且它装载的壁纸不在网格里（更差）。
   // ⟹ 这里不留桩，否则就是死代码。
   weClear: () => ipcRenderer.invoke('we-clear'),
+  // 把一个壁纸移到**废纸篓**（不是永久删除 —— 用户可能点错）。
+  // ⚠️ 主进程那边有路径白名单（只允许壁纸目录树下），而确认对话框在面板。
+  deleteWallpaper: (dir) => ipcRenderer.invoke('we-delete-wallpaper', dir),
   weControls: () => ipcRenderer.invoke('we-controls'),
   weStatus: () => ipcRenderer.invoke('we-status'),
   weSetProperty: (key, value) => ipcRenderer.invoke('we-set-property', key, value),

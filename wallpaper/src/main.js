@@ -1906,6 +1906,97 @@ ipcMain.on('we-mouse-seen', (_event, payload) => {
 // 只删按钮的话 preload 和 IPC 就是死代码，而死代码会让下一个人以为
 // "这个功能还在，只是入口丢了"，然后把入口加回来。
 
+// **删掉一个壁纸**（移到废纸篓，不是永久删除）。
+//
+// ⚠️⚠️ 用户 2026-08-01：
+//   「然后应该是卸载，就是这个壁纸的文件直接删除，而不是什么应用这个壁纸，
+//     应用之后再来个什么退回内置壁纸，我们的产品关闭了不就壁纸退出运行了，
+//     这个逻辑没必要」
+//
+// **他说得对** —— 关掉应用壁纸就没了，「退回内置壁纸」是个没有价值的中间态。
+// 而右键菜单里真正需要的是「删掉这个壁纸」（那是文件管理，不是运行状态管理）。
+//
+// ⚠️⚠️⚠️ **用 `shell.trashItem` 而不是 `fs.rmSync`。**
+//
+// 这是**删用户的文件**，而废纸篓和永久删除的差别是"能不能反悔"：
+//   · 用户可能点错（右键菜单里「删除」挨着「在 Finder 中打开」）
+//   · 壁纸可能是他花钱订阅的、或者改过属性的
+//   · 而我们没有"撤销"
+// ⟹ `trashItem` 让系统的撤销机制接管。**永久删除在这里是不可接受的风险。**
+//
+// ⚠️ 而这个项目有一条既有的纪律：**破坏性操作要用户明示**。
+// ⟹ 所以确认对话框在渲染进程那边（面板），而这里只负责执行 ——
+//    但这里也**再挡一道**：路径必须在我们的壁纸目录树下。
+//    那样"传错路径"不会变成"删掉用户的文档"。
+ipcMain.handle('we-delete-wallpaper', async (_event, dir) => {
+  if (!dir || typeof dir !== 'string') return { ok: false, error: '没给路径' };
+
+  // ⚠️⚠️ **只允许删我们目录树下的东西。**
+  //
+  // 为什么必须挡：这个 IPC 收到什么就删什么，而渲染进程的一个 bug
+  // （比如 `item.dir` 是 undefined 拼出了 `/`）就会变成灾难。
+  // ⟹ 白名单：我们的壁纸目录 + Steam 的下载目录（工坊原件）。
+  //
+  // ⚠️ 用 `path.resolve` + 前缀比较，而且前缀要带分隔符 ——
+  // 否则 `/Users/x/Wallpapers-evil` 会被 `/Users/x/Wallpapers` 前缀命中。
+  const resolved = path.resolve(dir);
+  const roots = [
+    ourWallpaperDir(),
+    ...Workshop.STEAM_ROOTS.map((r) =>
+      path.join(r, 'steamapps', 'workshop', 'content', Workshop.WE_APP_ID)),
+    ...(config.we.libraryDirs || []),
+  ].map((r) => path.resolve(r));
+  const inside = roots.some((r) => resolved === r || resolved.startsWith(r + path.sep));
+  if (!inside) {
+    logEvent('wallpaper', `拒绝删除（不在壁纸目录树下）：${resolved}`, { roots });
+    return {
+      ok: false,
+      error: '这个路径不在壁纸目录里，不删 —— 那是防手滑的护栏',
+      dir: resolved,
+    };
+  }
+  // ⚠️ 再挡一道：不能删**根目录本身**（那会把整个壁纸库扔进废纸篓）
+  if (roots.includes(resolved)) {
+    return { ok: false, error: '这是壁纸目录本身，不是某个壁纸 —— 不删' };
+  }
+
+  // ⚠️ **正在用的话先卸载** —— 否则删完文件而窗口还在渲染它，
+  // 那时的画面是"文件不在了但还在显示"（资源已经载入内存），
+  // 而用户重启应用后才发现壁纸没了 ⟹ 症状和时机脱节，很难查。
+  const wasActive = !!(weProject && path.resolve(weProject.dir) === resolved);
+  if (wasActive) {
+    setWEWallpaper(null);
+    config.we.dir = null;
+    writeConfig(config);
+    broadcast('config', config);
+  }
+
+  try {
+    await shell.trashItem(resolved);
+  } catch (err) {
+    // ⚠️ 失败要**说清原因** —— 权限/文件被占用/已经不在了，三种的下一步不同。
+    // 而如果上面已经卸载了，要告诉用户"壁纸卸了但文件还在"（那是个中间态）。
+    const msg = String(err && err.message ? err.message : err);
+    logEvent('wallpaper', `删除失败：${resolved}`, { error: msg, wasActive });
+    return {
+      ok: false,
+      error: `没能移到废纸篓：${msg}`
+        + (wasActive ? '（壁纸已经卸载了，但文件还在）' : ''),
+      dir: resolved,
+    };
+  }
+  logEvent('wallpaper', `已移到废纸篓：${resolved}`, { wasActive });
+  return { ok: true, dir: resolved, wasActive };
+});
+
+// 卸载当前壁纸（回到内置的）。
+//
+// ⚠️ **这个不再是 UI 功能**（0.9.42）—— 用户 2026-08-01 指出
+// 「我们的产品关闭了不就壁纸退出运行了，这个逻辑没必要」。
+// ⟹ 右键菜单里的「卸载」换成了「删除」（`we-delete-wallpaper`）。
+//
+// 而这条 IPC **保留**，因为删除时要先卸载（否则删完文件窗口还在渲染它）。
+// preload 里也保留 —— 删掉的话删除那条路就得内联一份卸载逻辑。
 ipcMain.handle('we-clear', () => {
   const out = setWEWallpaper(null);
   config.we.dir = null;

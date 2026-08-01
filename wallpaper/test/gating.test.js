@@ -3400,16 +3400,24 @@ check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸�
   // ⟹ **判据：常驻的东西要少，而不是功能要少。**
   const j2 = dash.indexOf('function renderMine');
   const mineFn = dash.slice(j2, dash.indexOf('\nfunction ', j2 + 10));
-  assert.match(mineFn, /weClear/,
-    '「卸载」的入口丢了 ⟹ 用户**回不到内置壁纸**');
   assert.match(mineFn, /showCardMenu/,
     '卡片没有右键菜单 ⟹ 用户 2026-08-01 明确要求的形态'
     + '（「右键点击，一个选项是在资源管理器中打开，一个是卸载」）');
-  // ⚠️ 「卸载」只能在**当前装载的那个**上出现 —— 挂在别的卡片上
-  // 会让人以为是"删掉这个壁纸文件"（那是危险操作，我们不做）
-  assert.match(mineFn, /it\.active \?[\s\S]{0,300}?weClear/,
-    '「卸载」不是只在当前装载的卡片上出现 ⟹ 挂在别的卡片上会让人以为'
-    + '是"删掉这个壁纸文件"');
+
+  // ⚠️⚠️ **「卸载（回到内置壁纸）」这个需求被用户否掉了**（0.9.42）：
+  //   「应该是卸载，就是这个壁纸的文件直接删除，而不是什么应用这个壁纸，
+  //     应用之后再来个什么退回内置壁纸，**我们的产品关闭了不就壁纸退出运行了**，
+  //     这个逻辑没必要」
+  //
+  // **他说得对** —— 关掉应用壁纸就没了，「退回内置」是个没有价值的中间态。
+  // ⟹ 菜单里换成「删除（移到废纸篓）」，那是文件管理而不是运行状态管理。
+  //
+  // ⚠️ 而 `weClear` 那条 IPC 保留 —— 删除时要先卸载（否则删完文件
+  // 窗口还在渲染它，画面是"文件不在了但还在显示"，症状和时机脱节）。
+  assert.match(mineFn, /移到废纸篓/,
+    '右键菜单里没有「删除」⟹ 那是用户 0.9.42 明确要的功能');
+  assert.ok(!/卸载（回到内置壁纸）/.test(mineFn),
+    '菜单里还有「卸载（回到内置壁纸）」⟹ 用户明确说那个逻辑没必要');
   // ⚠️ 「在 Finder 中打开」也要在菜单里 —— 那是它 0.9.38 的新家
   assert.match(mineFn, /Finder 中打开/,
     '右键菜单里没有「在 Finder 中打开」⟹ 用户明确提到的两项之一');
@@ -3770,6 +3778,66 @@ check('shell 里 $VAR 紧跟中文要用 ${VAR}（否则 unbound variable）', (
     `这些地方 bash 会把中文字符的首字节吞进变量名：\n    ${bad.join('\n    ')}\n`
     + '    ⟹ `set -u` 下报 `unbound variable`，而**`bash -n` 查不出**（语法合法）\n'
     + '    ⟹ 只有真跑才暴露，而云端跑不了完整脚本 ⟹ 只能靠这条守卫');
+});
+
+// ⚠️⚠️⚠️ **删壁纸 = 删用户的文件。四道护栏，每一道都不能省。**
+//
+// 用户 2026-08-01 要的：右键菜单里「这个壁纸的文件直接删除」。
+// 而这是这个项目里**唯一一个删用户文件**的功能 ⟹ 护栏要写死。
+check('删壁纸：废纸篓 + 路径白名单 + 不删根目录 + 要确认', () => {
+  const src = codeOnly(mainSrc);
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① **废纸篓，不是永久删除** —— 用户可能点错（菜单里「删除」挨着
+  //   「在 Finder 中打开」），而壁纸可能是他订阅的、或者改过属性的。
+  //   而我们没有"撤销" ⟹ 让系统的撤销机制接管。
+  assert.match(src, /shell\.trashItem/,
+    '不是移到废纸篓 ⟹ 永久删除在"删用户文件"这件事上是不可接受的风险'
+    + '（用户点错了没法反悔）');
+  const delAt = src.indexOf("ipcMain.handle('we-delete-wallpaper'");
+  assert.ok(delAt > 0, '没有删除的 IPC');
+  const delFn = src.slice(delAt, src.indexOf('\nipcMain', delAt + 10));
+  assert.ok(!/fs\.rmSync|fs\.unlinkSync|rimraf/.test(delFn),
+    '删除里用了 fs.rmSync/unlinkSync ⟹ 那是永久删除');
+
+  // ② **路径白名单** —— 这个 IPC 收到什么就删什么，而渲染进程的一个 bug
+  //   （比如 `item.dir` 是 undefined 拼出了 `/`）就会变成灾难。
+  assert.match(delFn, /startsWith\(r \+ path\.sep\)/,
+    '没有路径白名单，或者前缀比较没带分隔符 ⟹ '
+    + '`/Users/x/Wallpapers-evil` 会被 `/Users/x/Wallpapers` 前缀命中');
+  assert.match(delFn, /path\.resolve/,
+    '没 resolve 路径 ⟹ `../` 能穿出白名单');
+
+  // ③ **不能删根目录本身** —— 那会把整个壁纸库扔进废纸篓
+  assert.match(delFn, /roots\.includes\(resolved\)/,
+    '没挡住"删根目录本身" ⟹ 一次误操作能把整个壁纸库扔进废纸篓');
+
+  // ④ **正在用的要先卸载** —— 否则删完文件窗口还在渲染它
+  //   （资源已载入内存）⟹ 画面是"文件不在了但还在显示"
+  //   ⟹ 用户重启后才发现，症状和时机脱节
+  // ⚠️ 锚在**判定那一行**，不是 `wasActive` 这个词 ——
+  // 它在日志和返回值里也出现，把判定改成 `false` 后断言照样绿。
+  //（这一轮第三次栽在"名字子串"上：clearWorkshopManifest、installSignalCleanup。）
+  assert.match(delFn, /weProject && path\.resolve\(weProject\.dir\) === resolved/,
+    '删除时没判"是不是正在用" ⟹ 删完文件窗口还在渲染它，'
+    + '而用户重启后才发现壁纸没了（症状和时机脱节，很难查）');
+  assert.match(delFn, /if \(wasActive\) \{[\s\S]{0,200}?setWEWallpaper\(null\)/,
+    '正在用的没先卸载');
+
+  // ⑤ **要确认对话框** —— 这个项目的纪律：破坏性操作要用户明示
+  assert.match(dash, /confirm\(/,
+    '删除没有确认对话框 ⟹ 破坏性操作必须用户明示'
+    + '（而右键菜单里「删除」挨着「在 Finder 中打开」，点错的概率不低）');
+  // ⚠️ 确认框要说清"去哪" —— 用户知道是废纸篓才敢点
+  assert.match(dash, /移到废纸篓？|移到废纸篓\?/,
+    '确认框没说"移到废纸篓" ⟹ 用户不知道能不能反悔');
+
+  // ⑥ **失败要说出来** —— 静默失败时用户以为删了，
+  //   而下次刷新它又在那儿（看起来像"删不掉"的鬼故事）
+  const delBtn = dash.slice(dash.indexOf('移到废纸篓'),
+    dash.indexOf('移到废纸篓') + 1400);
+  assert.match(delBtn, /out\.error|删除失败/,
+    '删除失败时没报出来 ⟹ 用户以为删了，下次刷新它又在（像"删不掉"的鬼故事）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

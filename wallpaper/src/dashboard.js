@@ -1966,18 +1966,45 @@ async function renderMine() {
           label: '在 Finder 中打开',
           onClick: () => window.gw.revealWallpaperDir(it.dir),
         },
-        // ⚠️ 「卸载」只在**当前装载的那个**上出现 —— 挂在别的卡片上
-        // 会让人以为是"删掉这个壁纸文件"（那是危险操作，我们不做）。
-        it.active ? { label: null } : null,
-        it.active ? {
-          label: '卸载（回到内置壁纸）',
+        // ⚠️⚠️ **「卸载（回到内置壁纸）」换成了「删除」**（0.9.42）。
+        //
+        // 用户 2026-08-01：「应该是卸载，就是这个壁纸的文件直接删除，
+        // 而不是什么应用这个壁纸，应用之后再来个什么退回内置壁纸，
+        // 我们的产品关闭了不就壁纸退出运行了，这个逻辑没必要」
+        //
+        // **他说得对** —— 关掉应用壁纸就没了，「退回内置」是个没有价值的中间态。
+        // 而右键菜单里真正需要的是文件管理（删掉不要的壁纸）。
+        //
+        // ⚠️ 它对**每张卡片**都出现（不只当前那个）—— 因为"删掉一个不想要的
+        // 壁纸"和"它有没有在用"无关。而正在用的那个会先自动卸载再删。
+        { label: null },
+        {
+          label: '删除（移到废纸篓）',
           danger: true,
           onClick: async () => {
-            await window.gw.weClear();
+            // ⚠️⚠️ **删用户的文件必须确认。** 这个项目的纪律：
+            // 破坏性操作要用户明示。而右键菜单里「删除」挨着
+            // 「在 Finder 中打开」⟹ 点错的概率不低。
+            //
+            // ⚠️ 说清三件事：删什么、去哪（废纸篓 ⟹ 能反悔）、正在用的会先卸载。
+            const name = it.title || it.id || it.dir;
+            const extra = it.active ? '\n\n它正在使用中 —— 会先卸载再删。' : '';
+            // eslint-disable-next-line no-alert, no-restricted-globals
+            if (!confirm(`把「${name}」移到废纸篓？${extra}\n\n${it.dir}`)) return;
+            const out = await window.gw.deleteWallpaper(it.dir);
+            if (!out || !out.ok) {
+              // ⚠️ 失败要说出来 —— 静默失败时用户会以为删了，
+              // 而下次刷新它又在那儿（那看起来像"删不掉"的鬼故事）。
+              const st = document.getElementById('mine-state');
+              if (st) {
+                st.innerHTML = `<span class="warn">${(out && out.error) || '删除失败'}</span>`;
+              }
+              return;
+            }
             renderWEStatus();
             renderMine();
           },
-        } : null,
+        },
       ].filter(Boolean));
     });
     // 当前装载的那个标出来 —— 否则一屏缩略图里认不出哪个在用。
