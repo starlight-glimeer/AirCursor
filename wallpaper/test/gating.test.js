@@ -3997,4 +3997,61 @@ check('开发者模块物理隔离，能整块撤掉', () => {
     '2C 的音频开关不是在 system/off 之间切 ⟹ 那是普通用户唯一会用的两种');
 });
 
+// ⚠️⚠️ **壁纸墙式卡片的三个"改坏了不报错"点**（0.9.45）。
+//
+// 这次把卡片从「图 + 图下文字」改成「图 + 文字压在图上」（学 Open Wallpaper
+// Engine 的 ZStack 卡片）。三个东西一旦漏掉，症状都是**看起来正常但信息丢了**：
+check('壁纸墙卡片：定位上下文 / 放不了要常显 / \\n 要有 pre-wrap', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ① 标题/类型行都是 position: absolute ⟹ .ws-item 必须是定位上下文。
+  //    漏了的后果：它们跑到**页面**的角上去，而不是卡片的角上。
+  const wsItem = html.slice(html.indexOf('.ws-item {'), html.indexOf('.ws-item:hover'));
+  assert.match(wsItem, /position:\s*relative/,
+    '.ws-item 不是 relative ⟹ 压在图上的标题会相对整个页面定位');
+
+  // ② 而 JS 里那句 `card.style.position = 'relative'` 要**没有** ——
+  //    同一个事实两个来源就会漂（这个项目在类型白名单上栽过一次）。
+  //    ⚠️⚠️ 必须走 `codeOnly` —— 我删掉那行时**在注释里写了它为什么被删**，
+  //    于是这条断言在正确的代码上报红（这一轮第 8 次"注释/字符串骗过守卫"）。
+  //    ⟹ 规则：任何"代码里含不含 X"的断言，一律先剥注释。
+  assert.ok(!/card\.style\.position\s*=/.test(codeOnly(dash)),
+    'JS 又在设 card.style.position ⟹ 定位上下文有两个来源');
+
+  // ③ 「放不了」不能跟着 hover 藏起来 —— .tp 现在默认 opacity 0，
+  //    而 .tp.no 是"点下去之前就该知道"的信息。
+  //    ⚠️ 锚在 `.ws-item .tp.no {` 这个完整选择器上，不是子串 `tp.no`
+  //    （那三个字在 :hover 那条规则里也有，会锚到错的一条）。
+  const tpNo = html.slice(html.indexOf('.ws-item .tp.no {'));
+  assert.match(tpNo.slice(0, 200), /opacity:\s*1/,
+    '.tp.no 没把 opacity 拉回 1 ⟹ 「放不了」被 hover 规则藏了，用户点下去才知道');
+
+  // ④ 用 `\n` 分行的状态区必须有 pre-wrap，否则默认折叠成空格。
+  //    这条一直漏着（#mine-state 的多个扫描路径挤成一行），不报错。
+  //
+  // ⚠️⚠️ **先剥 CSS 注释**。第一版这里有个 `||` 后备分支，正则是
+  //   `#br-state[^{]*\{[^}]*white-space:\s*pre-wrap`
+  // 而 `[^{]*` 会跨换行 ⟹ 它匹配到了**上面那条 CSS 注释里**提到的
+  // "#br-state / #mine-state 是 0.9.45 补上的…"，于是把 pre-wrap 删掉之后
+  // 守卫**照样绿**（反向验证第 4 条：报红条数 0）。
+  // ⟹ 同一个形状的第 9 次。而这次骗过守卫的是我自己刚写的那段注释。
+  //    真正的教训不是"再多加一条剥离"，是：**断言必须先反向验证**，
+  //    因为"永久绿的守卫"和"没有守卫"一样，只是更贵。
+  const cssOnly = html.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const id of ['br-state', 'mine-state', 'we-state']) {
+    // 逐条规则找：选择器列表里含 #id、且同一条规则体里有 pre-wrap。
+    const ok = (cssOnly.match(/[^{}]+\{[^{}]*\}/g) || []).some((rule) => {
+      const [sel, body] = [rule.slice(0, rule.indexOf('{')), rule.slice(rule.indexOf('{'))];
+      return new RegExp(`#${id}\\b`).test(sel) && /white-space:\s*pre-wrap/.test(body);
+    });
+    assert.ok(ok, `#${id} 里用 \\n 分行但没有 white-space: pre-wrap ⟹ 换行被折叠成空格`);
+  }
+
+  // ⑤ 工坊空态要给**具体的下一步**，而且"没搜索词"时不能叫人"换搜索词"。
+  const empty = dash.slice(dash.indexOf('const hasQuery'), dash.indexOf('可以试试'));
+  assert.match(empty, /if\s*\(!ways\.length\)/,
+    '工坊空态没有"三个条件都不成立"的兜底 ⟹ 会叫没搜索词的用户去换搜索词');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

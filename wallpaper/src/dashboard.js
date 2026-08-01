@@ -1851,9 +1851,32 @@ async function runBrowse() {
   }
 
   browse.total = result.total;
-  state.textContent = result.items.length
-    ? `共 ${result.total} 个，第 ${browse.page} 页`
-    : '这一页没东西（换个搜索词或排序试试）';
+  // ⚠️ 空态要写「怎么办」而不是「没有」（0.9.45）。
+  //
+  // 学 Open Wallpaper Engine 的空态文案 —— 它是：
+  //   "No wallpapers found for your search.
+  //    Expand or reset the categories in the filter sidebar or try another search term."
+  // 两句：①事实 ②**具体的下一步**（去哪儿、改什么）。
+  //
+  // 我们「我的壁纸」那条已经这么写了（还带一个"打开目录"按钮），
+  // 但这条工坊的只有一句小字括号提示 ⟹ 对齐。
+  // ⚠️ 用 innerHTML 而不是 textContent —— 要分行和强调。
+  //    左边那支是模板串（没有 HTML），继续用 textContent 更安全，所以分开写。
+  if (result.items.length) {
+    state.textContent = `共 ${result.total} 个，第 ${browse.page} 页`;
+  } else {
+    const hasQuery = !!document.getElementById('br-q').value.trim();
+    const hasTags = !!(browse.tags && browse.tags.length);
+    const ways = [];
+    if (hasQuery) ways.push('换个搜索词，或者清空搜索框看热门');
+    if (hasTags) ways.push('把类型筛选去掉几个');
+    if (browse.page > 1) ways.push('回到第 1 页');
+    // ⚠️ 三个条件都不成立时（没搜索词、没筛选、第 1 页）说明是 Steam 那边
+    // 真的没返回 —— 那时候给"换个搜索词"是**误导**，他没搜索词可换。
+    if (!ways.length) ways.push('Steam 这次没返回结果，稍后再试一次');
+    state.innerHTML = '没找到壁纸。\n'
+      + `<span class="hint">可以试试：${ways.join('；')}</span>`;
+  }
 
   for (const item of result.items) {
     grid.appendChild(workshopCard(item, (picked) => {
@@ -2080,8 +2103,11 @@ async function renderMine() {
       mark.title = '在播放列表里';
       mark.style.cssText = 'position:absolute;top:4px;right:5px;font-size:10px;'
         + 'color:var(--accent);text-shadow:0 0 3px #000';
-      // ⚠️ 卡片要 relative 才能定位角标（ws-item 默认 static）
-      card.style.position = 'relative';
+      // ⚠️ 这里原来有 `card.style.position = 'relative'` —— 删了。
+      // 0.9.45 把 relative 提到 .ws-item 的 CSS 里了（标题也要绝对定位，
+      // 所以**所有**卡片都需要，不只是在播放列表里的那些）。
+      // 留着不算错，但那会让"谁负责定位上下文"有两个来源，而这个项目
+      // 在"同一个事实两个来源"上栽过（workshop.js 自己维护过一份类型白名单）。
       card.appendChild(mark);
     }
     grid.appendChild(card);

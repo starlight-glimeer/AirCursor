@@ -248,14 +248,63 @@
   .br-group .we-src { margin-bottom: 0; }
   .br-group button { font-size: 11px; padding: 3px 10px; }
 
+  /* ⚠️⚠️ **卡片改成"壁纸墙"而不是"文件列表"**（0.9.45）。
+     用户 2026-08-01：看 Open Wallpaper Engine 的界面「学习一下，他这个设计的挺酷」。
+
+     它的卡片是 `ZStack(alignment: .bottom)` —— 预览图铺满，标题**压在图上**
+     （半透明黑底），而不是图下面单独一条文字区。抄的是这个：
+       · 原来 150px 宽的卡片里，84px 是图、约 34px 是两行文字 ⟹ 图只占 7 成
+       · 现在标题浮在图上 ⟹ **同样面积下图大一半**，看起来像壁纸墙
+
+     ⚠️ 而 hover 放大（scaleEffect 1.2 + spring）是它的另一个做法，
+     CSS transform 就能做，不是 SwiftUI 特权。1.2 太夸张（网格里会互相压），
+     取 1.04 + 抬 z-index。
+
+     ⚠️ 没抄的：左侧 225px 筛选侧栏、底部分页数字、右侧 320px 详情面板
+     （它那个面板里的 5 颗星和爱心在代码里是 `.disabled(true)` 的摆设，
+     只为长得像 Windows 版 WE）。理由：那些是"几十万张壁纸"才需要的
+     dashboard 结构，而我们的「我的壁纸」是用户自己下的几十张，一屏看完。 */
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-             background: #15151b; cursor: pointer; }
-  .ws-item:hover { border-color: rgba(255,255,255,.22); }
-  .ws-item img { width: 100%; height: 84px; object-fit: cover; display: block; background: #000; }
-  .ws-item .nm { font-size: 11px; padding: 6px 8px 2px; overflow: hidden;
-                 text-overflow: ellipsis; white-space: nowrap; }
-  .ws-item .tp { font-size: 10px; color: var(--dim); padding: 0 8px 7px; }
+             background: #15151b; cursor: pointer;
+             /* ⚠️ relative 提到这里：原来只有"在播放列表里"的卡片才由 JS 设
+                （dashboard.js 里 card.style.position = 'relative'），
+                而现在标题和角标都要绝对定位 ⟹ 所有卡片都需要。 */
+             position: relative;
+             /* ⚠️ transform 会让卡片脱离正常层叠 —— 放大时要能压住邻居，
+                所以给个基准 z-index，hover 时抬高。 */
+             z-index: 0;
+             transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+  .ws-item:hover { border-color: rgba(255,255,255,.28);
+                   transform: scale(1.04);
+                   z-index: 2;
+                   box-shadow: 0 6px 18px rgba(0,0,0,.55); }
+  /* ⚠️ 图高从 84 → 116：文字不再占独立高度，省下的给图。
+     aspect-ratio 更"对"但 GIF 尺寸五花八门（实测 preview.gif 有 1:1 也有 16:9），
+     定高 + object-fit: cover 才能保证网格对齐。 */
+  .ws-item img { width: 100%; height: 116px; object-fit: cover; display: block; background: #000; }
+  /* 标题压在图底部。渐变而不是纯色块 —— 纯色块的上边缘是一条硬线，
+     而壁纸预览图底部亮暗不定，硬线会很显眼。 */
+  .ws-item .nm { position: absolute; left: 0; right: 0; bottom: 0;
+                 font-size: 11px; padding: 14px 8px 5px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap;
+                 color: rgba(255,255,255,.88);
+                 text-shadow: 0 1px 3px rgba(0,0,0,.9);
+                 background: linear-gradient(to top, rgba(0,0,0,.78), rgba(0,0,0,0));
+                 pointer-events: none; }
+  .ws-item:hover .nm { color: #fff;
+                       background: linear-gradient(to top, rgba(0,0,0,.88), rgba(0,0,0,0)); }
+  /* 类型/大小那行：也压在图上，但在标题**上方**（bottom 用标题的高度顶开）。
+     ⚠️ 它是"次要信息"，所以只在 hover 时才显示 —— 不 hover 时卡片上只有
+     一张图和一个名字，那是这一轮想要的密度。 */
+  .ws-item .tp { position: absolute; left: 0; right: 0; bottom: 22px;
+                 font-size: 10px; color: rgba(255,255,255,.72);
+                 text-shadow: 0 1px 3px rgba(0,0,0,.9);
+                 padding: 0 8px; opacity: 0;
+                 transition: opacity .16s ease;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                 pointer-events: none; }
+  .ws-item:hover .tp { opacity: 1; }
 
   /* ⚠️ 卡片右键菜单（0.9.38）。用户 2026-08-01 提的：
      「就不能设计成右键点击，然后有一个选项是在资源管理器中打开，有一个是卸载吗」
@@ -273,7 +322,14 @@
   .card-menu-item.danger { color: var(--warn); }
   .card-menu-item.danger:hover { background: rgba(255,180,84,.14); }
   .card-menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
-  .ws-item .tp.no { color: #ffb4b4; }
+  /* ⚠️⚠️ 「放不了」必须**常显**，不能跟着 hover 藏起来（0.9.45）。
+     上面把 .tp 改成了 hover 才出现（类型/大小是次要信息），但
+     "这个壁纸在 macOS 上放不了"是**用户点下去之前就该知道**的事 ——
+     藏起来的后果是他点了、被拒、再去猜为什么。
+     ⟹ opacity 拉回 1，并且给一层底色让它在亮图上也读得出来。 */
+  .ws-item .tp.no { color: #ffc9c9; opacity: 1;
+                    background: linear-gradient(to top, rgba(0,0,0,.7), rgba(0,0,0,.35)); }
+  .ws-item:hover .tp.no { color: #ffb4b4; }
 
   /* ---- WE 壁纸的自动生成控件 ----
      和 .row2 分开：那个是 1fr/64px 两列，而这里要 标签/控件/读数 三列，
@@ -291,7 +347,14 @@
   }
   .we-src button:hover { border-color: rgba(255,255,255,.2); }
   .we-src button.on { border-color: var(--accent); background: rgba(108,199,255,.12); }
-  #we-state, #we-audio-state { white-space: pre-wrap; line-height: 1.7; }
+  /* ⚠️⚠️ 这四个状态区都用 `\n` 分行 ⟹ **必须** pre-wrap（默认会折叠成空格）。
+     `#br-state` / `#mine-state` 是 0.9.45 补上的 —— 它们一直漏着，而症状不报错：
+       · `#mine-state`（一个壁纸都没找到）："扫过这些目录：" 后面 join('\n') 的
+         多个路径**全挤在一行**，那正是最需要读清路径的时刻
+       · `#br-state`（工坊查询失败）：错误 + hint 挤成一行
+     这跟 dashboard.html:210 那条注释说的是同一个坑，只是当时只修了 `.rec .state`。
+     ⟹ 教训：`\n` 和 pre-wrap 是**成对**的，加一个 `\n` 就要确认容器有那条规则。 */
+  #we-state, #we-audio-state, #br-state, #mine-state { white-space: pre-wrap; line-height: 1.7; }
 
   /* ---- 滑块 ---- */
   .row2 { display: grid; grid-template-columns: 1fr 64px; gap: 10px; align-items: center; padding: 4px 0; }
