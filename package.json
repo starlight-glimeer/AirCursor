@@ -9,6 +9,7 @@
     "web": "node server.js",
     "check": "node --check electron/main.js && node --check public/pose.js && node --check public/motion.js && node --check public/tracking.js && for f in wallpaper/src/*.js; do node --check $f || exit 1; done",
     "dist:mac": "bash wallpaper/scripts/build-mac.sh",
+    "build:mac": "bash wallpaper/scripts/build-mac.sh",
     "test": "node wallpaper/test/run.js",
     "vendor": "bash wallpaper/scripts/fetch-vendor.sh",
     "postinstall": "bash wallpaper/scripts/fetch-vendor.sh",

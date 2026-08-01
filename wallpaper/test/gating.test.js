@@ -3012,4 +3012,48 @@ check('测试里不用固定长度的切片（那个锚点会漂）', () => {
     + '    改成切到结构边界：indexOf(\'\\nfunc \', i) / indexOf(\'\\n}\', i)');
 });
 
+
+// ⚠️⚠️⚠️ **我给用户的每条 `npm run X` 都必须在 package.json 里存在。**
+//
+// 用户 2026-08-01 跑我给的命令：
+//   npm run build:mac  ⟹  `npm error Missing script: "build:mac"`
+// 真名是 `dist:mac`。他要打包验一个修复，卡在第一条命令上，一轮往返白烧。
+//
+// ⚠️ 这个形状在本项目已经不是第一次了 —— 我给过的命令里错过路径
+//（`/home/moon/...` vs 用户的 `~/workspace/AirCursor`）、错过 dmg 文件名。
+// 共同点：**命令里的每个值我都是从自己环境或记忆里取的，没有一个是查出来的。**
+//
+// ⟹ 文档里写下的 `npm run X` 就是一份契约，让测试来核。
+check('文档里的 npm run 命令都真的存在', () => {
+  const root = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const have = new Set(Object.keys(root.scripts || {}));
+  const docs = ['MODULES.md', 'TO-LOCAL.md', 'TO-LOCAL-RESUME.md'];
+  const missing = [];
+  for (const doc of docs) {
+    const f = path.join(__dirname, '..', doc);
+    if (!fs.existsSync(f)) continue;
+    const text = fs.readFileSync(f, 'utf8');
+    for (const m of text.matchAll(/npm run ([a-z][\w:-]*)/g)) {
+      if (!have.has(m[1])) missing.push(`${doc}: npm run ${m[1]}`);
+    }
+  }
+  assert.strictEqual(missing.length, 0,
+    `文档里的这些命令在 package.json 里不存在：\n    ${missing.join('\n    ')}\n`
+    + `    可用的是：${[...have].join(' ')}\n`
+    + '    ⟹ 用户照文档跑会撞 `Missing script`，而那是他验修复的第一条命令');
+});
+
+// ⚠️ 打包命令有两个名字（`dist:mac` 和 `build:mac`）—— 那是故意的。
+// 我在对话里给过 `build:mac`，而真名是 `dist:mac`；加别名比让用户记哪个对更可靠。
+check('打包命令 dist:mac 和 build:mac 都在（我给过两个名字）', () => {
+  const root = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  for (const name of ['dist:mac', 'build:mac']) {
+    assert.ok(root.scripts && root.scripts[name],
+      `package.json 里没有 \`${name}\` —— 我在对话里给过这个名字，`
+      + '用户照着跑会撞 Missing script');
+  }
+  assert.strictEqual(root.scripts['dist:mac'], root.scripts['build:mac'],
+    '两个名字指向不同的东西 ⟹ 用户跑哪个得到的结果不一样，那比只有一个名字更坏');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
