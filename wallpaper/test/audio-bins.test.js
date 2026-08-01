@@ -756,6 +756,9 @@ check('MODULES.md 的音频契约和代码一致', () => {
   const md = fs.readFileSync(path.join(__dirname, '..', 'MODULES.md'), 'utf8');
   // 文档不许再出现被证伪的结论
   const dead = [
+    // 0.9.36：那句凭印象的话已被真机证伪，不许再当当前结论
+    ['进程 tap 要 14.2+ 而且同样要屏幕录制',
+      '真机实测 tapErr 0 + screenRecordingGranted false ⟹ **不需要**屏幕录制'],
     ['不做时间平滑', 'WE 原版就是 movetowards(cur, target, 0.3f) —— 文档说反了'],
     ['绕了 15 圈', 'main.js:1141 的映射表把 PolygonAngle 12 → 180，那条论证已证伪'],
     ['诊断工具造成的残影', '螺旋的真因是 stride + 把 128 当连续频段，不是残影'],
@@ -789,6 +792,9 @@ check('MODULES.md 的音频契约和代码一致', () => {
     // 采样率：文档说 44100 就必须真的是 44100（两处都要）
     [/44100/, /let SAMPLE_RATE = 44100/, '采样率 44100'],
     [/单声道|channels = 1/, /config\.channelCount = 1/, '单声道'],
+    // 0.9.36：文档说了 CoreAudio tap，代码里就必须真有那条路
+    [/CoreAudio 进程 tap/, /final class CoreAudioTap/, 'CoreAudio tap'],
+    [/交错立体声/, /f \* ch \+ c/, '交错降单声道'],
   ];
   for (const [inDoc, inCode, name] of claims) {
     if (inDoc.test(md)) {
