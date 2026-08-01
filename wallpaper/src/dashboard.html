@@ -279,6 +279,14 @@
     display: grid; grid-template-columns: 1fr 340px;
     height: 100%; min-height: 0;
   }
+  /* ⚠️⚠️ **右侧面板隐藏时网格铺满全宽**（0.9.62）。
+     `[hidden]` 只让那个元素不显示，**但 grid 的那一列还在**
+     ⟹ 右边会空出 340px（那正是"看起来还占着位置"）。
+     ⟹ 用 `:has()` 让 .split 在面板隐藏时变单列。
+     ⚠️ `:has()` 在 Electron 43（Chromium 130+）是稳定的 —— 不是实验特性。
+     ⚠️ 加过渡：面板出现/消失时网格宽度是渐变的，那样不会"跳一下"。 */
+  .split:has(> .pane-side[hidden]) { grid-template-columns: 1fr; }
+  .split { transition: grid-template-columns .22s ease; }
   /* ⚠️⚠️ **`height: 100%` 是必须的**（0.9.56 补的）。用户报「手势录制这个界面
      不能滑动了」。
 
@@ -881,11 +889,18 @@
            （用户原话：「装载加显示壁纸参数」）。
            ⚠️ 所以"选中"和"正在放"是同一个概念 —— 没有"选了但没生效"的中间态。
               那也是为什么这里不需要「装载这个壁纸」按钮。 -->
-      <div class="pane-side" id="mine-side">
-        <div id="mine-side-empty" class="hint">
-          点左边任意一个壁纸 —— 它会立刻用上，参数出现在这里。
-        </div>
-        <div id="mine-side-body" hidden>
+      <!-- ⚠️⚠️ **整块默认不出现**（0.9.62）。用户 2026-08-01：
+           「点左边任意一个壁纸 —— 它会立刻用上，参数出现在这里。这是"我的壁纸"
+             这个界面…我想默认隐藏，只有我点击了壁纸…这时候再出来」
+
+           0.9.54 那版是"面板常驻 + 里面显示一句空态提示"，而用户要的是
+           **整块不占位** ⟹ 没选中时网格铺满全宽（多一列壁纸），
+           点了之后面板才滑出来。
+           ⚠️ 那句空态提示也跟着删了 —— 面板不出现的时候没有地方放它，
+              而"点壁纸会有反应"这件事不需要一句话来说明。
+           ⚠️ 创意工坊那边**不改**（用户点名「创意工坊那个先不用」）。 -->
+      <div class="pane-side" id="mine-side" hidden>
+        <div id="mine-side-body">
           <img id="side-preview" alt="">
           <div id="side-title"></div>
           <div id="side-meta" class="hint"></div>

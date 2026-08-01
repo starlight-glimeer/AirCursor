@@ -1695,17 +1695,19 @@ function renderAudioStatus(audio) {
 // ⚠️ 而**空态**要说清"点左边" —— 一个空白的右半屏看起来像坏了。
 
 function renderMineSide(item) {
-  const empty = document.getElementById('mine-side-empty');
-  const body = document.getElementById('mine-side-body');
-  if (!body) return;
+  // ⚠️⚠️ 0.9.62：藏的是**整块面板**（#mine-side），不是里面的 body。
+  // 用户：「我想默认隐藏，只有我点击了壁纸…这时候再出来」
+  // ⟹ 面板不占位时 .split 变单列（见 CSS 的 `:has()`），网格铺满全宽。
+  // ⚠️ 原来那个 `#mine-side-empty`（"点左边任意一个壁纸…"）删了 ——
+  //   面板不出现时没地方放它。
+  const side = document.getElementById('mine-side');
+  if (!side) return;
 
   if (!item) {
-    empty.hidden = false;
-    body.hidden = true;
+    side.hidden = true;
     return;
   }
-  empty.hidden = true;
-  body.hidden = false;
+  side.hidden = false;
 
   const img = document.getElementById('side-preview');
   if (item.preview) {
@@ -2396,9 +2398,22 @@ async function renderMine() {
   // ⟹ 列表每次刷新都要把右侧同步到 active 那张，否则：
   //   · 刚点了一个壁纸 → renderMine 重跑 → 右侧还是上一张的参数
   //   · 重开面板 → 桌面上在放着某个壁纸，而右侧是空的（看起来像没装载）
-  // ⚠️ 没有 active 时传 null ⟹ 显示空态（"点左边任意一个壁纸"），
-  //   而不是留着上一次的内容（那会让人以为那张还在放）。
-  renderMineSide(lastWallpapers.find((w) => w.active) || null);
+  // ⚠️⚠️ 0.9.62：**只在面板已经开着的时候**同步，不主动打开它。
+  // 用户：「我想默认隐藏，只有我点击了壁纸…这时候再出来」
+  //
+  // ⚠️ 这里有个矛盾要解：桌面上通常**正放着**某个壁纸（上次装的会自动恢复）
+  //   ⟹ 无条件同步到 active 那张的话，面板一打开右侧就出来了
+  //   ⟹ "默认隐藏"根本不成立。
+  // ⟹ 判据：**面板的开合由"点击"决定，内容由 active 决定。**
+  //   · 面板关着（用户还没点过）⟹ 保持关着
+  //   · 面板开着（用户点过了）⟹ 内容跟着 active 走，
+  //     否则"点了一下 → renderMine 重跑 → 右侧还是上一张的参数"
+  const sideOpen = !document.getElementById('mine-side')?.hidden;
+  if (sideOpen) {
+    // ⚠️ 没有 active 时传 null ⟹ 面板收起来（而不是留着上一次的内容，
+    //   那会让人以为那张还在放）。
+    renderMineSide(lastWallpapers.find((w) => w.active) || null);
+  }
   // ⚠️ 必须在 lastWallpapers 赋值**之后**渲染 —— 原来 renderRotate() 在
   // `await workshopLocal()` 之前调，那时清单还是空的 ⟹ 摘要行永远显示"—"。
   renderRotate();

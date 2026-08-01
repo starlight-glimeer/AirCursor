@@ -4381,7 +4381,23 @@ check('轮播 UI：摘要行开弹窗 / 分钟小时 / 横滑预览 / 网格不�
   // ⑥ 缩略图/标题的数据来自 renderMine 存下的清单，不重扫磁盘 ——
   //    各自扫一次的话，两次之间的差异会让"正在放"和网格对不上。
   assert.match(dash, /lastWallpapers = /, '没有壁纸清单缓存 ⟹ 轮播要自己重扫磁盘');
-  assert.match(dash, /lastWallpapers = [\s\S]{0,200}?renderRotate\(\)/,
+  // ⚠️ 用**位置比较**而不是 `[\s\S]{0,200}` 固定长度窗口 ——
+  //   0.9.62 在这两句之间加了一段注释（十来行）⟹ 窗口撑破，
+  //   断言**在正确代码上报红**（固定长度切片第 11 次）。
+  //   ⟹ 判据就是"谁在前"，那用 indexOf 比较最直接。
+  // ⚠️⚠️ 必须**切到 renderMine 的函数体里**再比 —— `renderRotate();` 在文件里
+  //   出现 4 次，而 `indexOf(..., lwAt)` 会一路找到**后面别处**那些
+  //   ⟹ 把 renderMine 里那处挪到 lastWallpapers 之前，断言照样绿
+  //   （反向验证第 6 条：报红 0）。"锚点撞名"第 9 次 —— 这次撞的是
+  //   **同一个调用在别的函数里的副本**。
+  const mineBody = (() => {
+    const a = dash.indexOf('async function renderMine()');
+    return a > 0 ? dash.slice(a, dash.indexOf('\n}', a) + 2) : '';
+  })();
+  assert.ok(mineBody.length > 400, '切不出 renderMine 的函数体 ⟹ 断言失效');
+  const lwAt = mineBody.indexOf('lastWallpapers = (result.ok');
+  const rrAt = mineBody.indexOf('renderRotate();');
+  assert.ok(lwAt > 0 && rrAt > lwAt,
     'renderRotate 在 lastWallpapers 赋值之前调 ⟹ 摘要行永远显示"—"（我第一版就是这样）');
   // "正在放哪个"只能来自 items 的 active，不能自己用 config.we.dir 判断
   //（那是"上次装载的路径"，壁纸可能已经被卸载了 ⟹ 显示一个没在放的壁纸）
@@ -4721,15 +4737,23 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
       `#${id} 里没有 .pane-grid ⟹ main 不滚了，这一页的内容会被直接截断（不报错）`);
   }
 
-  // ⑤ 两页各有右侧详情面板，且**空态要说清"点左边"**（空白的右半屏看起来像坏了）
-  for (const [page, emptyId, bodyId] of [
-    ['我的壁纸', 'mine-side-empty', 'mine-side-body'],
-    ['创意工坊', 'we-side-empty', 'we-side-body'],
-  ]) {
-    assert.ok(html.includes(`id="${emptyId}"`), `${page}的详情面板没有空态`);
-    assert.match(html, new RegExp(`id="${bodyId}"[^>]*hidden`),
-      `${page}的详情内容没有 hidden ⟹ 一开面板就是个空壳`);
-  }
+  // ⑤⚠️⚠️ 两页的空态处理**不一样**（0.9.62，用户点名）：
+  //
+  // · **我的壁纸**：整块面板默认 `hidden`，点了壁纸才出来
+  //   （用户：「我想默认隐藏，只有我点击了壁纸…这时候再出来」）
+  //   ⟹ 没有空态提示 —— 面板不出现时没地方放它。
+  //   ⟹ 而且 `.split` 要变单列，否则右边空出 340px（"看起来还占着位置"）。
+  // · **创意工坊**：面板常驻 + 里面一句空态（用户：「创意工坊那个先不用」）
+  assert.match(html, /id="mine-side"[^>]*hidden/,
+    '我的壁纸的详情面板没有默认 hidden ⟹ 那是"常驻"（用户点名要默认隐藏）');
+  assert.ok(!/id="mine-side-empty"/.test(html),
+    '我的壁纸的详情面板又有空态提示 ⟹ 整块都隐藏了，那句话没地方放');
+  assert.match(html, /\.split:has\(> \.pane-side\[hidden\]\)[^}]*grid-template-columns:\s*1fr/,
+    '面板隐藏时 .split 没变单列 ⟹ 右边空出 340px（看起来还占着位置）');
+  // 创意工坊那边不动
+  assert.ok(html.includes('id="we-side-empty"'), '创意工坊的详情面板没有空态');
+  assert.match(html, /id="we-side-body"[^>]*hidden/,
+    '创意工坊的详情内容没有 hidden ⟹ 一开面板就是个空壳');
 
   // ⑥⚠️⚠️ 点卡片的行为：**我的壁纸 = 装载 + 显示参数**（用户原话「装载加显示壁纸参数」），
   //    而**创意工坊 = 只看详情，不下载**（几百 MB 的误点很贵）。两边不同是有意的。
@@ -4769,6 +4793,18 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
     `切出的 renderWEStatus 长度 ${statusFn.length} 不合理 ⟹ 断言失效`);
   assert.ok(!/renderWEControls\(\)/.test(statusFn),
     'renderWEStatus 又在调 renderWEControls ⟹ 参数区变成常驻的（用户点名不要）');
+
+  // ⑩⚠️⚠️ **面板的开合由"点击"决定，内容由 active 决定**（0.9.62）。
+  //
+  // 这里有个矛盾：桌面上通常**正放着**某个壁纸（上次装的会自动恢复）
+  // ⟹ renderMine 里无条件 `renderMineSide(active)` 的话，面板一打开右侧就出来了
+  // ⟹ "默认隐藏"根本不成立。
+  // ⟹ 只在面板**已经开着**时同步（那时用户点过了，而不同步会让"点一下 →
+  //   renderMine 重跑 → 右侧还是上一张的参数"）。
+  assert.match(dash, /const sideOpen = !document\.getElementById\('mine-side'\)\?\.hidden/,
+    'renderMine 无条件同步右侧面板 ⟹ 桌面上有壁纸时面板一开就出来（默认隐藏就没了）');
+  assert.match(dash, /if \(sideOpen\) \{[\s\S]{0,300}?renderMineSide\(/,
+    '同步右侧面板时没判"面板开着吗"');
 
   // ⑧⚠️⚠️ **窗口初始尺寸按屏幕算，不写死**（0.9.55）。用户：「产品打开的初始大小
   //    改一下吧，左侧展示面太小了」—— 940 宽下网格只剩 560px（三列卡片），
