@@ -1912,19 +1912,28 @@ function renderMineDirs() {
   //
   // ⚠️ 但**全都不存在时要显示一行** —— 否则"没装 Steam"和"扫了但没找到"
   // 在面板上长得一样，而那两件事的下一步完全不同。
+  // ⚠️⚠️⚠️ **Steam 那行只在"有残留"时出现。**
+  //
+  // 用户 2026-08-01 让删掉的就是这一段：
+  //   「steamcmd 的临时下载目录（下载完会移走，所以这里通常是空的）：
+  //     …/content/431960 空的（正常 —— 下载完会移到上面那个目录）[打开]」
+  //
+  // 他是对的：0.9.29 起下载会**移动**到我们目录 + 清空壳
+  // ⟹ 那个目录**空着才是常态** ⟹ 显示一行"空的（正常）"是纯噪声。
+  //
+  // ⚠️ 而"没装 steamcmd"那种情况我原来也显示一行 —— 那更没用：
+  // 用户没装 steamcmd 就不会用工坊下载，那行只是让面板变长。
+  //
+  // ⟹ 判据：**只有异常才显示**。这里的异常只有一种 ——
+  //    目录里还留着壁纸（= 上次搬运失败，磁盘满/权限/跨卷）。
+  //    那时用户需要知道，而且需要那个「搬到我的壁纸目录」按钮。
   const autoAll = (lastScanned || []).filter((x) => x.auto);
-  const autoReal = autoAll.filter((x) => x.exists);
-  const auto = autoReal.length ? autoReal : autoAll.slice(0, 1);
+  const auto = autoAll.filter((x) => x.exists && x.found);
   if (auto.length) {
     const title = document.createElement('div');
     title.className = 'hint';
     title.style.marginBottom = '4px';
-    // ⚠️ 0.9.29 起工坊下载会**移动**到我们目录（不是复制）+ 清空壳
-    // ⟹ 这个目录正常情况下**应该是空的或不存在**。
-    // 里面还有东西 = 上次搬运失败了（那时 logEvent 里有记录）。
-    title.textContent = autoReal.length
-      ? 'steamcmd 的临时下载目录（下载完会移走，所以这里通常是空的）：'
-      : '没找到 steamcmd 的下载目录（没装 steamcmd 的话这是正常的）：';
+    title.textContent = 'steamcmd 目录里还留着壁纸（上次没搬走）：';
     host.appendChild(title);
     for (const item of auto) {
       const row = document.createElement('div');
@@ -1939,18 +1948,12 @@ function renderMineDirs() {
       // ⟹ 这里的数字是"Steam 那边还留着的原件"，而列表里显示的是我们目录那份
       //（去重逻辑保留我们的那份）⟹ 不说清的话"这里有 3 个但列表只有 3 个"
       // 看起来像数字不对。
-      // ⚠️ 0.9.29 起下载内容会被**移走** ⟹ 这里有东西说明搬运失败了。
-      // 那和"目录空着"是完全不同的状态：前者要查为什么搬不动（磁盘满/权限/跨卷），
-      // 后者是正常。⟹ 措辞必须让这两种分开。
-      const mark = item.exists
-        ? (item.found
-          ? `⚠️ 还留着 ${item.found} 个 —— 上次没搬走（磁盘满？权限？）`
-          : '空的（正常 —— 下载完会移到上面那个目录）')
-        : '（不存在 —— 没装 steamcmd 的话是正常的）';
+      // ⚠️ 走到这里的只有"有残留"一种情况（上面已经过滤了）
+      // ⟹ 不用再分支。原来那三个分支里两个是"正常"，而正常状态压根不该显示。
+      const mark = `${item.found} 个 —— 点右边搬过去`;
       text.textContent = `${item.path}  ${mark}`;
-      // ⚠️ 标黄的条件**反过来了**：现在"有残留"才是异常，"空的"是正常。
-      // 漏改这一行的话，正常状态会一直显示成警告色 ⟹ 用户以为有问题。
-      if (item.exists && item.found) text.style.color = 'var(--warn, #c98)';
+      // 走到这里都是异常状态 ⟹ 一律标黄
+      text.style.color = 'var(--warn, #c98)';
       row.appendChild(text);
       // ⚠️ 有残留时给一个「搬过来」按钮。
       //
@@ -2001,23 +2004,27 @@ function renderMineDirs() {
     }
   }
 
+  // ⚠️⚠️ **没加过自定义目录时，这一整段都不显示。**
+  //
+  // 用户 2026-08-01 让删的另一半：
+  //   「还没加自定义目录。
+  //     ⚠️ 每个子目录要是一个壁纸（里面有 project.json）…
+  //     ⚠️ 最多扫 2 层深、500 个 —— 再多会让面板卡住。」
+  //
+  // 那三行是**给还没做这件事的人看的说明**，而绝大多数人不需要自定义目录
+  //（我们的目录 + 工坊下载已经覆盖了）⟹ 常驻显示等于让每个人都读一遍不相关的约束。
+  //
+  // ⚠️ 而那两条约束**本身有价值**（"直接放一堆 mp4 认不出来"是真会撞到的）
+  // ⟹ 它们没有删，搬到了 `把壁纸放这里.txt` 里（那个文件就在壁纸目录，
+  //    用户点「打开」就会看到）+ 「添加目录」按钮的 title 上。
+  // ⟹ **在需要的时候出现，而不是一直挂着。**
+  if (!dirs.length) return;
+
   const custom = document.createElement('div');
   custom.className = 'hint';
   custom.style.margin = '10px 0 4px';
-  custom.textContent = dirs.length ? '我自己加的目录：' : '还没加自定义目录。';
+  custom.textContent = '我自己加的目录：';
   host.appendChild(custom);
-
-  if (!dirs.length) {
-    const tip = document.createElement('div');
-    tip.className = 'hint';
-    tip.style.cssText = 'margin-left:8px;font-size:11px';
-    // ⚠️ 这两条约束是用户会撞到的，说在前面比让他试出来好。
-    tip.innerHTML = '⚠️ 每个<b>子目录</b>要是一个壁纸（里面有 <code>project.json</code>）'
-      + '—— 直接放一堆 mp4 是认不出来的。'
-      + '<br>⚠️ 最多扫 2 层深、500 个 —— 再多会让面板卡住。';
-    host.appendChild(tip);
-    return;
-  }
   for (const dir of dirs) {
     const row = document.createElement('div');
     row.className = 'bar-row';
