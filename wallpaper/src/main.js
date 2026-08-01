@@ -312,10 +312,6 @@ function sendStrategy(win, strategy, frameOf) {
 // Config
 // ---------------------------------------------------------------------------
 const defaultConfig = {
-  // ⚠️ 面板主题（0.9.59）：'dark' | 'light'。用户点名「先做深色和浅色两种」。
-  // ⚠️ 默认 dark 而不是"跟随系统" —— 面板的 CSS 是按深色设计的，
-  //   "跟随系统"意味着两套配色都得经过检查，而浅色那套刚写出来。
-  theme: 'dark',
   wallStrategy: 'desktop',
   layers: {
     // Absolute paths, not copies: the user picked these files, and duplicating
@@ -917,6 +913,10 @@ function openDashboard() {
   } catch (error) {
     console.warn('[panel] 藏红绿灯失败（非 macOS？）：', error.message);
   }
+  // ⚠️⚠️ 起轮询（0.9.60）—— 见 pollTrafficLights 上面那段：
+  // 渲染进程的 mousemove 在窗口未聚焦时不可靠，而"从别的应用把鼠标移过来"
+  // 正是最常见的路径。
+  startTrafficWatch();
 
   // ⚠️ 面板的异常最误导：它一抛，后面的初始化全停（包括绑定所有开关），
   // 表现为"某个开关点了完全没反应"—— 而那看起来像那个功能坏了。
@@ -944,7 +944,7 @@ function openDashboard() {
   dashboardWindow.on('close', () => {
     hardQuit('关闭面板窗口');
   });
-  dashboardWindow.on('closed', () => { dashboardWindow = null; });
+  dashboardWindow.on('closed', () => { dashboardWindow = null; stopTrafficWatch(); });
 }
 
 // 骨架层：独立窗口，盖在所有东西之上，鼠标穿透。
@@ -1120,23 +1120,90 @@ ipcMain.handle('open-external', async (_event, url) => {
   }
 });
 
-// ⚠️⚠️ 红绿灯的显隐（0.9.58）—— 渲染进程在鼠标进入/离开顶部区域时调。
+// ⚠️⚠️⚠️ **红绿灯的显隐：主进程轮询鼠标位置**（0.9.60 重做）。
 //
-// ⚠️ 为什么由渲染进程判断而不是主进程监听全局鼠标：
-//   ① 主进程要拿鼠标位置得轮询 `screen.getCursorScreenPoint()`（我们已经有
-//      mouseTap 那条链，但它是给壁纸用的、要辅助功能授权）
-//   ② 而"鼠标在窗口顶部 60px 内"这件事，CSS/JS 天然就知道（mouseenter）
-// ⟹ 渲染进程报事实，主进程只负责调那个 macOS API。
-ipcMain.handle('title-bar-hover', (_event, visible) => {
-  if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+// 用户 2026-08-01（0.9.59 之后）：
+//   「红绿灯这个比刚才好了，但是触发有点迷，我鼠标放到红绿灯那里了，
+//     但是没反应。好像必须点击一些窗口最上方，然后才可以显示」
+//
+// ⚠️⚠️ **那句"必须点击才可以显示"就是根因**：
+//   ① 渲染进程的 `mousemove` 在窗口**没聚焦**时派发不可靠 —— 那是浏览器行为，
+//      我们改不了。而用户正是**从别的应用把鼠标移过来**的（那时窗口未聚焦）
+//      ⟹ 网页收不到任何事件 ⟹ 红绿灯不出现。点一下窗口 = 让它聚焦，
+//      之后 mousemove 才开始来 ⟹ 完全对上他描述的现象。
+//   ② 而 0.9.59 我还在 `blur` 时主动藏 ⟹ 雪上加霜：从别的应用过来的路径上，
+//      窗口是失焦的，那条 handler 刚好把它藏掉。
+//
+// ⟹ **不能靠渲染进程的鼠标事件。** 改成主进程轮询：
+//    `screen.getCursorScreenPoint()` 拿全局鼠标（**不需要任何授权** ——
+//    和 mouseTap 那条链不同，那个是"注入点击"才要辅助功能）
+//    + `win.getBounds()` 算"在不在窗口顶部那一条"。
+//
+// ⚠️ 轮询频率 120ms：红绿灯不是需要跟手的东西（用户是"移过去、看到、点它"），
+//    而 120ms 在人眼看来就是"立刻"。再快只是白烧 CPU（这个应用常驻）。
+// ⚠️ **只在面板可见时轮询** —— 窗口最小化/关掉之后接着轮询是纯浪费，
+//    而这个应用会开一整天。
+const TRAFFIC_ZONE = 34;     // 窗口顶部这么高的一条（红绿灯占 y=13..25）
+const TRAFFIC_POLL = 120;    // ms
+let trafficTimer = null;
+let trafficShown = false;
+// ⚠️ 藏之前的宽限期：鼠标"在红绿灯上"和"刚离开顶部"在坐标上都是一瞬间的事，
+// 而立刻藏会让"伸手去点，按钮跑了"（0.9.59 用户报过的原症状）。
+// ⚠️ 单位是**轮询次数**不是毫秒 —— 那样只要改 TRAFFIC_POLL 不用同时改这个。
+const TRAFFIC_GRACE = 4;     // 4 × 120ms ≈ 0.5s
+let trafficOutTicks = 0;
+
+function setTrafficLights(visible) {
+  if (visible === trafficShown) return;
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
   try {
-    dashboardWindow.setWindowButtonVisibility(!!visible);
-    return true;
+    dashboardWindow.setWindowButtonVisibility(visible);
+    trafficShown = visible;
   } catch {
-    // 非 macOS 上这个方法不存在 —— 静默失败就行（红绿灯本来也是 mac 的东西）
-    return false;
+    // 非 macOS 上这个方法不存在 —— 静默失败（红绿灯本来就是 mac 的东西）
   }
-});
+}
+
+function pollTrafficLights() {
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+  // ⚠️ 最小化/隐藏时不判断也不藏 —— 窗口不可见，红绿灯的状态无关紧要，
+  //   而 getBounds 在最小化状态下返回的位置是没意义的。
+  if (!dashboardWindow.isVisible() || dashboardWindow.isMinimized()) return;
+
+  let inZone = false;
+  try {
+    const pt = screen.getCursorScreenPoint();
+    const b = dashboardWindow.getBounds();
+    inZone = pt.x >= b.x && pt.x <= b.x + b.width
+      && pt.y >= b.y && pt.y <= b.y + TRAFFIC_ZONE;
+  } catch {
+    // 拿不到坐标就当"不在"—— 但**不要因此藏掉**（见下面的宽限期）
+    inZone = trafficShown && trafficOutTicks < TRAFFIC_GRACE;
+  }
+
+  if (inZone) {
+    trafficOutTicks = 0;
+    setTrafficLights(true);
+    return;
+  }
+  // ⚠️ 宽限期：连续几拍不在顶部才藏。
+  //   鼠标停在红绿灯上时坐标是在 zone 里的（它们就在 y=13..25），
+  //   所以这个宽限主要防的是"移动过程中的抖动"和"刚好压在边界上"。
+  if (!trafficShown) return;
+  trafficOutTicks += 1;
+  if (trafficOutTicks >= TRAFFIC_GRACE) setTrafficLights(false);
+}
+
+function startTrafficWatch() {
+  if (trafficTimer !== null) return;
+  trafficTimer = setInterval(pollTrafficLights, TRAFFIC_POLL);
+}
+
+function stopTrafficWatch() {
+  if (trafficTimer !== null) { clearInterval(trafficTimer); trafficTimer = null; }
+  trafficShown = false;
+  trafficOutTicks = 0;
+}
 
 ipcMain.handle('get-config', () => config);
 

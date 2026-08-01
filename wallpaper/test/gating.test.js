@@ -4169,8 +4169,11 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   // ⚠️ 红绿灯要默认藏起来 + 有地方能把它显示回来（否则用户找不到关闭按钮）
   assert.match(main, /setWindowButtonVisibility\(false\)/,
     '红绿灯没藏起来 ⟹ 左上角那三个圆点很违和（用户点名）');
-  assert.match(main, /ipcMain\.handle\('title-bar-hover'/,
-    '没有让红绿灯重新出现的通道 ⟹ 藏了就再也点不到关闭按钮了');
+  // ⚠️ 0.9.60：显隐从"渲染进程报事件"改成**主进程轮询鼠标位置** ——
+  // 渲染进程的 mousemove 在窗口未聚焦时派发不可靠（用户报「必须点击窗口
+  // 最上方才可以显示」），而"从别的应用把鼠标移过来"正是最常见的路径。
+  assert.match(main, /function pollTrafficLights/,
+    '没有让红绿灯重新出现的机制 ⟹ 藏了就再也点不到关闭按钮了');
   // ⚠️ 而 `main` 的顶部让位撤了（0.9.54 起 tab 条在最上面，main 不用让）
   // ⚠️⚠️ 必须**同时剥 HTML 注释和 CSS 注释**。
   // 第一版我只剥了 `<!-- -->`，而那段历史写在 `/* */` 里
@@ -4835,130 +4838,131 @@ check('340px 面板里的区块：预览卡片已撤 / 输入框通栏 / 贴 ID 
 //   「mac 的红绿灯不能做成隐藏的吗…我鼠标在顶部想要点再显示呗，
 //     很多的产品都是这样设计的，而已一开始的 gesturewall 那个界面，
 //     左上角突兀的红绿灯真的很违和」
-check('红绿灯：默认藏 / 顶部悬停才显 / 三端接线 / 只在状态变化时发', () => {
+check('红绿灯：默认藏 / 主进程轮询（不依赖焦点）/ 藏有宽限期', () => {
   const main = codeOnly(mainSrc);
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const pre = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8'));
 
-  // ① 三端接线（少一端就是"藏了但再也显不出来" —— 那时候用户找不到关闭按钮）
+  // ① 默认藏 + 有机制让它回来
   assert.match(main, /setWindowButtonVisibility\(false\)/, '建窗口时没藏红绿灯');
-  assert.match(main, /ipcMain\.handle\('title-bar-hover'/, 'main 没注册显隐通道');
-  assert.match(pre, /titleBarHover:/, 'preload 没暴露 titleBarHover');
-  assert.match(dash, /titleBarHover\?\.\(|titleBarHover\(/, '面板没调 titleBarHover');
+  assert.match(main, /function pollTrafficLights/, '没有显隐的判断逻辑');
+  assert.match(main, /startTrafficWatch\(\)/, '轮询没起来 ⟹ 红绿灯藏了就回不来');
 
-  // ②⚠️⚠️ `setWindowButtonVisibility` 是 **macOS 专用**，别的平台上调会抛。
-  //    而这里是在 `new BrowserWindow` 之后、`loadFile` 之前 ⟹ 抛了会让窗口白屏。
-  assert.match(main, /try \{\s*\n\s*dashboardWindow\.setWindowButtonVisibility\(false\)/,
-    'setWindowButtonVisibility 没被 try 包住 ⟹ 非 macOS 上会抛，把 loadFile 挡在后面（白窗口）');
+  // ②⚠️⚠️ **必须由主进程轮询，不能挂渲染进程的鼠标事件**（0.9.60 修的核心）。
+  // 用户报：「我鼠标放到红绿灯那里了，但是没反应。好像必须点击一些窗口最上方，
+  // 然后才可以显示」⟹ 渲染进程的 `mousemove` 在窗口**未聚焦**时派发不可靠，
+  // 而"从别的应用把鼠标移过来"正是最常见的路径。
+  // ⟹ 判据：**"窗口未聚焦时也要工作"的东西不能挂在渲染进程的鼠标事件上。**
+  assert.match(main, /screen\.getCursorScreenPoint\(\)/,
+    '不是用全局鼠标位置判断 ⟹ 窗口未聚焦时收不到事件（用户报的原症状）');
+  assert.ok(!/titleBarHover/.test(dash),
+    '渲染进程又在管红绿灯 ⟹ 窗口未聚焦时 mousemove 不可靠');
+  assert.ok(!/titleBarHover/.test(pre),
+    'preload 里还有 titleBarHover ⟹ 那条通道 0.9.60 删了，留着是死代码');
 
-  // ③ 只在状态**变化**时发 IPC —— 每次 mousemove 都发的话，
-  //    移动鼠标就是每秒几十次跨进程调用。
-  const zone = dash.slice(dash.indexOf('const ZONE ='));
-  assert.ok(zone.length > 200, '找不到红绿灯悬停那段');
-  // ⚠️ 0.9.59 重写了这段（见下面 ⑤）⟹ 断言跟着改成新的形状。
-  assert.match(zone, /if \(shown\) return/,
-    '每次进入顶部都发 IPC ⟹ 移动鼠标就是每秒几十次跨进程调用');
-  // ⚠️ 鼠标移出窗口 / 窗口失焦都要处理
-  assert.match(zone, /mouseleave/, '鼠标移出窗口时没处理 ⟹ 红绿灯停在显示状态');
-  assert.match(zone, /'blur'/, '窗口失焦时不藏');
+  // ③⚠️ 藏之前要有**宽限期** —— 立刻藏会让"伸手去点，按钮跑了"
+  //   （0.9.59 用户报过的原症状）。
+  assert.match(main, /const TRAFFIC_GRACE = \d+/, '藏红绿灯没有宽限期');
+  assert.match(main, /trafficOutTicks \+= 1/, '宽限期的计数没在累加 ⟹ 那个常量是死的');
+  assert.match(main, /trafficOutTicks >= TRAFFIC_GRACE/, '宽限期没被用来决定何时藏');
 
-  // ⑤⚠️⚠️ **隐藏必须有延迟**（0.9.59 修的核心 bug）。用户报：
-  //   「我真的要去点击红绿灯，反而隐藏了，点不了」
-  //
-  // 根因：红绿灯是**原生窗口按钮**，不在网页里 ⟹ 鼠标真的移到它们上面时，
-  // 网页收到的是 `mouseleave`（指针离开了文档区域）⟹ 旧代码立刻 setShown(false)
-  // ⟹ **按钮在用户要点的那一刻消失**。
-  // ⟹ 判据：**藏起来必须有延迟，而且"贴着顶部离开文档"要算成"还在顶部"。**
-  // ⚠️⚠️ 锚**定义**而不是名字 —— `HIDE_DELAY` 和 `cancelHide` 各出现两三次
-  //（定义 + 使用），只查名字的话把**定义**改掉守卫照样绿
-  //（反向验证第 2、4 条都是这样：报红 0）。
-  // "锚点太弱"第 7 次 ⟹ 判据还是那条：**锚产生效果的那一句**，
-  // 而对一个常量/函数来说，那就是它的**声明**。
-  assert.match(zone, /const HIDE_DELAY = \d+/,
-    '隐藏没有延迟 ⟹ 鼠标移到原生按钮上时网页收到 mouseleave，按钮会在要点的那一刻消失');
-  assert.match(zone, /function scheduleHide\(\)/, '没有延迟隐藏的机制');
-  assert.match(zone, /function cancelHide\(\)/, '没有取消延迟隐藏的机制');
-  // ⚠️ 而且 show() 里**必须**调它 —— 不调的话延迟就白设了（500ms 后照样藏）
-  assert.match(zone, /function show\(\) \{\s*\n\s*cancelHide\(\)/,
-    'show() 里不取消待执行的隐藏 ⟹ 回到顶部也会在 500ms 后被藏掉');
-  // ⚠️ 从顶部离开文档（去点原生按钮）不能藏
-  assert.match(zone, /mouseleave[\s\S]{0,200}?clientY <= ZONE\) return/,
-    '从顶部离开文档时也藏 ⟹ 那正是"伸手去点按钮，按钮跑了"的路径');
-
-  // ④ 判定区不能太大 —— 整个 tab 条都算的话，点 tab 时红绿灯会跟着冒出来，
-  //    而那正是用户抱怨的「我有点什么操作，这个红绿灯就显示出来」。
-  const z = Number((dash.match(/const ZONE = (\d+)/) || [])[1]);
-  assert.ok(z > 0, '读不到 ZONE ⟹ 断言失效');
-  // ⚠️⚠️ 上界从 70 收到 **40**（0.9.59）。用户报：
-  //   「我发现现在是在"我的壁纸，创意工坊"这些 tab 的下划线那里可以触发红绿灯」
-  // tab 的下划线在 y≈50（让位 10 + 按钮 9+19+10 + 边框 2）⟹ ZONE=56 把它包住了。
-  // 而红绿灯只占 y=13..25 ⟹ 34 就够（底边 25 + 余量）。
+  // ④ 判定区：红绿灯占 y=13..25，tab 下划线在 y≈50
+  const z = Number((main.match(/const TRAFFIC_ZONE = (\d+)/) || [])[1]);
+  assert.ok(z > 0, '读不到 TRAFFIC_ZONE ⟹ 断言失效');
   assert.ok(z >= 28 && z <= 40,
-    `悬停判定区 ${z}px 不合理 ⟹ 小于 28 会"移过去了才冒出来"（红绿灯占到 y=25），`
+    `判定区 ${z}px 不合理 ⟹ 小于 28 会"移过去了才出现"（红绿灯占到 y=25），`
     + '大于 40 会盖住 tab 的下划线（y≈50），划过 tab 就触发（用户报过）');
+
+  // ⑤⚠️ 只在面板**可见**时轮询 —— 这个应用会开一整天，
+  //   最小化/关掉之后接着轮询是纯浪费。
+  assert.match(main, /isVisible\(\) \|\| dashboardWindow\.isMinimized\(\)/,
+    '窗口不可见时还在轮询鼠标 ⟹ 常驻应用里白烧 CPU');
+  // ⚠️ 锚**它在 closed 里被调**，不是名字 —— `stopTrafficWatch` 出现两次
+  //   （定义 + 调用），只查名字的话删掉调用守卫照样绿
+  //   （反向验证第 8 条：报红 0，"锚点太弱"第 8 次）。
+  assert.match(main, /on\('closed'[\s\S]{0,120}?stopTrafficWatch\(\)/,
+    '关窗口时没停轮询 ⟹ 定时器泄漏（这个应用会开一整天）');
 });
 
 // ⚠️⚠️ **主题（深色/浅色）+ 主界面极光背景**（0.9.59）。用户 2026-08-01：
 //   「我想给产品一开始那个背景动画也加到打开软件之后，作为背景，
 //     然后在设置里多一个主题色彩的选项，可以调整颜色，
 //     先做深色和浅色两种模式就好」
-check('主题：两套变量齐 / 落配置 / 不闪深色；极光当背景', () => {
+check('只保留深色主题；极光当主界面背景（紫调、够明显）', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const main = codeOnly(mainSrc);
 
-  // ①⚠️⚠️ 两套变量必须**齐** —— 少一个的话浅色主题下那一处沿用深色值，
-  //    而"一半没换过来"是最难看的一种（比整个没换更糟）。
-  const dark = html.slice(html.indexOf('  :root {'), html.indexOf('}', html.indexOf('  :root {')));
-  const li = html.indexOf('html[data-theme="light"]');
-  assert.ok(li > 0, '没有浅色主题的变量块');
-  const light = html.slice(li, html.indexOf('}', li));
-  const varsOf = (block) => new Set((block.match(/--[\w-]+(?=:)/g) || []));
-  const dv = varsOf(dark);
-  const lv = varsOf(light);
-  const missing = [...dv].filter((v) => !lv.has(v));
-  assert.deepStrictEqual(missing, [],
-    `浅色主题缺这些变量：${missing.join(', ')} ⟹ 那几处会沿用深色值（"一半没换过来"）`);
+  // ①⚠️⚠️ **浅色主题撤了**（0.9.60）。用户 2026-08-01：
+  //   「浅色模式太难看了，我们只保留深色吧，设置里的颜色主题这个撤掉吧」
+  //
+  // **他说得对，而这是我该早点想到的**：那套浅色配色是我一次写出来的、
+  // 没有任何实测支撑（accent 压暗多少、分隔线基色、极光在白底上怎么办
+  // —— 全是我拍的）。一个深色产品的浅色版**不是把颜色取反**，
+  // 它要重新设计每一处对比关系。⟹ **做半套比不做糟。**
+  // ⟹ 这几条是反向的：浅色那套和主题开关都不许回来。
+  const htmlCode = html.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/html\[data-theme/.test(htmlCode),
+    '浅色主题的变量块又回来了 ⟹ 那是半套配色（用户点名撤掉）');
+  assert.ok(!/data-theme-pick/.test(htmlCode), '设置里的主题选择又回来了');
+  assert.ok(!/applyTheme/.test(dash), 'applyTheme 又回来了');
+  assert.ok(!/theme: 'dark'/.test(main),
+    '配置里又有 theme 字段 ⟹ 只有一种主题，那是个孤儿字段');
+  // ⚠️ 但**颜色仍然全走变量** —— 撤掉的是"半套浅色"，不是"变量化"。
+  //   换主题只改一处这件事本身有价值（以后真要做浅色时）。
+  // ⚠️ 每个变量要**定义了而且真的用上** —— 只查名字在不在的话，
+  //   改掉**定义**（`--card-bg:` → `--zz-bg:`）守卫照样绿，因为 `var(--card-bg)`
+  //   那些用处还在（反向验证第 12 条：报红 0）。
+  //   ⟹ 定义和使用各查一次；两边都在才说明这条变量是活的。
+  for (const v of ['--card-bg', '--nav-bg', '--img-bg', '--log-bg']) {
+    assert.ok(new RegExp(`${v}:\\s*#`).test(htmlCode),
+      `${v} 的定义不见了 ⟹ 用到它的地方会拿到空值（颜色变透明/继承）`);
+    assert.ok(htmlCode.includes(`var(${v})`),
+      `${v} 定义了但没人用 ⟹ 那一处的颜色又写死了（变量化不该被一起撤掉）`);
+  }
 
-  // ⚠️ `color-scheme` 也要换 —— 它决定**原生控件**（滚动条、checkbox、
-  //    select 的下拉面板）的配色。只改我们的变量不改它 ⟹ 浅色下滚动条还是黑的。
-  assert.match(light, /color-scheme:\s*light/,
-    '浅色主题没设 color-scheme ⟹ 滚动条/下拉框/checkbox 还是深色的');
-
-  // ②⚠️ 主题要**落配置** —— 换了下次打开还是那个（"设置"的意思就是记住）
-  assert.match(main, /theme: 'dark'/, '配置里没有 theme 默认值');
-  assert.match(dash, /setConfig\(\{ theme: t \}\)/, '换主题不写配置 ⟹ 下次打开又回去了');
-  assert.match(dash, /applyTheme\(config\.theme\)/,
-    'apply() 里不同步主题 ⟹ 别处改了/下次启动不跟');
-
-  // ③⚠️⚠️ **不能闪深色**：主题要在第一帧之前定。
-  //    等 getConfig() 拿到配置再改是异步的 ⟹ 浅色用户每次开面板先看到深色闪一下。
-  const head = html.slice(0, html.indexOf('</head>'));
-  assert.match(head, /localStorage\.getItem\('gw-theme'\)/,
-    '<head> 里没有同步设主题的 inline script ⟹ 浅色主题每次开面板会闪一下深色');
-  assert.match(dash, /localStorage\.setItem\('gw-theme'/,
-    '没写 localStorage 镜像 ⟹ 上面那段 inline script 永远读不到值');
-
-  // ④ 极光当主界面背景
+  // ② 极光当主界面背景
   assert.match(html, /id="app-bg"/, '没有主界面的极光背景 canvas');
-  // ⚠️⚠️ `z-index: 0` 不能是 -1 —— -1 会把它放到 **body 背景之下**
-  //    ⟹ 被 `body { background: var(--bg) }` 完全盖住，什么都看不见（不报错）。
+  // ⚠️⚠️ `z-index: 0` 不能是 -1 —— -1 会放到 **body 背景之下**
+  //    ⟹ 被 `body { background: var(--bg) }` 完全盖住（什么都看不见，不报错）。
   const bg = html.slice(html.indexOf('  #app-bg {'), html.indexOf('}', html.indexOf('  #app-bg {')));
-  assert.match(bg, /z-index:\s*0/,
-    '#app-bg 的 z-index 不是 0 ⟹ -1 会被 body 背景盖住，正数会盖住内容');
+  assert.match(bg, /z-index:\s*0/, '#app-bg 的 z-index 不是 0');
   assert.match(bg, /pointer-events:\s*none/, '#app-bg 会吃掉整个界面的点击');
-  // ⚠️ nav/main 要抬到它之上（文档流里默认同层，而 #app-bg 在 DOM 更前）
   assert.match(html, /nav, main \{ position: relative; z-index: 1; \}/,
     'nav/main 没抬到极光之上 ⟹ 背景会盖住整个界面');
-  // ⚠️ 浅色下极光要几乎关掉（加法混色在白底上是脏色，不是"淡淡的好看"）
-  // ⚠️ 要连小数点一起取 —— 我第一版写的是 `\.?(\d+)`（把点吃掉只留数字）
-  //   ⟹ `.5` 和 `.12` 变成 5 和 12，比出来"浅色比深色亮"⟹ **在正确代码上报红**。
-  //   （断言自己的解析错，症状和"代码有问题"一模一样。）
-  const la = Number((light.match(/--bg-aurora:\s*(\.?\d*\.?\d+)/) || [])[1]);
-  const da = Number((dark.match(/--bg-aurora:\s*(\.?\d*\.?\d+)/) || [])[1]);
-  assert.ok(la > 0 && da > 0, '读不到 --bg-aurora ⟹ 断言失效');
-  assert.ok(la < da,
-    `浅色主题的极光不比深色淡（${la} vs ${da}）⟹ 白底上加法混色是一片灰蒙蒙的脏色`);
+
+  // ③⚠️⚠️ **亮度是三个系数串联**：`blobs 的 a × dim × --bg-aurora`。
+  //    0.9.59 那版 0.46 × 0.28 × 0.5 = 0.064 ⟹ 用户报「效果不是很明显」。
+  //    ⟹ 守住乘积，而不是守单个系数（只调一个不够 —— 我上一版只想着调 a）。
+  const maxA = Math.max(...[...dash.matchAll(/a: (0?\.\d+),/g)].map((m) => Number(m[1])));
+  const dim = Number((dash.match(/startAurora\('app-bg', \{ dim: (0?\.\d+) \}\)/) || [])[1]);
+  const op = Number((html.match(/--bg-aurora:\s*(\.?\d*\.?\d+)/) || [])[1]);
+  assert.ok(maxA > 0 && dim > 0 && op > 0,
+    `读不到三个系数（a=${maxA} dim=${dim} opacity=${op}）⟹ 断言失效`);
+  assert.ok(maxA * dim * op >= 0.2,
+    `主界面极光的实际亮度只有 ${(maxA * dim * op).toFixed(3)}`
+    + `（a ${maxA} × dim ${dim} × opacity ${op}）⟹ 看不出来（用户报过"不是很明显"）`);
+
+  // ④⚠️ 紫是主调（用户：「色调可以来点紫色」）——
+  //    判据：**红分量明显低于蓝分量**的团（那才是紫/蓝紫），要占多数。
+  const hues = [...dash.matchAll(/hue: '(\d+),(\d+),(\d+)'/g)]
+    .map((m) => ({ r: +m[1], g: +m[2], b: +m[3] }));
+  assert.ok(hues.length >= 4, `只读到 ${hues.length} 团光 ⟹ 断言失效`);
+  // 紫 = 蓝高、绿低（青蓝是绿也高）
+  const isPurple = (h) => h.b > 200 && h.g < 140;
+  const purple = hues.filter(isPurple).length;
+  // ⚠️ 门槛用**过半**而不是写死 3 —— 现在是 5 团里 4 团紫，写 `>= 3` 的话
+  //   破坏一团还剩 3、照样通过（反向验证第 15 条：报红 0）。
+  assert.ok(purple > hues.length / 2,
+    `只有 ${purple}/${hues.length} 团紫色系（蓝高绿低）⟹ 整体还是偏青蓝（用户点名要紫）`);
+  // ⚠️⚠️ 而**最亮的那一团必须是紫** —— 那是第一眼看到的颜色。
+  //   四团紫但最亮的是青色，观感仍然是"青蓝背景带点紫"。
+  const brightest = [...dash.matchAll(/hue: '(\d+),(\d+),(\d+)', a: (0?\.\d+)/g)]
+    .map((m) => ({ r: +m[1], g: +m[2], b: +m[3], a: +m[4] }))
+    .sort((x, y) => y.a - x.a)[0];
+  assert.ok(brightest && isPurple(brightest),
+    `最亮那团光是 rgb(${brightest && [brightest.r, brightest.g, brightest.b]})，不是紫色系`
+    + ' ⟹ 第一眼看到的还是青蓝');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
