@@ -4281,13 +4281,34 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   //
   // ⟹ CSS 的 filter 由合成器（GPU）做，而且对整层只做**一次**。
   // ⟹ 断言翻过来：canvas 里**不许**有 ctx.filter，而两个 canvas 的 CSS 里要有 blur。
-  assert.ok(!/ctx\.filter/.test(aurora),
-    'canvas 里又用了 ctx.filter ⟹ 那是逐 fill 的 CPU 模糊，会把手势推理挤死'
-    + '（用户报过"不跟手了、卡卡的"）');
+  // ⚠️⚠️⚠️ 0.9.68 **翻回来了**：模糊必须在 `ctx.filter` 里做，不能在 CSS 上。
+  //
+  // 0.9.63 我为了性能把它搬到 CSS，而**那之后用户就再也看不到极光** ——
+  // 之后三轮我调参数、加自检、改底色层级，全建在"参数不对"这个错前提上。
+  // 用 `git diff` 一比才发现：`a90e3a3`（搬模糊那次）是唯一的分界。
+  //
+  // 两者**不等价**：
+  //   `ctx.filter` —— 画布**内部**模糊，每个 fill 各自摊开，
+  //      `lighter` 混色发生在**模糊之后**（亮度叠加）
+  //   CSS `filter` —— 对**整个元素**的最终结果模糊，会被边界裁掉、
+  //      中心亮度大幅摊薄 ⟹ 看起来"几乎没有"
+  //
+  // ⚠️⚠️ 而**性能和效果是两件独立的事** —— 我 0.9.63 把它们绑在一起，
+  // 于是守卫锁死了一个会让效果消失的实现。性能靠**降帧**（20fps）解决，
+  // 不够就降**画布分辨率**，而不是动模糊的做法。
+  assert.match(aurora, /ctx\.filter = `blur\(/,
+    'canvas 里没有 ctx.filter ⟹ 光团是硬边色盘；'
+    + '而搬到 CSS 上会让中心亮度摊薄到看不见（0.9.63~0.9.67 那四轮的教训）');
+  assert.match(aurora, /ctx\.filter = 'none'/,
+    'ctx.filter 没复位 ⟹ 它是 ctx 的持久状态，下一帧会带着跑');
+  // ⚠️ 半径要乘 dpr（ctx.filter 的单位是设备像素）
+  assert.match(aurora, /blur\(\$\{Math\.round\([^}]*dpr[^}]*\)\}px\)/,
+    'blur 半径没乘 dpr ⟹ Retina 上模糊只有一半');
+  // ⚠️ 而 CSS 上**不许**再加 filter（那是被证伪的做法）
   for (const id of ['#app-bg', '#launch-particles']) {
     const rule = html.slice(html.indexOf(`  ${id} {`), html.indexOf('}', html.indexOf(`  ${id} {`)));
-    assert.match(rule, /filter:\s*blur\(\d+px\)/,
-      `${id} 的 CSS 里没有 blur ⟹ 光团是五个硬边色盘，不是柔光`);
+    assert.ok(!/^\s*filter:\s*blur/m.test(rule),
+      `${id} 的 CSS 里又有 filter: blur ⟹ 那会把中心亮度摊薄到看不见`);
   }
   // ⚠️ 帧率要降下来 —— 极光周期 11~19 秒，60fps 画它是纯浪费（常驻应用里会累积）
   assert.match(aurora, /const MIN_DT = 1000 \/ (\d+)/,
@@ -5105,10 +5126,20 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
       + '合成器要为每一个单独模糊（用户报过"手势不跟手了"）');
   }
 
-  // ② canvas 里不许用 ctx.filter（那是逐 fill 的 CPU 模糊）
+  // ②⚠️⚠️ **性能和效果是两件独立的事**（0.9.68 纠正）。
+  //
+  // 0.9.63 我禁掉了 `ctx.filter`（"它是逐 fill 的 CPU 模糊"）—— 那个观察是对的，
+  // 但**把它换成 CSS filter 会让效果整个消失**（中心亮度被摊薄），
+  // 而我为此烧了四轮（调参 ×3 + 加自检 + 改层级）。
+  // ⟹ 判据改成：**降帧**是性能的解法，模糊怎么做是效果的事，两者不绑。
+  //   0.9.63 之前 60fps × 5 fill × 4.2M = 1.26 G 像素/秒
+  //   现在      20fps × 5 fill × 4.2M = 0.42 G 像素/秒（33%）
+  //   还不够就降画布分辨率（大团柔光半分辨率看不出差别，能再省 4 倍）。
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  assert.ok(!/ctx\.filter/.test(dash),
-    'canvas 里用了 ctx.filter ⟹ 逐 fill 的 CPU 模糊，每秒上 G 像素（手势推理只有 9M/秒）');
+  const fps = Number((dash.match(/const MIN_DT = 1000 \/ (\d+)/) || [])[1]);
+  assert.ok(fps > 0 && fps <= 30,
+    `极光帧率 ${fps} 太高 ⟹ 它周期 11~19 秒，20fps 够了。`
+    + '而 60fps × 5 个全画布 fill 会挤死手势推理（用户报过"不跟手了"）');
 
   // ③ 常驻的动画要降帧 + 挂 rAF（rAF 在窗口不可见时自动停）
   assert.ok(!/setInterval\([^)]*frame/.test(dash),
