@@ -4750,6 +4750,26 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
   assert.match(sideFn, /if \(item\.active\) \{[\s\S]{0,160}?renderWEControls\(\)/,
     '不管是不是正在放都渲染参数 ⟹ 会显示别的壁纸的参数');
 
+  // ⑨⚠️⚠️ **参数区不许常驻**（0.9.61）。用户 2026-08-01：
+  //   「我的壁纸右侧的参数这个不应该是常驻，应该是我点击了壁纸之后才展示」
+  //
+  // 根因：`renderWEStatus` 在**每次壁纸状态变化**时跑（装载/卸载/属性推送/
+  // 面板打开），而它无条件调 `renderWEControls()` ⟹ 参数区自己就填满了，
+  // 不管用户有没有点过卡片。
+  // ⟹ 参数只能由 `renderMineSide(item)` 触发（上面那条断言守着它判 active）。
+  // ⚠️ 用**函数结束的结构边界**（顶格的 `\n}`）而不是"下一个某函数名" ——
+  //   我第一版写 `indexOf('function renderAudioValues')`，而那个函数**不存在**
+  //   ⟹ 返回 -1 ⟹ slice(33084, -1) 切出的是整个文件后半段（含 renderMineSide
+  //   里那句合法的 renderWEControls()）⟹ **在正确代码上报红**。
+  //   （"锚了个不存在的名字"是这一轮的新形状 —— 前面栽的都是"锚到了错的东西"。）
+  const swStart = dash.indexOf('async function renderWEStatus');
+  assert.ok(swStart > 0, '找不到 renderWEStatus');
+  const statusFn = dash.slice(swStart, dash.indexOf('\n}', swStart) + 2);
+  assert.ok(statusFn.length > 200 && statusFn.length < 6000,
+    `切出的 renderWEStatus 长度 ${statusFn.length} 不合理 ⟹ 断言失效`);
+  assert.ok(!/renderWEControls\(\)/.test(statusFn),
+    'renderWEStatus 又在调 renderWEControls ⟹ 参数区变成常驻的（用户点名不要）');
+
   // ⑧⚠️⚠️ **窗口初始尺寸按屏幕算，不写死**（0.9.55）。用户：「产品打开的初始大小
   //    改一下吧，左侧展示面太小了」—— 940 宽下网格只剩 560px（三列卡片），
   //    而壁纸墙的价值就在于一眼看到很多张。
@@ -4914,11 +4934,22 @@ check('只保留深色主题；极光当主界面背景（紫调、够明显）'
   //   改掉**定义**（`--card-bg:` → `--zz-bg:`）守卫照样绿，因为 `var(--card-bg)`
   //   那些用处还在（反向验证第 12 条：报红 0）。
   //   ⟹ 定义和使用各查一次；两边都在才说明这条变量是活的。
-  for (const v of ['--card-bg', '--nav-bg', '--img-bg', '--log-bg']) {
-    assert.ok(new RegExp(`${v}:\\s*#`).test(htmlCode),
-      `${v} 的定义不见了 ⟹ 用到它的地方会拿到空值（颜色变透明/继承）`);
+  // ⚠️⚠️ 判据是**"没有写死的深色背景"**，而不是"某几个变量必须在用"。
+  // 0.9.61 极光当背景之后，大部分块改用了半透明版（--panel-a / --card-bg-a /
+  // --btn-bg-a / --log-bg-a）⟹ 原来那几个不透明变量有的就**该退役**
+  // （硬查它们"必须有人用"会逼我留下没必要的引用）。
+  // ⟹ 反过来查：**CSS 里不许再出现写死的深色十六进制背景**。
+  //   那才是"变量化"要防的事，而且它对新增的样式也成立。
+  const bgs = [...htmlCode.matchAll(/background(?:-color)?:\s*(#[0-9a-fA-F]{3,6})/g)]
+    .map((m) => m[1])
+    // #000 是图片/视频占位（两个主题下都对），#07080c 是启动页（该不透明）
+    .filter((v) => !/^#0{3,6}$/i.test(v) && v.toLowerCase() !== '#07080c');
+  assert.deepStrictEqual(bgs, [],
+    `CSS 里还有写死的深色背景：${bgs.join(', ')} ⟹ 改主题/调背景时它们不跟着变`);
+  // 半透明那几个必须在（极光当背景之后，压在它上面的块要透）
+  for (const v of ['--panel-a', '--card-bg-a', '--btn-bg-a', '--chip-bg']) {
     assert.ok(htmlCode.includes(`var(${v})`),
-      `${v} 定义了但没人用 ⟹ 那一处的颜色又写死了（变量化不该被一起撤掉）`);
+      `${v} 没人用 ⟹ 那一块又是不透明的，压在流动的极光上是"死黑方块"（用户报过）`);
   }
 
   // ② 极光当主界面背景
@@ -4943,26 +4974,32 @@ check('只保留深色主题；极光当主界面背景（紫调、够明显）'
     `主界面极光的实际亮度只有 ${(maxA * dim * op).toFixed(3)}`
     + `（a ${maxA} × dim ${dim} × opacity ${op}）⟹ 看不出来（用户报过"不是很明显"）`);
 
-  // ④⚠️ 紫是主调（用户：「色调可以来点紫色」）——
-  //    判据：**红分量明显低于蓝分量**的团（那才是紫/蓝紫），要占多数。
+  // ④⚠️⚠️ **色调：青蓝为主 + 一点紫**（0.9.61 推翻了 0.9.60）。
+  //
+  // 0.9.60 用户说「色调可以来点紫色」，我把三团都改成了紫 ⟹ 0.9.61 他说
+  // 「现在太紫了，其实不加紫色之前的样式稍微明显一些也不错的」。
+  // ⟹ **"加一点"和"换掉主色"是两回事**，我上一轮做过头了。
+  // ⟹ 判据翻过来：紫**不许过半**（那就是"太紫"），但**至少要有一团**
+  //   （用户当初要的那"一点紫"）。
+  // ⚠️ 而**亮度保留 0.9.60 提上来的那一档** —— 他说"稍微明显一些也不错"，
+  //   那是对亮度的肯定。颜色和亮度是两件独立的事（上面第 ③ 条守亮度）。
   const hues = [...dash.matchAll(/hue: '(\d+),(\d+),(\d+)'/g)]
     .map((m) => ({ r: +m[1], g: +m[2], b: +m[3] }));
   assert.ok(hues.length >= 4, `只读到 ${hues.length} 团光 ⟹ 断言失效`);
-  // 紫 = 蓝高、绿低（青蓝是绿也高）
   const isPurple = (h) => h.b > 200 && h.g < 140;
   const purple = hues.filter(isPurple).length;
-  // ⚠️ 门槛用**过半**而不是写死 3 —— 现在是 5 团里 4 团紫，写 `>= 3` 的话
-  //   破坏一团还剩 3、照样通过（反向验证第 15 条：报红 0）。
-  assert.ok(purple > hues.length / 2,
-    `只有 ${purple}/${hues.length} 团紫色系（蓝高绿低）⟹ 整体还是偏青蓝（用户点名要紫）`);
-  // ⚠️⚠️ 而**最亮的那一团必须是紫** —— 那是第一眼看到的颜色。
-  //   四团紫但最亮的是青色，观感仍然是"青蓝背景带点紫"。
+  assert.ok(purple >= 1,
+    '一团紫都没有 ⟹ 用户当初要的"来点紫色"没了');
+  assert.ok(purple <= hues.length / 2,
+    `${purple}/${hues.length} 团是紫色系 ⟹ 太紫了（用户报过）——`
+    + '"来点紫"是加一团，不是把主色换掉');
+  // ⚠️ 最亮那团应该是**青蓝**（主色），不是紫 —— 第一眼看到的是它。
   const brightest = [...dash.matchAll(/hue: '(\d+),(\d+),(\d+)', a: (0?\.\d+)/g)]
     .map((m) => ({ r: +m[1], g: +m[2], b: +m[3], a: +m[4] }))
     .sort((x, y) => y.a - x.a)[0];
-  assert.ok(brightest && isPurple(brightest),
-    `最亮那团光是 rgb(${brightest && [brightest.r, brightest.g, brightest.b]})，不是紫色系`
-    + ' ⟹ 第一眼看到的还是青蓝');
+  assert.ok(brightest && !isPurple(brightest),
+    `最亮那团光是紫色 rgb(${brightest && [brightest.r, brightest.g, brightest.b]})`
+    + ' ⟹ 整体观感就是紫的（用户报"太紫了"）');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -39,6 +39,16 @@
     --btn-hover: #2c2c36;
     /* 图片占位色。⚠️ 深色下是近黑，浅色下要浅灰 —— 一片纯黑方块在
        白色界面上比"图还没加载"更像"这里坏了"。 */
+    /* ⚠️ 半透明版（0.9.61）—— 极光当背景之后，压在它上面的块要透一点，
+       否则是"流动的背景 + 几个死黑方块"。见 .card 那段注释。
+       ⚠️ 不透明的 --panel / --card-bg 仍然保留：右侧详情面板和弹窗要用
+          （那两处内容密集，透了会读不清）。 */
+    --panel-a: rgba(23, 23, 29, .72);
+    --card-bg-a: rgba(21, 21, 27, .78);
+    --chip-bg: rgba(21, 21, 27, .66);
+    --btn-bg-a: rgba(34, 34, 42, .70);
+    --btn-hover-a: rgba(44, 44, 54, .85);
+    --log-bg-a: rgba(13, 13, 15, .62);
     --img-bg: #0b0b10;
     /* 日志区（等宽字体那几块） */
     --log-bg: #0d0d0f;
@@ -369,20 +379,35 @@
   }
   h3:first-of-type { margin-top: 0; }
 
+  /* ⚠️⚠️ **卡片半透明 + 毛玻璃**（0.9.61）。用户 2026-08-01：
+     「壁纸轮播，还有创意工坊的标签那里是不透明纯黑，你看怎么处理一下比较好」
+
+     根因：0.9.59 把极光加成了主界面背景，而这些块的底色是**不透明**的
+     ⟹ 一块块纯黑压在流动的背景上，那比"没有背景"更难看
+     （背景在动，而它上面贴着几个死黑的方块）。
+
+     ⟹ 半透明 + `backdrop-filter: blur()`：底下的极光**透上来但被模糊**
+     ⟹ 卡片有"浮在背景上"的质感，而文字仍然读得清（模糊掉的是花纹不是亮度）。
+     ⚠️ 为什么不直接调低 alpha 不加 blur：那样极光的**纹理**会透过来，
+        文字压在花纹上就难读了。blur 把纹理化掉、只留下颜色 —— 那是关键。
+     ⚠️ `--panel-a` 是半透明版的 --panel（0.72）；不透明那个还留着，
+        右侧详情面板和弹窗要用它（那两处不该透）。 */
   .card {
-    background: var(--panel); border: 1px solid var(--line);
+    background: var(--panel-a); border: 1px solid var(--line);
     border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;
+    backdrop-filter: blur(14px) saturate(120%);
   }
   .hint { color: var(--dim); font-size: 11px; line-height: 1.8; margin: 8px 0 0; }
   .warn { color: var(--warn); }
   .ok { color: var(--ok); }
 
   button.act {
-    appearance: none; border: 1px solid var(--line); background: var(--btn-bg);
+    appearance: none; border: 1px solid var(--line); background: var(--btn-bg-a);
+    backdrop-filter: blur(8px);
     color: var(--text); border-radius: 7px; padding: 5px 12px;
     font: inherit; font-size: 12px; cursor: pointer;
   }
-  button.act:hover { background: var(--btn-hover); }
+  button.act:hover { background: var(--btn-hover-a); }
   button.act.primary { background: var(--accent); color: #06121a; border-color: transparent; font-weight: 600; }
   button.act.danger { color: #ff8b8b; }
   button.act:disabled { opacity: .4; cursor: default; }
@@ -395,7 +420,8 @@
   .modules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .module {
     border: 1px solid var(--line); border-radius: 8px; padding: 10px;
-    cursor: pointer; background: var(--card-bg);
+    cursor: pointer; background: var(--card-bg-a);
+    backdrop-filter: blur(10px);
   }
   .module:hover { border-color: rgba(255,255,255,.2); }
   .module.on { border-color: var(--accent); background: rgba(108,199,255,.09); }
@@ -405,11 +431,12 @@
   /* ---- 图库 ---- */
   .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; }
   .asset {
-    border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #15151b;
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    background: var(--card-bg-a);
   }
   .asset .pic {
     height: 78px; background-size: cover; background-position: center;
-    background-color: var(--btn-bg);
+    background-color: var(--btn-bg-a);
   }
   .asset .meta { padding: 7px 8px; }
   .asset .nm {
@@ -432,7 +459,7 @@
   }
   .layer-row:last-child { border-bottom: 0; }
   .layer-row .thumb {
-    width: 60px; height: 44px; border-radius: 6px; background: var(--btn-bg);
+    width: 60px; height: 44px; border-radius: 6px; background: var(--btn-bg-a);
     background-size: cover; background-position: center;
   }
   .layer-row .nm { font-weight: 600; font-size: 12px; }
@@ -464,7 +491,7 @@
   .rec .nm { font-weight: 600; font-size: 12px; }
   .rec .hint2 { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
   .log { max-height: 120px; overflow: auto; margin: 6px 0 0; padding: 6px 8px;
-    background: var(--log-bg); border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
+    background: var(--log-bg-a); border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
     color: var(--log-fg); white-space: pre-wrap; }
   .rec .state { font-family: ui-monospace, monospace; font-size: 10px; margin-top: 4px; }
   /* ⚠️ 诊断区那几块（#match-probe / #overlay-geom）用的也是 `state` 类，但它们**不在
@@ -525,7 +552,10 @@
      dashboard 结构，而我们的「我的壁纸」是用户自己下的几十张，一屏看完。 */
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-             background: var(--card-bg); cursor: pointer;
+             /* ⚠️ 壁纸卡片：预览图本身是不透明的，只有它下面那一小条
+                （名字/类型那两行）会露底 ⟹ 半透明就够，不用 blur
+                （N 张卡片各一个 backdrop-filter 会明显拖慢滚动）。 */
+             background: var(--card-bg-a); cursor: pointer;
              /* ⚠️ relative 提到这里：原来只有"在播放列表里"的卡片才由 JS 设
                 （dashboard.js 里 card.style.position = 'relative'），
                 而现在标题和角标都要绝对定位 ⟹ 所有卡片都需要。 */
@@ -666,7 +696,9 @@
   .rs-item {
     flex: none; width: 92px; scroll-snap-align: start;
     border-radius: 7px; overflow: hidden; position: relative;
-    border: 1px solid var(--line); background: #15151b; cursor: pointer;
+    /* ⚠️ 用**不透明**的 —— 这几个缩略图在轮播弹窗里，而弹窗本身不透明
+       （内容密集）⟹ 里面的东西透了也看不到极光，只是白搭一层混色。 */
+    border: 1px solid var(--line); background: var(--card-bg); cursor: pointer;
   }
   .rs-item:hover { border-color: rgba(255,255,255,.26); }
   .rs-item img {
@@ -724,9 +756,14 @@
                  color: var(--dim); text-align: right; }
   .we-row input[type=checkbox] { justify-self: start; }
   .we-src { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  /* 筛选标签（类型/年龄/主题那几排药丸按钮）。
+     ⚠️ 同上：原来是不透明的 #15151b ⟹ 一排排纯黑药丸压在极光上。
+     ⚠️ 这里 blur 小一点（8px）—— 按钮小，大模糊看不出效果只是白烧 GPU。 */
   .we-src button {
     border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px;
-    background: #15151b; color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+    background: var(--chip-bg); color: var(--text);
+    font: inherit; font-size: 12px; cursor: pointer;
+    backdrop-filter: blur(8px);
   }
   .we-src button:hover { border-color: rgba(255,255,255,.2); }
   .we-src button.on { border-color: var(--accent); background: rgba(108,199,255,.12); }
@@ -744,9 +781,12 @@
   .row2 label { font-size: 12px; }
   .row2 output { font-family: ui-monospace, monospace; font-size: 10px; color: var(--dim); text-align: right; }
   input[type=range] { width: 100%; }
-  input[type=text] { background: #1e1e26; border: 1px solid var(--line); color: var(--text);
+  input[type=text] { background: var(--btn-bg-a); border: 1px solid var(--line); color: var(--text);
                      border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12px; }
-  select { background: #1e1e26; border: 1px solid var(--line); color: var(--text);
+  /* ⚠️ select 用**不透明**（0.9.61）—— 它展开时是原生下拉面板，
+     而那个面板的配色由系统按 color-scheme 决定、我们控制不了。
+     按钮部分透、展开的面板不透 ⟹ 两截。⟹ 这一个保持不透明。 */
+  select { background: var(--btn-bg); border: 1px solid var(--line); color: var(--text);
            border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .toggle { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
   .mono { font-family: ui-monospace, monospace; font-size: 11px; }
