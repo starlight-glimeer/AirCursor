@@ -6,7 +6,19 @@
 // Guard 码过期、ID 不存在、下载了但目录是空的……**每一种都表现成"壁纸没出来"**，
 // 而那和渲染坏了完全分不清。所以"把失败翻译成能行动的一句话"就是这一层的产品价值。
 const assert = require('node:assert');
-const W = require('../src/workshop.js') || globalThis.GestureWallWorkshop;
+// ⚠️ 这一行原来是 `require('../src/workshop.js') || globalThis.GestureWallWorkshop`
+// —— **一直是坏的**：workshop.js 是 IIFE 挂 globalThis，`require` 返回 `{}`，
+// 而 `{}` 是真值 ⟹ `||` 短路 ⟹ `W` 恒为空对象。
+//
+// 它没被发现是因为**没有任何测试用过 `W`**（都用下面的 `S`）——
+// 直到我加了两条用 `W.findWallpaperDirs` 的，立刻 `is not a function`。
+// ⟹ 教训：**"或"兜底遇到空对象不会兜**（`{} || x` 给 `{}`）；
+//    而一个从没被用过的导入不会报错，它会一直躺着等下一个人踩。
+// ⚠️ **require 那次调用不能删** —— workshop.js 是 IIFE，它的副作用就是
+// 往 globalThis 挂对象。我第一版把 require 删了只留 globalThis 引用
+// ⟹ 模块压根没加载 ⟹ 所有测试 `Cannot read properties of undefined`。
+require('../src/workshop.js');
+const W = globalThis.GestureWallWorkshop;
 
 let passed = 0;
 function check(name, fn) {
@@ -692,6 +704,68 @@ check('所有组的标签 id 全局唯一', () => {
   const all = S.FILTER_GROUPS.flatMap((g) => g.tags.map((t) => t.id));
   const dup = all.filter((x, i) => all.indexOf(x) !== i);
   assert.deepStrictEqual(dup, [], `重复的标签 id：${dup.join(', ')}`);
+});
+
+// ⚠️⚠️⚠️ **工坊下载要复制到统一的壁纸目录，而列表要按工坊 ID 去重。**
+//
+// 用户 2026-08-01 的要求：
+//   「现在的壁纸应该统一都是默认用户下面的 Documents/GestureWall/Wallpapers
+//     （不同用户自适应）…创意工坊的壁纸下载，和默认加载都应该是这样」
+//
+// ⚠️ 而 steamcmd 的下载位置是**它自己定的、不可配**
+//（`~/Library/Application Support/Steam/steamapps/workshop/content/431960/<ID>/`）
+// ⟹ 只能下载后**复制**过去（不是移动 —— Steam 目录是 steamcmd 的账本，
+//    移走会让下次下载认为"已下载"却找不到文件，只能手动清 appworkshop_*.acf）
+//
+// ⟹ 于是同一个壁纸在两处各有一份 ⟹ **列表里会出现两次**。
+// ⚠️ 用户看到两个一样的壁纸不会想到"一个是副本"——
+//    他会以为列表有 bug，或者不知道点哪个（而两个行为完全一样）。
+check('同一个工坊壁纸在两处时，列表只出现一次', () => {
+  const tree = {
+    '/D/W': ['3339949060-完美壁纸', '我的自制壁纸'],
+    '/D/W/3339949060-完美壁纸': [],
+    '/D/W/我的自制壁纸': [],
+    '/S/431960': ['3339949060'],
+    '/S/431960/3339949060': [],
+  };
+  const pj = new Set([
+    '/D/W/3339949060-完美壁纸/project.json',
+    '/D/W/我的自制壁纸/project.json',
+    '/S/431960/3339949060/project.json',
+  ]);
+  const r = W.findWallpaperDirs(['/D/W', '/S/431960'], {
+    listDir: (d) => tree[d] || [],
+    isDir: (d) => d in tree,
+    exists: (f) => pj.has(f),
+  });
+  assert.strictEqual(r.dirs.length, 2,
+    `列出了 ${r.dirs.length} 个：${r.dirs.join(', ')} —— `
+    + '同一个工坊 ID（3339949060）在两处，应该只算一个');
+  // ⚠️ **保留我们目录里那份** —— 那是用户在 Finder 里能找到的
+  assert.ok(r.dirs.some((d) => d.startsWith('/D/W/3339949060')),
+    '去重后留的是 Steam 目录那份 ⟹ 用户从 Finder 打开壁纸目录时找不到它');
+  // 用户自己放的（不带 ID）不能被去重逻辑吃掉
+  assert.ok(r.dirs.includes('/D/W/我的自制壁纸'),
+    '用户自己放的壁纸被去重逻辑漏掉了 —— 它目录名里没有工坊 ID');
+});
+
+check('不同工坊壁纸不会被误去重', () => {
+  const tree = {
+    '/S/431960': ['111111111', '222222222'],
+    '/S/431960/111111111': [],
+    '/S/431960/222222222': [],
+  };
+  const pj = new Set([
+    '/S/431960/111111111/project.json',
+    '/S/431960/222222222/project.json',
+  ]);
+  const r = W.findWallpaperDirs(['/S/431960'], {
+    listDir: (d) => tree[d] || [],
+    isDir: (d) => d in tree,
+    exists: (f) => pj.has(f),
+  });
+  assert.strictEqual(r.dirs.length, 2,
+    `两个不同 ID 被去重成 ${r.dirs.length} 个 —— 去重的键取错了`);
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

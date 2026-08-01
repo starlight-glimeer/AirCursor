@@ -2089,6 +2089,33 @@ ipcMain.handle('workshop-download', async (_event, input) => {
 
       if (dir) {
         logEvent('workshop', `下载成功：${dir}`);
+        // ⚠️ **搬进统一的壁纸目录**（用户要求：工坊下载和默认加载都在
+        // Documents/GestureWall/Wallpapers）。见 importToOurDir 上面那段。
+        //
+        // ⚠️ 搬之前先读标题 —— 目录名要带它，否则用户在 Finder 里认不出
+        // 一堆纯数字目录是什么。读失败就只用 ID（不阻断）。
+        let title = '';
+        try {
+          const pj = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+          title = pj && typeof pj.title === 'string' ? pj.title : '';
+        } catch (e) { title = ''; }
+        const moved = importToOurDir(dir, workshopId, title);
+        if (moved.ok) {
+          logEvent('workshop', `已放入我的壁纸：${moved.dir}`);
+          broadcast('workshop-progress', {
+            kind: 'info',
+            text: `已放入我的壁纸目录：${path.basename(moved.dir)}`,
+          });
+          dir = moved.dir;
+        } else {
+          // ⚠️ 降级要说出来 —— 否则"为什么我的壁纸里没有"变成鬼故事。
+          logEvent('workshop', `放入我的壁纸失败（仍从 Steam 目录装载）：${moved.error}`);
+          broadcast('workshop-progress', {
+            kind: 'warning',
+            text: `没能复制到我的壁纸目录（${moved.error}）——`
+              + '壁纸仍然能用，但「我的壁纸」列表里看不到它',
+          });
+        }
         const out = setWEWallpaper(dir);
         config.we.dir = dir;
         writeConfig(config);
@@ -2258,6 +2285,49 @@ function ourWallpaperDir() {
 //
 // ⚠️ 空目录对用户是没有信息的 —— 他不知道往里放什么、什么格式认得出来。
 // 而"放了一堆 mp4 结果认不出来"是这个产品最容易撞的墙（每个子目录要有 project.json）。
+// 把工坊下载的目录**搬进我们统一的壁纸目录**。
+//
+// ⚠️⚠️ 为什么必须搬：steamcmd 的下载位置是**它自己定的、不可配** ——
+//   `~/Library/Application Support/Steam/steamapps/workshop/content/431960/<ID>/`
+// 而用户的要求是「统一都在 Documents/GestureWall/Wallpapers」（2026-08-01）：
+//   「创意工坊的壁纸下载，和默认加载都应该是这样」
+//
+// ⟹ 不搬的话有两个后果：
+//   ① 「我的壁纸」列表里看不到刚下载的（它扫的是 Documents 那个目录）
+//   ② 用户从 Finder 打开壁纸目录，找不到自己下的东西
+//      —— 而 Steam 那个路径在「资源库」里，Finder 默认不显示
+//
+// ⚠️ **用复制而不是移动**：Steam 目录是 steamcmd 的账本，
+// 移走它会让下次 `workshop_download_item` 认为"已下载"却找不到文件
+//（steamcmd 有自己的 manifest）⟹ 那种状态很难恢复，只能手动清 appworkshop_*.acf。
+// 复制的代价是磁盘占用翻倍，而壁纸通常几十 MB —— 值得。
+//
+// ⚠️ 目录名带工坊 ID：`<ID>-<标题>`。只用标题会撞名（很多壁纸叫"时钟"），
+// 而只用 ID 用户在 Finder 里认不出来是哪个。
+function importToOurDir(srcDir, workshopId, title) {
+  const root = ensureOurWallpaperDir();
+  // 标题可能含 / : 等在文件名里非法的字符，也可能是空的
+  const safe = String(title || '')
+    .replace(/[/\\:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60);
+  const name = safe ? `${workshopId}-${safe}` : String(workshopId);
+  const dest = path.join(root, name);
+  try {
+    // ⚠️ 已存在就先删 —— 重新下载同一个物品时要拿到新内容，
+    // 而 cpSync 遇到同名文件不会覆盖目录结构里的残留（旧资产会留下）。
+    if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
+    // recursive + 保留时间戳。Node 16.7+ 有 cpSync。
+    fs.cpSync(srcDir, dest, { recursive: true });
+    return { ok: true, dir: dest };
+  } catch (err) {
+    // ⚠️ 搬失败不能让整个下载算失败 —— 文件已经在 Steam 目录里了，
+    // 直接用那个路径装载仍然能看到画面。**降级而不是报错。**
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
 function ensureOurWallpaperDir() {
   const dir = ourWallpaperDir();
   try {
@@ -2282,7 +2352,8 @@ function ensureOurWallpaperDir() {
         '⚠️ 直接把一堆 mp4 扔进 Wallpapers/ 是认不出来的 —— 没有 project.json，',
         '   我们不知道它是壁纸还是普通视频。',
         '',
-        '从 Steam 创意工坊下载的壁纸不用放这里，那个目录我们会自动扫。',
+        '⚠️ 从 Steam 创意工坊下载的壁纸会**自动复制到这里**，',
+        '   目录名是「工坊ID-标题」。删掉它们不影响 Steam 那边的下载记录。',
         '',
         '扫描上限：2 层深、500 个 —— 再多会让面板卡住。',
       ].join('\n'), 'utf8');

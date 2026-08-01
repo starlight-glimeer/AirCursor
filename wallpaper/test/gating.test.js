@@ -3068,4 +3068,42 @@ check('打包命令 dist:mac 和 build:mac 都在（我给过两个名字）', (
     '两个名字指向不同的东西 ⟹ 用户跑哪个得到的结果不一样，那比只有一个名字更坏');
 });
 
+// ⚠️⚠️⚠️ **工坊下载必须复制进统一的壁纸目录。**
+//
+// 用户 2026-08-01：「现在的壁纸应该统一都是默认用户下面的
+// Documents/GestureWall/Wallpapers（不同用户自适应）…
+// 创意工坊的壁纸下载，和默认加载都应该是这样」
+//
+// ⚠️ 而 steamcmd 的下载位置**不可配**（它自己定的）⟹ 只能下载后复制。
+// 不复制的两个后果：①「我的壁纸」列表里看不到刚下载的
+// ②用户从 Finder 打开壁纸目录找不到自己下的（Steam 那个路径在「资源库」下，
+//   Finder 默认不显示）
+check('工坊下载后复制到统一壁纸目录', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function importToOurDir/,
+    '没有把工坊下载搬进我们目录的函数 ⟹ 用户在「我的壁纸」里看不到刚下载的');
+  // 必须真的被调用 —— 定义了不用等于没有（这个项目栽过好几次）
+  const at = src.indexOf("logEvent('workshop', `下载成功");
+  assert.ok(at >= 0, '找不到下载成功那段');
+  const block = src.slice(at, src.indexOf('setWEWallpaper', at) + 40);
+  assert.match(block, /importToOurDir/,
+    'importToOurDir 定义了但下载成功后没调用 ⟹ 壁纸还留在 Steam 目录');
+  // ⚠️ **复制不是移动** —— Steam 目录是 steamcmd 的账本，移走它会让下次下载
+  // 认为"已下载"却找不到文件（manifest 在 appworkshop_*.acf 里），很难恢复。
+  assert.match(src, /fs\.cpSync/,
+    '没用 cpSync ⟹ 若改成 renameSync（移动），steamcmd 下次会认为已下载'
+    + '却找不到文件，只能手动清 appworkshop_*.acf');
+  assert.ok(!/fs\.renameSync\([^)]*srcDir|fs\.renameSync\([^)]*dir,/.test(src),
+    '用了 renameSync 搬工坊目录 —— 那会破坏 steamcmd 的下载账本');
+  // ⚠️ 复制失败要**降级不报错**：文件已经在 Steam 目录里，装载仍然能看到画面
+  const fnAt = src.indexOf('function importToOurDir');
+  const fn = src.slice(fnAt, src.indexOf('\nfunction ', fnAt + 10));
+  assert.match(fn, /catch/,
+    '复制没有 try/catch ⟹ 磁盘满/权限问题会让整个下载算失败，'
+    + '而文件其实已经下好了');
+  // ⚠️ 而降级必须**说出来** —— 否则"为什么我的壁纸里没有"变成鬼故事
+  assert.match(block, /没能复制到我的壁纸目录|放入我的壁纸失败/,
+    '复制失败时没告诉用户 ⟹ 他会以为下载坏了，或者以为列表有 bug');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

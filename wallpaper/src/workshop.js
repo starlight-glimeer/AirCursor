@@ -474,7 +474,38 @@ function findWallpaperDirs(roots, { listDir, isDir, exists }) {
   for (const root of roots || []) {
     if (root && isDir(root)) walk(root, 0);
   }
-  return { dirs: found, truncated: found.length >= SCAN_MAX_ITEMS };
+
+  // ⚠️⚠️ **按工坊 ID 去重** —— 上面那个 `seen` 只去重**路径**，
+  // 而 0.9.24 起工坊下载会复制到 `Documents/GestureWall/Wallpapers/<ID>-<标题>`
+  // ⟹ 同一个壁纸在 Steam 目录和我们目录里各有一份，路径不同 ⟹ 列表里出现两次。
+  //
+  // ⚠️ 用户看到两个一样的壁纸时，不会想到"一个是副本" ——
+  // 他会以为列表有 bug，或者不知道该点哪个（而它们的行为完全一样）。
+  //
+  // 判 ID 的方式：**目录名里的那串数字**。
+  //   Steam:  .../content/431960/**3339949060**
+  //   我们:   .../Wallpapers/**3339949060**-完美壁纸
+  // ⟹ 取目录名开头的连续数字（工坊 ID 是纯数字，长度 9-10 位）。
+  //
+  // ⚠️ **保留先出现的那个**，而 roots 里我们的目录排在最前
+  //（`workshop-local` 的注释说明了那个顺序是故意的）
+  // ⟹ 留下的是我们目录里的副本 = 用户在 Finder 里能找到的那个。
+  const byId = new Map();
+  const deduped = [];
+  for (const dir of found) {
+    const base = dir.split('/').pop() || '';
+    const m = base.match(/^(\d{6,})/);
+    if (!m) {
+      // 不带 ID 的（用户自己放的壁纸）⟹ 不参与去重，原样保留
+      deduped.push(dir);
+      continue;
+    }
+    if (byId.has(m[1])) continue;
+    byId.set(m[1], dir);
+    deduped.push(dir);
+  }
+
+  return { dirs: deduped, truncated: found.length >= SCAN_MAX_ITEMS };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

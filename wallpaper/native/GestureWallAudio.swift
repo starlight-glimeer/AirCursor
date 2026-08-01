@@ -27,7 +27,7 @@ import AVFoundation
 import ScreenCaptureKit
 import Accelerate
 import CoreAudio
-// ⚠️ `kAudioHardwareServiceDeviceProperty_VirtualMasterVolume` 定义在
+// ⚠️ `kAudioHardwareServiceDeviceProperty_VirtualMainVolume` 定义在
 // **AudioToolbox** 里（AudioServices），不在 CoreAudio ⟹ 两个都要 import。
 // 云端编不了 swiftc ⟹ 这类"符号在哪个框架"的错只能靠人核，
 // 而它的症状是 helper 编译失败 ⟹ 音频整条链没有（柱子完全不动）。
@@ -137,7 +137,7 @@ let VDSP_SCALE: Float = 0.5
 //
 //   ⚠️ **判法（面板已就位，不用改代码）：转系统音量看 RMS 变不变。**
 //      变了 ⟹ 假设错，别改；不变 ⟹ 坐实，修法是把系统音量乘进去
-//      （CoreAudio 的 `kAudioHardwareServiceDeviceProperty_VirtualMasterVolume`）
+//      （CoreAudio 的 `kAudioHardwareServiceDeviceProperty_VirtualMainVolume`）
 //
 // ⚠️ 在那之前**不许调幅度** —— 这一层的 Float 常量白名单只有三个，
 //    守卫会拦住新增的（`test/audio-bins.test.js`）。
@@ -175,7 +175,7 @@ func systemOutputVolume() -> Float {
         AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &deviceID
     ) == noErr, deviceID != 0 else { return 1.0 }
 
-    // ⚠️ 先看是不是静音 —— 静音时 VirtualMasterVolume 仍会返回上次的音量值
+    // ⚠️ 先看是不是静音 —— 静音时 VirtualMainVolume 仍会返回上次的音量值
     //（macOS 把"静音"和"音量"分成两个属性）⟹ 漏了这一步静音时柱子照旧动。
     var muted = UInt32(0)
     var mutedSize = UInt32(MemoryLayout<UInt32>.size)
@@ -193,17 +193,30 @@ func systemOutputVolume() -> Float {
     var volume = Float32(1.0)
     var volSize = UInt32(MemoryLayout<Float32>.size)
     var volAddr = AudioObjectPropertyAddress(
-        mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterVolume,
+        // ⚠️ **`VirtualMasterVolume` 在新 SDK 里改名成 `VirtualMainVolume`。**
+        //
+        // 用户 0.9.23 真机编译失败：
+        //   error: 'kAudioHardwareServiceDeviceProperty_VirtualMasterVolume'
+        //   has been renamed to 'kAudioHardwareServiceDeviceProperty_VirtualMainVolume':
+        //   APIs deprecated as of macOS 10.9 and earlier are unavailable in Swift
+        //
+        // ⚠️ Apple 从 macOS 12 起把 Master/Slave 这类术语改成 Main/Secondary，
+        // 而 Swift 对"10.9 之前废弃的 API"是**硬拒绝**（不是警告）。
+        // ⟹ 那意味着旧名字在 Swift 里根本编不过，不存在兼容写法。
+        //
+        // ⚠️ 这类"符号名在新 SDK 里变了"云端查不出（跑不了 swiftc）——
+        // 一轮打包的成本。守卫补了一条：禁止出现已知的旧名（见测试）。
+        mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
         mScope: kAudioDevicePropertyScopeOutput,
         mElement: kAudioObjectPropertyElementMain
     )
     if AudioObjectHasProperty(deviceID, &volAddr),
        AudioObjectGetPropertyData(deviceID, &volAddr, 0, nil, &volSize, &volume) == noErr {
-        // VirtualMasterVolume 是 0..1 的标量
+        // VirtualMainVolume 是 0..1 的标量
         return min(1.0, max(0.0, volume))
     }
 
-    // ⚠️ 退路：有些设备（尤其外接/聚合设备）没有 VirtualMasterVolume，
+    // ⚠️ 退路：有些设备（尤其外接/聚合设备）没有 VirtualMainVolume，
     // 但有**逐声道**的 `kAudioDevicePropertyVolumeScalar`（element 1 = 左声道）。
     // 漏了这条退路的症状是"在某些输出设备上音量修复不生效"，
     // 而那看起来像"修复没做" —— 比报错更难查。
