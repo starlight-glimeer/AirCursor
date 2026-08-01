@@ -1064,6 +1064,25 @@ function renderMouseDiag(mouse) {
   }
   const parts = [`已转发 ${injected}`];
   parts.push(`页面收到 mousedown ${saw.mousedown} / pointerdown ${saw.pointerdown} / click ${saw.click}`);
+  // ⚠️⚠️ **第四种可能：事件全到了，但壁纸自己的条件不满足。**
+  //
+  // 用户 0.9.25 报「粒子壁纸的点击触发流星没生效」。查那个壁纸的代码：
+  //   `pt = useCallback(We => Ee && K && Pe.current && Pe.current.triggerMeteorAt(…))`
+  //   而它挂在 React 的 `onClick` 上
+  // ⟹ `triggerMeteorAt` 前面有**两个前置条件 `Ee && K`**（混淆后追不到是什么，
+  //    大概率是"某个开关属性"和"3D 场景 ref 就绪"）
+  //
+  // ⟹ 如果 click 计数 > 0 而画面没反应，那**不是转发的问题** ——
+  //    事件到了、click 也合成了，是壁纸自己没往下走。
+  //    那时该查的是**属性**（上面那行属性发送状态），而不是鼠标链。
+  //
+  // ⚠️ 不说清这一点的话，"click 有值"这个好消息会被读成"那还有什么问题"，
+  // 而下一步该去哪查完全不明确。
+  if (saw.click > 0) {
+    parts.push('\n✅ click 已合成 ⟹ 鼠标链是通的。'
+      + '若画面仍无反应，那是**壁纸自己的条件没满足**（比如某个开关属性没开、'
+      + '或它的 3D 场景还没就绪）⟹ 去看上面那行「属性」状态，不是这里');
+  }
   // ⚠️ 这条区分最关键：我们注入的是 mouseDown，而很多壁纸监听 pointerdown。
   // Chromium 通常会合成，但如果没合成，症状就是"点了没反应"而事件其实到了。
   if (saw.mousedown > 0 && saw.pointerdown === 0) {
