@@ -208,7 +208,23 @@ function startAurora(canvasId, opts) {
   const MIN_DT = 1000 / 20;
   let lastDraw = 0;
 
+  // ⚠️⚠️⚠️ **整个帧回调包在 try 里**（0.9.70）。
+  //
+  // 「极光看不到」查了六轮，根因是一行 `const base = ...` 被我 0.9.63 连带删掉，
+  // 而 `base` 在下面还在用 ⟹ 第一帧抛 ReferenceError
+  // ⟹ **rAF 回调里的异常不往上传播** ⟹ 动画静默停止、没有任何日志。
+  // 而"画面没变化"这个症状和"参数太小"**长得完全一样**
+  // ⟹ 我在错的方向上调了六轮参数。
+  //
+  // ⟹ 判据：**长跑的回调必须自己 try/catch 并把异常报出来。**
+  //   它死了要能看见 —— 这个项目在"静默失效"上栽过九次，
+  //   而每一次的代价都是"在错的地方找原因"。
+  // ⚠️ 报错之后**不再排下一帧** —— 一个每帧都抛的循环会刷屏，
+  //   而第一条消息已经包含了全部信息。
+  let frameError = null;
+
   function frame(now) {
+    try {
     if (t0 === null) t0 = now;
     // ⚠️ 跳帧要在**任何绘制之前** return，而 rAF 得继续排 —— 不然动画就停了。
     if (now - lastDraw < MIN_DT) {
@@ -267,7 +283,6 @@ function startAurora(canvasId, opts) {
       auroraRAF[canvasId] = requestAnimationFrame(frame);
       return;
     }
-    ctx.filter = `blur(${Math.round(Math.min(w, h) * 0.16 * dpr)}px)`;
     //
     // 用户 2026-08-01 报「手势的部分，不跟手了，卡卡的」+「开启摄像头，
     // 显示骨架，这个过程也好慢」。
@@ -282,7 +297,27 @@ function startAurora(canvasId, opts) {
     //   ① 模糊交给**合成器**（CSS filter 走 GPU，而且对整层只做一次，
     //      不是每个 fill 一次）⟹ 5 遍变 1 遍，且不占主线程
     //   ② 帧率从 60 降到 ~20（极光是"慢到看不出在动"的东西，60fps 是纯浪费）
-    // ⚠️ 半径也跟着搬 —— CSS 里的 blur 单位是 **CSS 像素**，不用乘 dpr。
+    // ⚠️⚠️⚠️ **`base` 的声明**（0.9.70 补回来的）——
+    // 这就是"极光看不到"整整六轮的根因。
+    //
+    // 0.9.63 我把模糊搬到 CSS 时删掉了这两行：
+    //     const base = Math.min(w, h);
+    //     ctx.filter = `blur(${Math.round(base * 0.16 * dpr)}px)`;
+    // 而 `base` 在下面 `const r = base * b.r` **还在用**
+    // ⟹ 第一帧就抛 `ReferenceError: base is not defined`
+    // ⟹ 而 **rAF 回调里的异常不往上传播** ⟹ 动画静默停止，一帧都没画出来。
+    //
+    // ⚠️ 这就是为什么我调了六轮参数（亮度/dim/opacity/模糊位置/底色层级/自检）
+    //   一点效果都没有 —— **压根没有任何东西在画**。
+    // ⚠️ `node --check` 查不出（语法合法）；没有任何日志（异常被 rAF 吞了）；
+    //   而"画面上没变化"这个症状和"参数太小"**长得完全一样**。
+    //
+    // ⟹ 定位它靠的是"`bg-geom` 更新了但 `bg-selfcheck` 停在初始文本"
+    //   ⟹ 同步代码跑了、rAF 回调没跑 ⟹ 然后逐个查 frame() 里引用的变量有没有声明。
+    // ⟹ 教训：**删代码时要查被删的行有没有定义别处在用的东西。**
+    //   我删的是"两行相邻的 filter 相关代码"，而其中一行是别处的依赖。
+    const base = Math.min(w, h);
+    ctx.filter = `blur(${Math.round(base * 0.16 * dpr)}px)`;
     ctx.globalCompositeOperation = 'lighter';
 
     for (const b of blobs) {
@@ -365,6 +400,19 @@ function startAurora(canvasId, opts) {
     }
 
     auroraRAF[canvasId] = requestAnimationFrame(frame);
+    } catch (error) {
+      // ⚠️ 只报一次 —— 每帧都抛的话会刷屏，而第一条已经有全部信息。
+      if (!frameError) {
+        frameError = error;
+        const m = `[aurora] ${canvasId} ⚠️⚠️ 绘制抛异常，动画已停：${error.message}`;
+        console.error(m, error);
+        if (typeof logLine === 'function') logLine('wall', m);
+        const slot = document.getElementById('bg-selfcheck');
+        if (slot) slot.textContent = m.replace('[aurora] ', '');
+      }
+      // ⚠️ 不再排下一帧 —— 但**要留下痕迹**（上面那三行）。
+      //   静默停止是这次六轮弯路的全部原因。
+    }
   }
   auroraRAF[canvasId] = requestAnimationFrame(frame);
 }

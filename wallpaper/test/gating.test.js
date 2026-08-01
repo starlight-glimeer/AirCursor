@@ -5278,4 +5278,69 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
     'body 的背景不是 transparent ⟹ 它可能盖住底下的极光 canvas');
 });
 
+// ⚠️⚠️⚠️ **rAF / 事件回调里的异常是静默的**（0.9.70）。
+//
+// 「极光看不到」查了**六轮**，根因是一行 `const base = Math.min(w, h);`
+// 被我 0.9.63 连带删掉了（它和 `ctx.filter` 那行相邻，而我只想删 filter），
+// 而 `base` 在下面 `const r = base * b.r` 还在用
+// ⟹ 第一帧抛 `ReferenceError: base is not defined`
+// ⟹ **rAF 回调里的异常不往上传播** ⟹ 动画静默停止，一帧都没画出来。
+//
+// 这就是为什么我调了六轮参数（亮度/dim/opacity/模糊位置/底色层级/自检）
+// 一点效果都没有 —— **压根没有任何东西在画**。
+// ⚠️ `node --check` 查不出（语法合法）；没有任何日志（异常被 rAF 吞了）；
+//   而"画面上没变化"这个症状和"参数太小"**长得完全一样**。
+//
+// ⟹ 三条教训，都写成断言：
+//   ① **删代码时要查被删的行有没有定义别处在用的东西**
+//   ② rAF 回调体要能被静态检查 —— 至少"引用的局部变量都有声明"
+//   ③ 而更根本的：**长跑的回调应该自己 try/catch 并把异常报出来**，
+//      否则它死了没人知道（这个项目在"静默失效"上栽过八次）
+check('rAF 回调：引用的变量都有声明 + 异常不会静默吞掉', () => {
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ① `startAurora` 里引用的局部变量必须都有声明。
+  //    ⚠️ 这是个**粗扫**（不是真的作用域分析）—— 但它能逮住 `base` 那一类：
+  //      "一个只在这个函数里用的名字，却没有 const/let 声明它"。
+  const fnStart = raw.indexOf('function startAurora(');
+  assert.ok(fnStart > 0, '找不到 startAurora');
+  const fnBody = raw.slice(fnStart, raw.indexOf('\n}\n', fnStart) + 3);
+  // 剥注释、模板串、字符串（否则文案里的中文/单词会被当标识符）
+  const code = fnBody
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    .replace(/`[^`]*`/g, '``')
+    .replace(/'[^']*'/g, "''");
+  // 这几个是这个函数里真正用到的**局部**名字（我手写清单，而不是猜）——
+  // 它们每一个都必须有 const/let 声明。漏一个就是 base 那种 bug。
+  for (const name of ['cv', 'ctx', 'dim', 'loud', 'blobs', 'w', 'h', 'dpr',
+    't0', 'selfChecked', 'MIN_DT', 'lastDraw', 'base']) {
+    assert.match(code, new RegExp(`(?:const|let)\\s+${name}\\b`),
+      `startAurora 里用了 \`${name}\` 但没有声明它 ⟹ 第一帧抛 ReferenceError，`
+      + '而 rAF 回调里的异常**不往上传播** ⟹ 动画静默停止、没有任何日志'
+      + '（"极光看不到"查了六轮就是这个）');
+  }
+
+  // ② 帧回调必须自己 try/catch —— 死了要能看见。
+  //    ⚠️ 判据不是"有 try"（自检那段就有一个），而是**整个绘制体**被包住。
+  assert.match(code, /function frame\(now\) \{\s*\n\s*try \{/,
+    'frame() 没有把整个绘制体包在 try 里 ⟹ 任何一行抛异常都会让动画静默停止，'
+    + '而症状（画面没变化）和"参数太小"长得一模一样');
+  // ⚠️ 锚**catch 块里真正产生效果的那几句**，不是 `frameError` 这个名字 ——
+  //   它出现三次（声明 / 判断 / 赋值），只查名字的话破坏赋值那处照样绿
+  //   （反向验证第 4 条：报红 0，"锚点太弱"第 10 次）。
+  // ⚠️⚠️ 用**原文**（fnBody）而不是 `code` —— 后者把单引号字符串替换成了 ''
+  //   （为了粗扫标识符时不把文案当变量）⟹ `logLine('wall', m)` 变成
+  //   `logLine('', m)`，断言在正确代码上报红。
+  //   ⟹ 教训：**同一段代码的"剥过"和"原文"两个版本，用哪个取决于要查什么** ——
+  //     查标识符用剥过的，查含字符串的调用用原文。
+  const catchBlock = fnBody.slice(fnBody.indexOf('} catch (error) {'));
+  assert.match(catchBlock, /frameError = error/,
+    'catch 里没记下"已经报过了" ⟹ 每帧都抛的话会刷屏');
+  assert.match(catchBlock, /console\.error\(/, 'catch 里没往控制台报');
+  assert.match(catchBlock, /logLine\('wall', m\)/,
+    'catch 里没报到面板 ⟹ 打包版看不到（这次六轮弯路就是因为它静默）');
+  assert.match(catchBlock, /bg-selfcheck/,
+    'catch 里没写到那个固定落点 ⟹ 流式日志会把它冲掉');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
