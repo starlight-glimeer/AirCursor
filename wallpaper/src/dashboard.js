@@ -2090,9 +2090,6 @@ window.gw.workshopBrowseMeta().then((meta) => {
 // 用户的原话："不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸
 // 就在这里" ⟹ 判据是目录里有 project.json，不是"我们下载过"。
 async function renderMine() {
-  // ⚠️ 轮播那块和网格是同一份数据（列表里的路径要和卡片对上）
-  // ⟹ 一起刷新，否则"加入列表"之后计数不变
-  renderRotate();
   renderAudioSimple();
   const state = document.getElementById('mine-state');
   const grid = document.getElementById('mine-grid');
@@ -2101,6 +2098,15 @@ async function renderMine() {
   // 存下来而不是让它重扫：扫描要遍历磁盘，而它在每次增删目录后都会跑。
   lastScanned = result.scanned || null;
   renderMineDirs();
+
+  // ⚠️⚠️ **存下壁纸清单给轮播用**（0.9.49）。轮播的摘要行和弹窗要显示
+  // 缩略图 + 标题 + "正在放哪个"，那些只有这份 items 里有（dir/preview/title/active）。
+  // ⚠️ 存下来而不是让轮播自己再调一次 workshopLocal() —— 那要遍历磁盘，
+  // 而且两次扫描之间的结果可能不一致（"正在放"的判断就会和网格打架）。
+  lastWallpapers = (result.ok && result.items) ? result.items : [];
+  // ⚠️ 必须在 lastWallpapers 赋值**之后**渲染 —— 原来 renderRotate() 在
+  // `await workshopLocal()` 之前调，那时清单还是空的 ⟹ 摘要行永远显示"—"。
+  renderRotate();
 
   if (!result.ok || !result.items.length) {
     grid.innerHTML = '';
@@ -2243,16 +2249,28 @@ async function renderMine() {
         },
       ].filter(Boolean));
     });
-    // 当前装载的那个标出来 —— 否则一屏缩略图里认不出哪个在用。
-    // ⚠️ 而那行「点击卸载」的提示**撤了**（0.9.38）——
-    // 卸载现在在右键菜单里，不需要在卡片上常驻一行字。
+    // ⚠️⚠️ 这里原来给"正在用"的那张卡片加**蓝框高亮** —— 0.9.49 撤了。
+    //
+    // 用户 2026-08-01：「就是我下载的壁纸这里不用高亮一类的说正在播放这个，
+    // 因为在轮播那里会显示」
+    //
+    // 他说得对：0.9.49 把"正在放哪个"做成了轮播摘要行的**主要内容**
+    // （缩略图 + 名字，常驻在页面上方）⟹ 网格里再标一遍是同一个信息说两次。
+    // 而这一页的网格是"有哪些壁纸"，不是"哪个在放"。
+    //
+    // ⚠️ 但 title（悬停提示）留着 —— 那不占视觉空间，而且它回答的是
+    // "我点这张会发生什么"（点当前的什么都不做，见上面 onclick 里那句 return），
+    // 那和"哪个在放"是两个问题。
     if (item.active) {
-      card.style.borderColor = 'var(--accent)';
       card.title = '正在用（右键有更多操作）';
     }
-    // ⚠️ **在播放列表里的要标出来** —— 否则用户加了几个之后
-    // 完全看不出是哪几个（而列表只在右键菜单里能改）。
-    // ⟹ 一个小角标，不占卡片的空间。
+    // ⚠️ **在播放列表里的要标出来** —— 这个角标**留着**，理由和上面撤掉
+    // "正在用"高亮的理由正好相反：
+    //   · "哪个在放" 只有一个，而轮播摘要行已经把它当主要内容显示了
+    //   · "在播放列表里" 是**多个**，而用户在这一页做的动作就是右键加/移出
+    //     ⟹ 加完之后当场看不到反馈，就不知道加成功没有
+    //     （这个项目栽过六次"做了但用户看不到"）
+    // ⚠️ 弹窗里那排缩略图能看到完整列表，但那要点开 —— 而加/移出发生在这里。
     const rlist = ((config.we && config.we.rotate) || {}).list || [];
     if (rlist.includes(item.dir)) {
       const mark = document.createElement('div');
@@ -2279,38 +2297,198 @@ async function renderMine() {
 // 两个设计决定（用户拍的）：
 //   · 列表是**手选**的（右键菜单里加/移出），不是"目录里全部"
 //   · 轮播开着时手动点一个壁纸**不打断轮播**，只是从它重新计时
+// ⚠️⚠️ **轮播：一行摘要 + 弹窗**（0.9.49 重做）。用户 2026-08-01：
+//   「轮播那里改一下，应该是点击一下出一个弹窗，设计时间，轮播时间，
+//     顺序/随机等等，正常的轮播逻辑都要有，并且要有预览图，就是一行，
+//     肯定放不下，右滑就行了，然后当前播放的哪个壁纸要有显示」
+//
+// ⟹ 面板上只剩一行（在放哪个 + 状态），设置全进弹窗。
+// 这是"常驻的东西要少，而不是功能要少"的第四次应用。
+
+// 小时/分钟的换算只在 **UI 层**做 —— 配置里存的仍然是 `minutes`，
+// 主进程那边（rotateStep / syncRotate）一个字都不用改。
+// ⚠️ 存两个字段（数值 + 单位）会引入"120 分钟"和"2 小时"两种表示同一件事
+// 的状态，而它们会不同步。⟹ 单一真相是 minutes，单位只是显示方式。
+function splitMinutes(minutes) {
+  const m = Math.max(1, Math.round(Number(minutes) || 30));
+  // 整小时才显示成小时 —— 90 分钟显示"1.5 小时"要么被 step=1 截断成 1，
+  // 要么就得允许小数，两个都比"90 分钟"糟。
+  if (m >= 60 && m % 60 === 0) return { every: m / 60, unit: 'hour' };
+  return { every: m, unit: 'minute' };
+}
+
+function joinMinutes(every, unit) {
+  const n = Math.max(1, Math.round(Number(every) || 1));
+  return unit === 'hour' ? n * 60 : n;
+}
+
+// 从 dir 找那个壁纸的信息（缩略图/标题）。找不到返回 null ——
+// ⚠️ 列表里的路径可能已经不存在了（用户在 Finder 里删了目录），
+// 那不是异常，是要**显示出来**的状态（否则用户不知道为什么轮播跳过它）。
+function wallpaperByDir(dir) {
+  return lastWallpapers.find((w) => w.dir === dir) || null;
+}
+
 function renderRotate() {
   const r = (config.we && config.we.rotate) || {};
   const list = r.list || [];
+
+  // ---- ① 面板上那一行摘要 ----
+  const nowImg = document.getElementById('rotate-now-img');
+  const nowTitle = document.getElementById('rotate-now-title');
+  const nowState = document.getElementById('rotate-now-state');
+  if (!nowTitle) return;
+
+  // "正在放的是哪个" —— 唯一来源是 items 里的 active 标记（主进程算的）。
+  // ⚠️ 不用 config.we.dir 自己判断：那是"上次装载的路径"，而壁纸可能
+  // 已经被卸载/换掉了 ⟹ 会显示一个其实没在放的壁纸。
+  const active = lastWallpapers.find((w) => w.active) || null;
+
+  if (active) {
+    nowTitle.textContent = active.title || active.id || '(未命名)';
+    if (active.preview) {
+      nowImg.src = active.preview;
+      nowImg.style.visibility = 'visible';
+    } else {
+      // ⚠️ visibility 而不是 display —— 要**留住位置**，
+      // 否则"没有缩略图"和"没在放壁纸"两种状态长得一样。
+      nowImg.removeAttribute('src');
+      nowImg.style.visibility = 'hidden';
+    }
+  } else {
+    nowTitle.textContent = '没有在放壁纸';
+    nowImg.removeAttribute('src');
+    nowImg.style.visibility = 'hidden';
+  }
+
+  // 状态那半行：轮播开着说清"每多久、什么顺序"，关着就说怎么开。
+  const t = splitMinutes(r.minutes);
+  const unitText = t.unit === 'hour' ? '小时' : '分钟';
+  if (r.on && list.length >= 2) {
+    nowState.textContent = `轮播中 · 每 ${t.every} ${unitText} · `
+      + `${r.mode === 'random' ? '随机' : '按顺序'} · 列表 ${list.length} 个`;
+  } else if (list.length >= 2) {
+    nowState.textContent = `轮播关着 · 列表 ${list.length} 个 · 点这里设置`;
+  } else if (list.length === 1) {
+    nowState.textContent = '播放列表只有 1 个 —— 至少要 2 个才会轮播';
+  } else {
+    nowState.textContent = '还没有播放列表 · 点这里设置';
+  }
+
+  // ---- ② 弹窗里的控件（弹窗关着也要同步，否则打开的一瞬间是旧值）----
   const onBox = document.getElementById('rotateOn');
-  const minBox = document.getElementById('rotateMinutes');
+  const everyBox = document.getElementById('rotateEvery');
+  const unitBox = document.getElementById('rotateUnit');
   const modeBox = document.getElementById('rotateMode');
-  const opts = document.getElementById('rotate-opts');
-  const count = document.getElementById('rotate-count');
-  const hint = document.getElementById('rotate-hint');
+  const countEl = document.getElementById('rotate-list-count');
+  const hint = document.getElementById('rotate-modal-hint');
   if (!onBox) return;
 
   onBox.checked = !!r.on;
-  minBox.value = r.minutes || 30;
+  everyBox.value = t.every;
+  unitBox.value = t.unit;
   modeBox.value = r.mode || 'order';
-  count.textContent = list.length ? `播放列表 ${list.length} 个` : '';
-
-  // ⚠️ 列表空时藏掉那些设置 —— 它们没有意义，而这个项目刚因为
-  // "常驻的东西太多"被用户要求删过三轮。
-  opts.hidden = list.length < 2;
+  countEl.textContent = list.length ? `${list.length} 个` : '空';
 
   if (!list.length) {
-    hint.innerHTML = '播放列表是空的 —— <b>在壁纸上右键 → 「加入播放列表」</b>';
+    hint.innerHTML = '在壁纸上<b>右键 → 「加入播放列表」</b>把壁纸加进来。';
   } else if (list.length === 1) {
     // ⚠️ 一个壁纸"轮播"没有意义，而且主进程那边也不会起定时器
     // ⟹ 要说清，否则用户开了开关发现不动会以为坏了。
-    hint.innerHTML = '⚠️ 列表里只有 1 个 —— 至少要 2 个才会轮播'
-      + '（一个壁纸"轮播"就是每隔 N 分钟重载它，画面会白闪一下）';
+    hint.innerHTML = '⚠️ 只有 1 个 —— 至少要 2 个才会轮播'
+      + '（一个壁纸"轮播"就是每隔 N 分钟重载它，画面会白闪一下）。';
   } else {
     hint.textContent = r.on
-      ? `轮播中：每 ${r.minutes} 分钟，${r.mode === 'random' ? '随机' : '按列表顺序'}`
-      : '开关关着 —— 打开才会自动换';
+      ? '手动点某个壁纸装载不会打断轮播，只是从它开始重新计时。'
+      : '开关打开才会自动换。';
   }
+
+  renderRotateStrip(list);
+}
+
+// 播放列表那一排缩略图。横向排，右滑看更多。
+function renderRotateStrip(list) {
+  const strip = document.getElementById('rotate-strip');
+  if (!strip) return;
+  strip.innerHTML = '';
+
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'hint';
+    empty.style.cssText = 'font-size:11px;padding:8px 2px';
+    empty.textContent = '列表是空的';
+    strip.appendChild(empty);
+    return;
+  }
+
+  for (const dir of list) {
+    const info = wallpaperByDir(dir);
+    const item = document.createElement('div');
+    item.className = 'rs-item';
+    // ⚠️ 正在放的那个要标出来（用户点名「当前播放的哪个壁纸要有显示」）——
+    // 摘要行只给了名字，而在列表里也要能一眼定位到它。
+    if (info && info.active) item.classList.add('now');
+
+    const img = document.createElement('img');
+    if (info && info.preview) img.src = info.preview;
+    img.onerror = () => { img.style.visibility = 'hidden'; };
+    item.appendChild(img);
+
+    const nm = document.createElement('div');
+    nm.className = 'rs-nm';
+    // ⚠️ 找不到 = 目录已经不在了（用户在 Finder 里删了）。
+    // 那不是异常，是要**显示出来**的状态 —— 否则用户不知道轮播为什么跳过它。
+    nm.textContent = info ? (info.title || info.id) : '⚠️ 已不存在';
+    if (!info) nm.style.color = '#ffb4b4';
+    item.appendChild(nm);
+    item.title = info ? `${info.title || info.id}\n${dir}` : `找不到这个目录：${dir}`;
+
+    // 移出按钮（hover 才显示）
+    const del = document.createElement('div');
+    del.className = 'rs-del';
+    del.textContent = '✕';
+    del.title = '从播放列表移出';
+    del.onclick = (e) => {
+      // ⚠️ stopPropagation —— 否则冒泡到 item.onclick 把这个壁纸装载了
+      e.stopPropagation();
+      setRotate({ list: list.filter((d) => d !== dir) });
+    };
+    item.appendChild(del);
+
+    // 点缩略图 = 立刻切到这个壁纸。⚠️ 目录不存在就不给点（会失败）。
+    if (info) {
+      item.onclick = async () => {
+        await window.gw.workshopLoadLocal(dir);
+        renderWEStatus();
+        renderMine();
+      };
+    } else {
+      item.style.cursor = 'default';
+    }
+
+    strip.appendChild(item);
+  }
+}
+
+// ---- 弹窗的开关 ----
+//
+// ⚠️ 三条关闭路径：✕ / 点遮罩 / Esc。少任何一条都会让人觉得"关不掉"
+// （这个项目在右键菜单上已经踩过一次 —— 那次是漏了滚动时关闭）。
+function openRotateModal() {
+  const modal = document.getElementById('rotate-modal');
+  if (!modal) return;
+  // ⚠️ 打开时重渲染一次 —— 弹窗关着的时候壁纸可能被换过/删过，
+  // 而"打开看到的是旧状态"是这个项目栽过的形状。
+  renderRotate();
+  modal.hidden = false;
+  // 焦点给关闭按钮 ⟹ Esc 和 Tab 都从一个确定的位置开始
+  const close = document.getElementById('rotate-modal-close');
+  if (close) close.focus();
+}
+
+function closeRotateModal() {
+  const modal = document.getElementById('rotate-modal');
+  if (modal) modal.hidden = true;
 }
 
 // ⚠️ 改任何一项都走同一个入口 —— 三个控件各写一遍 patch 必然漏一个
@@ -2353,17 +2531,46 @@ document.getElementById('audioFollow').onchange = async (e) => {
   renderAudioSimple();
 };
 
+// ---- 轮播（0.9.49：摘要行开弹窗，控件都在弹窗里）----
+
+// 摘要行：整行可点。⚠️ 也要能用键盘（它是 role="button" tabindex="0"，
+// 那意味着它会被 Tab 聚焦 —— 聚焦了却按不动是最糟的一种）。
+const rotateSummary = document.getElementById('rotate-summary');
+rotateSummary.onclick = openRotateModal;
+rotateSummary.onkeydown = (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRotateModal(); }
+};
+
+// 三条关闭路径：✕ / 点遮罩 / Esc。
+document.getElementById('rotate-modal-close').onclick = closeRotateModal;
+document.getElementById('rotate-modal-mask').onclick = closeRotateModal;
+// ⚠️ Esc 挂在 window 上而不是弹窗上 —— 焦点可能在弹窗里任何一个控件上，
+// 而 keydown 冒泡到弹窗要求焦点在它内部，输入框里按 Esc 就不灵了。
+// ⚠️ 判 hidden 而不是无条件关 —— 否则和别处的 Esc（右键菜单）抢。
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('rotate-modal');
+  if (modal && !modal.hidden) { e.stopPropagation(); closeRotateModal(); }
+});
+
 document.getElementById('rotateOn').onchange = (e) =>
   setRotate({ on: e.target.checked });
+
 // ⚠️ 用 change 而不是 input —— input 会在用户还在敲的时候就触发
 // （敲 "15" 的过程中先收到 1 ⟹ 那会让轮播先按 1 分钟起一次定时器）。
-document.getElementById('rotateMinutes').onchange = (e) => {
-  const v = Math.round(Number(e.target.value));
+// ⚠️⚠️ 数值和单位**必须一起算**：改单位时数值没变，但 minutes 变了
+// （2 分钟 → 2 小时 = 120）。各自只发自己那半的话，改单位不会生效。
+function pushInterval() {
+  const every = Number(document.getElementById('rotateEvery').value);
+  const unit = document.getElementById('rotateUnit').value;
   // ⚠️ 挡住非法值 —— 空/0/负数会让主进程那边 fallback 到 30，
   // 而用户看到"我填了 0 它变成 30"会以为没生效。
-  if (!Number.isFinite(v) || v < 1) { renderRotate(); return; }
-  setRotate({ minutes: v });
-};
+  if (!Number.isFinite(every) || every < 1) { renderRotate(); return; }
+  setRotate({ minutes: joinMinutes(every, unit) });
+}
+document.getElementById('rotateEvery').onchange = pushInterval;
+document.getElementById('rotateUnit').onchange = pushInterval;
+
 document.getElementById('rotateMode').onchange = (e) =>
   setRotate({ mode: e.target.value });
 document.getElementById('rotateNext').onclick = async () => {
@@ -2377,6 +2584,14 @@ document.getElementById('rotateNext').onclick = async () => {
 // ⚠️ 用模块级变量而不是每次重新扫 —— 扫描要遍历磁盘，而这个函数在
 // 每次增删目录后都会跑。
 let lastScanned = null;
+
+// ⚠️⚠️ 最近一次扫到的壁纸清单（0.9.49）—— 轮播的摘要行和弹窗靠它拿
+// 缩略图 / 标题 / "正在放哪个"。renderMine 拿到就存下来。
+//
+// ⚠️ 和 lastScanned 一样是**模块级缓存**，理由也一样：扫描要遍历磁盘，
+// 而且轮播和网格必须看到同一份数据 —— 各自扫一次的话，两次之间的差异
+// 会让"正在放"的判断和网格上的蓝框对不上。
+let lastWallpapers = [];
 
 function renderMineDirs() {
   const host = document.getElementById('mine-dirs');

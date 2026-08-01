@@ -378,6 +378,112 @@
      ⟹ 那解决了两个问题：①「卸载」不再藏在"点当前那张卡片"这个动作里
      ②「打开目录」不再需要常驻按钮（它 2026-07-31 因为常驻太吵被删过）
      ⟹ 判据：**常驻的东西要少，而不是功能要少。** */
+  /* ---- 轮播：摘要行 + 弹窗（0.9.49）---- */
+
+  /* 摘要行：整行可点。左缩略图 + 中文字 + 右箭头。 */
+  #rotate-summary {
+    display: flex; align-items: center; gap: 11px;
+    cursor: pointer; border-radius: 7px; margin: -4px;
+    padding: 4px; transition: background .14s ease;
+  }
+  #rotate-summary:hover { background: rgba(255,255,255,.045); }
+  #rotate-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* ⚠️ 缩略图挂了要**留住位置** —— 用 background 而不是靠 img 本身撑开，
+     否则"图没加载"和"没有正在放的壁纸"两种状态看起来一样。 */
+  #rotate-now-img {
+    width: 52px; height: 32px; flex: none; border-radius: 5px;
+    object-fit: cover; background: #0b0b10;
+    border: 1px solid var(--line); display: block;
+  }
+  #rotate-now-text { flex: 1; min-width: 0; }
+  /* ⚠️ min-width:0 + ellipsis —— 壁纸名可以很长（工坊标题动辄几十字），
+     不截断的话整行会被撑开，右边的箭头被挤出去。 */
+  #rotate-now-title {
+    display: block; font-size: 12.5px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  #rotate-now-state { display: block; font-size: 11px; margin: 0; }
+  #rotate-chevron { color: var(--dim); font-size: 17px; flex: none; }
+
+  /* 弹窗。
+     ⚠️ z-index 只需要 **高于 #launch（100）**，因为启动页在最上面。
+     ⚠️ 但要**低于右键菜单（dashboard.js:1912 里内联的 9999）** ——
+        我第一版注释写"右键菜单是 200"，那是凭记忆写的、错的。
+        grep 出来才是 9999。⟹ 取 150：启动页之上、右键菜单之下。
+        顺序对的理由：弹窗里的卡片也能右键，菜单必须浮在弹窗上面。 */
+  #rotate-modal { position: fixed; inset: 0; z-index: 150; }
+  #rotate-modal-mask {
+    position: absolute; inset: 0;
+    background: rgba(4,5,9,.62);
+    /* 毛玻璃：底下的面板还能看见轮廓 ⟹ "这是个浮层"而不是"换了一页" */
+    backdrop-filter: blur(3px);
+  }
+  #rotate-modal-box {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 460px; max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 64px); overflow-y: auto;
+    background: var(--panel); border: 1px solid rgba(255,255,255,.14);
+    border-radius: 12px; padding: 16px 18px 18px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.6);
+  }
+  .rm-head { display: flex; align-items: center; margin-bottom: 12px; }
+  .rm-head b { flex: 1; font-size: 14px; }
+  #rotate-modal-close { padding: 2px 8px; font-size: 13px; line-height: 1.3; }
+  .rm-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 12px; flex-wrap: wrap;
+  }
+  .rm-label { font-size: 12px; color: var(--dim); }
+
+  /* 播放列表：横向一排，右滑看更多。
+     ⚠️ `overflow-x: auto` + `flex-wrap: nowrap` 是这个效果的全部 ——
+     少了 nowrap 就会换行堆成两排（那就不是"右滑"了）。 */
+  #rotate-strip {
+    display: flex; flex-wrap: nowrap; gap: 8px;
+    overflow-x: auto; overflow-y: hidden;
+    padding: 4px 2px 10px; margin-top: 6px;
+    /* 滚动吸附：滑动停下时对齐到卡片边缘，不会停在半张图上 */
+    scroll-snap-type: x proximity;
+  }
+  /* 细滚动条 —— 默认的在深色面板上是一条粗白条 */
+  #rotate-strip::-webkit-scrollbar { height: 6px; }
+  #rotate-strip::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,.16); border-radius: 3px;
+  }
+  #rotate-strip::-webkit-scrollbar-track { background: transparent; }
+  .rs-item {
+    flex: none; width: 92px; scroll-snap-align: start;
+    border-radius: 7px; overflow: hidden; position: relative;
+    border: 1px solid var(--line); background: #15151b; cursor: pointer;
+  }
+  .rs-item:hover { border-color: rgba(255,255,255,.26); }
+  .rs-item img {
+    width: 100%; height: 54px; object-fit: cover; display: block; background: #000;
+  }
+  .rs-item .rs-nm {
+    font-size: 10px; padding: 4px 5px 5px; color: rgba(232,232,238,.72);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 正在放的那个：蓝框 + 左上角一个 ▶。
+     ⚠️ 用户点名「当前播放的哪个壁纸要有显示」—— 而摘要行只说了名字，
+     列表里也要能一眼定位到它。 */
+  .rs-item.now { border-color: var(--accent); }
+  .rs-item.now::before {
+    content: '▶'; position: absolute; left: 4px; top: 3px;
+    font-size: 9px; color: var(--accent); text-shadow: 0 0 3px #000;
+  }
+  /* 移出按钮：hover 才出现（常驻会让每张卡片多一个控件） */
+  .rs-item .rs-del {
+    position: absolute; right: 3px; top: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: rgba(0,0,0,.62); color: #ffb4b4;
+    font-size: 11px; line-height: 16px; text-align: center;
+    opacity: 0; transition: opacity .14s ease;
+  }
+  .rs-item:hover .rs-del { opacity: 1; }
+  .rs-item .rs-del:hover { background: rgba(255,120,120,.3); color: #fff; }
+
   .card-menu { background: var(--panel); border: 1px solid var(--line);
                border-radius: 8px; padding: 4px; min-width: 168px;
                box-shadow: 0 8px 24px rgba(0,0,0,.5); }
@@ -516,37 +622,82 @@
               ⟹ 见 dashboard.js 的 renderMine 里 `item.active` 那段。 -->
     </div>
 
-    <!-- ⚠️ 轮播（0.9.43）。用户 2026-08-01：
-         「壁纸应该设置一个播放列表，然后可以设置时间如轮播，
-           可以选择顺序/随机等」
+    <!-- ⚠️⚠️ 轮播（0.9.49 重做成"一行摘要 + 点开弹窗"）。
+         用户 2026-08-01：「轮播那里改一下，应该是点击一下出一个弹窗，
+         设计时间，轮播时间，顺序/随机等等，正常的轮播逻辑都要有，
+         并且要有预览图，就是一行，肯定放不下，右滑就行了，
+         然后当前播放的哪个壁纸要有显示」
 
-         ⚠️ 放在网格**上面** —— 它管的是"这些壁纸怎么放"，
-         而网格是"有哪些壁纸"。顺序反了的话用户要先滚过一屏缩略图才看到设置。
-
-         ⚠️ 而整块只在**列表里有东西**时才显示细节（间隔/顺序/下一个）——
-         列表空的时候那些设置没有意义，而这个项目刚因为"常驻的东西太多"
-         被用户要求删过三轮。 -->
+         ⟹ 面板上只留**一行摘要**（在放哪个 + 状态），设置全进弹窗。
+         那和 0.9.43 那版（间隔/顺序/下一个三个控件常驻）的区别是：
+         常驻的东西从 4 个变成 1 行，而功能反而多了。
+         这是这个项目第四次收到"常驻的东西太多" —— 判据一直是
+         **常驻的东西要少，而不是功能要少**。 -->
     <div class="card" id="rotate-card">
-      <div class="bar-row" style="align-items:baseline">
-        <div class="toggle" style="flex:1">
-          <input type="checkbox" id="rotateOn">
-          <label for="rotateOn">轮播播放列表里的壁纸</label>
+      <!-- 摘要行：整行可点 → 开弹窗。左边是"正在放"的缩略图 + 名字。 -->
+      <div id="rotate-summary" role="button" tabindex="0"
+           title="点开设置轮播（间隔、顺序、播放列表）">
+        <img id="rotate-now-img" alt="">
+        <div id="rotate-now-text">
+          <b id="rotate-now-title">—</b>
+          <span id="rotate-now-state" class="hint"></span>
         </div>
-        <span id="rotate-count" class="hint" style="font-size:11px"></span>
+        <span id="rotate-chevron">›</span>
       </div>
-      <div id="rotate-opts" class="bar-row" style="margin-top:8px;align-items:baseline">
-        <span class="hint" style="font-size:11px">每</span>
-        <input type="number" id="rotateMinutes" min="1" max="1440" step="1"
-               style="width:64px" title="分钟。⚠️ 不支持秒级 —— 切换要重建窗口、重载资源，秒级只会让画面一直闪">
-        <span class="hint" style="font-size:11px">分钟换一张，</span>
-        <select id="rotateMode" title="顺序：按列表往下走。随机：避开当前和上一张">
-          <option value="order">顺序</option>
-          <option value="random">随机</option>
-        </select>
-        <button class="act" id="rotateNext" type="button"
-                title="立刻换下一张（不改开关状态）">下一张</button>
+    </div>
+
+    <!-- ⚠️⚠️ 轮播设置弹窗。默认 hidden，点摘要行才出来。
+         ⚠️ 不用 <dialog> —— 它的 ::backdrop 在 Electron 里样式受限，
+         而且 showModal() 会把焦点管理接过去，和我们自己的 Esc/点外关闭打架。
+         一个 fixed 的遮罩 + 一个居中的面板，行为完全可控。 -->
+    <div id="rotate-modal" hidden>
+      <div id="rotate-modal-mask"></div>
+      <div id="rotate-modal-box" role="dialog" aria-modal="true"
+           aria-labelledby="rotate-modal-title">
+        <div class="rm-head">
+          <b id="rotate-modal-title">轮播设置</b>
+          <button class="act" id="rotate-modal-close" type="button" title="关闭（Esc）">✕</button>
+        </div>
+
+        <!-- ① 开关 -->
+        <div class="toggle">
+          <input type="checkbox" id="rotateOn">
+          <label for="rotateOn">开启轮播</label>
+        </div>
+
+        <!-- ② 间隔。⚠️ 数字 + 单位两个控件 —— 用户说"设计时间，轮播时间"，
+             而只给"分钟"的话 2 小时要填 120，那不是正常的轮播设置。 -->
+        <div class="rm-row">
+          <span class="rm-label">每隔</span>
+          <input type="number" id="rotateEvery" min="1" max="1440" step="1" style="width:70px">
+          <select id="rotateUnit" title="分钟或小时">
+            <option value="minute">分钟</option>
+            <option value="hour">小时</option>
+          </select>
+          <span class="rm-label">换一张</span>
+        </div>
+
+        <!-- ③ 顺序 -->
+        <div class="rm-row">
+          <span class="rm-label">顺序</span>
+          <select id="rotateMode" title="顺序：按列表往下走。随机：避开当前和上一张">
+            <option value="order">按列表顺序</option>
+            <option value="random">随机</option>
+          </select>
+          <button class="act" id="rotateNext" type="button"
+                  title="立刻换下一张（不改开关状态，也会重新计时）">立刻换下一张</button>
+        </div>
+
+        <!-- ④ 播放列表：横向一排缩略图，右滑看更多。
+             ⚠️ 用户点名要预览图 + 横滑：「并且要有预览图，就是一行，
+             肯定放不下，右滑就行了」 -->
+        <div class="rm-row" style="justify-content:space-between">
+          <span class="rm-label">播放列表</span>
+          <span id="rotate-list-count" class="hint" style="font-size:11px"></span>
+        </div>
+        <div id="rotate-strip"></div>
+        <div id="rotate-modal-hint" class="hint" style="font-size:11px"></div>
       </div>
-      <div id="rotate-hint" class="hint" style="font-size:11px;margin-top:6px"></div>
     </div>
 
     <!-- ⚠️ 音频那一整块搬进「开发者选项」了（五个音源按钮 + 频谱数值 + helper 日志），

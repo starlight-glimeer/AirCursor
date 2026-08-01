@@ -4186,4 +4186,85 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
     '放行骨架层时没清兜底定时器 ⟹ 正常情况下也会打出"面板可能挂了"的警告');
 });
 
+// ⚠️⚠️ **轮播 UI：摘要行 + 弹窗**（0.9.49）。用户 2026-08-01：
+//   「轮播那里改一下，应该是点击一下出一个弹窗，设计时间，轮播时间，
+//     顺序/随机等等，正常的轮播逻辑都要有，并且要有预览图，就是一行，
+//     肯定放不下，右滑就行了，然后当前播放的哪个壁纸要有显示」
+//   +「我下载的壁纸这里不用高亮一类的说正在播放这个，因为在轮播那里会显示」
+//
+// 上面那条「轮播：列表存路径 / …」守的是**主进程侧**的逻辑，这一轮整块换了
+// UI 它照样全绿 —— 那正说明它没在守 UI。这一节补上。
+check('轮播 UI：摘要行开弹窗 / 分钟小时 / 横滑预览 / 网格不再高亮', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① 摘要行 + 弹窗都在，而旧的常驻控件没了
+  assert.match(html, /id="rotate-summary"/, '没有轮播摘要行 ⟹ 面板上没有入口');
+  assert.match(html, /id="rotate-modal"[^>]*hidden/,
+    '轮播弹窗没有 hidden ⟹ 一开面板它就糊在上面');
+  assert.ok(!/id="rotateMinutes"/.test(html),
+    '还有旧的 rotateMinutes 常驻输入框 ⟹ 设置应该都在弹窗里');
+
+  // ② 摘要行要能用键盘（它是 role=button tabindex=0 ⟹ 会被 Tab 聚焦，
+  //    聚焦了却按不动是最糟的一种）
+  assert.match(html, /id="rotate-summary"[\s\S]{0,120}?tabindex="0"/,
+    '摘要行不可聚焦 ⟹ 键盘用户到不了轮播设置');
+  assert.match(dash, /rotateSummary\.onkeydown/,
+    '摘要行没接键盘 ⟹ Tab 能聚焦但回车/空格按不开（比不能聚焦更糟）');
+
+  // ③ 三条关闭路径：✕ / 遮罩 / Esc。少一条都会让人觉得"关不掉"。
+  assert.match(dash, /rotate-modal-close'\)\.onclick/, '弹窗没有 ✕ 关闭');
+  assert.match(dash, /rotate-modal-mask'\)\.onclick/, '点遮罩关不掉弹窗');
+  assert.match(dash, /e\.key !== 'Escape'[\s\S]{0,300}?closeRotateModal\(\)/,
+    'Esc 关不掉弹窗');
+
+  // ④ 分钟/小时：**换算只在 UI 层**，配置里仍然只有 minutes。
+  //    存两个字段会引入"120 分钟"和"2 小时"两种表示同一件事的状态，而它们会漂。
+  assert.match(dash, /function joinMinutes\s*\(/, '没有单位换算 ⟹ 2 小时要用户填 120');
+  assert.match(dash, /setRotate\(\{ minutes: joinMinutes\(/,
+    '发给主进程的不是换算后的 minutes ⟹ 主进程侧要跟着改，同一个事实两个来源');
+  // ⚠️⚠️ 数值和单位**必须一起算** —— 改单位时数值没变但 minutes 变了
+  //    （2 分钟 → 2 小时 = 120）。各自只发自己那半的话，改单位不会生效。
+  assert.match(dash, /rotateEvery'\)\.onchange = pushInterval[\s\S]{0,120}?rotateUnit'\)\.onchange = pushInterval/,
+    '数值和单位没走同一个入口 ⟹ 改单位不生效（数值没变，但 minutes 变了）');
+
+  // ⑤ 横滑预览条：nowrap + overflow-x 是这个效果的全部
+  const strip = html.slice(html.indexOf('#rotate-strip {'));
+  assert.match(strip.slice(0, 320), /flex-wrap:\s*nowrap/,
+    '预览条没有 flex-wrap: nowrap ⟹ 会换行堆成两排，那就不是"右滑"了');
+  assert.match(strip.slice(0, 320), /overflow-x:\s*auto/,
+    '预览条不能横向滚动 ⟹ 装不下的壁纸看不到');
+  // 正在放的那个在列表里也要标出来（用户点名要"当前播放的哪个壁纸要有显示"）。
+  // ⚠️⚠️ 两条规则**都要**查 —— 蓝框（.rs-item.now）和 ▶ 角标
+  // （.rs-item.now::before）是这个标记的两半。
+  // 第一版只写 `/\.rs-item\.now/`，而那个子串在 `::before` 那条里也有
+  // ⟹ 把蓝框那条删掉守卫**照样绿**（反向验证第 11 条：报红 0）。
+  // 锚点撞名第 5 次；前几次撞注释、字符串、别处的同名调用，这次撞的是
+  // **同一个类名的另一条规则** —— 所以判据是：断言要锚到"规则的完整形状"
+  // （选择器 + 花括号），不是类名。
+  assert.match(html, /\.rs-item\.now\s*\{/, '预览条里"正在放"没有蓝框');
+  assert.match(html, /\.rs-item\.now::before\s*\{/, '预览条里"正在放"没有 ▶ 角标');
+  assert.match(dash, /info\.active\)\s*item\.classList\.add\('now'\)/,
+    '预览条没标出正在放的那个 ⟹ 用户说的"当前播放的哪个壁纸要有显示"只做了一半');
+
+  // ⑥ 缩略图/标题的数据来自 renderMine 存下的清单，不重扫磁盘 ——
+  //    各自扫一次的话，两次之间的差异会让"正在放"和网格对不上。
+  assert.match(dash, /lastWallpapers = /, '没有壁纸清单缓存 ⟹ 轮播要自己重扫磁盘');
+  assert.match(dash, /lastWallpapers = [\s\S]{0,200}?renderRotate\(\)/,
+    'renderRotate 在 lastWallpapers 赋值之前调 ⟹ 摘要行永远显示"—"（我第一版就是这样）');
+  // "正在放哪个"只能来自 items 的 active，不能自己用 config.we.dir 判断
+  //（那是"上次装载的路径"，壁纸可能已经被卸载了 ⟹ 显示一个没在放的壁纸）
+  assert.match(dash, /lastWallpapers\.find\(\(w\) => w\.active\)/,
+    '"正在放哪个"不是从 active 标记来的 ⟹ 可能显示一个其实没在放的壁纸');
+
+  // ⑦⚠️ 网格里**不再**给"正在用"加高亮（用户点名撤掉），
+  //    但"在播放列表里"的角标要**留着** —— 加/移出发生在网格上，
+  //    当场看不到反馈就不知道加成功没有。
+  const gridActive = dash.slice(dash.indexOf('if (item.active) {'));
+  assert.ok(!/borderColor/.test(gridActive.slice(0, 200)),
+    '网格又给"正在用"加边框高亮 ⟹ 和轮播摘要行说的是同一件事（用户点名撤掉）');
+  assert.match(dash, /rlist\.includes\(item\.dir\)/,
+    '网格没标"在播放列表里" ⟹ 右键加进去之后当场没有反馈');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
