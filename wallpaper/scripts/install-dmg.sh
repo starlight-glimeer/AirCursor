@@ -100,12 +100,29 @@ ditto "$MNT/$APP_NAME" "$DEST"
 # ⚠️ 这一步**就是用户也要做的那一步**，脚本里做只是省事，没有跳过。
 echo "③ 解除 Gatekeeper 隔离"
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
-# 报出来还剩什么属性 —— 万一 xattr 没清干净，"打不开"要能查
-REST=$(xattr "$DEST" 2>/dev/null | tr '\n' ' ')
-if [ -n "$REST" ]; then
-  echo "   剩余扩展属性：$REST"
+# ⚠️⚠️ **只有 quarantine 还在才是问题** —— 别把所有剩余属性都报成"没清干净"。
+#
+# 我第一版直接打印全部剩余属性，而用户 2026-08-01 看到的是：
+#     ③ 解除 Gatekeeper 隔离
+#        剩余扩展属性：com.apple.provenance
+# ⟹ 读起来像「没清干净」，用户会去想办法清它、或者以为装得有问题。
+#
+# 而 `com.apple.provenance` 是 macOS 13 起的**来源记录**，和 quarantine
+# 不是一回事：
+#     quarantine  = 「未验证来源，要拦」⟹ Gatekeeper 会挡
+#     provenance  = 「从哪来的」⟹ 纯溯源信息，**不影响能不能打开**
+# 而且它是 **SIP 保护的**，`xattr -dr` 删不掉（删了也会被重新加）。
+#
+# ⟹ 判据只看 quarantine 在不在。其他属性放进"顺带一提"，不当问题报。
+REST=$(xattr "${DEST}" 2>/dev/null | tr '\n' ' ' || true)
+if echo "${REST}" | grep -q "com.apple.quarantine"; then
+  echo "   ⚠️ quarantine 还在（${REST}）—— 打开时会被 Gatekeeper 挡"
+  echo "      试手动跑一次：xattr -dr com.apple.quarantine ${DEST}"
+elif [ -n "${REST}" ]; then
+  # ⚠️ 措辞不能像"有问题" —— 这些属性是正常的
+  echo "   ✅ quarantine 已清（还有 $REST —— 那是系统的来源记录，不影响打开）"
 else
-  echo "   干净"
+  echo "   ✅ 干净"
 fi
 
 echo ""
