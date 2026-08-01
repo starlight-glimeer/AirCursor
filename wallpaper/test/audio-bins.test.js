@@ -1055,11 +1055,112 @@ check('不许新增幅度常量（尺度已三重验证，等音量观测）', (
     `多了这些 Float 常量：${extra.join(', ')}。「柱子太长」已三重验证不是尺度问题`
     + '（vDSP 因子已抵消 / kiss_fftr 不归一化 / 帕塞瓦尔对上）⟹ '
     + '再乘一个系数就是"我调的参数"，而用户明确否过这条路');
-  // 面板必须提示用户做那个观测 —— 否则这条假设永远悬着
+  // ⚠️ 那条假设**已经坐实**（用户实测：系统音量 0，柱子还在动）
+  // ⟹ 提示撤掉，守卫改成"音量必须真的乘进采样"。
   const dash = dashCode();
-  assert.match(dash, /转一下系统音量/,
-    '面板没提示"转系统音量看 RMS 变不变" ⟹ 那条假设无法被验证 ⟹ '
-    + '我会一直卡在"要不要调幅度"上');
+  assert.match(dash, /systemVolume/,
+    '面板没显示系统音量 ⟹ "音量乘了没生效"是静默失败，'
+    + '而它的症状（柱子还是长）和没改一模一样');
+});
+
+// ⚠️⚠️⚠️ **系统音量乘进采样：这是「柱子太长」的根因修复，而它有出处。**
+//
+// 用户 2026-08-01 实测坐实：**系统音量调到 0，柱子还在动。**
+//
+//   WE 抓 PulseAudio 的 `.monitor` 源 = sink 的**输出流** = **音量之后**的信号
+//     ⟹ 音量 50% 则信号也 50%，静音时 monitor 里就是静音
+//   ScreenCaptureKit 的 `capturesAudio` = **应用的**音频输出 = **音量之前**
+//     ⟹ 设计如此（录屏时系统静音也该录到声音）
+//
+// ⟹ 两个平台的抓取点不同，而 WE 的公式是按"音量之后"的信号调的
+//    ⟹ 补这一乘是**平台差异的补偿**，判据（能从 WE 的行为推出来？）——**能**
+//
+// ⚠️ 而它同时解释用户从 0.9.12 到 0.9.21 报的两件事：
+//   「整体的柱子都太长了」 = 我们的输入比 WE 大（他系统音量没开满）
+//   「太敏感」            = 同一个原因（信号大 ⟹ 离 log10 地板远 ⟹ 长期在高位）
+check('系统音量乘进采样（对齐 WE 抓的音量后信号）', () => {
+  assert.match(swiftSrc, /import CoreAudio/, '没 import CoreAudio ⟹ 读不到音量');
+  // ⚠️ `kAudioHardwareServiceDeviceProperty_VirtualMasterVolume` 在 **AudioToolbox**
+  // 里（AudioServices），不在 CoreAudio ⟹ 漏了它 helper 编译失败
+  // ⟹ 音频整条链没有，而用户看到的是"柱子完全不动"（和没授权同一个画面）。
+  // ⚠️ 云端跑不了 swiftc ⟹ 这类"符号属于哪个框架"的错只能靠守卫兜。
+  if (/VirtualMasterVolume/.test(swiftCode)) {
+    // ⚠️ 用 `swiftCode`（剥注释）不是 `swiftSrc` —— 我上面那段注释里
+    // 就写了"import AudioToolbox"这几个字 ⟹ 查 swiftSrc 会假阴性。
+    // **这是今天第四次踩"注释让守卫失效"**（前三次：multiPct / rawFrames /
+    // 音乐本身的瞬态）⟹ 规则很简单：**查代码一律用剥注释的那份。**
+    assert.match(swiftCode, /^import AudioToolbox$/m,
+      '用了 VirtualMasterVolume 但没 import AudioToolbox ⟹ 编译失败 ⟹ '
+      + '音频整条链死掉（症状：柱子完全不动，和没授权一样）');
+  }
+  // ⚠️ 单一属性不够：有些设备没有 VirtualMasterVolume，只有逐声道的 VolumeScalar。
+  // 漏了退路的症状是"在某些输出设备上音量修复不生效"—— 看起来像修复没做。
+  assert.match(swiftCode, /kAudioDevicePropertyVolumeScalar/,
+    '没有逐声道音量的退路 ⟹ 外接/聚合设备上可能拿不到音量 ⟹ 修复静默失效');
+  assert.match(swiftCode, /func systemOutputVolume/, '没有读系统音量的函数');
+  assert.match(swiftCode, /samples\[i\] \*= vol/,
+    '音量没乘进采样 —— 定义了不用等于没有'
+    + '（用户实测：不乘的话系统静音柱子还在动）');
+  // ⚠️ 静音必须单独查 —— macOS 把"静音"和"音量"分成两个属性，
+  // 静音时 VirtualMasterVolume 仍返回上次的音量值
+  assert.match(swiftCode, /kAudioDevicePropertyMute/,
+    '没查静音属性 —— macOS 静音时 VirtualMasterVolume 仍返回上次的音量'
+    + '⟹ 静音时柱子照旧动（那正是用户报的症状）');
+  // ⚠️ 读不到音量时必须返回 1.0（不衰减），**不能是 0**
+  assert.ok(!/return 0\.0$[\s\S]{0,80}else \{ return 1\.0 \}/m.test(swiftCode)
+    || /else \{ return 1\.0 \}/.test(swiftCode),
+    '读不到音量时的兜底不是 1.0 ⟹ 返回 0 会静音整条链，'
+    + '症状是"柱子完全不动"，和没授权同一个画面（这个项目为它烧过四轮）');
+  const guardCount = (swiftCode.match(/return 1\.0/g) || []).length;
+  assert.ok(guardCount >= 2,
+    `只有 ${guardCount} 处 "return 1.0" 兜底 —— 拿不到设备 / 拿不到音量属性`
+    + '两条失败路径都要兜到不衰减');
+  // 静音要能和"没授权/没在放歌"区分开
+  const main = mainCode();
+  assert.match(main, /lastSystemVolume/, '主进程没记系统音量');
+  assert.match(main, /result\.silent && !\(lastSystemVolume <= 0\.001\)/,
+    '静音时会误报"没授权/没在放歌" —— 两者都是全 0 帧，'
+    + '而报错的方向完全不同（用户一静音就看到"是不是没在放歌"是误导）');
+});
+
+// ⚠️⚠️⚠️ **查代码用剥注释的那份 —— 这是今天第四次踩的洞，做成自动检查。**
+//
+// 形状：写成 `assert.match(swiftSrc, 某正则)` 而那个正则匹配的字**也出现在注释里**
+// ⟹ 把代码里的 X 删了，断言照样绿 ⟹ **守卫没有判别力**。
+//
+// 今天踩了四次：`multiPct`、`rawFrames`、`音乐本身的瞬态`、`import AudioToolbox`。
+// 每一次都是反向验证逮到的，而不是我想到的。
+// ⟹ 与其靠纪律，不如**让测试自己扫**：把所有 `assert.match(swiftSrc, …)`
+//    的正则抽出来，看有没有"注释里命中、代码里没有"的。
+//
+// ⚠️ 白名单：验"出处写在注释里"的断言本来就该用 swiftSrc
+//（比如查 `linux-wallpaperengine` 这个出处有没有写在代码里）。
+check('没有"只在注释里命中"的 Swift 断言（守卫必须有判别力）', () => {
+  const self = fs.readFileSync(__filename, 'utf8');
+  // 本来就该查注释的（验出处/教训写没写）
+  // ⚠️ 白名单里那个 `/X/` 是**这条测试自己的注释**里举的例子 ——
+  // 它扫到了自己 ⟹ 报"只在注释里命中"。那是对的（示例本来就在注释里），
+  // 但会让这条测试恒红。⟹ 教训：**自省式的检查要能认出自己**。
+  const ALLOW = [/linux-wallpaperengine/, /PulseAudioPlaybackRecorder/, /849\.4/, /kiss_fftr/, /X/];
+  const re = /assert\.match\(swiftSrc, (\/(?:[^/\\]|\\.)+\/[a-z]*)/g;
+  const risky = [];
+  let m = re.exec(self);
+  while (m) {
+    let r = null;
+    try {
+      // eslint-disable-next-line no-eval
+      r = eval(m[1]);
+    } catch (e) { r = null; }
+    if (r && !ALLOW.some((a) => a.source === r.source)) {
+      if (r.test(swiftSrc) && !r.test(swiftCode)) risky.push(m[1]);
+    }
+    m = re.exec(self);
+  }
+  assert.strictEqual(risky.length, 0,
+    `这些断言只在**注释**里命中，代码里没有：${risky.join(', ')}\n`
+    + '    ⟹ 把代码里对应的东西删掉，断言照样绿 = 守卫没有判别力。\n'
+    + '    ⟹ 改用 swiftCode（剥注释的那份）；若本意是查注释里的出处，'
+    + '加进这条测试的 ALLOW 白名单');
 });
 
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');

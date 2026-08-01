@@ -26,6 +26,12 @@ import Foundation
 import AVFoundation
 import ScreenCaptureKit
 import Accelerate
+import CoreAudio
+// ⚠️ `kAudioHardwareServiceDeviceProperty_VirtualMasterVolume` 定义在
+// **AudioToolbox** 里（AudioServices），不在 CoreAudio ⟹ 两个都要 import。
+// 云端编不了 swiftc ⟹ 这类"符号在哪个框架"的错只能靠人核，
+// 而它的症状是 helper 编译失败 ⟹ 音频整条链没有（柱子完全不动）。
+import AudioToolbox
 
 let BIN_COUNT = 128
 // 1024 点 FFT。取这个大小是因为 @48kHz 约 21ms 一帧，接近 60fps 的节奏；
@@ -135,6 +141,88 @@ let VDSP_SCALE: Float = 0.5
 //
 // ⚠️ 在那之前**不许调幅度** —— 这一层的 Float 常量白名单只有三个，
 //    守卫会拦住新增的（`test/audio-bins.test.js`）。
+
+// ⚠️⚠️⚠️ **读系统输出音量，把它乘进采样。这是「柱子太长」的根因修复。**
+//
+// 用户 2026-08-01 实测坐实：**系统音量调到 0，柱子还在动。**
+//
+// 为什么这是对齐 WE 而不是我调参数：
+//   WE 抓 PulseAudio 的 `.monitor` 源 —— 那是 sink 的**输出流**，
+//   **经过系统音量控制之后**的信号 ⟹ 音量 50% 则 monitor 信号也 50%，
+//   静音时 monitor 里就是**静音**。
+//
+//   而 ScreenCaptureKit 的 `capturesAudio` 抓的是**应用的音频输出**，
+//   设计上**不受系统音量影响**（录屏时把系统静音也该录到声音）。
+//
+// ⟹ 两个平台的音频抓取点不同，而 WE 的公式是按"音量之后"的信号调的
+//    ⟹ 补上这一乘是**平台差异的补偿**，判据（能不能从 WE 的行为推出来）——**能**。
+//
+// ⚠️ 而这也解释了用户从 0.9.12 到 0.9.21 一直报的两件事：
+//   「整体的柱子都太长了」 = 我们的输入比 WE 大（他系统音量没开满）
+//   「太敏感」            = 同一个原因（信号大 ⟹ 离 log10 地板远 ⟹ 一直在高位）
+//
+// ⚠️ 失败时返回 1.0（不衰减）——**不能返回 0**：读不到音量时静音整条链，
+// 症状是"柱子完全不动"，而那和没授权是同一个画面（这个项目为它烧过四轮）。
+func systemOutputVolume() -> Float {
+    var deviceID = AudioDeviceID(0)
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &deviceID
+    ) == noErr, deviceID != 0 else { return 1.0 }
+
+    // ⚠️ 先看是不是静音 —— 静音时 VirtualMasterVolume 仍会返回上次的音量值
+    //（macOS 把"静音"和"音量"分成两个属性）⟹ 漏了这一步静音时柱子照旧动。
+    var muted = UInt32(0)
+    var mutedSize = UInt32(MemoryLayout<UInt32>.size)
+    var mutedAddr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyMute,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    if AudioObjectHasProperty(deviceID, &mutedAddr),
+       AudioObjectGetPropertyData(deviceID, &mutedAddr, 0, nil, &mutedSize, &muted) == noErr,
+       muted != 0 {
+        return 0.0
+    }
+
+    var volume = Float32(1.0)
+    var volSize = UInt32(MemoryLayout<Float32>.size)
+    var volAddr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterVolume,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    if AudioObjectHasProperty(deviceID, &volAddr),
+       AudioObjectGetPropertyData(deviceID, &volAddr, 0, nil, &volSize, &volume) == noErr {
+        // VirtualMasterVolume 是 0..1 的标量
+        return min(1.0, max(0.0, volume))
+    }
+
+    // ⚠️ 退路：有些设备（尤其外接/聚合设备）没有 VirtualMasterVolume，
+    // 但有**逐声道**的 `kAudioDevicePropertyVolumeScalar`（element 1 = 左声道）。
+    // 漏了这条退路的症状是"在某些输出设备上音量修复不生效"，
+    // 而那看起来像"修复没做" —— 比报错更难查。
+    var chanVol = Float32(1.0)
+    var chanSize = UInt32(MemoryLayout<Float32>.size)
+    var chanAddr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyVolumeScalar,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: 1
+    )
+    if AudioObjectHasProperty(deviceID, &chanAddr),
+       AudioObjectGetPropertyData(deviceID, &chanAddr, 0, nil, &chanSize, &chanVol) == noErr {
+        return min(1.0, max(0.0, chanVol))
+    }
+
+    // ⚠️ 两条都拿不到 ⟹ **不衰减**（返回 1.0），不是 0 ——
+    // 返回 0 会静音整条链，症状和没授权一模一样（这个项目为它烧过四轮）。
+    return 1.0
+}
 
 func emit(_ dict: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: dict),
@@ -764,6 +852,9 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     // ⚠️ 这里曾经是两个（分左右声道），撤了，理由见 pcm() 上面那段。
     private let spectrum = Spectrum()
     private var pending = [Float]()
+    // 系统音量缓存（每 10 帧刷一次，见 didOutputSampleBuffer 里的注释）
+    private var cachedVolume: Float = 1.0
+    private var volumeTick = 0
     private let targetBundle: String?
 
     init(targetBundle: String?) {
@@ -854,7 +945,23 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer,
                 of type: SCStreamOutputType) {
         guard type == .audio, buffer.isValid else { return }
-        guard let samples = pcm(from: buffer) else { return }
+        guard var samples = pcm(from: buffer) else { return }
+        // ⚠️⚠️ **乘系统音量** —— 见 `systemOutputVolume()` 上面那段：
+        // WE 抓的 PulseAudio `.monitor` 是**音量之后**的信号，
+        // 而 ScreenCaptureKit 抓的是音量之前的 ⟹ 补上这一乘才和 WE 同尺度。
+        // 用户实测坐实：系统音量调到 0，柱子还在动。
+        //
+        // ⚠️ 每 10 帧读一次而不是每帧 —— CoreAudio 的属性查询有开销，
+        // 而音量是人手动调的（10 帧 ≈ 0.2 秒，感知不到延迟）。
+        // ⚠️ 但**第一帧就要读**（`volumeTick == 0`），否则启动瞬间用错的音量。
+        if volumeTick % 10 == 0 {
+            cachedVolume = systemOutputVolume()
+        }
+        volumeTick += 1
+        let vol = cachedVolume
+        if vol < 0.999 {
+            for i in 0..<samples.count { samples[i] *= vol }
+        }
         pending.append(contentsOf: samples)
         // 一次回调发几帧。**用户 0.9.17 实测：0%（恒 1 帧，每批 960 采样）**
         // ⟹ 我曾怀疑"push 模型下一次回调连发多帧 ⟹ movetowards 连做多次而
@@ -896,6 +1003,9 @@ final class AudioTap: NSObject, SCStreamOutput, SCStreamDelegate {
                 "rms": Double(round(spectrum.lastRMS * 10000) / 10000),
                 "nth": framesThisCall,
                 "batch": samples.count,
+                // ⚠️ 报出来 —— 否则"音量乘了没生效"是静默失败，
+                // 而它的症状（柱子还是长）和没改一模一样。
+                "vol": Double(round(vol * 1000) / 1000),
             ])
         }
         // 防止上游比我们快时无界堆积。

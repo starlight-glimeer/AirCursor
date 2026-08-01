@@ -168,6 +168,9 @@ function start({ sourcePath, outDir, bundle, onFrame, onStatus, packaged = true,
           // 而 PWCircle 只在收帧时重绘 ⟹ 前面那些帧被覆盖 = 等效跳帧。
           nth: typeof msg.nth === 'number' ? msg.nth : undefined,
           batch: typeof msg.batch === 'number' ? msg.batch : undefined,
+          // 系统音量（0..1）。⚠️ 上层要用它区分"静音"和"没授权/没在放歌" ——
+          // 两者都是全 0 的帧，而报错的方向完全不同。
+          vol: typeof msg.vol === 'number' ? msg.vol : undefined,
         });
       } else if (msg.type === 'selftest') {
         // ⚠️ FFT 自检结果 —— 现在的判据是**峰值位置 + 泄漏衰减 + 镜像**。

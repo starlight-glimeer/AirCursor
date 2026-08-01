@@ -2990,6 +2990,7 @@ function reportAudioFrame(data, source) {
     //   RMS 0.03-0.1（−30..−20dBFS）= 正常听感 ⟹ 我们的实现偏大
     //   RMS 0.3+（−10dBFS 以上）    = 音量开得很大 ⟹ 不是实现问题
     inputRMS: Number(lastInputRMS.toFixed(4)),
+    systemVolume: Number(lastSystemVolume.toFixed(3)),
     // ⚠️ 帧节奏 —— 判"柱子突兀的长"是不是 push 模型的批大小抖动。
     //   multiPct ≈ 0  ⟹ 一次回调只发一帧 ⟹ 节奏稳 ⟹ **这条假设作废，别改**
     //   multiPct 明显 >0 ⟹ 连发多帧，间隔几微秒 ⟹ 平滑速度随批大小漂
@@ -3344,6 +3345,9 @@ function syncAudioSource() {
 let lastAudioSilentAt = 0;
 // 最近一帧输入 PCM 的 RMS（判"柱子太长"是音量还是实现，见 pushWEAudio）
 let lastInputRMS = 0;
+// 系统输出音量（0..1）。0.9.23 起乘进采样以对齐 WE 抓的音量后信号；
+// 也用来区分"静音"和"没授权/没在放歌"（两者都是全 0 帧）。
+let lastSystemVolume = 1;
 // 帧节奏统计（判"突兀的柱子"是不是 push 模型的批大小抖动造成的）
 let frameRhythm = { total: 0, multi: 0, max: 0, batchSum: 0, batchMax: 0 };
 // 最近 N 帧的原始 128 段序列。**用户报"孤峰/噪点"时我需要的真值。**
@@ -3421,6 +3425,7 @@ function pushWEAudio(frame, meta) {
   // ⚠️ 第二个参数从裸 rms 改成了对象 —— 因为"柱子突兀的长"有两个候选原因，
   // 而它们需要不同的观测：整体幅度看 RMS，单帧尖刺看**帧节奏**。
   if (meta && typeof meta.rms === 'number') lastInputRMS = meta.rms;
+  if (meta && typeof meta.vol === 'number') lastSystemVolume = meta.vol;
   if (meta && typeof meta.nth === 'number') {
     // ⚠️ 统计分布而不是记最后一个值 —— 一次回调发几帧是**变化的**，
     // 而"最后一次是 1"和"平均 1.02"是完全不同的结论。
@@ -3449,7 +3454,14 @@ function pushWEAudio(frame, meta) {
   //
   // ⟹ 有了这个，"该调多少"变成算术：面板直接显示每段的实际值。
   // 抽样而不是每帧发：那是 30fps × 128 个数，全发会把 IPC 灌满。
-  if (result.silent) {
+  // ⚠️⚠️ **静音时全 0 是正常的，不是"没授权/没在放歌"。**
+  //
+  // 0.9.23 起我们把系统音量乘进采样（对齐 WE 抓的 PulseAudio `.monitor` ——
+  // 那是音量之后的信号）⟹ 系统静音时帧就是全 0。
+  //
+  // 而 `normalizeAudioFrame` 的 `silent` 本来是"没授权/没在放歌"的信号
+  // ⟹ 不区分的话，用户一静音面板就报"是不是没在放歌"，那是误导。
+  if (result.silent && !(lastSystemVolume <= 0.001)) {
     const now = Date.now();
     // 别每帧都播报，那会把 IPC 灌满。
     if (now - lastAudioSilentAt > 3000) {

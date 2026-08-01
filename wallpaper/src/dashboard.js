@@ -1250,8 +1250,16 @@ function renderAudioFrame(frame) {
       // ⟹ **判法（不用改代码）：把系统音量从大调到小，看这个 RMS 变不变。**
       //    变了 ⟹ 受音量影响 ⟹ 这条假设错，别改
       //    不变 ⟹ 坐实 ⟹ 修法是把系统音量乘进去（CoreAudio 读得到）
+      // ⚠️ 这里原来带一句「← 转一下系统音量，看这个数变不变」——
+      // 那条假设**已经被用户实测坐实**（系统音量调到 0，柱子还在动）
+      // ⟹ 提示撤掉，改成显示实际乘进去的音量。
       ? `<br>输入电平 RMS <b>${frame.inputRMS}</b>（${frame.inputDbfs} dBFS）`
-        + '　<b>← 转一下系统音量，看这个数变不变</b>'
+        + (frame.systemVolume !== undefined
+          ? `　系统音量 <b>${Math.round(frame.systemVolume * 100)}%</b>`
+            + `${frame.systemVolume <= 0.001
+              ? '（静音 ⟹ 柱子该完全不动，那是对的）'
+              : ''}`
+          : '')
         + `${frame.inputRMS > 0.25
           ? ' ⚠️ 音量很大 ⟹ 柱子长可能是音量，不是实现'
           : (frame.inputRMS > 0.02
