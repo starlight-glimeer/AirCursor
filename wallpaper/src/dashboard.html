@@ -355,6 +355,16 @@
     <div class="card">
       <div id="mine-dirs"></div>
       <div id="mine-state" class="hint">—</div>
+      <!-- ⚠️ **壁纸操作**（不是目录操作）—— 从「创意工坊」页签搬来的（0.9.32）。
+           用户 2026-08-01 让删创意工坊那段，而这两个功能没有等价入口：
+             「装载别处的目录…」= 装载一个不在壁纸目录里的壁纸（临时试一个）
+             「卸载」            = 回到内置壁纸
+           ⟹ 放在这里而不是目录那一行：它们操作的是**当前壁纸**，不是目录。
+           目录那行已经有 4 个按钮了，再塞会挤成一团。 -->
+      <div class="bar-row" style="margin-top:8px">
+        <button class="act" id="we-pick" type="button">装载别处的目录…</button>
+        <button class="act" id="we-clear" type="button">卸载（回到内置壁纸）</button>
+      </div>
     </div>
 
     <div id="mine-grid" class="ws-grid"></div>
@@ -435,20 +445,23 @@
 
   <!-- ============ WE 网页壁纸 ============ -->
   <section id="tab-we" class="on">
-    <h2>Wallpaper Engine 网页壁纸</h2>
-    <p class="lead">
-      装载 Steam 创意工坊的<b>网页类</b>壁纸（<code>project.json</code> 里 <code>type: "Web"</code>）。
-      它们就是 HTML + JS，所以能直接跑；音频响应和鼠标交互都在。
-      <br>⚠️ <b>scene / video 类不支持</b> —— 那要解 WE 的私有格式。
-    </p>
+    <h2>Steam 创意工坊</h2>
+    <!-- ⚠️⚠️ 这里原来有一段说明和两个按钮，删了（0.9.32）。用户 2026-08-01 让删的。
+         而那段说明**本身已经过期**：
 
-    <div class="card">
-      <div class="bar-row">
-        <button class="act" id="we-pick" type="button">选择壁纸目录…</button>
-        <button class="act" id="we-clear" type="button">卸载，回到三层景深</button>
-      </div>
-      <div id="we-state" class="hint">未装载</div>
-    </div>
+           「装载…**网页类**壁纸（project.json 里 type: "Web"）
+             ⚠️ **scene / video 类不支持** —— 那要解 WE 的私有格式。」
+
+         video 和 image/GIF 类早就支持了（真机验过：龙猫视频壁纸正常播放、
+         legacy 单文件走魔数嗅探造 project.json）⟹ 那句话在劝用户别下他其实能用的东西。
+         ⚠️ 教训：**"不支持 X"这类说明会随功能推进过期，而它比没有说明更坏**
+         （它主动误导）。⟹ 能力矩阵只留在 MODULES.md 一处，UI 上不重复。
+
+         两个按钮的去处：
+           「选择壁纸目录…」→ 搬到「我的壁纸」（那才是壁纸的家）
+           「卸载，回到三层景深」→ 同上
+         ⟹ 用户的模型是「我的壁纸」管壁纸、「创意工坊」管下载。 -->
+    <div id="we-state" class="hint" style="margin-bottom:12px">未装载</div>
 
     <h3>浏览创意工坊</h3>
     <div class="card">

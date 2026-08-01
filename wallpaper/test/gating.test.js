@@ -3326,4 +3326,58 @@ check('壁纸目录是单一来源，操作都在那一行', () => {
     '不再扫 libraryDirs ⟹ 旧配置里的目录会突然消失，用户的壁纸不见了');
 });
 
+// ⚠️⚠️⚠️ **「创意工坊」页签不重复壁纸的操作和能力说明。**
+//
+// 用户 2026-08-01 让删的三段：
+//   ①「装载…**网页类**壁纸（project.json 里 type: "Web"）…
+//      ⚠️ **scene / video 类不支持** —— 那要解 WE 的私有格式。」
+//   ②「选择壁纸目录…」「卸载，回到三层景深」两个按钮
+//   ③「未装载 —— 现在显示的是**三层景深壁纸**」
+//
+// ⚠️ ① **本身已经过期**：video 和 image/GIF 类早就支持了（真机验过 ——
+// 龙猫视频壁纸正常播放、legacy 单文件走魔数嗅探造 project.json）
+// ⟹ 那句话在劝用户别下他其实能用的东西。
+// ⟹ **"不支持 X"这类说明会随功能推进过期，而它比没有说明更坏**（主动误导）。
+//   能力矩阵只留在 MODULES.md 一处，UI 上不重复。
+//
+// ⚠️ ③ 「三层景深」是内部叫法（templates.js 里的"背景+主体+漂浮碎片"），
+// 用户从没见过那个词 ⟹ 读到的是"现在显示的是某个我不知道的东西"。
+check('创意工坊页签不重复能力说明，壁纸操作在「我的壁纸」', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const htmlCode = html.replace(/<!--[\s\S]*?-->/g, '');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ⚠️ 过期的能力说明不许在 UI 上
+  assert.ok(!/scene \/ video 类不支持/.test(htmlCode),
+    'UI 上还写着"scene / video 类不支持" —— **video 和 GIF 早就支持了**'
+    + '（真机验过）⟹ 那句话在劝用户别下他其实能用的东西');
+  assert.ok(!/type: "Web"/.test(htmlCode),
+    'UI 上还在说"只支持 type: Web" ⟹ 同上，已过期');
+
+  // ⚠️ 内部叫法不许出现在用户可见的文案里
+  assert.ok(!/三层景深/.test(dash),
+    'dashboard.js 里还有"三层景深" —— 那是内部对内置壁纸的叫法'
+    + '（templates.js 的"背景+主体+漂浮碎片"），用户从没见过那个词');
+
+  // ⚠️ 两个按钮搬到了「我的壁纸」——**必须真的能点到**，
+  // 否则"装载别处的目录"和"卸载"就没有入口了
+  const mineAt = htmlCode.indexOf('id="mine-grid"');
+  const weTabAt = htmlCode.indexOf('id="tab-we"');
+  const pickAt = htmlCode.indexOf('id="we-pick"');
+  assert.ok(pickAt > 0, '「装载别处的目录」按钮不在了 ⟹ 那个功能没入口了');
+  assert.ok(pickAt < weTabAt,
+    '「装载别处的目录」还在创意工坊页签里 ⟹ 用户的模型是'
+    + '「我的壁纸」管壁纸、「创意工坊」管下载');
+  assert.ok(htmlCode.indexOf('id="we-clear"') < weTabAt,
+    '「卸载」还在创意工坊页签里');
+
+  // ⚠️ 而状态要报到**新位置**那块 —— 报到 we-state 的话用户点了按钮
+  // 却要切页签才看到错误（"做了但用户看不到"，这个项目栽过六次）
+  const pickFn = dash.slice(dash.indexOf("getElementById('we-pick')"),
+    dash.indexOf("getElementById('we-clear')"));
+  assert.match(pickFn, /getElementById\('mine-state'\)/,
+    '「装载别处的目录」失败时把错误报到 we-state（创意工坊页签）'
+    + '⟹ 用户在「我的壁纸」点的按钮，错误显示在另一个页签');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

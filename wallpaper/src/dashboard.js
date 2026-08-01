@@ -1165,7 +1165,14 @@ async function renderWEStatus() {
     : '');
 
   if (!status.dir) {
-    node.innerHTML = '未装载 —— 现在显示的是三层景深壁纸' + menuBar;
+    // ⚠️ 这句原来是「未装载 —— 现在显示的是**三层景深壁纸**」，用户 2026-08-01 让删。
+    //
+    // 「三层景深」是我们内部对那个内置壁纸的叫法（`templates.js` 里的
+    // "背景 + 主体 + 漂浮碎片"），而用户从没见过那个词 ⟹ 他读到的是
+    // "现在显示的是某个我不知道的东西"，那比只说"未装载"更让人迷惑。
+    //
+    // ⟹ 只说事实：没装壁纸，现在是内置的那个。
+    node.innerHTML = '还没装载壁纸 —— 现在显示的是内置壁纸' + menuBar;
   } else if (status.error) {
     node.innerHTML = `<span class="warn">${status.error}</span>\n${status.dir}`;
   } else {
@@ -1500,18 +1507,27 @@ async function renderWEControls() {
   }
 }
 
+// ⚠️ 这两个按钮 0.9.32 从「创意工坊」页签搬到了「我的壁纸」——
+// id 没变，所以绑定不用改，只是它们现在在另一个页签里。
+//
+// ⚠️ 而**状态要报到 `mine-state`**（新位置那块）而不是 `we-state`
+// —— 后者还在创意工坊页签，用户点了按钮却在另一个页签看错误信息，
+// 那等于没报（这个项目栽过六次"做了但用户看不到"）。
 document.getElementById('we-pick').onclick = async () => {
   const result = await window.gw.wePick();
   if (!result.ok && result.error) {
-    document.getElementById('we-state').innerHTML = `<span class="warn">${result.error}</span>`;
+    const st = document.getElementById('mine-state');
+    if (st) st.innerHTML = `<span class="warn">${result.error}</span>`;
     return;
   }
   renderWEStatus();
+  renderMine();
 };
 
 document.getElementById('we-clear').onclick = async () => {
   await window.gw.weClear();
   renderWEStatus();
+  renderMine();
 };
 
 // ---------------------------------------------------------------------------
