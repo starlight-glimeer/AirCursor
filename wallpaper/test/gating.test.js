@@ -3409,6 +3409,42 @@ check('说清「正在共享屏幕」是抓音频的必然副作用', () => {
   assert.match(htmlCode, /AVAudioEngine/,
     '没说清为什么非用 ScreenCaptureKit ⟹ 读起来像"我们懒得找别的办法"');
 
+  // ⚠️⚠️⚠️ **必须说清这只影响音频** —— 用户 2026-08-01 的反问：
+  //   「真的吗，必须要这个屏幕录制？我之前的手势那里我记得也操作桌面了，
+  //     就没有用到这个什么屏幕共享啊」
+  // **他是对的**，而我上一条把"抓系统音频"的限制说成了整个应用的必然：
+  //   手势（摄像头）   → 摄像头权限，菜单栏亮绿点
+  //   鼠标转发         → 辅助功能权限，**不亮任何指示**
+  //   系统音频         → 屏幕录制权限，亮"正在共享屏幕"
+  // ⟹ 不说清的话，用户会以为整个应用都在录屏。
+  assert.match(htmlCode, /手势走.{0,6}摄像头/,
+    '没说清"这只影响音频，手势/鼠标是别的权限" ⟹ '
+    + '用户会以为整个应用都在录屏（他 2026-08-01 就这么反问的，而他是对的）');
+  assert.match(htmlCode, /不亮任何指示/,
+    '没说鼠标转发那条不亮指示 ⟹ 那正是用户记忆里"操作桌面没有共享屏幕"的部分');
+
+  // ⚠️⚠️ **不许把没验过的话当依据。**
+  //
+  // 我原来在面板上写「CoreAudio 的进程 tap 要 14.2+ **而且同样要屏幕录制权限**」
+  // —— 前半是事实（API 版本），**后半是我凭印象说的、从没验过**。
+  // 而它恰好是"能不能避开屏幕共享"的关键 ⟹ 拿它当"没有别的路"的依据，
+  // 等于用一个未验证的假设关掉了一条可能的出路。
+  // ⟹ 已删，并写了真机探针（`GestureWallAudioTapProbe.swift`）去定案。
+  assert.ok(!/进程 tap 要 14\.2\+[^<]*同样要屏幕录制/.test(htmlCode),
+    '面板上还写着"进程 tap 同样要屏幕录制权限" —— **那句话没验过**，'
+    + '而它是"有没有出路"的关键 ⟹ 不能当依据');
+  const probe = path.join(__dirname, '..', 'native', 'GestureWallAudioTapProbe.swift');
+  assert.ok(fs.existsSync(probe),
+    '没有 CoreAudio tap 的探针 ⟹ "进程 tap 要不要屏幕录制"这个问题永远悬着，'
+    + '而它决定用户到底要不要看那个"正在共享屏幕"');
+  const probeSrc = fs.readFileSync(probe, 'utf8');
+  // ⚠️ 探针必须报**屏幕录制授权状态**做对照 —— 否则"tap 建成功"在已授权的
+  // 机器上无法区分"不需要它"和"靠它成功"，而那正是我上一条犯的错
+  assert.match(probeSrc, /CGPreflightScreenCaptureAccess/,
+    '探针没报屏幕录制授权状态 ⟹ "tap 能建"在已授权的机器上分不清原因');
+  assert.match(probeSrc, /AudioHardwareDestroyProcessTap/,
+    '探针建了 tap 却不销毁 ⟹ 在系统里留下音频对象，可能影响用户后续的音频');
+
   // ⚠️ 而那条出路必须真的成立：synth 不能碰 SCStream
   const src = codeOnly(mainSrc);
   const synthAt = src.indexOf('function startSynthAudio');
