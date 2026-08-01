@@ -4255,8 +4255,20 @@ check('产品外壳：深色标题栏 / 关闭即退出 / 启动页极光 / 骨�
   // ⚠️ 两处都要起：启动页（dim 1）+ 主界面背景（dim 更小，否则文字读不清）
   assert.match(dash, /startAurora\('launch-particles', \{ dim: 1 \}\)/,
     '启动页的极光没起');
-  assert.match(dash, /startAurora\('app-bg', \{ dim: 0?\.\d+ \}\)/,
-    '主界面背景的极光没起，或者 dim 不小于 1（那样文字会被背景干扰）');
+  // ⚠️ 0.9.65：dim 改成变量 `bgDim`（开发者选项里的强度滑杆要能改它）
+  //   ⟹ 断言不能再锚字面量。
+  assert.match(dash, /startAurora\('app-bg', \{ dim: bgDim \}\)/,
+    '主界面背景的极光没起');
+  // ⚠️⚠️ `bgDim` 的声明必须在**那个模块级调用之前** —— `let` 有 TDZ，
+  //   写在后面（比如开发者模块那一段里）会抛
+  //   `ReferenceError: Cannot access 'bgDim' before initialization`
+  //   ⟹ 后面所有开关的绑定全停，症状是"面板上什么都点不动"
+  //   （跟 bgDim 一点关系都没有，而 `node --check` 查不出来）。
+  //   我第一版就是这样写的。
+  const declAt = dash.indexOf('let bgDim =');
+  const useAt = dash.indexOf("startAurora('app-bg', { dim: bgDim })");
+  assert.ok(declAt > 0 && useAt > declAt,
+    'bgDim 的声明在模块级调用之后 ⟹ TDZ 抛 ReferenceError，面板所有开关都绑不上');
   assert.match(aurora, /globalCompositeOperation\s*=\s*'lighter'/,
     "没用 'lighter' 混色 ⟹ 光团只是互相覆盖，缺了极光靠叠加处变亮撑起来的那个观感");
   // ⚠️⚠️ **模糊必须在 CSS 上做，不能在 canvas 里**（0.9.63）。
@@ -5024,7 +5036,7 @@ check('只保留深色主题；极光当主界面背景（紫调、够明显）'
   //    0.9.59 那版 0.46 × 0.28 × 0.5 = 0.064 ⟹ 用户报「效果不是很明显」。
   //    ⟹ 守住乘积，而不是守单个系数（只调一个不够 —— 我上一版只想着调 a）。
   const maxA = Math.max(...[...dash.matchAll(/a: (0?\.\d+),/g)].map((m) => Number(m[1])));
-  const dim = Number((dash.match(/startAurora\('app-bg', \{ dim: (0?\.\d+) \}\)/) || [])[1]);
+  const dim = Number((dash.match(/let bgDim = (0?\.\d+)/) || [])[1]);
   const op = Number((html.match(/--bg-aurora:\s*(\.?\d*\.?\d+)/) || [])[1]);
   assert.ok(maxA > 0 && dim > 0 && op > 0,
     `读不到三个系数（a=${maxA} dim=${dim} opacity=${op}）⟹ 断言失效`);
@@ -5128,6 +5140,32 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   //   那看起来像"关了但还在"（而那会让对照实验得出错的结论）。
   assert.match(dash, /clearRect\(0, 0, cv\.width, cv\.height\)/,
     '关背景时不清画布 ⟹ 最后一帧留在屏幕上，看起来像没关掉');
+
+  // ⑥⚠️⚠️ **强度滑杆**（0.9.65）。用户报「极光看起来还是没有，也可能是不明显？」
+  //
+  // "没有"和"不明显"是**两回事**，而我在云端跑不了渲染 ⟹ 光靠算术调参
+  // 就是前几轮那个错法（算出 rgb(32,45,58) vs 底色 rgb(16,16,20)，
+  // "差异很小"—— 但那推不出"所以只是不明显"）。
+  // ⟹ 给一个能拉到**明显过头**（max 150%）的滑杆：
+  //    拉满还是什么都没有 ⟹ 是 bug；拉满能看到 ⟹ 只是默认值保守。
+  //    **一次分清，不用再来回猜。**
+  // ⚠️ 不能假设**属性顺序** —— 我第一版写 `id="bgDim"[^>]*type="range"`，
+  //   而那一行真实的顺序是 `<input type="range" id="bgDim" …>`
+  //   ⟹ 断言在正确代码上报红（"正则假设了写法"的又一次）。
+  //   ⟹ 切出那个 <input> 标签，再分别查两个属性。
+  const bgDimTag = (html2.match(/<input[^>]*id="bgDim"[^>]*>/) || [''])[0];
+  assert.ok(bgDimTag,
+    '开发者模块里没有背景强度滑杆 ⟹ "没有"和"不明显"分不清，只能来回猜');
+  assert.match(bgDimTag, /type="range"/, 'bgDim 不是滑杆');
+  const mx = Number((bgDimTag.match(/max="(\d+)"/) || [])[1]);
+  assert.ok(mx >= 120,
+    `强度滑杆最大只到 ${mx} ⟹ 拉满也只是"正常亮度"，分不清"没有"和"不明显"`);
+  // ⚠️ 用 input 而不是 change —— 拖的时候就要看到效果（这是个"找合适值"的控件）
+  assert.match(dash, /slider\.oninput = /,
+    '强度滑杆用 change ⟹ 松手才变，找一个合适值要试很多次');
+  // ⚠️ 改强度要**重启**极光（那些 alpha 是在 startAurora 里闭包捕获的）
+  assert.match(dash, /function restart\(\)[\s\S]{0,300}?startAurora\('app-bg', \{ dim: bgDim \}\)/,
+    '改强度时不重启极光 ⟹ dim 是闭包捕获的，拖滑杆没有任何效果');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

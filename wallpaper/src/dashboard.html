@@ -29,8 +29,14 @@
     /* 极光背景的整体可见度。
        ⚠️ 0.9.60 从 .5 提到 .85 —— 用户报"效果不是很明显"，而实际亮度是
           `a × dim × 这个值` 三者**串联**：0.46×0.28×0.5 = 0.064（几乎看不见）。
-          三个系数一起调才有用，我上一版只想着调 blobs 的 a。 */
-    --bg-aurora: .85;
+          三个系数一起调才有用，我上一版只想着调 blobs 的 a。
+       ⚠️ 0.9.65 提到 **1**（不再削）—— 算过一遍：0.62×0.55×0.85 = 0.29，
+          而 `blur(90px)` 还会把亮度**摊开**（半径 410px 的团过 90px 模糊
+          中心大约剩 75%）⟹ 落到屏幕上最亮处约 rgb(32,45,58)，
+          而底色是 rgb(16,16,20) —— 那个差异在深色屏幕上几乎看不出。
+       ⟹ 三个系数里这个最没必要（它的作用和 dim 完全重复）⟹ 交给 dim 一个人管，
+          省掉一环猜测。 */
+    --bg-aurora: 1;
     /* nav 和右侧面板的底色（比 --bg 深一点/浅一点，分出层次） */
     --nav-bg: #0d0d11;
     --side-bg: #131318;
@@ -1296,9 +1302,20 @@
     <input type="checkbox" id="bgOn" checked>
     <label for="bgOn">主界面的极光背景</label>
   </div>
+  <!-- ⚠️⚠️ 强度滑杆（0.9.65）。用户报「极光看起来还是没有，也可能是不明显？」
+       —— 而"没有"和"不明显"是两回事，我在云端跑不了渲染、光靠算术调参
+       就是上一轮那个错法。
+       ⟹ 拉满还是什么都没有 ⟹ 是 bug；拉满能看到 ⟹ 只是默认值太保守。
+       **一次分清。** -->
+  <div class="bar-row" style="margin-top:8px;align-items:center">
+    <span class="hint" style="font-size:11px">强度</span>
+    <input type="range" id="bgDim" min="0" max="150" step="5" style="flex:1">
+    <span id="bgDimVal" class="hint" style="font-size:11px;min-width:2.4em;text-align:right"></span>
+  </div>
   <p class="hint">
     手势卡 / 摄像头启动慢的时候关掉它，看是不是它的锅 ——
     那能一次分清"背景在抢 CPU"和"另有原因"。
+    <br>强度拉到最大还是看不到 ⟹ 那是 bug（不是"不明显"），告诉我。
   </p>
 </div>
 

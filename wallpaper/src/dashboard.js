@@ -245,10 +245,22 @@ function startAurora(canvasId, opts) {
   auroraRAF[canvasId] = requestAnimationFrame(frame);
 }
 
+// ⚠️⚠️ **`bgDim` 必须在这里声明**（0.9.65）—— 下面 `startAurora('app-bg')`
+// 是**模块级同步执行**的，而我第一版把它写在开发者模块那一段里（第 2852 行）
+// ⟹ `let` 的 TDZ ⟹ `ReferenceError: Cannot access 'bgDim' before initialization`
+// ⟹ 后面所有开关的绑定全停（这个项目为"一处抛异常挡住后面全部"栽过三次，
+//    而症状是"面板上什么都点不动"，跟 bgDim 一点关系都没有）。
+// ⚠️ `node --check` 查不出 TDZ —— 语法是合法的。
+//
+// 值：0.9（0.9.60 是 .55）。`--bg-aurora` 那一环 0.9.65 撤了（和它完全重复），
+// 而算过的实际亮度（0.29 ⟹ 屏幕上 rgb(32,45,58) vs 底色 rgb(16,16,20)）
+// 说明原来那档太保守。
+let bgDim = 0.9;
+
 startAurora('launch-particles', { dim: 1 });
 // ⚠️ dim 0.28 → 0.55（0.9.60）：三个系数串联（a × dim × --bg-aurora），
 // 0.28 那一版实际亮度只有 0.064 ⟹ 用户报"不明显"。见 blobs 上面的算式。
-startAurora('app-bg', { dim: 0.55 });
+startAurora('app-bg', { dim: bgDim });
 
 // ---------------------------------------------------------------------------
 // ⚠️ 这里原来有 `applyTheme()` + 主题按钮的绑定（0.9.59）—— 0.9.60 删了。
@@ -2837,13 +2849,45 @@ async function setRotate(patch) {
 // ⚠️ 背景开关（0.9.64）—— 排查性能问题用的，见 HTML 里那段注释。
 // ⚠️ 停的时候用 stopAurora（它会 cancelAnimationFrame）+ 清画布 ——
 //   只 cancel 不清的话最后一帧会留在屏幕上，那看起来像"关了但还在"。
+// ⚠️⚠️ 背景的**当前强度**（0.9.65）—— 开关和滑杆共用它。
+// 用户 2026-08-01：「极光看起来还是没有，也可能是不明显？」
+//
+// ⚠️ "没有"和"不明显"是**两回事**，而我在这台机器上跑不了渲染
+// ⟹ 光靠算术调参就是上一轮那个错法（我算出 rgb(32,45,58) vs 底色
+//    rgb(16,16,20)，"差异很小"—— 但那推不出"所以只是不明显"）。
+// ⟹ 给一个能拉到**明显过头**的滑杆：拉满还是什么都没有 ⟹ 是 bug；
+//    拉满能看到 ⟹ 只是默认值太保守，那就调默认值。
+//    **一次分清，不用再来回猜。**
 (() => {
   const box = document.getElementById('bgOn');
   if (!box) return;
+  const slider = document.getElementById('bgDim');
+  const readout = document.getElementById('bgDimVal');
+
+  function restart() {
+    stopAurora('app-bg');
+    const cv = document.getElementById('app-bg');
+    const ctx = cv && cv.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, cv.width, cv.height);
+    if (box.checked) startAurora('app-bg', { dim: bgDim });
+  }
+
+  if (slider) {
+    slider.value = String(Math.round(bgDim * 100));
+    if (readout) readout.textContent = slider.value;
+    // ⚠️ input 而不是 change —— 拖的时候就要看到效果（这是个用来"找到合适值"
+    //   的控件，等松手才变的话得试很多次）。
+    slider.oninput = () => {
+      bgDim = Number(slider.value) / 100;
+      if (readout) readout.textContent = slider.value;
+      restart();
+    };
+  }
+
   box.onchange = () => {
     const cv = document.getElementById('app-bg');
     if (box.checked) {
-      startAurora('app-bg', { dim: 0.55 });
+      startAurora('app-bg', { dim: bgDim });
     } else {
       stopAurora('app-bg');
       // ⚠️ 用 clearRect 而不是 style.display = 'none' —— 后者会让
