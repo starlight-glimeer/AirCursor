@@ -151,7 +151,10 @@ check('128 = 左 64 + 右 64，右半是镜像', () => {
 });
 
 check('② 用功率（re²+im²），不是 magnitude', () => {
-  assert.match(swiftCode, /magnitude \* magnitude/,
+  // ⚠️ 断言从 `magnitude * magnitude` 改成 `m * m` —— 因为改成了**主瓣求和**：
+  // 单点取值时是 `power = magnitude²`，现在是三个 bin 的功率相加。
+  // （功率可加，magnitude 不可加 —— 那是能量守恒，不是风格选择。）
+  assert.match(swiftCode, /power \+= m \* m/,
     '没有把 magnitude 平方回功率 —— WE 用的是 `f2 = f1*f1 + f2*f2`');
   assert.ok(!/sqrtf\(/.test(swiftCode),
     '还在开根 —— 那和 WE 相反（它用功率，因为后面要 log10）');
@@ -584,7 +587,8 @@ check('VDSP_SCALE = 0.5，且注释里带真机实测出处', () => {
   assert.strictEqual(A.VDSP_SCALE, 0.5, 'JS 规格的 VDSP_SCALE 和 Swift 漂了');
   // ⚠️ **必须真的乘在 magnitude 上** —— 定义了不用等于没有
   //（我这一轮已经栽过"定义了不调用"：selfTestFFT）。
-  assert.match(swiftCode, /magnitudes\[index\] \* VDSP_SCALE/,
+  // ⚠️ 锚点跟着改成主瓣求和里的那一行
+  assert.match(swiftCode, /magnitudes\[k\] \* VDSP_SCALE/,
     'VDSP_SCALE 定义了但没乘在 magnitude 上 —— 定义了不用等于没有');
   // ⚠️ 出处必须写在代码里。这个数是"库约定差"还是"我调的系数"，
   // 唯一的区别就是**有没有那个实测依据** ⟹ 依据丢了它就退化成魔数。
@@ -948,6 +952,91 @@ check('分声道让镜像轴上的双柱不再等高', () => {
   assert.match(swiftCode, /channelDiff/,
     '没报左右声道差 ⟹ 分不出"分声道生效了"和"音源本来就是单声道"，'
     + '而后者下双柱仍然存在且**不是 bug**（WE 也一样）');
+});
+
+// ⚠️⚠️⚠️ **主瓣求和：细高刺的根因是 stride 2 丢掉一半的 bin。**
+//
+// 用户 0.9.19 在**两个完全不同的壁纸**上都看到细高刺
+//（圆环壁纸 2-4 点那块「一直很坚挺」、粒子壁纸满屏孤立高柱）
+// ⟹ 那是输入数据的性质，不是某个壁纸的渲染。
+//
+// 实测坐实（云端手写 DFT，不需要真机）：
+//   200Hz 谐波列：bin3=37.9 / **bin4=144.6（最强）** / bin5=42.8
+//   stride 2 只读奇数 bin ⟹ **bin4 那个峰完全丢了**
+//   ⟹ 段值 `0.48 / 0.09 / 0.49 / 0.06 / 0.46` —— **奇偶交替**
+//
+// ⚠️ 更基本的问题：**单点采样本身就抖**（不依赖 stride）。
+// 实测矩形窗，同一正弦落在不同位置时邻居 bin 的相对值：
+//     频率在 bin 20.00 ⟹ [19]0%   [20]100% [21]0%
+//     频率在 bin 20.50 ⟹ [19]34%  [20]100% [21]98%
+// ⟹ 邻居在 0% 和 98% 之间跳，只取决于频率落在哪 ⟹ 柱子高度无故抖动
+//
+// ⟹ 三个 bin = **矩形窗主瓣的物理宽度**，能从"WE 不加窗"推出来。
+//   判据（这一行能不能从 WE 的行为推出来）—— **能**。
+//
+// ⚠️⚠️ 而"三个"不是随手挑的，反向实测过：
+//   单点 13.8 → 2bin 取 max 13.5 → 2bin 求和 13.3 → **3bin 求和 5.8**
+//   ⟹ 差一个 bin 就几乎没用（必须覆盖整个主瓣）
+//   ⟹ 而 4 个会开始把相邻段的能量混进来（那才是真的抹平频谱结构）
+check('在主瓣宽度上求功率和，不是单点取值', () => {
+  assert.match(swiftCode, /power \+= m \* m/,
+    'Swift 不是在求功率和 —— 单点取值时同一个音的柱子高度会因"频率落在哪"'
+    + '而在 0% 和 98% 之间抖（实测），而 stride 2 还会整个丢掉落在偶数 bin 的谐波');
+  assert.match(swiftCode, /for k in lo\.\.\.hi/,
+    'Swift 没有在 bin 区间上循环');
+  assert.match(swiftCode, /index - 1/, '求和区间不含 index-1 ⟹ 没覆盖主瓣左半');
+  assert.match(swiftCode, /index \+ 1/, '求和区间不含 index+1 ⟹ 没覆盖主瓣右半');
+  // JS 规格必须一致，而且要**数值上**验证有效
+  assert.strictEqual(typeof A.bandValueFromLobe, 'function',
+    'JS 规格没有主瓣求和 ⟹ 云端唯一能跑的验证失效了');
+  // 用手写 DFT 造谐波列，量孤峰数 —— 这是这条修复的效果判据
+  const N = 1024;
+  const RATE = 48000;
+  const dft = (x, mb) => {
+    const m = new Array(mb).fill(0);
+    for (let k = 0; k < mb; k += 1) {
+      let re = 0;
+      let im = 0;
+      for (let n = 0; n < N; n += 1) {
+        const a = (-2 * Math.PI * k * n) / N;
+        re += x[n] * Math.cos(a);
+        im += x[n] * Math.sin(a);
+      }
+      m[k] = Math.hypot(re, im);
+    }
+    return m;
+  };
+  const harm = (f0) => {
+    const x = new Array(N).fill(0);
+    for (let n = 0; n < N; n += 1) {
+      let v = 0;
+      for (let h = 1; h <= 20; h += 1) v += Math.sin((2 * Math.PI * f0 * h * n) / RATE) / h;
+      x[n] = v * 0.3;
+    }
+    return x;
+  };
+  const countSpikes = (a) => {
+    let n = 0;
+    for (let i = 1; i < a.length - 1; i += 1) {
+      if (a[i] > a[i - 1] * 1.3 && a[i] > a[i + 1] * 1.3 && a[i] > 0.15) n += 1;
+    }
+    return n;
+  };
+  let lobe = 0;
+  let single = 0;
+  for (const f0 of [150, 200, 262, 330]) {
+    const mags = dft(harm(f0), 140);
+    lobe += countSpikes(A.channelValues(mags));
+    const one = [];
+    for (let b = 0; b < 64; b += 1) {
+      one.push(A.bandValue((mags[Math.min(139, b * 2 + 1)] || 0) * A.VDSP_SCALE, b));
+    }
+    single += countSpikes(one);
+  }
+  // 主瓣求和必须明显少于单点 —— 否则这个改动白做
+  assert.ok(lobe < single * 0.7,
+    `主瓣求和孤峰 ${(lobe / 4).toFixed(1)} 个，单点 ${(single / 4).toFixed(1)} 个 —— `
+    + '没有明显改善 ⟹ 求和区间可能没覆盖主瓣（实测应该从 13.8 降到 5.8）');
 });
 
 console.log('\n  Swift 的未定义符号（云端跑不了 swiftc）');
