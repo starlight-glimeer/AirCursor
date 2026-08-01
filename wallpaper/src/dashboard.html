@@ -135,7 +135,15 @@
         守卫盯住"两者成对"。 */
   nav {
     display: flex; align-items: center; gap: 2px;
-    padding: 40px 16px 0 96px;
+    /* ⚠️ 顶部 30px（0.9.56 从 40 降下来）。用户 2026-08-01：
+       「我们的菜单栏离上方太远了，有比较突兀的空白」
+
+       ⚠️ 40 是我按"红绿灯按钮区到 y≈36"算的，但那算错了参照：
+       hiddenInset 下红绿灯的**垂直中心**在 y≈19，直径 12 ⟹ 占 y=13..25。
+       而 tab 按钮自己有 9px 上内边距 + ~19px 行高 ⟹ 30 + 9 = 39，
+       tab 文字中心在 y≈48，和红绿灯（y≈19）错开足够远。
+       ⟹ 40 是多让了 15px，那就是用户看到的"突兀的空白"。 */
+    padding: 30px 16px 0 96px;
     background: #0d0d11; border-bottom: 1px solid var(--line);
     /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。 */
     -webkit-app-region: drag;
@@ -193,7 +201,22 @@
     display: grid; grid-template-columns: 1fr 340px;
     height: 100%; min-height: 0;
   }
-  .pane-grid { overflow-y: auto; min-height: 0; padding: 18px 20px 40px; }
+  /* ⚠️⚠️ **`height: 100%` 是必须的**（0.9.56 补的）。用户报「手势录制这个界面
+     不能滑动了」。
+
+     根因：`overflow-y: auto` 只有在**高度受限**时才会产生滚动条。
+     · 在 `.split`（grid）里，`.pane-grid` 是 grid 项 ⟹ 被隐式拉伸到行高
+       ⟹ 高度受限 ⟹ 能滚（所以我的壁纸/创意工坊两页是正常的）
+     · 而手势页里它直接在 `section`（display: block）下 ⟹ **高度按内容走**
+       ⟹ overflow 无从触发 ⟹ 内容溢出，被 `main { overflow: hidden }` 裁掉
+     ⟹ 症状是"滚不动 + 下半截看不到"，而**不报任何错**。
+
+     ⚠️ 这就是 0.9.54 那次改布局的漏洞：我给手势页套了 .pane-grid，
+        但只验了"class 在不在"（守卫也只查了这个），没验它**真的能滚**。 */
+  .pane-grid {
+    overflow-y: auto; min-height: 0; height: 100%;
+    padding: 18px 20px 40px;
+  }
   .pane-side {
     overflow-y: auto; min-height: 0;
     border-left: 1px solid var(--line); background: #131318;
@@ -249,10 +272,16 @@
     font-size: 11.5px; color: var(--text); min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  /* 滑块/下拉这类控件独占第二行，通栏 —— 340px 里和标签挤一行会太窄 */
-  .pane-side .we-row > input[type=range],
+  /* 滑块/下拉/输入框独占第二行，通栏 —— 340px 里和标签挤一行会太窄。
+     ⚠️⚠️ **`input[type=password]` 0.9.56 补上的** —— 我漏了它，
+     而「密码」那行正好是 password ⟹ 它落在 `1fr auto` 的第二列（auto = 内容宽）
+     ⟹ 输入框被压成一条，placeholder「只存在本机配置里」贴在右边缘。
+     用户贴的截图里能直接看到那一行。
+     ⚠️ 判据：这种"按类型枚举"的选择器**一定会漏** ——
+        改成 `:not(checkbox)` 那样反向排除，加新类型时不用回来改。 */
+  .pane-side .we-row > input:not([type=checkbox]),
   .pane-side .we-row > select,
-  .pane-side .we-row > input[type=text] {
+  .pane-side .we-row > textarea {
     grid-column: 1 / -1; width: 100%;
   }
   .pane-side .we-row > span { font-size: 10px; color: var(--dim); white-space: nowrap; }
@@ -394,18 +423,41 @@
   }
   .tier.pro { background: rgba(255,180,84,.18); color: var(--warn); }
 
-  /* ---- 创意工坊：预览卡片和已下载列表 ----
-     没有预览图就没法挑壁纸，而挑不了这个功能只服务已经知道 ID 的人。 */
-  .ws-card { display: none; gap: 12px; margin-top: 10px; padding: 10px;
+  /* ---- 创意工坊：「看看是什么」的预览卡片 ----
+     没有预览图就没法挑壁纸，而挑不了这个功能只服务已经知道 ID 的人。
+
+     ⚠️⚠️ **0.9.56 改成竖排。** 用户 2026-08-01 贴了截图：
+     「创意工坊这里你可以看到这里的渲染是有问题的」—— 图里那块预览卡片
+     的文字被压成了一列竖排单字（"能 / 跑 / · / 39.6 / MB / · / 125 / 人 / 订 / 阅"）。
+
+     根因：原来是 `display: flex` 横排三段（图 160px + 文字 flex:1 + 按钮竖列），
+     那是给**页面正文**（宽约 590px）设计的。而 0.9.54 把它搬进了右侧详情面板
+     ⟹ 可用宽度只有 ~300px：160 图 + 按钮列 ~90 ⟹ 文字那段只剩 ~40px
+     ⟹ 每行放不下两个汉字，就成了竖排。
+
+     ⟹ 改成**竖排**（图通栏在上、文字在中、按钮在下）。
+     ⚠️ 教训：**搬动一个区块之后要重新审它的横向布局** ——
+        `flex` 横排在窄容器里不会报错，只会挤到不可读。
+        这和 0.9.54 那次"搬完要跑 DOM 引用全检"是同一类：
+        **搬动会让原来成立的假设失效，而症状不是报错。** */
+  .ws-card { display: none; gap: 8px; margin-top: 10px; padding: 10px;
              border: 1px solid var(--line); border-radius: 8px; background: #15151b; }
-  .ws-card.on { display: flex; }
-  .ws-card img { width: 160px; height: 90px; object-fit: cover; border-radius: 6px;
-                 background: #000; flex-shrink: 0; }
-  .ws-card .meta { flex: 1; min-width: 0; font-size: 12px; line-height: 1.7; }
+  .ws-card.on { display: flex; flex-direction: column; }
+  /* 图通栏。⚠️ aspect-ratio 而不是定高 —— 面板宽度会变（窗口能拉），
+     定高 90px 在 300px 宽下就是 10:3 的怪比例。 */
+  .ws-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
+                 border-radius: 6px; background: #000; display: block; }
+  .ws-card .meta { min-width: 0; font-size: 12px; line-height: 1.7; }
   .ws-card .meta b { display: block; font-size: 13px; color: var(--text);
-                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                     /* ⚠️ 允许两行 —— 工坊标题动辄几十字，单行 ellipsis 下
+                        用户看到的是一串省略号（而这块的用途正是"看看是什么"）。 */
+                     display: -webkit-box; -webkit-line-clamp: 2;
+                     -webkit-box-orient: vertical; overflow: hidden; }
   .ws-card .meta .sub { color: var(--dim); font-size: 11px; }
-  .ws-card .acts { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  /* 按钮横排在最下面（原来是竖排在右侧）。⚠️ wrap —— 两个按钮加起来
+     可能超过 300px，不 wrap 会溢出容器。 */
+  .ws-card .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ws-card .acts button { flex: 1; min-width: 0; }
   /* 筛选分组：标签在左、按钮在右，一组一行。仿 Steam 创意工坊的侧栏排版。 */
   .br-group { display: grid; grid-template-columns: 68px 1fr; gap: 8px;
               align-items: start; margin-bottom: 6px; }

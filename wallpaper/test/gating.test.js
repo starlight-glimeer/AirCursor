@@ -4606,8 +4606,18 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
   //   ⟹ 正则不能要求每个值都带 px，否则读不到而"断言失效"（我第一版就是）。
   const pad = nav.match(/padding:\s*(\d+)(?:px)?\s+(\d+)(?:px)?\s+(\d+)(?:px)?\s+(\d+)(?:px)?/);
   assert.ok(pad, `nav 的 padding 不是四值形式，读不到让位量：${nav.slice(0, 120)}`);
-  assert.ok(Number(pad[1]) >= 34,
-    `nav 顶部只让了 ${pad[1]}px ⟹ 红绿灯会压在 tab 上（hiddenInset 下按钮区到 y≈36）`);
+  // ⚠️⚠️ 这个下界 0.9.56 从 34 降到 **26**，因为**我上一轮算错了参照**：
+  // 我写的是"hiddenInset 下按钮区到 y≈36"，而实测（用户截图）红绿灯的
+  // **垂直中心在 y≈19、直径 12** ⟹ 占 y=13..25。
+  // 40px 是多让了 15px ⟹ 用户报「我们的菜单栏离上方太远了，有比较突兀的空白」。
+  // ⟹ 26 = 红绿灯底边 25 + 1px 余量。低于它才真的会压上去。
+  // ⚠️ 教训：**"我算的安全余量"和"用户看到的空白"是两回事** ——
+  //    那个 36 是我凭对 macOS 的印象写的，没有任何实测支撑，
+  //    而它直接变成了一条"锁死错误值"的守卫。
+  assert.ok(Number(pad[1]) >= 26,
+    `nav 顶部只让了 ${pad[1]}px ⟹ 红绿灯会压在 tab 上（它占 y=13..25）`);
+  assert.ok(Number(pad[1]) <= 34,
+    `nav 顶部让了 ${pad[1]}px ⟹ 红绿灯只占到 y=25，多出来的是"突兀的空白"（用户报过）`);
   assert.ok(Number(pad[4]) >= 80,
     `nav 左侧只让了 ${pad[4]}px ⟹ 第一个 tab 跑到红绿灯底下，点不动`);
   // titleBarStyle 和这个让位是成对的
@@ -4619,8 +4629,19 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
   const main = html.slice(html.indexOf('  main {'), html.indexOf('}', html.indexOf('  main {')));
   assert.match(main, /overflow:\s*hidden/,
     'main 自己在滚 ⟹ 右侧详情面板会跟着滚走（那就白改了这个布局）');
+  // ⚠️⚠️ `overflow-y: auto` **不够** —— 它只在高度受限时才产生滚动条。
+  // 用户报「手势录制这个界面不能滑动了」，根因：
+  //   · 在 `.split`（grid）里，.pane-grid 是 grid 项 ⟹ 被隐式拉伸 ⟹ 能滚
+  //   · 而手势页里它直接在 `section`（display: block）下 ⟹ 高度按内容走
+  //     ⟹ overflow 无从触发 ⟹ 内容被 `main { overflow: hidden }` 裁掉
+  // ⟹ 必须显式 `height: 100%`。
+  // ⚠️ 而这正是 0.9.54 那次改布局的漏洞：守卫只查了"手势页有没有 .pane-grid"
+  //   （见下面第 ④ 条），而 class 在、能不能滚是两件事。
   assert.match(html, /\.pane-grid\s*\{[^}]*overflow-y:\s*auto/,
     '网格列不能滚 ⟹ 壁纸多了就看不到后面的');
+  assert.match(html, /\.pane-grid\s*\{[^}]*height:\s*100%/,
+    '.pane-grid 没有 height: 100% ⟹ 在非 grid 父容器下（手势页）高度按内容走，'
+    + 'overflow 不触发 ⟹ 那一页滚不动、下半截被裁掉（不报错）');
   // ⚠️ min-height:0 —— flex/grid 子项默认 min-height:auto ⟹ 内容再高也不出滚动条，
   //   而是把父容器撑破（"滚不动、整页被撑长"的经典成因）。三处都要。
   for (const [sel, re] of [
@@ -4699,6 +4720,44 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
   //   而这里的 URL 来自 Steam 接口返回（不是我们完全控制的输入）。
   assert.match(codeOnly(mainSrc), /u\.protocol !== 'http:' && u\.protocol !== 'https:'/,
     "open-external 没校验协议 ⟹ file:// 能打开本机任意文件、自定义 scheme 能唤起别的应用");
+});
+
+// ⚠️⚠️ **搬进 340px 面板的区块，横向布局要重新审**（0.9.56）。
+// 用户 2026-08-01 贴了截图：「创意工坊这里你可以看到这里的渲染是有问题的」——
+// `#ws-peek-card` 的文字被压成一列竖排单字。
+//
+// 根因：它原来是 `display: flex` 横排三段（图 160px + 文字 flex:1 + 按钮竖列），
+// 那是给**页面正文**（宽约 590px）设计的。0.9.54 把它搬进右侧详情面板
+// ⟹ 可用宽度 ~300px：160 图 + 90 按钮列 ⟹ 文字只剩 ~40px ⟹ 每行放不下两个汉字。
+//
+// ⚠️ 这和 0.9.54 那次"搬完要跑 DOM 引用全检"是同一类教训：
+//    **搬动会让原来成立的假设失效，而症状不是报错。**
+check('340px 面板里的区块：竖排、输入框通栏、按钮不溢出', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+
+  // ① 预览卡片要竖排（原来是横排三段）
+  assert.match(html, /\.ws-card\.on\s*\{[^}]*flex-direction:\s*column/,
+    '#ws-peek-card 又是横排 ⟹ 在 340px 面板里文字会被压成一列竖排单字（用户报过）');
+  // ⚠️ 图要通栏 + 用 aspect-ratio（定高 90px 在窄面板下是 10:3 的怪比例）
+  assert.match(html, /\.ws-card img\s*\{[^}]*width:\s*100%/,
+    '预览图不是通栏 ⟹ 竖排下它旁边是一片空白');
+  assert.match(html, /\.ws-card img\s*\{[^}]*aspect-ratio/,
+    '预览图用定高而不是 aspect-ratio ⟹ 面板宽度变化时比例会怪');
+  // ⚠️ 按钮横排 + 允许 wrap（两个按钮加起来可能超过 300px）
+  assert.match(html, /\.ws-card \.acts\s*\{[^}]*flex-wrap:\s*wrap/,
+    '预览卡片的按钮不允许换行 ⟹ 超过面板宽度会溢出');
+
+  // ②⚠️⚠️ 面板里的输入框要**通栏**（独占第二行），否则被挤成一条。
+  //    用户截图里「密码」那行就是：placeholder 贴在右边缘。
+  //    根因：那条选择器原来是按类型枚举的（range/select/text），**漏了 password**。
+  //    ⟹ 改成反向排除 `:not([type=checkbox])`，加新类型时不用回来改。
+  const rule = html.match(/\.pane-side \.we-row > input[^{]*\{[^}]*\}/);
+  assert.ok(rule, '找不到"面板里的输入框通栏"那条规则');
+  assert.match(rule[0], /input:not\(\[type=checkbox\]\)/,
+    '面板里的输入框还在按类型枚举（range/text/…）⟹ 一定会漏（password 就漏过）'
+    + '，改成 :not([type=checkbox]) 反向排除');
+  assert.match(rule[0], /grid-column:\s*1 \/ -1/,
+    '输入框没有通栏 ⟹ 在 `1fr auto` 的第二列里被压成一条');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
