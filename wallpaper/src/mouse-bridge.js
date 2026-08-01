@@ -176,28 +176,17 @@ function describeStatus(msg) {
   return { ok: false, text: `未知状态 ${msg.state}` };
 }
 
-// ⚠️⚠️⚠️ **辅助功能授权框：整个应用生命周期里只弹一次**（0.9.86）。
+// ⚠️⚠️ 0.9.86 这里有一套 `axPromptUsed` + `--no-ax-prompt` 的"只弹一次"压制，
+//   **0.9.87 全删了**。用户实测那一版仍然反复弹，而他给的方向是对的：
+//   「你还不如就逻辑简单一点，初次的时候就问用户要这个辅助功能，然后就不要再弹了」
 //
-// 用户 2026-08-01：「我现在每点一个壁纸，他都要求我开启辅助功能，我都已经开了」
+// 根本问题是**位置**：我把"要不要弹框"的判断放进了一个反复重启的进程链里
+// （这个 helper 每装载一个壁纸重启一次），压制状态放哪都不对 ——
+// 放 helper 里跟着进程死，放这里也只压得住一次启动内。
 //
-// 根因不是"没做检测"，而是**这个 helper 每装载一个壁纸就被杀掉重启一次**
-// （main.js `setWEWallpaper` → `syncMouseForward`，而旧的已经 stop 了）
-// ⟹ 每次都是全新进程，每次都走一遍授权检查。
-//
-// ⚠️ 而"用户已经在系统设置里勾了"**不代表这个进程被授权**：TCC 按可执行文件
-//   记授权，而 helper 的二进制名带源码 sha256 ⟹ 换个版本就是新路径，
-//   上次勾的那一项对它不算 ⟹ 他确实开过，却仍然 untrusted，于是每次都弹。
-//
-// ⟹ 状态必须存在**主进程**里（helper 活不过一次装载，存它里面会跟着死）：
-//   第一次允许弹，之后传 `--no-ax-prompt`。
-//
-// ⚠️ 而重启应用时这个标志自然重置 —— 那是对的：用户上次可能就是去授权了，
-//   重开之后如果还是没授权，值得再问一次。
-let axPromptUsed = false;
-
-// ⚠️ 只给测试用 —— 生产代码不该重置它。
-function resetAxPromptForTest() { axPromptUsed = false; }
-
+// ⟹ 责任收到主进程：`main.js` 的 `ensureAccessibility()` 启动时查一次、
+//   没授权就问一次（标记写进 config 文件）。helper 这边**只做纯查询**。
+//   ⟹ 这里不需要传任何授权相关的参数了。
 function start({ sourcePath, outDir, gateFinder, onEvent, onStatus,
   spawnFn = spawn, runFn = spawnSync }) {
   const built = ensureHelper(sourcePath, outDir, runFn);
@@ -208,10 +197,6 @@ function start({ sourcePath, outDir, gateFinder, onEvent, onStatus,
 
   // ⚠️ 默认不传参数就是"不设门" —— 那个默认值我改过一次（见 Swift 那边的注释）。
   const args = gateFinder ? ['--gate-finder'] : [];
-  // ⚠️ 第二次及以后：压掉授权框（见上面那段）。helper 里那个 flag 只控制"弹不弹"，
-  //   **纯查询照旧做** ⟹ 已授权的话 trusted 仍然是 true，功能不受影响。
-  if (axPromptUsed) args.push('--no-ax-prompt');
-  axPromptUsed = true;
 
   const child = spawnFn(built.binary, args,
     { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -248,5 +233,4 @@ function start({ sourcePath, outDir, gateFinder, onEvent, onStatus,
 
 module.exports = {
   parseLines, toWindowPoint, toInputEvent, describeStatus, ensureHelper, start,
-  resetAxPromptForTest,
 };

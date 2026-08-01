@@ -5604,91 +5604,78 @@ check('预编译 helper：四个都编 / 名字规则两边一致 / swiftc 那�
     '预编译在 electron-builder 之后跑 ⟹ 打包时那个目录还是空的');
 });
 
-// ⚠️⚠️⚠️ **需要授权时要主动弹框**（0.9.76）。用户 2026-08-01：
-//   「你只要能保证需要用到的时候能够弹出来让授权的东西，用户授权一下就行」
+// ⚠️⚠️⚠️ **辅助功能授权：什么都不弹、什么都不检测，只把状态显示出来**（0.9.87 终版）。
 //
-// ⚠️⚠️ 两条授权链的表现**完全不同**，而这是查出来的：
-//   · **摄像头** —— `getUserMedia` 会让 macOS **自己弹框** ✅ 本来就对
-//   · **辅助功能** —— 原来只调 `AXIsProcessTrusted()`，那是**纯查询**，
-//     **永远不会弹框** ⟹ 用户看到"壁纸点不动 / 零事件"，
-//     而没有任何东西提示他去授权，更没有框让他点。
+// 用户 2026-08-01（第四轮，前三版全被他实测否掉）：
+//   「我们就辅助功能这个东西呢，我们不强行给他弹窗啥的也不检测啥的，然后我这在
+//     使用的过程中，我发现哪一个功能是需要的，我们就只对这个功能做一个监控就行了」
 //
-// ⟹ `AXIsProcessTrustedWithOptions` + `kAXTrustedCheckOptionPrompt: true`
-//   是 macOS **唯一**会自动弹辅助功能授权框的 API。
-check('辅助功能：主动弹授权框（不是只查询）', () => {
-  const files = [
-    ['native/AirCursorPointer.swift', '..', '..'],
-    ['wallpaper/native/GestureWallMouse.swift', '..', '..'],
-  ];
-  for (const [rel] of files) {
+// **他说得对，而我在这件事上连错三版，每一版都是同一个毛病 ——
+//   把"应用替用户操心一个他还没遇到的问题"当成体贴。**
+//   0.9.76：helper 里无条件弹 ⟹ 未授权时每次启动都弹
+//   0.9.86：先查再弹 + `--no-ax-prompt` 压制 ⟹ 仍然反复弹
+//           （根因是位置：helper 反复重启，压制状态放哪都不对）
+//   0.9.87 中途：主进程启动自检 + 自己的对话框 + config 标记
+//           ⟹ 逻辑对了，但**这件事本身就不该做**
+//
+// ⟹ 判据：**谁需要谁自己报。**
+//   · 两个 helper 只做 `AXIsProcessTrusted()` 纯查询，永不弹框
+//   · trusted 照旧报给面板 ⟹ 用户真撞到"点不动"时那里有解释
+//   · 给不给授权由用户在撞到某个功能不工作时自己决定
+check('辅助功能：不弹框、不自检，只报状态', () => {
+  // ① 两个 helper 都不许有任何会弹框的调用
+  for (const rel of ['native/AirCursorPointer.swift',
+    'wallpaper/native/GestureWallMouse.swift']) {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', rel), 'utf8');
-    // ⚠️ 剥掉 Swift 的注释 —— 那几段注释里写着历史（"原来只调
-    //   AXIsProcessTrusted()"），会骗过下面的反向断言。
+    // ⚠️ 剥掉 Swift 注释 —— 那几段注释里写着历史（"0.9.76 用它主动弹授权框"），
+    //   查原文会**假阴性**（这个项目栽过五次）。
     const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-
-    assert.match(code, /AXIsProcessTrustedWithOptions/,
-      `${rel} 只用 AXIsProcessTrusted（**纯查询**）⟹ 永远不弹授权框，`
-      + '用户看到"点不动"却没有任何东西让他授权（用户点名要弹框）');
-    assert.match(code, /AXTrustedCheckOptionPrompt/,
-      `${rel} 没传 kAXTrustedCheckOptionPrompt ⟹ WithOptions 也不会弹`);
-    // ⚠️ 那个 key 必须是 **true** —— 传 false 等于没传
-    assert.match(code, /axPromptKey: kCFBooleanTrue/,
-      `${rel} 的 prompt 选项不是 true ⟹ 不会弹框`);
-
-    // ⚠️⚠️⚠️ **但必须先查、只有真没授权才弹**（0.9.86）。用户 2026-08-01：
-    //   「我现在每点一个壁纸，他都要求我开启辅助功能，我都已经开了就不能做一个
-    //     检测吗？没开的时候再问我要权限，这非常奇怪好吧」
-    //
-    // **他说得对，而 0.9.76 我在这两个文件里写的注释是错的** ——
-    // 我写「它只在还没授权时弹 —— 已授权时是静默的 true，不会骚扰用户」，
-    // 而那句**没有实测过**，是照着"应该如此"写的。
-    //
-    // ⚠️ 真正的机制：`AXIsProcessTrustedWithOptions(prompt: true)` 在**未授权**时
-    //   必弹框。而"用户已经在系统设置里勾了"**不代表这个进程被授权** ——
-    //   TCC 按可执行文件记授权，helper 的二进制名带源码 sha256，
-    //   换个版本就是新路径 ⟹ 他确实开过，却仍然 untrusted ⟹ 每次启动都弹。
-    //
-    // ⟹ 判据：**先用纯查询判一次，false 才请求。**
-    assert.match(code, /= AXIsProcessTrusted\(\)/,
-      `${rel} 没有先用纯查询判一次 ⟹ 直接调带 prompt 的版本，`
-      + '未授权时每次启动必弹框（用户点名"非常奇怪"）');
-    // ⚠️ 而带 prompt 那次必须在 `if !xxx` 里面 —— 不然"先查"只是个摆设
-    assert.match(code, /if !\w+[\s\S]{0,120}?AXIsProcessTrustedWithOptions/,
-      `${rel} 的带 prompt 调用不在"没授权"的分支里 ⟹ 先查那一步白做`);
-    // ⚠️⚠️ **`ready` 那次**要用带 prompt 的结果（那是"启动时请求一次"），
-    //   而 **`pong` 那次是实时查询** —— 那是有意的：
-    //   用户授权后重启进程，pong 要报**当前**状态，而不是启动那一刻的。
-    //   ⟹ 只守 ready/status 那次，不碰 pong。
-    //   ⚠️ 我第一版写的是"整个文件里不许有裸的 AXIsProcessTrusted()"
-    //     ⟹ **在正确代码上报红**（它逮到了 pong 那处，而那处该保留）。
-    //     判据要区分"请求一次"和"实时查询"这两种用途。
-    const readyLine = code.split('\n').find((l) => /"(?:ready|status)"/.test(l)
-      || /emit\(\["type": "(?:ready|status)"/.test(l));
-    if (readyLine) {
-      assert.ok(!/AXIsProcessTrusted\(\)/.test(readyLine),
-        `${rel} 的 ready/status 里又查了一次 AXIsProcessTrusted()`
-        + ' ⟹ 该用带 prompt 那次的结果（否则代码里有两个来源，会漂）');
-    }
+    assert.ok(!/AXIsProcessTrustedWithOptions/.test(code),
+      `${rel} 又在用会弹框的 API ⟹ 用户点名"不强行给他弹窗"（否掉过三版）`);
+    assert.ok(!/AXTrustedCheckOptionPrompt/.test(code),
+      `${rel} 还留着 prompt 那个 key ⟹ 迟早又被接上`);
+    // ⚠️ 但**纯查询必须留着** —— trusted 要照旧报给面板，那是"做个监控"的全部内容。
+    // ⚠️⚠️ 锚到**赋值那一行**，不是"文件里出现过" —— 这个符号在 pong/silent
+    //   那几处状态汇报里还有 3 次，只查存在性的话把赋值那行删了照样绿
+    //   （第 6 次栽在"断言查存在性而不是查那一处"）。
+    assert.match(code, /^let (?:ax)?[tT]rusted = AXIsProcessTrusted\(\)$/m,
+      `${rel} 的 trusted 不是由纯查询赋值的 ⟹ 要么改回了会弹框的 API，`
+      + '要么写死了常量（面板会永远报错误的授权状态）');
   }
 
-  // ⚠️⚠️ **鼠标 helper 每装载一个壁纸就重启一次** ⟹ "只弹一次"的状态不能存在
-  //   helper 里（它活不过一次装载），必须存在主进程的 mouse-bridge 里。
+  // ② 主进程**不许**做启动自检，也不许自己弹框
+  const src = codeOnly(mainSrc);
+  assert.ok(!/function ensureAccessibility/.test(src),
+    '主进程又加了启动时的辅助功能自检 ⟹ 用户点名"也不检测啥的"');
+  assert.ok(!/isTrustedAccessibilityClient/.test(src),
+    'main.js 又在查辅助功能授权 ⟹ 那是 system-bridge 的事（面板显示用），'
+    + '主进程查它只会导向"启动时提醒用户"，而那被否掉了');
+  const ready = src.slice(src.indexOf('app.whenReady()'),
+    src.indexOf("app.on('window-all-closed'"));
+  assert.ok(ready.length > 400, '切不出 whenReady ⟹ 断言失效');
+  assert.ok(!/showMessageBox/.test(ready),
+    'whenReady 里又弹对话框了 ⟹ 用户刚打开应用什么都没做，不该被任何框拦住');
+
+  // ③ 0.9.86 那套 `--no-ax-prompt` 压制必须删干净 ——
+  //    留着等于两套机制并存，而其中一套已被实测否掉。
   const mb = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'mouse-bridge.js'), 'utf8'));
-  assert.match(mb, /let axPromptUsed = false/,
-    'mouse-bridge 没有"已经弹过了"的标志 ⟹ 每装载一个壁纸弹一次');
-  assert.match(mb, /if \(axPromptUsed\) args\.push\('--no-ax-prompt'\)/,
-    '第二次启动 helper 没传 --no-ax-prompt ⟹ 重复弹框');
-  assert.match(mb, /axPromptUsed = true/, 'axPromptUsed 从来不置 true ⟹ 那个压制永远不生效');
-  // ⚠️ Swift 那边必须真认这个参数 —— 只在 JS 侧传、Swift 不解析 = 静默无效
-  const ms = fs.readFileSync(
-    path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'), 'utf8');
-  assert.match(ms, /arg == "--no-ax-prompt"/,
-    'GestureWallMouse 不解析 --no-ax-prompt ⟹ JS 侧传了也没用（静默无效）');
-  // ⚠️⚠️ 而它只该控制"弹不弹"，**纯查询照旧做** ——
-  //   否则第二次之后 trusted 永远报 false，面板会说"没授权"而实际已授权。
-  assert.match(ms, /var trusted = AXIsProcessTrusted\(\)/,
-    'GestureWallMouse 的纯查询被 --no-ax-prompt 关掉了 ⟹ 第二次之后永远报未授权');
+  assert.ok(!/axPromptUsed/.test(mb),
+    'mouse-bridge 还留着 0.9.86 的 axPromptUsed 压制 ⟹ 两套机制并存');
+  assert.ok(!/--no-ax-prompt/.test(mb),
+    'mouse-bridge 还在传 --no-ax-prompt ⟹ helper 已经不认这个参数（静默无效）');
+
+  // ④⚠️ 而"监控"那部分**必须还在** —— 不弹框的前提是用户能自己看到状态。
+  //   删了它就变成"既不提醒也没地方查"，那比弹框还糟。
+  const sb = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  assert.match(sb, /isTrustedAccessibilityClient\(false\)/,
+    'system-bridge 不查授权状态了 ⟹ 面板没法显示"有没有授权"，'
+    + '而不弹框的前提正是"用户自己能查到"（用户：只对这个功能做一个监控）');
+  const dashSrc = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dashSrc, /没有辅助功能授权/,
+    '面板不再显示"没有辅助功能授权" ⟹ 用户撞到"点不动"时没有任何解释');
 
   // ⚠️ GestureWallMouse 显式 import ApplicationServices ——
   //   Cocoa 会间接带上，但云端编译不了（没 swiftc）⟹ 不赌传递依赖。

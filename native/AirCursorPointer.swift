@@ -60,12 +60,12 @@ func emit(_ payload: [String: Any]) {
 //   ⟹ 不赌这个 API 的行为，自己先用纯查询判一次。
 //   这个 helper 是幂等启动的（systemBridge.startPointer），不像鼠标那个会反复
 //   重启，所以不需要 --no-ax-prompt 那套；但形状一样，一起改掉。
-let axPromptKey = "AXTrustedCheckOptionPrompt" as CFString
-let axOptions = [axPromptKey: kCFBooleanTrue as Any] as CFDictionary
-var axTrusted = AXIsProcessTrusted()
-if !axTrusted {
-    axTrusted = AXIsProcessTrustedWithOptions(axOptions)
-}
+// ⚠️⚠️⚠️ **这个 helper 也一个框都不弹**（0.9.87）——
+//   弹框的责任全部收到主进程（见 GestureWallMouse.swift 里那段，
+//   以及 main.js 的 `ensureAccessibility()`）。
+//   这个 helper 由 `systemBridge.startPointer()` 幂等拉起，但它**会在
+//   sendPointer 发现进程死掉时被重拉** ⟹ 同样不能在这里弹。
+let axTrusted = AXIsProcessTrusted()
 
 if !axTrusted {
     FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件不会生效。已弹出授权请求。\n".data(using: .utf8)!)

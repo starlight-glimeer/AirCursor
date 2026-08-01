@@ -133,21 +133,10 @@ var eventsSeen = 0
 // 被门挡掉的计数。⚠️ 必须报出来：否则"没反应"和"被挡了"分不清，
 // 而那正是我上一版让用户白测一轮的原因。
 var blockedByGate = 0
-// ⚠️ 这次启动允不允许弹辅助功能授权框（0.9.86）。
-//
-// 默认**允许** —— 那是"需要用到时能弹出来让授权"该有的行为。
-// 但这个 helper **每装载一个壁纸就重启一次** ⟹ 一直没授权的话会一直弹。
-// ⟹ 上层（mouse-bridge）第一次之后传 `--no-ax-prompt` 压掉重复。
-//
-// ⚠️ 为什么判断放在上层而不是这里：进程活不过一次装载，
-//   任何"我已经问过了"的状态存在进程里都会跟着它一起死。
-var axPromptAllowed = true
-
 for arg in CommandLine.arguments.dropFirst() {
     if arg == "--gate-finder" { gateOnFinder = true }
     // 兼容旧参数名（老的 helper 二进制可能还在缓存里）
     if arg == "--always" { gateOnFinder = false }
-    if arg == "--no-ax-prompt" { axPromptAllowed = false }
 }
 
 // ⚠️⚠️⚠️ **必须先初始化 NSApplication，否则全局监听收不到任何事件。**
@@ -250,15 +239,22 @@ if monitor == nil {
 // ⟹ ① 先用纯查询 `AXIsProcessTrusted()`（它从不弹框）
 //    ② 只有 false 时才用带 prompt 的版本请求一次
 //    ③ 而且**每个进程最多请求一次**（--no-ax-prompt 让上层压掉重复）
-let axPromptKey = "AXTrustedCheckOptionPrompt" as CFString
-let axOptions = [axPromptKey: kCFBooleanTrue as Any] as CFDictionary
-var trusted = AXIsProcessTrusted()
-if !trusted && axPromptAllowed {
-    // 没授权，而且上层说这次可以问 —— 弹一次。
-    // ⚠️ 返回值仍是 false（用户当场勾选也要重启进程才生效），
-    //   面板那句"授权后重开本应用"照旧有用。
-    trusted = AXIsProcessTrustedWithOptions(axOptions)
-}
+// ⚠️⚠️⚠️ **这个 helper 一个框都不弹**（0.9.87）。用户 2026-08-01：
+//
+//   「还是在反复弹，那既然这样的话，你还不如就逻辑简单一点，初次的时候就问用户
+//     要这个辅助功能，然后就不要再弹了…打开软件的时候检测一下有没有授权，
+//     没有授权的话就做个提醒，有授权的话就进呗」
+//
+// **他说得对，而我前两版的设计从根上就错了**：我把"要不要弹框"的判断放进了一个
+// **反复重启的进程**里，然后想办法压制重复。而压制状态放哪都不对 ——
+// 放进程里跟着进程死，放主进程里也只压得住"同一次启动内"。
+//
+// ⟹ 正确的位置是**主进程**：它整个应用生命周期只有一个，启动时查一次、
+//   没授权就问一次，之后再也不问。helper 这边**只做纯查询**，永不弹框。
+//
+// ⚠️ `AXIsProcessTrusted()` 是纯查询，从不弹框 —— 这一点两版都没变。
+//   trusted 照旧报出去，面板那些"没授权"的提示全部照旧有用。
+let trusted = AXIsProcessTrusted()
 
 emit(["type": "status", "state": "running",
       "gateOnFinder": gateOnFinder,
