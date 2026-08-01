@@ -1,7 +1,7 @@
 {
   "name": "aircursor",
-  "version": "0.9.77",
-  "description": "Transparent macOS hand and voice control overlay.",
+  "version": "0.9.78",
+  "description": "macOS 上的动态壁纸播放器 —— 直接用 Wallpaper Engine 创意工坊的壁纸",
   "author": "starlight-glimeer",
   "main": "wallpaper/src/main.js",
   "scripts": {
@@ -59,6 +59,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "extendInfo": {
+        "NSHumanReadableCopyright": "由 starlight-glimeer 开发 · GestureWall",
         "NSCameraUsageDescription": "AirCursor uses the camera to recognize your hand gestures.",
         "NSMicrophoneUsageDescription": "AirCursor uses the microphone for optional voice commands.",
         "NSSpeechRecognitionUsageDescription": "AirCursor uses speech recognition for optional local voice commands.",
@@ -67,7 +68,8 @@
       },
       "target": [
         "dmg"
-      ]
+      ],
+      "identity": "-"
     }
   },
   "devDependencies": {

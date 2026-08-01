@@ -5665,4 +5665,37 @@ check('辅助功能：主动弹授权框（不是只查询）', () => {
     + '不是 GestureWall（TCC 按可执行文件记授权）');
 });
 
+// ⚠️⚠️ **ad-hoc 签名 + 应用信息**（0.9.78）。
+check('ad-hoc 签名在；应用信息不写上游项目名', () => {
+  const pkg = fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8');
+
+  // ① ad-hoc 签名（`identity: "-"`）—— 不需要开发者账号、不花钱。
+  //    它**不让 Gatekeeper 信任我们**，作用是让应用**结构完整**
+  //    ⟹ macOS 从"这东西**坏了**"改判成"这东西**没认证**"
+  //    ⟹ 用户能用「右键 → 打开」而不是敲 `xattr` 命令。
+  //    ⚠️ 关键在措辞：「已损坏」会让用户以为**下载坏了**（重下多少次都一样），
+  //      「来自身份不明的开发者」说的是**信任问题**，那是他能决定的。
+  assert.match(pkg, /"identity":\s*"-"/,
+    'ad-hoc 签名不在了 ⟹ 用户双击会看到「已损坏」而不是「身份不明的开发者」，'
+    + '而前者会让他以为文件下载坏了');
+
+  // ②⚠️⚠️ 那个弹框里的**开发者名字填不了** —— 它来自代码签名证书的
+  //   Common Name，而 ad-hoc 没有证书。要显示「由 xx 开发」只有
+  //   Apple Developer ID（$99/年）这一条路。
+  //   ⟹ 能填名字的地方是 `NSHumanReadableCopyright`（Finder 的"显示简介"、
+  //     "关于本应用"里显示）—— 那是现在唯一能署名的位置。
+  const info = JSON.parse(pkg).build.mac.extendInfo || {};
+  assert.ok(info.NSHumanReadableCopyright,
+    '没有 NSHumanReadableCopyright ⟹ 应用里没有任何地方署名'
+    + '（Gatekeeper 弹框里的开发者名字要 Developer ID 才有，填不了）');
+
+  // ③ 应用信息里不许写上游项目名 —— `description` 会进 Info.plist，
+  //   而它显示在 Finder 的"显示简介"里。用户看到一个陌生名字会困惑。
+  const desc = JSON.parse(pkg).description || '';
+  assert.ok(!/AirCursor/i.test(desc),
+    `description 里写着上游项目名："${desc}" ⟹ 那会显示在 Finder 的"显示简介"里`);
+  assert.ok(/壁纸|wallpaper/i.test(desc),
+    `description 没说清这是什么："${desc}"`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
