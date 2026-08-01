@@ -80,10 +80,33 @@ guard #available(macOS 14.2, *) else {
     exit(1)
 }
 
-// ── 1. 建 tap（全局混音）────────────────────────────────────────────────
-let desc = CATapDescription(stereoMixdownOfProcesses: [])
+// ── 1. 建 tap（全局，不排除任何进程）──────────────────────────────────
+//
+// ⚠️⚠️⚠️ **这里的初始化器选错会让 tap 没有源，而且不报错。**
+//
+// 我第一版用的是：
+//     CATapDescription(stereoMixdownOfProcesses: [])
+// 假设「空数组 = 全部进程」。**那个假设是错的** ——
+// 那个初始化器的语义是「混音**这些**进程」⟹ 空数组 = **没有进程**。
+//
+// ⟹ tap 建起来了（`tapErr: 0`），但它**不监听任何进程**
+// ⟹ 下游全部 noErr，而回调一次都不触发（用户 2026-08-01 实测两次）。
+//
+// ⟹ 正解是另一个初始化器：
+//     CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+//   = 全局 tap，**排除**这些进程 ⟹ 空数组 = 不排除任何 = **全部**
+//
+// ⚠️ 两个初始化器名字很像、参数类型一样、都不报错 ——
+// 而语义正好相反（白名单 vs 黑名单）。
+// ⟹ 这类"选错重载但不报错"和 CFString 那次是同一个形状：
+//    **每一步都成功，功能是死的**。
+let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
 desc.name = "GestureWall tap probe2"
 desc.isPrivate = true
+// ⚠️ 静音 tap 不能开 —— 那会让**用户听不到声音**（tap 把音频截走）。
+// 默认是 unmuted，但显式写出来：这个字段错了的后果是"壁纸能动但没声音"，
+// 而用户会以为是播放器坏了。
+desc.muteBehavior = .unmuted
 var tapID = AudioObjectID(kAudioObjectUnknown)
 let tapErr = AudioHardwareCreateProcessTap(desc, &tapID)
 if tapErr != noErr || tapID == AudioObjectID(kAudioObjectUnknown) {
@@ -152,6 +175,49 @@ if (tapUID as String).isEmpty {
 // ⚠️ 这一步是 CoreAudio tap 的必经之路：tap 自己不是设备，
 // 要靠一个 aggregate device 才能走 IOProc 拿数据。
 // 而它需要一个**唯一的 UID** —— 撞名会让第二次运行失败。
+// ⚠️⚠️⚠️ **aggregate device 必须有一个 subdevice 提供时钟，否则没有 IO 周期。**
+//
+// 我第一版给了 `kAudioAggregateDeviceSubDeviceListKey: []`（空）——
+// 而 aggregate device 的 **IO 周期是靠 subdevice 的时钟驱动的**
+// ⟹ 没有 subdevice = 没有时钟 = **不产生 IO 周期** = 回调一次都不触发。
+//
+// ⟹ 把**默认输出设备**加进去。它只提供时钟（我们不往它写数据），
+//    不会影响用户听到的声音。
+//
+// ⚠️ 这和 tap 描述那个错是同一轮的：两个都"建成功但不工作"，都不报错。
+var defOutAddr = AudioObjectPropertyAddress(
+    mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain
+)
+var defOut = AudioDeviceID(0)
+var defOutSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+let defOutErr = AudioObjectGetPropertyData(
+    AudioObjectID(kAudioObjectSystemObject), &defOutAddr, 0, nil, &defOutSize, &defOut
+)
+if defOutErr != noErr || defOut == 0 {
+    fail("读默认输出设备", defOutErr, "aggregate device 需要它提供时钟")
+}
+// 它的 UID —— subdevice 列表要用 UID 而不是 AudioDeviceID
+var outUIDAddr = AudioObjectPropertyAddress(
+    mSelector: kAudioDevicePropertyDeviceUID,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain
+)
+// ⚠️ 同 tap UID：**CF 引用类型要用 Unmanaged 接收**，不能 `&裸CFString`
+//（那次的后果是读到空 UID ⟹ 静默失效）。
+var outUIDRef: Unmanaged<CFString>?
+var outUIDSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+let outUIDErr = AudioObjectGetPropertyData(
+    defOut, &outUIDAddr, 0, nil, &outUIDSize, &outUIDRef
+)
+if outUIDErr != noErr { fail("读默认输出设备 UID", outUIDErr) }
+guard let outUIDValue = outUIDRef else {
+    fail("读默认输出设备 UID", -1, "UID 是 nil")
+    exit(1)
+}
+let outUID = outUIDValue.takeRetainedValue()
+
 let aggUID = "com.gesturewall.tapprobe2.\(ProcessInfo.processInfo.processIdentifier)"
 let aggDesc: [String: Any] = [
     kAudioAggregateDeviceNameKey as String: "GestureWall Tap Probe2",
@@ -160,7 +226,12 @@ let aggDesc: [String: Any] = [
     kAudioAggregateDeviceIsPrivateKey as String: true,
     kAudioAggregateDeviceIsStackedKey as String: false,
     kAudioAggregateDeviceTapAutoStartKey as String: true,
-    kAudioAggregateDeviceSubDeviceListKey as String: [],
+    // ⚠️ **必须有一个 subdevice** —— 它提供时钟，见上面那段。
+    kAudioAggregateDeviceSubDeviceListKey as String: [
+        [kAudioSubDeviceUIDKey as String: outUID],
+    ],
+    // ⚠️ 主设备也指它 —— 那决定用谁的时钟当基准
+    kAudioAggregateDeviceMainSubDeviceKey as String: outUID,
     kAudioAggregateDeviceTapListKey as String: [
         [kAudioSubTapUIDKey as String: tapUID,
          kAudioSubTapDriftCompensationKey as String: true],
@@ -262,6 +333,12 @@ cleanup()
 emit([
     "type": "tapprobe2",
     "ok": c.nonZero > 0,
+    // ⚠️ 报出中间状态 —— 零回调时要能判"是哪一环空了"。
+    // 前两版失败都是"每一步 noErr 但功能死"，而没有这些字段的话
+    // 我只能继续猜（这一轮已经猜错两次：tap 初始化器、subdevice 列表）。
+    "tapUID": tapUID as String,
+    "outUID": outUID as String,
+    "aggID": Int(aggID),
     "callbacks": c.callbacks,
     "frames": c.frames,
     "nonZero": c.nonZero,
