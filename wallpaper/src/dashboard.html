@@ -700,17 +700,20 @@
       </div>
     </div>
 
-    <!-- ⚠️ 音频那一整块搬进「开发者选项」了（五个音源按钮 + 频谱数值 + helper 日志），
-         但**"壁纸能不能跟着音乐动"是 2C 用户要的** ⟹ 在这里留一个开关。
-         它映射到 `全系统` / `关`（那两个是普通用户唯一会用的两种）。 -->
-    <div class="card" id="audio-simple">
-      <div class="toggle">
-        <input type="checkbox" id="audioFollow">
-        <label for="audioFollow">让壁纸跟着音乐动</label>
-      </div>
-      <div id="audio-simple-hint" class="hint" style="font-size:11px;margin-top:6px"></div>
-    </div>
+    <!-- ⚠️⚠️ 这里原来有个「让壁纸跟着音乐动」开关（0.9.44 加的）—— 0.9.50 撤了。
+         用户 2026-08-01：「这是什么，这应该是默认的，不需要给选项」
 
+         **他说得对。** 那个开关是我在 0.9.44 把五个音源按钮搬进开发者选项时
+         留下的"2C 版本"，但它给的是一个用户不需要做的决定：
+           · 采集的条件本来就是 `weProject.wantsAudio && audioSource !== 'off'`
+             （main.js:3790）—— **壁纸自己声明要音频**才采集
+           · 默认值已经是 `system`（main.js:413），而且有一条迁移把老配置的
+             `off` 改回 `system`（main.js:569）
+           ⟹ 一个装了音乐可视化壁纸的人，唯一合理的期望就是它跟着音乐动。
+              问他"要不要动"是把实现细节暴露成了选项。
+
+         ⟹ 开发者选项里那五个音源按钮**留着**（netease/system/synth/sweep/off），
+            那是诊断工具；这里不再有 2C 开关。 -->
     <div id="mine-grid" class="ws-grid"></div>
       <!-- ⚠️⚠️ 这里原来有一段写死的说明（steamcmd 自动扫 + 两条约束），删了。
            用户 2026-08-01 指出它和 renderMineDirs 生成的内容**重复显示**

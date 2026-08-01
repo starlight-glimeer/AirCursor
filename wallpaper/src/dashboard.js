@@ -1080,33 +1080,13 @@ window.gw.onCaptureSaved((payload) => {
 // WE 网页壁纸
 // ---------------------------------------------------------------------------
 
-// ⚠️⚠️ **2C 区的那个「让壁纸跟着音乐动」开关**（0.9.44）。
+// ⚠️⚠️ 这里原来是 `renderAudioSimple()`（0.9.44 的「让壁纸跟着音乐动」开关）
+// —— 0.9.50 整个删了。用户：「这是什么，这应该是默认的，不需要给选项」
 //
-// 用户 2026-08-01：「你的设计太 dashboard 了，我们是一个 2C 的产品」
-// ⟹ 五个音源按钮（含单段扫描、合成测试音）搬进了开发者选项，
-//    而"壁纸能不能跟着音乐动"是普通用户真正要的那一件事。
-//
-// ⚠️ 它只映射两个值：`system`（跟随）和 `off`（不跟随）——
-// 那是普通用户唯一会用的两种。若当前是 `netease`/`sweep`/`synth`
-//（开发者在开发者选项里选的），开关显示成"开"但**不去改它** ——
-// 否则用户一进面板就把开发者的设置改掉了。
-function renderAudioSimple() {
-  const box = document.getElementById('audioFollow');
-  const hint = document.getElementById('audio-simple-hint');
-  if (!box) return;
-  const src = (config.we && config.we.audioSource) || 'off';
-  box.checked = src !== 'off';
-  // ⚠️ 非 system 的"开"要说清 —— 否则用户看到开关是开的、
-  // 而行为和他预期不同（比如 synth 是假频谱），会以为坏了。
-  if (src === 'off') {
-    hint.textContent = '关着 —— 壁纸里的频谱/波形不会动';
-  } else if (src === 'system') {
-    hint.textContent = '跟随电脑正在放的声音';
-  } else {
-    const label = (AUDIO_SOURCES.find((x) => x.id === src) || {}).label || src;
-    hint.innerHTML = `当前音源是<b>${label}</b>（在开发者选项里选的）`;
-  }
-}
+// 采集的条件本来就是 `weProject.wantsAudio && audioSource !== 'off'`
+//（main.js:3790）—— 壁纸自己声明要音频才采集，而默认值已经是 `system`。
+// ⟹ 那个开关问的是一个用户不需要做的决定。
+// 开发者选项里那五个音源按钮留着（诊断用），见 AUDIO_SOURCES。
 
 const AUDIO_SOURCES = [
   { id: 'netease', label: '网易云', hint: '只抓网易云的声音（需 macOS 14.4+，要屏幕录制授权）' },
@@ -2090,7 +2070,6 @@ window.gw.workshopBrowseMeta().then((meta) => {
 // 用户的原话："不知道从哪里得到的壁纸，反正只要在指定的壁纸存储目录中有的壁纸
 // 就在这里" ⟹ 判据是目录里有 project.json，不是"我们下载过"。
 async function renderMine() {
-  renderAudioSimple();
   const state = document.getElementById('mine-state');
   const grid = document.getElementById('mine-grid');
   const result = await window.gw.workshopLocal();
@@ -2524,12 +2503,6 @@ async function setRotate(patch) {
 // ╔═══════════════════════════════════════════════════════════════════════╗
 // ║  DEV-PANEL-END                                                        ║
 // ╚═══════════════════════════════════════════════════════════════════════╝
-
-// ⚠️ 只在两个值之间切 —— 见 renderAudioSimple 上面那段。
-document.getElementById('audioFollow').onchange = async (e) => {
-  await window.gw.weSetAudioSource(e.target.checked ? 'system' : 'off');
-  renderAudioSimple();
-};
 
 // ---- 轮播（0.9.49：摘要行开弹窗，控件都在弹窗里）----
 

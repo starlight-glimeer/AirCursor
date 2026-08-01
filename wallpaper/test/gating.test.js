@@ -3969,7 +3969,9 @@ check('开发者模块物理隔离，能整块撤掉', () => {
   // ⚠️ 而 2C 要的那些**不能**在模块里 —— 撤掉模块不该带走核心功能
   const htmlNoComment = html.replace(/<!--[\s\S]*?-->/g, '');
   const devHtmlNoComment = devHtml.replace(/<!--[\s\S]*?-->/g, '');
-  for (const id of ['mine-dirs', 'mine-grid', 'rotateOn', 'audioFollow']) {
+  // ⚠️ 0.9.50 从这个清单里去掉了 `audioFollow` —— 那个开关整个撤了
+  //（用户：「这是什么，这应该是默认的，不需要给选项」），见下面那条反向断言。
+  for (const id of ['mine-dirs', 'mine-grid', 'rotate-summary']) {
     assert.ok(htmlNoComment.includes(`id="${id}"`), `${id} 不见了`);
     assert.ok(!devHtmlNoComment.includes(`id="${id}"`),
       `${id} 被放进开发者模块了 ⟹ 撤掉模块会带走 2C 功能`);
@@ -3987,14 +3989,37 @@ check('开发者模块物理隔离，能整块撤掉', () => {
   assert.ok(!/weSet|writeConfig|config\.we\./.test(jsDev),
     '开发者开关的状态落进了配置 ⟹ 撤掉模块后 config.json 里留下孤儿字段');
 
-  // ⚠️ 「让壁纸跟着音乐动」只能在 system/off 之间切 —— 它是 2C 的简化入口，
-  // 而开发者可能在开发者选项里选了 netease/synth ⟹ 不该被这个开关改掉
-  // ⚠️ 锚在 **onchange 那一处**，不是 `getElementById('audioFollow')` ——
-  // 那个字符串在 `renderAudioSimple` 里也有（而且更靠前）
-  // ⟹ `indexOf` 找到读取那处，切片里当然没有 system/off
-  // ⟹ **在正确代码上报红**（这一轮第二次"锚点撞名"，上一次是 spikes:）。
-  assert.match(dash, /audioFollow'\)\.onchange[\s\S]{0,200}?'system' : 'off'/,
-    '2C 的音频开关不是在 system/off 之间切 ⟹ 那是普通用户唯一会用的两种');
+  // ⚠️⚠️ **不许再有「让壁纸跟着音乐动」那个开关**（0.9.50 撤掉）。
+  // 用户 2026-08-01：「这是什么，这应该是默认的，不需要给选项」
+  //
+  // 它问的是一个用户不需要做的决定：采集的条件本来就是
+  // `weProject.wantsAudio && audioSource !== 'off'`（壁纸自己声明要音频），
+  // 而默认值已经是 `system`，还有一条迁移把老配置的 `off` 改回 `system`。
+  // ⟹ 装了音乐可视化壁纸的人，唯一合理的期望就是它跟着音乐动。
+  // ⚠️⚠️ 这两条必须用**剥掉注释/HTML 注释**的版本 ——
+  // 撤掉那个开关时我在原处留了一段注释解释"为什么撤"，而那段注释里就写着
+  // `id="audioFollow"` 和 `renderAudioSimple()` ⟹ 查原文的话这两条断言
+  // **在正确代码上报红**（第 8 次"注释骗过守卫"，这次是假阳性方向）。
+  // 而这条 check 里的 `dash`/`html` 是原文（marker 检查需要原文）⟹ 各自剥。
+  const htmlNoC = html.replace(/<!--[\s\S]*?-->/g, '');
+  const dashNoC = codeOnly(dash);
+  assert.ok(!/id="audioFollow"/.test(htmlNoC),
+    '又加了「让壁纸跟着音乐动」开关 ⟹ 那是把实现细节暴露成选项（用户点名撤掉）');
+  assert.ok(!/renderAudioSimple\s*\(/.test(dashNoC),
+    'renderAudioSimple 又回来了 ⟹ 那个 2C 音频开关整个撤了');
+
+  // ⚠️ 但**默认值必须是 system** —— 撤掉开关之后，如果默认是 off，
+  // 壁纸就永远不动了，而用户再也没有地方能打开它（除了开发者选项）。
+  // 这是撤掉这个开关的**承重前提**，必须有守卫。
+  assert.match(mainSrc, /audioSource: 'system'/,
+    "audioSource 默认不是 'system' ⟹ 撤掉开关之后壁纸永远不跟着音乐动");
+  assert.match(mainSrc, /we\.audioSource === 'off'[\s\S]{0,120}?we\.audioSource = 'system'/,
+    "老配置里的 'off' 没有迁移成 'system' ⟹ 之前关过的人永远打不开了");
+
+  // ⚠️ 而开发者选项里那五个音源按钮要**留着** —— 它们是诊断工具
+  //（synth 免授权、sweep 单段扫描，都是把"壁纸能不能画"和"能不能拿到音频"拆开用的）
+  assert.match(dash, /const AUDIO_SOURCES = \[/,
+    '开发者选项里的音源按钮没了 ⟹ 那是这几十轮唯一的音频诊断手段');
 });
 
 // ⚠️⚠️ **壁纸墙式卡片的三个"改坏了不报错"点**（0.9.45）。
