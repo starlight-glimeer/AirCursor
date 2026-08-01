@@ -423,41 +423,15 @@
   }
   .tier.pro { background: rgba(255,180,84,.18); color: var(--warn); }
 
-  /* ---- 创意工坊：「看看是什么」的预览卡片 ----
-     没有预览图就没法挑壁纸，而挑不了这个功能只服务已经知道 ID 的人。
+  /* ⚠️⚠️ 这里原来是 `.ws-card`（「看看是什么」的预览卡片）的一整套样式 ——
+     0.9.57 **整块删了**，因为那个卡片自己被删了（用户：「也不用再弹一下
+     这个预览图了，本身点击了创意工坊的壁纸不就已经展示了预览图了」）。
 
-     ⚠️⚠️ **0.9.56 改成竖排。** 用户 2026-08-01 贴了截图：
-     「创意工坊这里你可以看到这里的渲染是有问题的」—— 图里那块预览卡片
-     的文字被压成了一列竖排单字（"能 / 跑 / · / 39.6 / MB / · / 125 / 人 / 订 / 阅"）。
-
-     根因：原来是 `display: flex` 横排三段（图 160px + 文字 flex:1 + 按钮竖列），
-     那是给**页面正文**（宽约 590px）设计的。而 0.9.54 把它搬进了右侧详情面板
-     ⟹ 可用宽度只有 ~300px：160 图 + 按钮列 ~90 ⟹ 文字那段只剩 ~40px
-     ⟹ 每行放不下两个汉字，就成了竖排。
-
-     ⟹ 改成**竖排**（图通栏在上、文字在中、按钮在下）。
-     ⚠️ 教训：**搬动一个区块之后要重新审它的横向布局** ——
-        `flex` 横排在窄容器里不会报错，只会挤到不可读。
-        这和 0.9.54 那次"搬完要跑 DOM 引用全检"是同一类：
-        **搬动会让原来成立的假设失效，而症状不是报错。** */
-  .ws-card { display: none; gap: 8px; margin-top: 10px; padding: 10px;
-             border: 1px solid var(--line); border-radius: 8px; background: #15151b; }
-  .ws-card.on { display: flex; flex-direction: column; }
-  /* 图通栏。⚠️ aspect-ratio 而不是定高 —— 面板宽度会变（窗口能拉），
-     定高 90px 在 300px 宽下就是 10:3 的怪比例。 */
-  .ws-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
-                 border-radius: 6px; background: #000; display: block; }
-  .ws-card .meta { min-width: 0; font-size: 12px; line-height: 1.7; }
-  .ws-card .meta b { display: block; font-size: 13px; color: var(--text);
-                     /* ⚠️ 允许两行 —— 工坊标题动辄几十字，单行 ellipsis 下
-                        用户看到的是一串省略号（而这块的用途正是"看看是什么"）。 */
-                     display: -webkit-box; -webkit-line-clamp: 2;
-                     -webkit-box-orient: vertical; overflow: hidden; }
-  .ws-card .meta .sub { color: var(--dim); font-size: 11px; }
-  /* 按钮横排在最下面（原来是竖排在右侧）。⚠️ wrap —— 两个按钮加起来
-     可能超过 300px，不 wrap 会溢出容器。 */
-  .ws-card .acts { display: flex; flex-wrap: wrap; gap: 6px; }
-  .ws-card .acts button { flex: 1; min-width: 0; }
+     ⚠️ 值得记一笔：**上一轮（0.9.56）我刚花力气把它从横排改成竖排** ——
+     用户报"渲染有问题"，我修的是一个下一轮就要删掉的东西。
+     那不是白做（当时不知道它要删），但它指出一件事：
+     **用户报某块"看起来不对"时，先问一句"这块还需要吗"** ——
+     有时候答案是删掉，而那比修好它省一整轮。 */
   /* 筛选分组：标签在左、按钮在右，一组一行。仿 Steam 创意工坊的侧栏排版。 */
   .br-group { display: grid; grid-template-columns: 68px 1fr; gap: 8px;
               align-items: start; margin-bottom: 6px; }
@@ -821,7 +795,10 @@
              ⚠️ 有些类型我们暂不支持（scene / application），但**预览图照样能看** ——
              用户明确说过这点。所以不支持的项不隐藏，只在卡片上标出来。 -->
         <div class="bar-row">
-          <input id="br-q" type="text" placeholder="搜索壁纸名（留空看热门）">
+          <!-- ⚠️ placeholder 要提"也能贴 ID/链接"（0.9.57）—— 那条路没有别的入口了，
+               不写的话用户不会知道搜索框吃 ID（见 looksLikeWorkshopId）。 -->
+          <input id="br-q" type="text"
+                 placeholder="搜索壁纸名，或贴创意工坊链接 / ID（留空看热门）">
           <button class="act primary" id="br-go" type="button">搜索</button>
         </div>
         <div id="br-sorts" class="we-src"></div>
@@ -854,6 +831,10 @@
           <img id="wside-preview" alt="">
           <div id="wside-title"></div>
           <div id="wside-meta" class="hint"></div>
+          <!-- ⚠️ ID 显示成一行文本（0.9.57，用户点名「Wallpaper 壁纸 id:3775463674」）。
+               ⚠️ `user-select: text` —— 它的用途就是**复制出去**
+                  （去 Steam 页面看、发给别人），选不中等于没有。 -->
+          <div id="wside-id" class="hint"></div>
           <div id="wside-actions" class="bar-row" style="margin-top:10px"></div>
           <div id="wside-state" class="hint"></div>
         </div>
@@ -863,17 +844,28 @@
              而它们原来占了工坊页一半（三个输入框 + 一段说明常驻）。
              ⚠️ 但一个都没删 —— 贴 ID 是"工坊搜不到某个壁纸"时唯一的路。 -->
         <details id="we-side-manual" style="margin-top:16px">
-          <summary class="hint">手动：贴链接/ID + Steam 账号</summary>
-          <p class="hint">
-            你的 Steam 账号买过 Wallpaper Engine，<b>工坊内容就能用</b> ——
-            那些是文件，和 WE 本体是不是 Windows 无关。
-          </p>
-          <div class="bar-row">
-            <input id="ws-id" type="text" placeholder="贴链接或 ID">
-            <button class="act" id="ws-peek" type="button">看看是什么</button>
-          </div>
-          <!-- 预览卡片：贴链接之后先看这个再决定装不装。 -->
-          <div id="ws-peek-card" class="ws-card"></div>
+          <summary class="hint">Steam 账号（下载要用）</summary>
+          <!-- ⚠️⚠️ 这里原来有一段说明 + ID 输入框 + 「看看是什么」按钮 + 预览卡片，
+               0.9.57 全删了。用户 2026-08-01：
+                 「这里改一下：Wallpaper 壁纸 id:3775463674。然后"看看是什么"
+                   这个按钮需要（不需要），id 号也不用现在这样的文本框显示」
+                 「点击了下载这个壁纸（改成下载）并且也不用再弹一下这个预览图了，
+                   本身点击了创意工坊的壁纸不就已经展示了预览图了」
+
+               他说得对，那四样在右侧面板下**全是冗余**：
+                 · 输入框：ID 是点左边卡片自动填的，用户不用手输
+                 · 「看看是什么」：右侧面板已经是详情了
+                 · 预览卡片：屏幕上会出现**第二张**预览图（右侧已有一张）
+                 · 那段说明（「你的 Steam 账号买过 WE，工坊内容就能用…」）：
+                   它解释的是"为什么 macOS 上能用 Windows 软件的工坊内容"，
+                   而那是**产品前提**，不是每次下载都要读一遍的东西
+
+               ⟹ 折叠区现在只剩它真正必需的东西：**Steam 账号**。
+               ⟹ 而 ID 显示成一行文本（见 #wside-id，在预览图下面）。
+
+               ⚠️ 「贴链接/ID 装载」这条路**没有丢** —— 它变成了
+                  「在 Steam 打开」的反向：用户在工坊里搜到就能点。
+                  真要手输的场景（别人发了个 ID）走搜索框贴 ID 也能搜到。 -->
           <div class="we-row">
             <label>Steam 用户名</label>
             <input id="ws-user" type="text" placeholder="登录名，不是昵称">

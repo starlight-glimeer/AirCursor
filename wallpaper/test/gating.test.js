@@ -4359,7 +4359,12 @@ check('目录行：一行装完 / 计数不写死 0 / 状态行只报异常', ()
     '「扫存储目录里所有含 project.json…」那句 lead 又回来了（用户点名删掉）');
 
   // ② 计数必须画在**目录行**里，不能再写回 mine-state（那会变成第二行）
-  assert.match(dash, /个能跑/, '计数那句不见了');
+  // ⚠️ 「能跑」那个说法 0.9.57 去掉了（用户：「"能跑"的这种描述不需要」）
+  // ⟹ 断言改成"计数还在"，而不是"用了某个具体的词"。
+  //（这一轮第 5 次改这类断言：写的是当时那个字，不是意图。）
+  assert.match(dash, /lastMineCount\.total\} 个/, '目录行的计数不见了');
+  assert.ok(!/个能跑/.test(dash),
+    '「N 个能跑」又回来了 ⟹ 用户点名不要（"这张放不了"的信息在卡片上）');
   // ⚠️⚠️ 锚**完整的赋值形状**，不是变量名。
   // 第一版写的是 `/lastMineCount/`（只查名字在不在这个切片里）——
   // 而把渲染条件改成 `if (false)` 之后那个名字**还在**（声明、注释、别的引用）
@@ -4732,20 +4737,33 @@ check('布局：顶部 tab / 两列 / 右侧详情 / 滚动归网格列', () => 
 //
 // ⚠️ 这和 0.9.54 那次"搬完要跑 DOM 引用全检"是同一类教训：
 //    **搬动会让原来成立的假设失效，而症状不是报错。**
-check('340px 面板里的区块：竖排、输入框通栏、按钮不溢出', () => {
+check('340px 面板里的区块：预览卡片已撤 / 输入框通栏 / 贴 ID 那条路保留', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash2 = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
 
-  // ① 预览卡片要竖排（原来是横排三段）
-  assert.match(html, /\.ws-card\.on\s*\{[^}]*flex-direction:\s*column/,
-    '#ws-peek-card 又是横排 ⟹ 在 340px 面板里文字会被压成一列竖排单字（用户报过）');
-  // ⚠️ 图要通栏 + 用 aspect-ratio（定高 90px 在窄面板下是 10:3 的怪比例）
-  assert.match(html, /\.ws-card img\s*\{[^}]*width:\s*100%/,
-    '预览图不是通栏 ⟹ 竖排下它旁边是一片空白');
-  assert.match(html, /\.ws-card img\s*\{[^}]*aspect-ratio/,
-    '预览图用定高而不是 aspect-ratio ⟹ 面板宽度变化时比例会怪');
-  // ⚠️ 按钮横排 + 允许 wrap（两个按钮加起来可能超过 300px）
-  assert.match(html, /\.ws-card \.acts\s*\{[^}]*flex-wrap:\s*wrap/,
-    '预览卡片的按钮不允许换行 ⟹ 超过面板宽度会溢出');
+  // ①⚠️⚠️ `.ws-card`（「看看是什么」的预览卡片）**0.9.57 整块删了** ——
+  //    用户：「也不用再弹一下这个预览图了，本身点击了创意工坊的壁纸
+  //    不就已经展示了预览图了」⟹ 右侧详情面板已经在显示预览图。
+  //
+  // ⚠️ 值得记一笔：0.9.56 我刚花力气把它从横排改成竖排（用户报"渲染有问题"），
+  //    而下一轮它就被删了。⟹ **用户报某块"看起来不对"时，先问"这块还需要吗"** ——
+  //    有时答案是删掉，那比修好它省一整轮。
+  // ⟹ 断言翻成**反向**：整套 CSS 和那个元素都不许回来（回来就是死代码 +
+  //    同一个壁纸两张预览图）。
+  assert.ok(!/\.ws-card/.test(html.replace(/\/\*[\s\S]*?\*\//g, '')),
+    '.ws-card 的样式又回来了 ⟹ 那个预览卡片删了，留着就是死代码');
+  assert.ok(!/id="ws-peek-card"/.test(html),
+    '「看看是什么」的预览卡片又回来了 ⟹ 会出现同一个壁纸两张预览图');
+  assert.ok(!/id="ws-peek"/.test(html), '「看看是什么」按钮又回来了（用户点名不需要）');
+  assert.ok(!/id="ws-id"/.test(html),
+    'ID 输入框又回来了 ⟹ ID 是点卡片自动来的（用户：「id 号也不用现在这样的文本框显示」）');
+  // ⚠️ 而"贴 ID/链接"那条路**必须保留**（用户拍的方案：搜索框兼容）
+  assert.match(dash2, /function looksLikeWorkshopId/,
+    '搜索框不认 ID 了 ⟹ 删掉输入框之后"别人发我一个 ID"这条路就断了');
+  assert.match(dash2, /workshopDetails\(q\)/,
+    '搜索框认出 ID 但没走 workshopDetails ⟹ 会把 ID 当关键词去搜');
+  assert.match(html, /placeholder="[^"]*ID/,
+    '搜索框的 placeholder 没提能贴 ID ⟹ 用户不会知道（那条路没有别的入口）');
 
   // ②⚠️⚠️ 面板里的输入框要**通栏**（独占第二行），否则被挤成一条。
   //    用户截图里「密码」那行就是：placeholder 贴在右边缘。

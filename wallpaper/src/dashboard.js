@@ -1683,6 +1683,10 @@ function renderWeSide(item) {
   if (item.sizeBytes) meta.push(W_FORMAT(item.sizeBytes));
   if (item.subscriptions) meta.push(`${item.subscriptions} 订阅`);
   document.getElementById('wside-meta').textContent = meta.join(' · ');
+  // ⚠️ ID 那一行（0.9.57，用户点名「Wallpaper 壁纸 id:3775463674」）。
+  // 它取代了原来那个 `#ws-id` 输入框 —— ID 是点卡片自动来的，用户不用手输，
+  // 而他确实需要**看到并能复制**它（去 Steam 页面看、发给别人）。
+  document.getElementById('wside-id').textContent = `Wallpaper 壁纸 id:${item.id}`;
 
   // 「下载」。⚠️ 点卡片**不直接下载** —— 几百 MB 的误点很贵。
   // ⟹ 下载是这个面板上一个明确的按钮，那是"贵操作要有明确动作"。
@@ -1691,18 +1695,21 @@ function renderWeSide(item) {
   const dl = document.createElement('button');
   dl.className = 'act primary';
   dl.type = 'button';
-  dl.textContent = item.supported === false ? '仍然下载（暂不支持）' : '下载这个壁纸';
+  // ⚠️ 文案就叫「下载」（0.9.57，用户点名）。原来是「下载这个壁纸」——
+  // "这个壁纸"是多余的：按钮就在那个壁纸的详情下面，指代不会有歧义。
+  dl.textContent = item.supported === false ? '仍然下载（暂不支持）' : '下载';
   dl.onclick = () => {
-    // ⚠️ 复用「按 ID 装载」那条路 —— 它已经处理了 steamcmd 登录、清 manifest、
-    // 移动到我们目录、报进度。在这里重写一份就是第二份知识。
-    const idBox = document.getElementById('ws-id');
-    if (idBox) idBox.value = item.id;
-    const manual = document.getElementById('we-side-manual');
-    // ⚠️ 把那个 <details> 展开 —— 下载要 Steam 账号，而它收起来的时候
-    // 用户看不到"为什么没动"（这个项目栽过六次"做了但用户看不到"）。
-    if (manual) manual.open = true;
-    const peek = document.getElementById('ws-peek');
-    if (peek) peek.click();
+    // ⚠️⚠️ **直接下载**（0.9.57）。用户：「点击了下载这个壁纸（改成下载）
+    // 并且也不用再弹一下这个预览图了，本身点击了创意工坊的壁纸不就已经
+    // 展示了预览图了」
+    //
+    // 原来这里做的是：填 ID → 展开折叠区 → 点「看看是什么」→ 出一张预览卡片
+    // → 用户再点那张卡片上的「下载并装载」。**四步，而且第一步之后
+    // 屏幕上出现了第二张预览图**（右侧面板已经有一张了）。
+    // ⟹ 现在一步：直接调 startDownload。
+    // ⚠️ 进度和结果报到 `#wside-state`（就在按钮下面），不再报到折叠区里
+    //   那个 `#ws-state` —— 那样用户得展开折叠区才看得到"下载到哪了"。
+    startDownload(item.id, 'wside-state');
   };
   actions.appendChild(dl);
 
@@ -1852,6 +1859,9 @@ async function renderWEControls() {
 // ---------------------------------------------------------------------------
 
 const wsState = document.getElementById('ws-state');
+// ⚠️ 当前这次下载的进度往哪写。startDownload 设，onWorkshopProgress 读。
+// 两个入口：右侧面板的「下载」→ #wside-state；折叠区那条 → wsState。
+let downloadInto = null;
 
 // 用户名/密码/Guard 码改了就存。⚠️ 不做"保存"按钮：那会让人以为填完不点就没生效，
 // 而下载失败时又多一个可疑原因。
@@ -1866,63 +1876,18 @@ for (const [id, key] of [['ws-user', 'username'], ['ws-pass', 'password'], ['ws-
 // ⚠️ 这一步是补一个产品缺口：我原来只做了"填 ID → 下载"，而那等于把命令行搬进 GUI。
 // 工坊的本质是浏览，没有预览图就没法挑。而且类型在这里就能看到 ⟹ scene 类可以在
 // 下载几百 MB 之前就说清"装了也只能看静态图"。
-const peekCard = document.getElementById('ws-peek-card');
-
-function renderPeek(item) {
-  peekCard.innerHTML = '';
-  peekCard.className = 'ws-card on';
-  if (!item.ok) {
-    peekCard.innerHTML = `<div class="meta"><span class="warn">${item.reason}</span></div>`;
-    return;
-  }
-
-  if (item.preview) {
-    const img = document.createElement('img');
-    img.src = item.preview;
-    // ⚠️ 预览图加载失败不能让卡片塌掉 —— 那会看起来像"这个壁纸有问题"，
-    // 而实际上只是图挂了（Steam 的 CDN 在国内经常要代理）。
-    img.onerror = () => { img.style.display = 'none'; };
-    peekCard.appendChild(img);
-  }
-
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  // ⚠️ 三种情况要分开说，因为用户据此做的决定不同：
-  //   作者标了 tag      → 确定的，可以直接判断
-  //   我们从文件名推的  → 大概，要说明是推断
-  //   什么线索都没有    → 说清"下了才知道"，而不是干巴巴一句"未标注"
-  //（"未标注"是用户实测看到的原话 —— 那时候他只能靠猜要不要下。）
-  let typeText;
-  if (item.type && item.typeSource === 'tag') {
-    typeText = `${item.type}${item.supported ? ' · 能跑' : ' · 暂不支持'}`;
-  } else if (item.type) {
-    typeText = `看起来是 ${item.type}（从文件名 ${item.filename} 推的）`
-      + `${item.supported ? ' · 应该能跑' : ' · 大概不支持'}`;
-  } else {
-    typeText = '作者没标类型 —— 下载后才知道是哪种（我们会自动认格式）';
-  }
-  meta.innerHTML = `<b>${item.title}</b>`
-    + `<span class="sub">${typeText} · ${W_FORMAT(item.sizeBytes)} · ${item.subscriptions} 人订阅</span>`;
-  // 在下载之前就说清后果。⚠️ 让用户下完几百 MB 才发现装不了，比一开始说清糟得多。
-  //
-  // ⚠️ 这里原来是个两分支三元表达式（不是 scene 就说 application），于是 image
-  // 被报成"Windows 程序" —— 少一个分支的后果不是少说一句，是**说错**。
-  // 现在理由由主进程按类型查表给出（we-host 的 TYPE_REFUSALS），加类型不会漏。
-  if (item.refusal) {
-    meta.innerHTML += `<span class="warn">${item.refusal}</span>`;
-  }
-  peekCard.appendChild(meta);
-
-  const acts = document.createElement('div');
-  acts.className = 'acts';
-  const go = document.createElement('button');
-  go.type = 'button';
-  go.className = item.supported ? 'act primary' : 'act';
-  go.textContent = item.supported ? '下载并装载' : '仍要下载';
-  go.onclick = () => startDownload(item.id);
-  acts.appendChild(go);
-  peekCard.appendChild(acts);
-}
+// ⚠️⚠️ 这里原来是 `peekCard` + `renderPeek()`（「看看是什么」的预览卡片）——
+// 0.9.57 整个删了。用户 2026-08-01：「也不用再弹一下这个预览图了，
+// 本身点击了创意工坊的壁纸不就已经展示了预览图了」
+//
+// 他说得对：右侧详情面板（renderWeSide）已经在显示预览图 + 标题 + 类型/大小/订阅数，
+// 而 renderPeek 会在它**下面**再画一张 ⟹ 同一个壁纸两张预览图。
+//
+// ⚠️ 它里面那段"三种情况分开说类型"的逻辑（tag 标的 / 从文件名推的 / 什么都没有）
+// **没有丢** —— 那是 0.9.x 的一个真教训（用户当时只能靠猜要不要下）。
+// 它在 renderWeSide 里以更短的形式保留：类型 + 「暂不支持」+ refusal 理由。
+// ⚠️ 而 `startDownload` 留着（真正干活的那个），只是入口从这张卡片
+// 换成了右侧面板的「下载」按钮。
 
 const W_FORMAT = (bytes) => {
   const n = Number(bytes) || 0;
@@ -1932,22 +1897,6 @@ const W_FORMAT = (bytes) => {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
 
-document.getElementById('ws-peek').onclick = async () => {
-  const input = document.getElementById('ws-id').value;
-  peekCard.className = 'ws-card on';
-  peekCard.innerHTML = '<div class="meta">查询中…</div>';
-  const result = await window.gw.workshopDetails(input);
-  if (!result.ok) {
-    peekCard.innerHTML = `<div class="meta"><span class="warn">${result.error}</span>`
-      + `${result.hint ? `\n${result.hint}` : ''}</div>`;
-    return;
-  }
-  if (!result.items.length) {
-    peekCard.innerHTML = '<div class="meta">没查到这个物品</div>';
-    return;
-  }
-  renderPeek(result.items[0]);
-};
 
 // ---------------------------------------------------------------------------
 // 浏览创意工坊（仿 Steam 排版）
@@ -2145,11 +2094,49 @@ function workshopCard(item, onPick, onMenu) {
   return card;
 }
 
+// ⚠️⚠️ **搜索框兼容"贴 ID / 贴创意工坊链接"**（0.9.57）。
+//
+// 起因：0.9.57 删掉了折叠区里那个 ID 输入框 + 「看看是什么」按钮（用户点名，
+// 它们在右侧详情面板下是冗余的）⟹ "别人发我一个壁纸 ID"这条路就没了 UI。
+// ⟹ 用户拍的方案：搜索框里贴 ID/链接就直接出那个壁纸，不当关键词去搜。
+// ⟹ 零新增控件，而那条路保留了。
+//
+// ⚠️ 这个正则是 workshop.js:22 `parseWorkshopId` 的**镜像** —— 那是主进程侧的
+// 模块，面板拿不到。⟹ 这里只做"**看起来像不像**"的判断（要不要走 details 那条路），
+// 真正的解析仍然由 `workshopDetails` → parseWorkshopId 做（唯一来源）。
+// ⚠️ 所以这里宁可**松**一点：认错了最坏是 details 返回"认不出 ID"，
+//   而认漏了就是用户贴了 ID 却被当关键词去搜（那会搜出一堆无关的）。
+function looksLikeWorkshopId(text) {
+  return /(?:[?&]id=|CommunityFilePage\/|^)\d{6,20}(?:[^\d]|$)/.test(String(text || '').trim());
+}
+
 async function runBrowse() {
   const state = document.getElementById('br-state');
   const grid = document.getElementById('br-grid');
   state.textContent = '查询中…';
   grid.innerHTML = '';
+
+  // 贴了 ID/链接 ⟹ 直接查那一个，右侧出详情（不当关键词搜）
+  const q = document.getElementById('br-q').value;
+  if (looksLikeWorkshopId(q)) {
+    const one = await window.gw.workshopDetails(q);
+    if (!one.ok) {
+      state.innerHTML = `<span class="warn">${one.error}</span>`
+        + (one.hint ? `\n${one.hint}` : '');
+      return;
+    }
+    if (!one.items.length) {
+      state.textContent = '没查到这个 ID —— 它可能已经被作者删了';
+      return;
+    }
+    // ⚠️ 也画到网格里（一张卡片）而不是只填右侧 —— 否则网格是空的，
+    // 看起来像"搜索没结果"，而右侧那张详情会让人以为它是上一次点的残留。
+    state.textContent = `按 ID 找到 1 个（贴的是 ${q.trim()}）`;
+    grid.appendChild(workshopCard(one.items[0], (picked) => renderWeSide(picked)));
+    renderWeSide(one.items[0]);
+    document.getElementById('br-pager').style.display = 'none';
+    return;
+  }
 
   const result = await window.gw.workshopBrowse({
     query: document.getElementById('br-q').value,
@@ -2843,7 +2830,10 @@ function renderMineDirs() {
     countEl.className = 'hint';
     countEl.style.cssText = 'font-size:11px;white-space:nowrap';
     if (lastMineCount) {
-      countEl.textContent = `${lastMineCount.total} 个，${lastMineCount.usable} 个能跑`
+      // ⚠️ 「能跑」这个说法 0.9.57 去掉了（用户点名：「"能跑"的这种描述不需要」）。
+      // ⟹ 只报总数。而"这张放不了"的信息在**卡片上**（`scene·暂不支持` 那行），
+      //   那是用户点下去之前会看到的地方 —— 一个汇总数字帮不了他挑壁纸。
+      countEl.textContent = `${lastMineCount.total} 个壁纸`
         + (lastMineCount.truncated ? '（超 500，只列前 500）' : '');
     }
     // ⚠️⚠️ **全部操作都在这一行**（0.9.31）。
@@ -3092,12 +3082,25 @@ function renderMineDirs() {
 // 已下载的列表 —— 下过的东西要能重新装载，而不是每次重填 ID。
 
 
-async function startDownload(id) {
-  wsState.textContent = '开始…';
+// ⚠️ `into` = 把进度/结果写到哪个状态区（0.9.57 加的参数）。
+// 右侧面板的「下载」按钮传 'wside-state'（就在按钮下面），
+// 而折叠区里那条路径不传 ⟹ 沿用 `wsState`。
+// ⚠️ 两个入口写同一个 `#ws-state` 的话，从右侧面板点下载的人得**展开折叠区**
+// 才看得到"下载到哪了"—— 那是"做了但用户看不到"的第七次。
+async function startDownload(id, into) {
+  const target = into ? document.getElementById(into) : wsState;
+  // ⚠️ 兜底到 wsState —— 传了个不存在的 id 时不该整个函数崩
+  //（那会让"点了下载完全没反应"，比报错糟）。
+  const box = target || wsState;
+  downloadInto = box;   // 进度回调要知道往哪写
+  box.textContent = '开始…';
   const result = await window.gw.workshopDownload(id);
   if (result.ok) {
-    wsState.innerHTML = `✅ 装载成功\n${result.dir}`;
+    box.innerHTML = `✅ 下载好了，已经用上\n${result.dir}`;
     renderWEStatus();
+    // ⚠️ 刷新「我的壁纸」—— 刚下的那个要出现在网格里。
+    // 不刷的话用户切过去看不到它，会以为下载没成功。
+    renderMine();
     return;
   }
   let html = `<span class="warn">${result.error}</span>`;
@@ -3107,13 +3110,17 @@ async function startDownload(id) {
   if (result.tail && result.tail.length) {
     html += `\n\nsteamcmd 最后几行：\n${result.tail.slice(-8).join('\n')}`;
   }
-  wsState.innerHTML = html;
+  box.innerHTML = html;
 }
 
 // 进度实时显示。⚠️ 没有它，下载大壁纸时界面一动不动，和卡死分不清。
+// ⚠️⚠️ 进度要写到**发起下载的那个状态区**（0.9.57）。
+// 原来写死 `wsState`（折叠区里那个）⟹ 从右侧面板点「下载」的人看不到进度，
+// 界面一动不动，和卡死分不清（而下载几百 MB 要好几分钟）。
+// ⟹ `downloadInto` 由 startDownload 设，默认还是 wsState。
 window.gw.onWorkshopProgress((hit) => {
   if (!hit) return;
-  wsState.textContent = hit.text;
+  (downloadInto || wsState).textContent = hit.text;
 });
 
 // 启动时探一下 steamcmd 在不在 —— 提前说比等下载失败再说好。
