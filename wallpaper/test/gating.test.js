@@ -5575,4 +5575,84 @@ check('预编译 helper：四个都编 / 名字规则两边一致 / swiftc 那�
     '预编译在 electron-builder 之后跑 ⟹ 打包时那个目录还是空的');
 });
 
+// ⚠️⚠️⚠️ **需要授权时要主动弹框**（0.9.76）。用户 2026-08-01：
+//   「你只要能保证需要用到的时候能够弹出来让授权的东西，用户授权一下就行」
+//
+// ⚠️⚠️ 两条授权链的表现**完全不同**，而这是查出来的：
+//   · **摄像头** —— `getUserMedia` 会让 macOS **自己弹框** ✅ 本来就对
+//   · **辅助功能** —— 原来只调 `AXIsProcessTrusted()`，那是**纯查询**，
+//     **永远不会弹框** ⟹ 用户看到"壁纸点不动 / 零事件"，
+//     而没有任何东西提示他去授权，更没有框让他点。
+//
+// ⟹ `AXIsProcessTrustedWithOptions` + `kAXTrustedCheckOptionPrompt: true`
+//   是 macOS **唯一**会自动弹辅助功能授权框的 API。
+check('辅助功能：主动弹授权框（不是只查询）', () => {
+  const files = [
+    ['native/AirCursorPointer.swift', '..', '..'],
+    ['wallpaper/native/GestureWallMouse.swift', '..', '..'],
+  ];
+  for (const [rel] of files) {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', rel), 'utf8');
+    // ⚠️ 剥掉 Swift 的注释 —— 那几段注释里写着历史（"原来只调
+    //   AXIsProcessTrusted()"），会骗过下面的反向断言。
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+    assert.match(code, /AXIsProcessTrustedWithOptions/,
+      `${rel} 只用 AXIsProcessTrusted（**纯查询**）⟹ 永远不弹授权框，`
+      + '用户看到"点不动"却没有任何东西让他授权（用户点名要弹框）');
+    assert.match(code, /AXTrustedCheckOptionPrompt/,
+      `${rel} 没传 kAXTrustedCheckOptionPrompt ⟹ WithOptions 也不会弹`);
+    // ⚠️ 那个 key 必须是 **true** —— 传 false 等于没传
+    assert.match(code, /axPromptKey: kCFBooleanTrue/,
+      `${rel} 的 prompt 选项不是 true ⟹ 不会弹框`);
+    // ⚠️⚠️ **`ready` 那次**要用带 prompt 的结果（那是"启动时请求一次"），
+    //   而 **`pong` 那次是实时查询** —— 那是有意的：
+    //   用户授权后重启进程，pong 要报**当前**状态，而不是启动那一刻的。
+    //   ⟹ 只守 ready/status 那次，不碰 pong。
+    //   ⚠️ 我第一版写的是"整个文件里不许有裸的 AXIsProcessTrusted()"
+    //     ⟹ **在正确代码上报红**（它逮到了 pong 那处，而那处该保留）。
+    //     判据要区分"请求一次"和"实时查询"这两种用途。
+    const readyLine = code.split('\n').find((l) => /"(?:ready|status)"/.test(l)
+      || /emit\(\["type": "(?:ready|status)"/.test(l));
+    if (readyLine) {
+      assert.ok(!/AXIsProcessTrusted\(\)/.test(readyLine),
+        `${rel} 的 ready/status 里又查了一次 AXIsProcessTrusted()`
+        + ' ⟹ 该用带 prompt 那次的结果（否则代码里有两个来源，会漂）');
+    }
+  }
+
+  // ⚠️ GestureWallMouse 显式 import ApplicationServices ——
+  //   Cocoa 会间接带上，但云端编译不了（没 swiftc）⟹ 不赌传递依赖。
+  const mouse = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'), 'utf8');
+  assert.match(mouse, /^import ApplicationServices$/m,
+    'GestureWallMouse 没显式 import ApplicationServices ⟹ '
+    + '赌 Cocoa 的传递依赖，而这台机器编译不了、验不出来');
+
+  // ⚠️⚠️ **打包版和开发模式要说不同的话**。
+  // 原来那条提示只讲开发模式（"要打包成 .app"），而**打包版用户看到的是同一句**
+  // ⟹ 他已经在用 .app 了，那句话毫无意义（甚至误导）。
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // ⚠️ 锚**它在提示里被用到**，不是那个名字 —— `isPackagedBuild()` 出现两次
+  //   （定义 + 调用），只查名字的话把**调用**改掉守卫照样绿
+  //   （反向验证第 6 条：报红 0，"锚点太弱"第 13 次）。
+  assert.match(dash, /\+ \(isPackagedBuild\(\)/,
+    '鼠标授权的提示不分打包版/开发模式 ⟹ 打包版用户被告知"要打包成 .app"');
+  // ⚠️⚠️ 判据用的是 **build 标识里那三个字**，不是 `window.gw.isPackaged`
+  //   —— **那个不存在**（面板拿不到 app.isPackaged）。
+  //   我差点直接写上去，而它会静默 undefined ⟹ 打包版永远走错那支。
+  assert.ok(!/window\.gw\??\.?isPackaged/.test(dash),
+    'dashboard 用了 window.gw.isPackaged ⟹ **那个不存在**，会静默 undefined');
+  assert.match(dash, /status\.build\.includes\('打包版'\)/,
+    'isPackagedBuild 不是从 build 标识判的 ⟹ 那是面板唯一拿得到的信息');
+  // ⚠️ 打包版那支要说清**两件**用户不知道的事
+  assert.match(dash, /要重开本应用/,
+    '没说"授权后要重开应用" ⟹ 用户会"授权了但还是不行"，以为是 bug'
+    + '（macOS 的授权对已经在跑的进程不生效）');
+  assert.match(dash, /找 GestureWallMouse/,
+    '没说授权列表里找哪个名字 ⟹ 那里显示的是 helper 的二进制名，'
+    + '不是 GestureWall（TCC 按可执行文件记授权）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

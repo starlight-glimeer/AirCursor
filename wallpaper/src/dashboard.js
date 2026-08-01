@@ -1118,12 +1118,27 @@ function buildPreview(action, recorded) {
 //
 // ⟹ 一句话：**核对版本用的东西，不能依赖任何"恰好发生"的时机。**
 // 而它对打包来回测试是刚需 —— 测了旧版本会得出"改了没生效"的假结论。
+// ⚠️ 是不是打包版。**没有 `window.gw.isPackaged`** —— 面板拿不到 app.isPackaged，
+// 而 `weStatus().build` 里有现成的（main.js 的 buildStamp 拼的
+// `v0.9.76 <commit> 打包版` / `… npm start`）。
+// ⟹ 用它，不新加一条 IPC（那是第二份知识）。
+// ⚠️ 存缓存而不是每次 await —— 这个判断在渲染函数里同步用。
+let packagedBuild = null;
+
+function isPackagedBuild() {
+  return packagedBuild === true;
+}
+
 async function renderBuildStamp() {
   const node = document.getElementById('build-stamp');
   if (!node) return;
   try {
     const status = await window.gw.weStatus();
     node.textContent = (status && status.build) || '版本未知';
+    // ⚠️ 顺手记下"是不是打包版" —— 给 renderMouseDiag 用（见 isPackagedBuild）。
+    if (status && typeof status.build === 'string') {
+      packagedBuild = status.build.includes('打包版');
+    }
   } catch {
     // 拿不到也要说话 —— 空白会被读成"这个功能没做"。
     node.textContent = '版本读不到';
@@ -1583,11 +1598,30 @@ function renderMouseDiag(mouse) {
     // 监听建立了、门也开着、但没有辅助功能授权 ⟹ 回调一次都不触发。
     const trusted = mouse.status && mouse.status.trusted;
     if (trusted === false) {
+      // ⚠️⚠️ **打包版和开发模式要说不同的话**（0.9.76）。
+      //
+      // 原来这条只讲开发模式（"要打包成 .app"）—— 而**打包版的用户看到的是
+      // 同一句** ⟹ 他已经在用 .app 了，那句话对他毫无意义（甚至误导）。
+      //
+      // ⟹ 打包版：说清**授权之后要重开应用**。那是 macOS 的硬要求 ——
+      //   `AXIsProcessTrustedWithOptions` 会弹框（0.9.76 加的），
+      //   但用户在系统设置里勾选之后，**进程不会自动获得授权**，必须重启。
+      //   不说这句的话用户会"授权了但还是不行"⟹ 以为是 bug。
+      // ⚠️ 而**授权列表里显示的是 helper 的名字**（GestureWallMouse），
+      //   不是 GestureWall —— TCC 按可执行文件记授权。不说这句他找不到那一项。
+      // ⚠️⚠️ 判"是不是打包版"用的是 **build 标识里那三个字**，
+      //   而不是 `window.gw.isPackaged`（**那个不存在** —— 我差点直接写上去，
+      //   而它会静默 undefined ⟹ 打包版永远走到 else 那支，说"要打包成 .app"）。
       return '\n⚠️ 没有辅助功能授权 —— 监听建立了但收不到任何事件。'
-        + '\n开发模式（npm start）拿不到那个授权，要打包成 .app：npm run dist:mac';
+        + (isPackagedBuild()
+          ? '\n\n应该已经弹过授权框了。如果错过了：'
+            + '\n系统设置 → 隐私与安全性 → 辅助功能 → 找 GestureWallMouse 打开'
+            + '\n\n⚠️ 勾选之后**要重开本应用**（⌃⇧Q 退出再打开）——'
+            + '那是 macOS 的要求，授权对已经在跑的进程不生效。'
+          : '\n开发模式（npm start）拿不到那个授权，要打包成 .app：npm run dist:mac');
     }
     return '\n⚠️ 一个鼠标事件都没转发进去。三种可能：'
-      + '\n① 没有辅助功能授权（最常见，开发模式下必然如此）'
+      + '\n① 没有辅助功能授权（最常见）—— 上面那行状态会说'
       + '\n② 「只在桌面被聚焦时」那个开关开着'
       + '\n③ helper 没起来 —— 看上面那行状态';
   }

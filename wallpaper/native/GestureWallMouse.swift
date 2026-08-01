@@ -39,6 +39,10 @@
 //   {"type":"status","state":"running"}
 
 import Cocoa
+// ⚠️ 显式 import —— `AXIsProcessTrustedWithOptions`（0.9.76 用它主动弹授权框）
+//   在 ApplicationServices 里。Cocoa 会间接带上它，但这台机器上编译不了
+//   （云端没 swiftc）⟹ 显式写出来，不赌传递依赖。
+import ApplicationServices
 
 // 只监听真正会用到的类型。
 //
@@ -201,7 +205,24 @@ if monitor == nil {
 //
 // 所以启动 3 秒后自查：一个事件都没有就报出来，并说清最可能的原因。
 // 3 秒是因为用户装载壁纸后总会动一下鼠标 —— 真有授权的话那几秒必有事件。
-let trusted = AXIsProcessTrusted()
+// ⚠️⚠️⚠️ **主动请求辅助功能授权**（0.9.76）。
+//
+// 用户 2026-08-01：「你只要能保证需要用到的时候能够弹出来让授权的东西，
+// 用户授权一下就行」
+//
+// ⚠️ 原来这里只调 `AXIsProcessTrusted()` —— 那是**纯查询**，**永远不会弹框**。
+//   ⟹ 用户看到的是"壁纸点不动"，而没有任何东西提示他去授权。
+//   而这个 helper 正是**壁纸收鼠标点击**的那条链（粒子壁纸的点击特效靠它）。
+//
+// ⟹ `AXIsProcessTrustedWithOptions` + `kAXTrustedCheckOptionPrompt: true`
+//   是 macOS **唯一**会自动弹辅助功能授权框的 API。
+//
+// ⚠️ 已授权时它是静默的 true，不会骚扰用户；
+//   而用户在系统设置里勾选之后 macOS 要求**重启进程**才生效
+//   ⟹ 我们仍然报 trusted: false，面板那句"授权后重开本应用"照旧有用。
+let axPromptKey = "AXTrustedCheckOptionPrompt" as CFString
+let axOptions = [axPromptKey: kCFBooleanTrue as Any] as CFDictionary
+let trusted = AXIsProcessTrustedWithOptions(axOptions)
 
 emit(["type": "status", "state": "running",
       "gateOnFinder": gateOnFinder,

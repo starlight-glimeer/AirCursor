@@ -30,10 +30,37 @@ func emit(_ payload: [String: Any]) {
     FileHandle.standardOutput.write(line.data(using: .utf8)!)
 }
 
-if !AXIsProcessTrusted() {
-    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件不会生效。\n".data(using: .utf8)!)
+// ⚠️⚠️⚠️ **主动请求辅助功能授权**（0.9.76）。
+//
+// 用户 2026-08-01：「你只要能保证需要用到的时候能够弹出来让授权的东西，
+// 用户授权一下就行」
+//
+// ⚠️ 原来这里只调 `AXIsProcessTrusted()` —— 那是**纯查询**，
+//   它**永远不会弹框**。⟹ 用户看到的是"一个鼠标事件都没转发进去"，
+//   而没有任何东西告诉他"去授权"，更没有弹框让他点。
+//
+// ⟹ `AXIsProcessTrustedWithOptions` + `kAXTrustedCheckOptionPrompt: true`
+//   是 macOS **唯一**会自动弹辅助功能授权框的 API。
+//   它弹的是系统标准框（"XXX 想要控制此电脑…" + 「打开系统设置」按钮）。
+//
+// ⚠️ 三件必须知道的：
+//   ① 它**只在还没授权时**弹 —— 已授权时是静默的 true，不会骚扰用户
+//   ② 弹框之后**这个进程不会自动获得授权** —— 用户在系统设置里勾选之后，
+//      macOS 要求**重启进程**才生效。⟹ 我们仍然要报 trusted: false，
+//      让面板显示"授权后重开本应用"（那段文案已经在了）
+//   ③ 用户点「稍后」的话不会再弹（macOS 记住了）⟹ 那时只能靠面板的提示
+//
+// ⚠️ 弹框里显示的名字是**这个二进制的名字**（AirCursorPointer），
+//   不是主应用 —— 那是 TCC 按可执行文件记授权的必然结果。
+//   面板上那句「授权列表里找 AirCursorPointer」就是为这个写的。
+let axPromptKey = "AXTrustedCheckOptionPrompt" as CFString
+let axOptions = [axPromptKey: kCFBooleanTrue as Any] as CFDictionary
+let axTrusted = AXIsProcessTrustedWithOptions(axOptions)
+
+if !axTrusted {
+    FileHandle.standardError.write("AirCursorPointer 缺少辅助功能权限，鼠标事件不会生效。已弹出授权请求。\n".data(using: .utf8)!)
 }
-emit(["type": "ready", "trusted": AXIsProcessTrusted()])
+emit(["type": "ready", "trusted": axTrusted])
 
 func currentMousePoint() -> CGPoint {
     CGEvent(source: nil)?.location ?? lastPoint
