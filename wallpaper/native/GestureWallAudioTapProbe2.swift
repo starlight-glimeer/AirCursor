@@ -265,6 +265,19 @@ final class Counters {
     var peak: Float = 0
     var channelsSeen = 0
     var callbacks = 0
+    // ⚠️⚠️ **格式细节 —— 换过去之前必须确认的两件事之一。**
+    //
+    // 探针报了 `channels: 1`（只有一个 AudioBuffer），但那有两种可能：
+    //   ① 真的是单声道（正好是 WE 要的 —— 它 `spec.channels = 1`）
+    //   ② **交错的立体声**（L,R,L,R… 挤在一个 buffer 里）
+    //
+    // ⚠️ 若是 ② 而我按单声道读，采样率实际是一半
+    // ⟹ **每个 FFT bin 对应的频率翻倍** ⟹ 整圈频率映射错位
+    // ⟹ 而那是"画面看起来还行但对不上音乐"，最难发现的一类。
+    //
+    // ⟹ `mNumberChannels` 直接给出答案。
+    var bufChannels: UInt32 = 0
+    var bufBytes: UInt32 = 0
 }
 let c = Counters()
 
@@ -280,6 +293,11 @@ let ioErr = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, nil) {
     let bufs = UnsafeMutableAudioBufferListPointer(
         UnsafeMutablePointer(mutating: list))
     for buf in bufs {
+        // 记下格式（每次都一样，记第一次就够）
+        if c.bufChannels == 0 {
+            c.bufChannels = buf.mNumberChannels
+            c.bufBytes = buf.mDataByteSize
+        }
         guard let raw = buf.mData else { continue }
         let count = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
         let p = raw.assumingMemoryBound(to: Float.self)
@@ -325,6 +343,42 @@ if c.callbacks == 0 {
     verdict += "RMS \(String(format: "%.4f", rms))（\(String(format: "%.1f", dbfs)) dBFS）。"
     verdict += "⟹ CoreAudio tap 能拿到系统音频，而且**不需要屏幕录制权限** "
     verdict += "⟹ 换过去之后菜单栏不会再显示「正在共享屏幕」。"
+    // ⚠️ 但还有两件事要确认，否则换过去会引入新问题
+    verdict += " ⚠️ 换之前还要定两件事："
+    if c.bufChannels > 1 {
+        verdict += "①格式是**交错的 \(c.bufChannels) 声道**"
+        verdict += "（按单声道读会让频率映射整体翻倍，画面对不上音乐）；"
+    } else {
+        verdict += "①格式是**单声道**（正好是 WE 要的，直接用）；"
+    }
+    verdict += "②这个 RMS 是音量前还是音量后 —— **改一下系统音量再跑一次**："
+    verdict += "RMS 跟着变=音量后（换过去要去掉那次乘系统音量），不变=音量前（保留）。"
+    verdict += " 当前系统音量 \(Int(max(0, sysVol) * 100))%。"
+}
+
+// ⚠️⚠️ **系统音量 —— 换过去之前必须确认的另一件事。**
+//
+// PulseAudio 的 monitor（WE 用的）= **音量之后**的信号
+// ScreenCaptureKit（我们现在用的）= **音量之前** ⟹ 我们为此乘了系统音量
+// CoreAudio tap = **不知道**
+//
+// ⟹ 若 tap 已经是音量后，我们再乘一次就**乘了两遍**
+//    ⟹ 音量 50% 时柱子只有 WE 的 1/4
+//
+// ⟹ 报出当前音量 + RMS，让用户**改音量跑两次**对比：
+//    RMS 跟着变 ⟹ tap 是音量后 ⟹ 换过去要**去掉**那次乘法
+//    RMS 不变   ⟹ tap 是音量前 ⟹ 保留乘法
+var volAddr = AudioObjectPropertyAddress(
+    mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+    mScope: kAudioDevicePropertyScopeOutput,
+    mElement: kAudioObjectPropertyElementMain
+)
+var sysVol = Float32(-1)
+var volSize = UInt32(MemoryLayout<Float32>.size)
+if AudioObjectHasProperty(defOut, &volAddr) {
+    if AudioObjectGetPropertyData(defOut, &volAddr, 0, nil, &volSize, &sysVol) != noErr {
+        sysVol = -1
+    }
 }
 
 // ⚠️ 正常路径也要清理（不能只靠 defer，因为上面已经改成手动了）
@@ -336,6 +390,9 @@ emit([
     // ⚠️ 报出中间状态 —— 零回调时要能判"是哪一环空了"。
     // 前两版失败都是"每一步 noErr 但功能死"，而没有这些字段的话
     // 我只能继续猜（这一轮已经猜错两次：tap 初始化器、subdevice 列表）。
+    "bufChannels": Int(c.bufChannels),
+    "bufBytes": Int(c.bufBytes),
+    "systemVolume": Double(String(format: "%.3f", max(0, sysVol))) ?? 0,
     "tapUID": tapUID as String,
     "outUID": outUID as String,
     "aggID": Int(aggID),
