@@ -1,4 +1,6 @@
-# GestureWall
+# DreamPaper
+
+> any wallpaper you want is here
 
 macOS 上的动态壁纸播放器 —— 直接用 **Wallpaper Engine 创意工坊**的壁纸。
 
@@ -14,13 +16,13 @@ macOS 上的动态壁纸播放器 —— 直接用 **Wallpaper Engine 创意工�
 
 ### 1. 拖进「应用程序」
 
-打开 `GestureWall-x.y.z-arm64.dmg`，把 GestureWall 拖到「应用程序」。
+打开 `DreamPaper-x.y.z-arm64.dmg`，把 DreamPaper 拖到「应用程序」。
 
 ### 2. 第一次打开：跟着那个「?」走
 
 这个应用**没有 Apple 开发者签名**（那要 $99/年），所以第一次打开时 macOS 会拦一下：
 
-> **Apple 无法验证「GestureWall」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。**
+> **Apple 无法验证「DreamPaper」是否包含可能危害 Mac 安全或泄漏隐私的恶意软件。**
 > 【完成】 【移到废纸篓】 【**?**】
 
 **点那个「?」** —— 它会引导你到「系统设置 → 隐私与安全性」，
@@ -31,7 +33,7 @@ macOS 上的动态壁纸播放器 —— 直接用 **Wallpaper Engine 创意工�
 **如果你更习惯终端**，一条命令等效：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/GestureWall.app
+xattr -dr com.apple.quarantine /Applications/DreamPaper.app
 ```
 
 > 那个 `com.apple.quarantine` 属性是**下载时**打上的、**按文件**算 ——
@@ -71,7 +73,7 @@ xattr -dr com.apple.quarantine /Applications/GestureWall.app
 
 ## 壁纸放哪
 
-**`~/Documents/GestureWall/Wallpapers/`**（中文系统的 Finder 里显示为「文档」）
+**`~/Documents/DreamPaper/Wallpapers/`**（中文系统的 Finder 里显示为「文档」）
 
 首次启动会自动建出来，里面有一个 `把壁纸放这里.txt` 说明格式。
 
@@ -130,8 +132,10 @@ Wallpapers/
 
 残留的只有两处，和别的应用一样：
 
-- `~/Library/Application Support/GestureWall/` —— 配置和缓存
-- `~/Documents/GestureWall/Wallpapers/` —— **你的壁纸**（想留就留着）
+- `~/Library/Application Support/aircursor/` —— 配置和缓存
+  （⚠️ 目录名是 `aircursor` 不是 `DreamPaper`：它取自 package.json 的顶层 `name`，
+  而那个字段**有意没跟着改名走** —— 改了的话现有的 config.json 就找不到了）
+- `~/Documents/DreamPaper/Wallpapers/` —— **你的壁纸**（想留就留着）
 
 ---
 
@@ -172,7 +176,7 @@ npm test               # 跑测试
 要测首次打开的体验，手动拖 dmg，然后模拟"从网上下载"：
 
 ```bash
-xattr -w com.apple.quarantine "0083;00000000;Safari;" /Applications/GestureWall.app
+xattr -w com.apple.quarantine "0083;00000000;Safari;" /Applications/DreamPaper.app
 ```
 
 > 本地构建的 dmg **没有** quarantine 属性（那是下载时才打的）

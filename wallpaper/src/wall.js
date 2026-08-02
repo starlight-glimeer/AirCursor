@@ -291,7 +291,7 @@ function drawHud() {
   const missing = ['background', 'subject', 'shard'].filter((k) => !config.layers[k]);
   const gestureAge = lastGesture ? Math.round(performance.now() - lastGestureAt) : null;
   hud.innerHTML = [
-    `<b>GestureWall</b> ${fps} fps`,
+    `<b>DreamPaper</b> ${fps} fps`,
     `壁纸层：${strategy ? strategy.label : '?'}`,
     frameNote(),
     `鼠标事件：${mouseSeen ? '收到 ✓' : '没收到（desktop 层的预期）'}`,

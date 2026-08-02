@@ -3598,7 +3598,7 @@ function renderMineDirs() {
     reset.type = 'button';
     reset.className = 'act';
     reset.textContent = '恢复默认';
-    reset.title = '回到 文档/GestureWall/Wallpapers';
+    reset.title = '回到 文档/DreamPaper/Wallpapers';
     reset.onclick = async () => {
       const out = await window.gw.resetWallpaperDir();
       if (out && out.ok) await renderMine();

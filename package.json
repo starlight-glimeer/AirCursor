@@ -1,6 +1,6 @@
 {
   "name": "aircursor",
-  "version": "0.9.130",
+  "version": "0.9.131",
   "description": "macOS 上的动态壁纸播放器 —— 直接用 Wallpaper Engine 创意工坊的壁纸",
   "author": "starlight-glimeer",
   "main": "wallpaper/src/main.js",
@@ -20,7 +20,7 @@
   },
   "build": {
     "appId": "com.starlightglimeer.aircursor",
-    "productName": "GestureWall",
+    "productName": "DreamPaper",
     "asar": false,
     "files": [
       "wallpaper/**/*",
@@ -59,12 +59,12 @@
     "mac": {
       "category": "public.app-category.productivity",
       "extendInfo": {
-        "NSHumanReadableCopyright": "由 starlight-glimeer 开发 · GestureWall",
-        "NSCameraUsageDescription": "GestureWall 需要摄像头来识别你的手势。画面只在本机处理，不上传、不保存。",
-        "NSMicrophoneUsageDescription": "GestureWall 需要麦克风来识别语音指令（可选功能）。",
-        "NSSpeechRecognitionUsageDescription": "GestureWall 需要语音识别来处理你的语音指令（可选功能，本机识别）。",
-        "NSAppleEventsUsageDescription": "GestureWall 需要本机自动化来打开你指定的应用、以及设置桌面壁纸。",
-        "NSScreenCaptureUsageDescription": "GestureWall 需要采集系统声音来驱动音频响应的壁纸。"
+        "NSHumanReadableCopyright": "由 starlight-glimeer 开发 · DreamPaper",
+        "NSCameraUsageDescription": "DreamPaper 需要摄像头来识别你的手势。画面只在本机处理，不上传、不保存。",
+        "NSMicrophoneUsageDescription": "DreamPaper 需要麦克风来识别语音指令（可选功能）。",
+        "NSSpeechRecognitionUsageDescription": "DreamPaper 需要语音识别来处理你的语音指令（可选功能，本机识别）。",
+        "NSAppleEventsUsageDescription": "DreamPaper 需要本机自动化来打开你指定的应用、以及设置桌面壁纸。",
+        "NSScreenCaptureUsageDescription": "DreamPaper 需要采集系统声音来驱动音频响应的壁纸。"
       },
       "target": [
         "dmg"

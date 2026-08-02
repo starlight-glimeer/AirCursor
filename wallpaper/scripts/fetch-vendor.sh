@@ -21,6 +21,7 @@ for candidate in \
   "${AIRCURSOR_REPO:-}" \
   "$here/.." \
   "$here/../AirCursor" \
+  "$HOME/workspace/DreamPaper" \
   "$HOME/workspace/AirCursor" \
   "$HOME/hackathon/AirCursor"
 do

@@ -14,6 +14,18 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
 
+// ⚠️⚠️ **产品名从 package.json 的 productName 读，不写死**（0.9.131）。
+//   用户 2026-08-02 把 GestureWall 改成 DreamPaper，而当时**五条守卫同时在正确
+//   代码上报红** —— 它们各自写死了 'GestureWall'（启动横幅、pgrep、三条授权说明、
+//   README 对照）。
+//   ⟹ 判据：**守卫里凡是"产品名/版本号"这类会变的标识，都从单一来源读** ——
+//     写死的话每次改名都要改一圈守卫，而那一圈里漏掉的那条会静默失效。
+//   ⚠️ 而 `name`（aircursor）和 `appId` **有意不跟着改**：前者决定 userData 目录
+//     （改了 config.json 就找不到），后者决定 TCC 授权（改了要重新授权）。
+const PRODUCT = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'),
+).build.productName;
+
 let passed = 0;
 function check(name, fn) {
   try {
@@ -1840,8 +1852,10 @@ check('⌃⇧D 能开开发者工具（有些东西只有 devtools 有：网络�
     '没有 devtools 快捷键 —— 那意味着用户看不到 404 是哪个资源、异常在哪一行');
   // 和 ⌃⇧H 同一条道理:默认关且没有开关的观测手段等于不存在。
   assert.match(html, /⌃⇧D/, '面板没列出这个快捷键，用户不会知道它存在');
-  // ⚠️ 同上：不能锚在字面 `=== GestureWall ===`，那行带了 build 标识。
-  const bannerAt2 = main.indexOf('=== GestureWall');
+  // ⚠️ 同上：不能锚在字面 `=== <名字> ===`，那行带了 build 标识。
+  // ⚠️⚠️ 而**名字从 productName 读**（0.9.131 改名 DreamPaper）——
+  //   写死名字的守卫在下次改名时会在正确代码上报红，而这已经发生过一次了。
+  const bannerAt2 = main.indexOf(`=== ${PRODUCT}`);
   assert.ok(bannerAt2 > 0, '找不到启动横幅');
   const banner = main.slice(bannerAt2);
   assert.match(banner.slice(0, 400), /⌃⇧D/, '终端启动信息里没列 ⌃⇧D');
@@ -2581,6 +2595,70 @@ check('一个 id 在文档里只能有一个（重复的那个是静默死区）
     `重复的 id：${dups.join(', ')}\n`
     + '⟹ getElementById 只找到第一个，后面那些是写不进去的死区'
     + '（它们的占位内容会一直挂在界面上）');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️ **改名 DreamPaper**（0.9.131）。用户 2026-08-02：
+//    「我想把开头的 gesturewall 改成 DreamPaper，slogan 就是
+//      any wallpaper you want is here，然后壁纸路径也是 gesture 替换成
+//      DreamPaper，之前的不用管，我自己迁移」
+//    「我就是先改用户能看到的这些东西，其他那些我们后面再说」
+//
+//  ⚠️⚠️ 而**两个字段有意不跟着改**，这条守卫要把那个决定钉住：
+//    `name`（aircursor） → 决定 `app.getPath('userData')`
+//                          ⟹ 改了 config.json 就找不到（Steam key、AI key、
+//                            壁纸目录、录制的手势全丢）
+//    `appId`             → macOS 的 TCC **按 bundle id 记授权**
+//                          ⟹ 改了摄像头/辅助功能全部要重新授权
+//  ⟹ 判据：**"改名"要分清"对外的称呼"和"系统里的真实标识"** ——
+//    前者随便改，后者改了就和用户机器上的既有状态脱节。
+// ═══════════════════════════════════════════════════════════════════════
+check('改名只动对外称呼，不动 name / appId（那两个决定数据和授权）', () => {
+  const pkg = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  assert.strictEqual(pkg.name, 'aircursor',
+    'package.json 的顶层 name 变了 ⟹ `app.getPath(\'userData\')` 跟着变，'
+    + '而那意味着现有的 config.json 找不到了（Steam key / AI key / 壁纸目录 / '
+    + '录过的手势全部回默认）。改名不该动它');
+  assert.match(pkg.build.appId, /aircursor$/,
+    'appId 变了 ⟹ macOS 的 TCC 按 bundle id 记授权，用户要重新授权'
+    + '摄像头和辅助功能。改名不该动它');
+  assert.strictEqual(pkg.build.productName, 'DreamPaper',
+    'productName 不是 DreamPaper ⟹ 打出来的 .app 和 dmg 名字不对');
+});
+
+check('打包脚本找的 .app 名字跟着 productName（写错就直接装不上）', () => {
+  // ⚠️ electron-builder 用 productName 命名 .app 和 dmg 卷
+  //   ⟹ 脚本里写死旧名字的话，改名之后 `ls dist/mac*/<旧名>.app` 找不到文件，
+  //     而症状是"打包成功但装不上"（或者装了个不存在的东西）。
+  for (const f of ['build-mac.sh', 'install-dmg.sh']) {
+    const sh = fs.readFileSync(path.join(__dirname, '..', 'scripts', f), 'utf8');
+    const code = sh.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    assert.ok(!new RegExp(`GestureWall\\.app`).test(code),
+      `${f} 里还在找 GestureWall.app ⟹ productName 已经是 ${PRODUCT}，`
+      + '那个路径不存在（症状：打包成功但装不上）');
+    assert.ok(code.includes(`${PRODUCT}.app`),
+      `${f} 里没有 ${PRODUCT}.app`);
+  }
+});
+
+check('启动页写的是产品名和 slogan', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const at = html.indexOf('id="launch"');
+  assert.ok(at > 0, '找不到启动页');
+  const block = html.slice(at, html.indexOf('<nav>', at));
+  // ⚠️ h1 是拆成两半的（`Dream<b>Paper</b>`，后半截单独给了字重和颜色）
+  //   ⟹ 去掉标签再比，那样拆词方式变了也不会误报。
+  const h1 = (block.match(/<h1>([\s\S]*?)<\/h1>/) || [])[1] || '';
+  assert.strictEqual(h1.replace(/<[^>]+>/g, '').trim(), PRODUCT,
+    `启动页的大字不是 ${PRODUCT}（去掉标签后是 "${h1.replace(/<[^>]+>/g, '').trim()}"）`);
+  // ⚠️⚠️ 锚**那个元素的内容**，不是"这串字在这一段里出现过" ——
+  //   上面那条注释里就引用了 slogan 原文（记录用户的原话）⟹ 只查字串会命中它，
+  //   改坏真正的 `.sub` 断言照样绿。这是这轮第六次撞到同一件事。
+  const sub = (block.match(/<div class="sub">([^<]*)<\/div>/) || [])[1] || '';
+  assert.strictEqual(sub.trim(), 'any wallpaper you want is here',
+    `slogan 不对（现在是 "${sub.trim()}"）—— 用户 2026-08-02 点名：`
+    + '"any wallpaper you want is here"');
 });
 
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
@@ -4229,7 +4307,7 @@ check('装包走 dmg（不许把"直接拷 .app"当推荐路径）', () => {
   assert.match(isCode, /^\s*ditto /m,
     '用 cp -R 拷 .app ⟹ 某些情况下会丢符号链接目标，用 ditto');
   // ⚠️ 旧版本在跑时要拦住 —— 否则文件被占用，症状是"装完还是旧行为"
-  assert.match(is, /pgrep -x GestureWall/,
+  assert.match(is, new RegExp(`pgrep -x ${PRODUCT}`),
     '没检查旧版本在不在跑 ⟹ 文件被占用时症状是"装完还是旧行为"，'
     + '而那和"改了没生效"分不清');
 
@@ -6584,8 +6662,10 @@ check('授权框里说的是 GestureWall，不是 AirCursor', () => {
     assert.ok(v, `${k} 没了 ⟹ macOS 会直接拒绝那次授权请求（不是"不显示说明"，是崩）`);
     assert.ok(!/AirCursor/.test(v),
       `${k} 里还写着 AirCursor ⟹ 用户看到的框上说"AirCursor 要用…"，`
-      + '而应用叫 GestureWall（看起来像被别的程序劫持）');
-    assert.match(v, /GestureWall/, `${k} 没提 GestureWall ⟹ 用户不知道是谁在要权限`);
+      + `而应用叫 ${PRODUCT}（看起来像被别的程序劫持）`);
+    // ⚠️ 从 productName 读，不写死名字 —— 0.9.131 改名时这几条全在正确代码上报红了。
+    assert.match(v, new RegExp(PRODUCT),
+      `${k} 没提 ${PRODUCT} ⟹ 用户不知道是谁在要权限`);
   }
   // helper 自己的 plist —— 语音 helper 弹框用的是**它**，不是主 App 的
   const plist = fs.readFileSync(

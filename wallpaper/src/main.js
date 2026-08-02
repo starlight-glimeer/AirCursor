@@ -1104,7 +1104,7 @@ function openDashboard() {
     // 900 保证正常情况下总是"网格 + 右侧详情"两列。
     minWidth: 900,
     minHeight: 600,
-    title: 'GestureWall',
+    title: 'DreamPaper',
     // ⚠️⚠️ **深色标题栏**（0.9.46）。用户 2026-08-01 报：
     //   「wall 这块是用的 Mac 原生的那个条一个白条，因为我是浅色主题吗？
     //     但是我们整体是深色主题，他就不是一个整体，你懂吗？
@@ -3198,8 +3198,17 @@ ipcMain.handle('workshop-browse-meta', () => ({
 // ⚠️ 默认值**不写进 config** —— 那样换用户/换机器时它自己跟着 `app.getPath`
 // 走（`config.we.wallpaperDir` 为空时才用默认）。写死的话配置一旦生成
 // 就绑在某个用户名上，而这个项目已经因为"路径从自己环境取"栽过几次。
+// ⚠️⚠️ **目录名 0.9.131 从 GestureWall 改成 DreamPaper**。用户 2026-08-02：
+//   「壁纸路径也是 gesture 替换成 DreamPaper，之前的不用管，我自己迁移」
+//
+// ⚠️ 所以这里**不做自动迁移** —— 用户明确说他自己搬。
+//   ⟹ 而那意味着他升级之后打开面板会看到**壁纸列表是空的**（新目录还不存在，
+//     我们会建一个空的 + 放那个说明文件）。那是预期，不是 bug。
+//   ⚠️ 而**已经装载着的那张壁纸不受影响**：`config.we.dir` 存的是绝对路径，
+//     指向旧目录里那个子目录 ⟹ 它照样能放。判据：改默认目录只影响"扫哪儿"，
+//     不影响"当前在放什么"。
 function defaultWallpaperDir() {
-  return path.join(app.getPath('documents'), 'GestureWall', 'Wallpapers');
+  return path.join(app.getPath('documents'), 'DreamPaper', 'Wallpapers');
 }
 
 function ourWallpaperDir() {
@@ -3316,9 +3325,9 @@ function ensureOurWallpaperDir() {
     const readme = path.join(dir, '把壁纸放这里.txt');
     if (!fs.existsSync(readme)) {
       fs.writeFileSync(readme, [
-        'GestureWall 壁纸目录',
+        'DreamPaper 壁纸目录',
         '',
-        '把壁纸放进这个目录，GestureWall 会自动扫到它们。',
+        '把壁纸放进这个目录，DreamPaper 会自动扫到它们。',
         '',
         '⚠️ 每个壁纸是一个【子目录】，里面要有 project.json：',
         '',
@@ -3634,7 +3643,7 @@ function unpackLegacy(binPath, targetDir) {
         type: isImage ? 'image' : 'video',
         file: `wallpaper.${ext}`,
         title: `工坊物品（${sniff.label}）`,
-        _generatedBy: 'GestureWall：legacy 单文件壁纸没有 project.json，这个是我们造的',
+        _generatedBy: 'DreamPaper：legacy 单文件壁纸没有 project.json，这个是我们造的',
         _sourceFile: path.basename(binPath),
       }, null, 2));
 
@@ -5239,9 +5248,9 @@ function hardQuit(from) {
 function buildAppMenu() {
   const template = [
     {
-      label: 'GestureWall',
+      label: 'DreamPaper',
       submenu: [
-        { label: '关于 GestureWall', click: () => { openDashboard(); } },
+        { label: '关于 DreamPaper', click: () => { openDashboard(); } },
         { type: 'separator' },
         { label: '设置面板', accelerator: 'CmdOrCtrl+,', click: () => { openDashboard(); } },
         { type: 'separator' },
@@ -5263,7 +5272,7 @@ function buildAppMenu() {
         // screen-saver 层的骨架窗口 —— 那条链上任何一步没按预期走，退出就静默停住。
         //
         // ⟹ 不猜它为什么停住，改成**自己控制的、可观测的**退出路径。
-        { label: '退出 GestureWall', accelerator: 'Command+Q', click: () => hardQuit('菜单') },
+        { label: '退出 DreamPaper', accelerator: 'Command+Q', click: () => hardQuit('菜单') },
       ],
     },
     // 编辑菜单：面板里有输入框（工坊搜索、API key），没有这个 Cmd+V 粘贴不了。
@@ -5444,7 +5453,7 @@ app.whenReady().then(() => {
   //   版本号   —— dmg 文件名里也有，用来核对装的是哪个包
   //   commit   —— 唯一确定代码，版本号不变时也能分辨
   //   打包与否 —— 决定权限能不能拿到（npm start 拿不到辅助功能/屏幕录制）
-  console.log(`\n=== GestureWall ${buildStamp()} ===`);
+  console.log(`\n=== DreamPaper ${buildStamp()} ===`);
   console.log('  ⌃⇧W 设置    ⌃⇧L 换壁纸层    ⌃⇧R 复位视角    ⌃⇧H 调试信息');
   console.log('  ⌃⇧D 开发者工具    ⌃⇧X 拆掉骨架层(鼠标点不动时用)    ⌃⇧Q 退出\n');
 });

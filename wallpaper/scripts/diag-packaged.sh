@@ -20,11 +20,13 @@ done
 
 echo
 echo "=== ④ dist 里的构建产物 ==="
-ls -dla ~/workspace/AirCursor/dist/mac-arm64/*.app 2>/dev/null || echo "  (dist 是空的 —— 还没构建过)"
+# ⚠️ 0.9.131 改名。两个目录都看一眼 —— 用户可能还没改目录名。
+ls -dla ~/workspace/{DreamPaper,AirCursor}/dist/mac-arm64/*.app 2>/dev/null || echo "  (dist 是空的 —— 还没构建过)"
 
 echo
 echo "=== ⑤ 仓库在哪个 commit ==="
-cd ~/workspace/AirCursor && git log --oneline -1 && echo "  版本: $(node -e "console.log(require('./package.json').version)")"
+cd ~/workspace/DreamPaper 2>/dev/null || cd ~/workspace/AirCursor
+git log --oneline -1 && echo "  版本: $(node -e "console.log(require('./package.json').version)")"
 
 # ⚠️ 显式成功退出。这是**纯报告脚本**，退出码不该反映最后一条命令的真假 ——
 # `grep` 没匹配到、`[ ] && echo` 条件为假，都会让它以非 0 结束。

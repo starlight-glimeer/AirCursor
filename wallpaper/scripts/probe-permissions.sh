@@ -19,7 +19,10 @@
 #   跑 6 秒然后杀掉 —— 而那正是要测的东西。
 set -uo pipefail          # ⚠️ 不用 -e：某条探针失败要继续往下测，那才是探针的意义
 
-APP="/Applications/GestureWall.app"
+# ⚠️ 跟着 productName 走（0.9.131 → DreamPaper）。旧的留作兜底：
+#   用户可能还装着上一版，那时探针仍然该能查。
+APP="/Applications/DreamPaper.app"
+[ -d "$APP" ] || APP="/Applications/GestureWall.app"
 HELPERS="$APP/Contents/Resources/prebuilt-helpers"
 PASS="✅"; FAIL="❌"; WARN="⚠️ "
 

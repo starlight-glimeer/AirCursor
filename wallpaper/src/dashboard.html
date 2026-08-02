@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>GestureWall</title>
+<title>DreamPaper</title>
 <!-- ⚠️ 这里原来有一段 inline script（从 localStorage 读主题，防第一帧闪深色）
      —— 0.9.60 删了：只有深色一种主题，没有"闪"的问题。 -->
 <style>
@@ -1258,8 +1258,13 @@
   <!-- 粒子背景。⚠️ 在 .wrap **之前** —— 它靠 DOM 顺序 + z-index 垫在文字底下。 -->
   <canvas id="launch-particles"></canvas>
   <div class="wrap">
-    <h1>Gesture<b>Wall</b></h1>
-    <div class="sub">gesture music wallpaper</div>
+    <!-- ⚠️⚠️ **改名 DreamPaper**（0.9.131）。用户 2026-08-02：
+         「我想把开头的 gesturewall 改成 DreamPaper，slogan 就是
+           any wallpaper you want is here」
+         ⚠️ `<b>` 那一半是**加粗的后半截**（CSS 里 `#launch h1 b` 单独给了
+           字重和颜色）⟹ 拆词要跟着新名字走：Dream + Paper。 -->
+    <h1>Dream<b>Paper</b></h1>
+    <div class="sub">any wallpaper you want is here</div>
     <div class="go">点击进入</div>
   </div>
 </div>

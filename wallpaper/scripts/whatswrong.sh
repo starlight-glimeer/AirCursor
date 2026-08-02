@@ -1,5 +1,7 @@
 #!/bin/bash
-cd ~/workspace/AirCursor 2>/dev/null || { echo "❌ 仓库路径不对"; exit 1; }
+# ⚠️ 0.9.131 改名 DreamPaper。两个都试 —— 用户可能还没改目录名。
+cd ~/workspace/DreamPaper 2>/dev/null || cd ~/workspace/AirCursor 2>/dev/null \
+  || { echo "❌ 仓库路径不对（试过 ~/workspace/DreamPaper 和 ~/workspace/AirCursor）"; exit 1; }
 
 echo "=== ① 仓库在哪个版本 ==="
 git log --oneline -1

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 从 dmg 装 GestureWall —— **走的就是用户拿到 dmg 之后的那条路**。
+# 从 dmg 装 DreamPaper —— **走的就是用户拿到 dmg 之后的那条路**。
 #
-# ⚠️⚠️ 为什么要有这个脚本（而不是直接拷 dist/mac-arm64/GestureWall.app）：
+# ⚠️⚠️ 为什么要有这个脚本（而不是直接拷 dist/mac-arm64/DreamPaper.app）：
 #
 # 用户 2026-08-01：
 #   「可是我就是应该验证 dmg 啊，最后别人拿到的也是 dmg，
@@ -24,7 +24,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-APP_NAME="GestureWall.app"
+# ⚠️⚠️ 跟着 package.json 的 `build.productName` 走（0.9.131 改成 DreamPaper）——
+#   electron-builder 用它命名 .app 和 dmg 卷 ⟹ 这里写错的话直接找不到文件。
+APP_NAME="DreamPaper.app"
 DEST="/Applications/$APP_NAME"
 
 # ⚠️⚠️ **`|| true` 不能省** —— `set -euo pipefail` 下：
@@ -47,8 +49,8 @@ echo ""
 
 # ⚠️ 旧版本在跑的话，拷进去的文件可能被占用（尤其 helper 二进制）
 # ⟹ 症状是"装完还是旧行为"，而那和"改了没生效"分不清。
-if pgrep -x GestureWall >/dev/null 2>&1; then
-  echo "⚠️ GestureWall 正在运行 —— 先退掉它（⌃⇧Q 或 Dock 右键退出），"
+if pgrep -x DreamPaper >/dev/null 2>&1; then
+  echo "⚠️ DreamPaper 正在运行 —— 先退掉它（⌃⇧Q 或 Dock 右键退出），"
   echo "   否则新文件可能拷不进去，而症状是「装完还是旧行为」。"
   exit 1
 fi
@@ -56,7 +58,7 @@ fi
 # ── 挂载 ────────────────────────────────────────────────────────────────
 # ⚠️ 用 -nobrowse：不在 Finder 里弹窗（这是脚本，不该打扰）
 # ⚠️ 而挂载点要**从 hdiutil 的输出里取**，不能猜 /Volumes/<名字> ——
-# 同名卷已挂载时 macOS 会加后缀（"GestureWall 1"），猜的话就拷错地方了。
+# 同名卷已挂载时 macOS 会加后缀（"DreamPaper 1"），猜的话就拷错地方了。
 echo "① 挂载…"
 PLIST=$(hdiutil attach "$DMG" -nobrowse -readonly -plist)
 MNT=$(echo "$PLIST" | python3 -c '
@@ -152,4 +154,4 @@ echo ""
 #   ⟹ 指向一个不存在的东西比不说更糟。
 echo "   没授权的表现：那个功能不工作，而面板「?」页里对应那段会说是缺什么。"
 echo ""
-echo "然后：打开 GestureWall，⌃⇧W 开面板"
+echo "然后：打开 DreamPaper，⌃⇧W 开面板"

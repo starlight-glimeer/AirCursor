@@ -18,7 +18,7 @@ DIRTY=$(git status --porcelain -- wallpaper/src public package.json | wc -l | tr
 VERSION=$(node -e "console.log(require('./package.json').version)")
 
 echo ""
-echo "=== 打包 GestureWall ==="
+echo "=== 打包 DreamPaper ==="
 echo "  版本:   v$VERSION"
 echo "  commit: $COMMIT"
 if [ "$DIRTY" -gt 0 ]; then
@@ -129,7 +129,8 @@ echo "=== 装 ==="
 # `[ "$dirty" -gt 0 ] && echo …` 在干净工作区返回 1 ⟹ 整个脚本 exit 1
 # ⟹ `npm run sync && npm start` 的 `&&` 阻断后半段（**工作区越干净越触发**）。
 DMG=$(ls -t dist/*.dmg 2>/dev/null | head -1 || true)
-APP=$(ls -td dist/mac*/GestureWall.app 2>/dev/null | head -1 || true)
+# ⚠️ 跟着 productName 走（0.9.131 → DreamPaper）
+APP=$(ls -td dist/mac*/DreamPaper.app 2>/dev/null | head -1 || true)
 
 if [ -z "$DMG" ]; then
   echo "  ❌ dist/ 下没有 .dmg —— 打包失败了，往上翻 electron-builder 的输出"
@@ -152,8 +153,8 @@ echo "       「拖进应用程序 + xattr」自动化了，没有跳过任何�
 echo ""
 echo "--- ②' 或者手动（和别人拿到的完全一样）---"
 echo ""
-echo "  open \"$DMG\"          # 拖 GestureWall 进「应用程序」"
-echo "  xattr -dr com.apple.quarantine /Applications/GestureWall.app"
+echo "  open \"$DMG\"          # 拖 DreamPaper 进「应用程序」"
+echo "  xattr -dr com.apple.quarantine /Applications/DreamPaper.app"
 echo ""
 echo "    ⚠️ xattr 这步**每次都要** —— 那个属性是从 dmg 拷出来时打上的，"
 echo "       按文件算，不是「这台机器信任过一次就行」。"
@@ -167,7 +168,7 @@ if [ -n "$APP" ]; then
   echo ""
 fi
 
-echo "--- ③ 打开 GestureWall，⌃⇧W 开面板 ---"
+echo "--- ③ 打开 DreamPaper，⌃⇧W 开面板 ---"
 echo ""
 # ⚠️ 同 install-dmg.sh：那句"授权给 GestureWallMouse"是错的（它不需要授权）。
 echo "  ⚠️ **装完直接用** —— 壁纸收点击、系统声音都不需要授权。"
