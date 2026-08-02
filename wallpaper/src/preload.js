@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld('gw', {
   // ⚠️ 在 Finder 里选中 helper —— 0.9.87 删掉所有弹框之后，
   //   这是用户把它加进辅助功能列表的唯一路径（见 main.js 那段注释）。
   permissionsRevealHelper: (which) => ipcRenderer.invoke('permissions-reveal-helper', which),
+  // ⚠️ 授权完重启 helper（不用退出整个应用 —— 见 main.js 那段）
+  permissionsRecheck: () => ipcRenderer.invoke('permissions-recheck'),
 
   // 创意工坊
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),

@@ -3909,12 +3909,30 @@ async function renderPermissions() {
       open.className = 'act perm-toggle';
       open.textContent = '② 打开辅助功能设置';
       open.onclick = () => window.gw.permissionsOpenPane(row.pane);
+      // ⚠️⚠️ **③ 授权完点这个 —— 不用退出整个应用**（0.9.93）。
+      //   用户 2026-08-02：「退出去重新打开这个操作本身就不合理，应该是我授权，
+      //     然后直接就生效」**他说得对** —— macOS 那条"授权对已在跑的进程不生效"
+      //   只针对**那个进程**，而 helper 是我们 spawn 的子进程 ⟹ 杀掉重启就够了。
+      const recheck = document.createElement('button');
+      recheck.className = 'act perm-toggle';
+      recheck.textContent = '③ 授权完了，重新检测';
+      recheck.onclick = async () => {
+        recheck.disabled = true;
+        recheck.textContent = '③ 正在重启 helper…';
+        try { await window.gw.permissionsRecheck(); } catch (error) {
+          logLine('wall', `重新检测失败：${error.message}`);
+        }
+        renderPermissions();
+      };
       const hint = document.createElement('div');
       hint.className = 'perm-detail';
-      hint.innerHTML = '把 ① 里选中的那个文件<b>拖进</b> ② 打开的列表，'
-        + '然后 <b>⌃⇧Q 退出、重新打开本应用</b>'
-        + '（macOS 的授权对已经在跑的进程不生效）。';
-      wrap.append(go, open);
+      hint.innerHTML = '把 ① 里选中的那个文件<b>拖进</b> ② 打开的列表'
+        + '（或者用列表下面的「+」），然后点 <b>③</b>。'
+        + '<br>⚠️ <b>给 GestureWall 授权是不够的</b> —— 真正干活的是'
+        + ' <code>GestureWallMouse</code>，而它在 macOS 眼里是个独立程序'
+        + '（没有开发者证书把两者签成同一身份）。'
+        + '<br>⚠️ 而<b>不需要退出整个应用</b>：③ 只重启那个 helper。';
+      wrap.append(go, open, recheck);
       el.append(wrap, hint);
     }
     // ⚠️ 子开关：一个授权底下的多个功能，各自一个开关。

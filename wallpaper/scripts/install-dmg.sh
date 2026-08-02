@@ -137,6 +137,12 @@ echo "   版本 $VER"
 echo ""
 echo "⚠️ **重新装过之后授权可能要重给** —— 辅助功能/屏幕录制是按二进制路径挂的。"
 echo "   症状：鼠标转发不工作（面板会说「零事件」）。"
-echo "   ⟹ 系统设置 → 隐私与安全性 → 辅助功能，把 GestureWall 删掉再加回来。"
+# ⚠️⚠️ 这句原来写"把 GestureWall 删掉再加回来" —— **错的**（0.9.93）。
+# `codesign` 证明 helper 是**独立的 TCC 身份**（Identifier=GestureWallMouse-5555…、
+# TeamIdentifier=not set）⟹ 给 GestureWall 授权覆盖不到它。要授权的是 helper 本身。
+# ⟹ 而那条路面板上有（⚙ → 权限 → 辅助功能 → ①②③），不该让用户自己在这里摸。
+echo "   ⟹ 打开面板 ⌃⇧W → ⚙ 设置 → 权限 → 辅助功能，按那里的 ①②③ 走。"
+echo "      （授权要给 GestureWallMouse 那个 helper，不是 GestureWall 本身 ——"
+echo "        它在 macOS 眼里是独立程序，没有开发者证书把两者签成同一身份。）"
 echo ""
 echo "然后：打开 GestureWall，⌃⇧W 开面板"

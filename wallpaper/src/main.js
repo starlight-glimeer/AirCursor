@@ -489,6 +489,23 @@ const defaultConfig = {
     // ⟹ 默认放行。代价是在别的应用里滑滚轮壁纸也会动，
     // 那比"点壁纸完全没反应"可接受得多。
     mouseGateFinder: false,
+    // ⚠️⚠️⚠️ **这个字段必须在 defaultConfig 里**（0.9.93 修）。用户 2026-08-02：
+    //   「我按照你这个流程退出这个软件，然后再重新打开，我发现他那个辅助功能
+    //     那块儿又变成…上面显示是都关闭」
+    //
+    // **他说得对，而这是个真 bug：他每次开应用，开关都被自动关掉一次。**
+    //
+    // 0.9.88 那条迁移（把存量的 mouseForward: true 关掉）带了个
+    // `mouseForwardMigrated` 标记，本意是"只跑一次"。而 `mergeConfig`
+    // **只遍历 defaultConfig 的键** —— 这个字段不在里面 ⟹ 每次 readConfig
+    // 都把它**静默剥掉** ⟹ 迁移看到"true 且没标记"，于是又关一次。
+    // 用户开了开关、退出、重开 ⟹ 又变回关着，而且没有任何报错。
+    //
+    // ⚠️ 判据：**任何写进 config 的字段都必须在 defaultConfig 里声明**，
+    //   否则它活不过一次重启（而那是静默的）。
+    //   ⚠️ 这个坑 OPAQUE_DICTS 上面那段注释里就写着（presets 被静默丢掉），
+    //     而我加迁移标记时没想到自己正在踩同一个。
+    mouseForwardMigrated: false,
   },
   // ⚠️ 默认**关**。这是开发时的遗留:HUD 盖在壁纸左上角,而它报的东西(fps、壁纸层策略、
   // 鼠标事件收不收到、三层设了没)全是调试信息。用户报「一打开就出现这个把壁纸盖住了」。
@@ -3742,6 +3759,39 @@ ipcMain.handle('permissions-reveal-helper', (_event, which) => {
   return { ok: false,
     error: `找不到 ${name}。它要等对应功能第一次启动才会出现`
       + `（打开开关 + 装载一个壁纸），找过这些位置：\n${candidates.join('\n')}` };
+});
+
+// ⚠️⚠️⚠️ **授权完重启 helper —— 不用退出整个应用**（0.9.93）。
+//
+// 用户 2026-08-02：「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接
+//   就生效」
+//
+// **他说得对。** macOS 那条"授权对已经在跑的进程不生效"是真的，但它只针对
+// **那个进程**。而 helper 是我们 spawn 的子进程 ⟹ **杀掉重启一个就够了**，
+// 主应用完全不用动。我上一版让他退出重开是多余的。
+//
+// ⚠️ 而这条也解释了他为什么"授权了还是未授权"：他给 GestureWall 授了权，
+//   而 `codesign` 的输出证明 helper 是**独立的 TCC 身份**
+//   （`Identifier=GestureWallMouse-5555…`、`TeamIdentifier=not set`）
+//   ⟹ 主应用的授权覆盖不到它。要覆盖得有 Apple 开发者证书把两者签成同一身份。
+ipcMain.handle('permissions-recheck', () => {
+  // ⚠️ 杀掉再同步 —— syncMouseForward 里 `if (mouseTap) return` 会让"已经在跑"
+  //   直接返回，所以必须先清掉才会重新 spawn（和 we-set-mouse-forward 一致）。
+  if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+  // ⚠️ 顺带把上一轮的状态清掉 —— 不清的话面板会拿旧的 trusted 显示，
+  //   而那正是"重启了但显示没变"的来源。
+  mouseStatus = null;
+  syncMouseForward();
+  // ⚠️ helper 启动 + 上报要一点时间（spawn → NSApplication 初始化 → emit）。
+  //   不等就读的话必然还是旧值 ⟹ 用户会以为没生效。
+  //   ⚠️ 800ms 是估的：实测 helper 从 spawn 到第一条 status 大约几十毫秒，
+  //     留足余量。而读早了的代价只是"再点一次"，不是错值（面板会显示"查不到"）。
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      broadcast('permissions', permissionSnapshot());
+      resolve({ ok: true, rows: permissionSnapshot() });
+    }, 800);
+  });
 });
 
 // 打开系统设置里对应的那一页。

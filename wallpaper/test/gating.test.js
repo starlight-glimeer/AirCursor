@@ -1363,6 +1363,25 @@ check('WE 壁纸默认真壁纸层（能覆盖菜单栏），鼠标靠转发补�
   const mig = mainSrc.slice(mainSrc.indexOf('function migrateConfig'),
     mainSrc.indexOf('function writeConfig'));
   assert.ok(mig.length > 200, '切不出 migrateConfig ⟹ 断言失效');
+  // ⚠️⚠️⚠️ **写进 config 的字段必须在 defaultConfig 里声明**（0.9.93）。
+  //
+  // 用户 2026-08-02：「我按照你这个流程退出这个软件，然后再重新打开，我发现他那个
+  //   辅助功能那块儿又变成…上面显示是都关闭」
+  //
+  // **他每次开应用，开关都被自动关掉一次，而这是我的 bug**：
+  // `mergeConfig` **只遍历 defaultConfig 的键** ⟹ `mouseForwardMigrated`
+  // 没在里面 ⟹ 每次 readConfig 都把它**静默剥掉** ⟹ 迁移看到"true 且没标记"，
+  // 于是又关一次。用户开了开关、退出、重开 ⟹ 又变回关着，且没有任何报错。
+  //
+  // ⚠️⚠️ 而这个坑 `OPAQUE_DICTS` 上面那段注释里就写着（presets 被静默丢掉），
+  //   而我加迁移标记时正好踩了同一个。
+  const defBlock = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
+    mainSrc.indexOf('let config = null'));
+  assert.ok(defBlock.length > 500, '切不出 defaultConfig ⟹ 断言失效');
+  assert.match(defBlock, /mouseForwardMigrated: false/,
+    'mouseForwardMigrated 不在 defaultConfig 里 ⟹ mergeConfig 只遍历默认的键，'
+    + '这个标记每次启动都被静默剥掉 ⟹ 迁移每次都跑一遍 ⟹ '
+    + '**用户每次开应用开关都被自动关掉**（他实测撞到了）');
   assert.match(mig, /we\.mouseForward === true && !we\.mouseForwardMigrated/,
     '没有把存量的 mouseForward: true 关掉 ⟹ 现有用户（包括我的测试机）'
     + '照旧每次被要权限，而默认值的改动对他们完全不生效');
@@ -6304,12 +6323,60 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   assert.match(dashEarly, /row\.revealHelper && row\.on && row\.auth !== 'granted'/,
     '"去授权"按钮的显示条件不对 ⟹ 该只在"开着但没授权"时出现');
-  // ⚠️ 而且要说清**授权后要重开** —— 不说的话用户会"授权了但还是不行"
-  assert.match(dashEarly, /退出、重新打开本应用/,
-    '没说"授权后要重开应用" ⟹ macOS 的授权对已在跑的进程不生效，'
-    + '用户会以为是 bug');
+  // ⚠️⚠️ 这条 0.9.92 断言的是"必须说要退出重开**整个应用**" —— **0.9.93 翻了**。
+  //   用户：「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接就生效」
+  //   **他说得对** —— 那条 macOS 规则只针对**那个进程**，而 helper 是子进程
+  //   ⟹ 杀掉重启就够了。⟹ 判据改成"必须给一个重启 helper 的按钮"。
+  assert.match(dashEarly, /③ 授权完了，重新检测/,
+    '没有"授权完重新检测"那个按钮 ⟹ 用户只能退出重开整个应用，'
+    + '而那是多余的（helper 是子进程，杀掉重启就够）');
 
-  // ⑦ 面板那边：三个接口 + DOM 容器 + 每次打开重查
+  // ⑦⚠️⚠️⚠️ **授权完不用退出整个应用**（0.9.93）。用户 2026-08-02：
+  //   「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接就生效」
+  //
+  // **他说得对。** macOS 那条"授权对已经在跑的进程不生效"是真的，但它只针对
+  // **那个进程** —— 而 helper 是我们 spawn 的子进程 ⟹ **杀掉重启一个就够了**。
+  // 我上一版让他退出重开整个应用是多余的。
+  assert.match(src, /ipcMain\.handle\('permissions-recheck'/,
+    '没有"重启 helper 再检测"这条路 ⟹ 用户每次授权都得退出重开整个应用'
+    + '（他点名"这个操作本身就不合理"）');
+  const recheck = src.slice(src.indexOf("ipcMain.handle('permissions-recheck'"),
+    src.indexOf("ipcMain.handle('permissions-open-pane'"));
+  assert.ok(recheck.length > 200, `切不出 recheck（长度 ${recheck.length}）⟹ 断言失效`);
+  // ⚠️ 必须**先杀掉** —— syncMouseForward 里 `if (mouseTap) return` 会让
+  //   "已经在跑"直接返回，不清的话压根不会重新 spawn（那就是静默无效）。
+  assert.match(recheck, /if \(mouseTap\) \{ mouseTap\.stop\(\); mouseTap = null; \}/,
+    'recheck 没先杀掉 helper ⟹ syncMouseForward 会因为"已经在跑"直接返回，'
+    + '什么都不做（静默无效）');
+  // ⚠️ 旧状态要清 —— 不清的话面板拿旧的 trusted 显示，就是"重启了但显示没变"
+  assert.match(recheck, /mouseStatus = null/,
+    'recheck 没清掉旧的 mouseStatus ⟹ 面板会显示上一轮的授权状态');
+  // ⚠️ 要等 helper 启动+上报 —— 立刻读必然是旧值
+  assert.match(recheck, /setTimeout/,
+    'recheck 不等 helper 上报就返回 ⟹ 读到的必然还是旧值，用户以为没生效');
+
+  // ⚠️⚠️ **面板必须说清"给 GestureWall 授权是不够的"**。
+  //   `codesign` 证明 helper 是独立的 TCC 身份（Identifier=GestureWallMouse-5555…、
+  //   TeamIdentifier=not set）⟹ 主应用的授权覆盖不到它。而用户正是这么试的：
+  //   「我直接打开这个隐私与安全辅助功能，这个按钮它里面就有这个 Wall 软件啊，
+  //     我给他授权了」—— 而那不管用，面板得先告诉他。
+  const dashAx = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dashAx, /给 GestureWall 授权是不够的/,
+    '面板没说"给 GestureWall 授权不够" ⟹ 用户会在列表里给主应用授权然后发现没用'
+    + '（他已经这么试过一次了）');
+  assert.match(dashAx, /不需要退出整个应用/,
+    '面板还在让用户退出整个应用 ⟹ 只需要重启 helper');
+  // ⚠️ 而安装脚本里那句"把 GestureWall 删掉再加回来"是**错的**，不许回来
+  for (const sh of ['install-dmg.sh', 'build-mac.sh']) {
+    const body = fs.readFileSync(path.join(__dirname, '..', 'scripts', sh), 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    assert.ok(!/把 GestureWall 删掉再加回来/.test(body),
+      `${sh} 又在说"把 GestureWall 删掉再加回来" ⟹ 那是错的，`
+      + '要授权的是 GestureWallMouse 那个 helper（codesign 已证实它是独立身份）');
+  }
+
+  // ⑧ 面板那边：三个接口 + DOM 容器 + 每次打开重查
   const dash = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
