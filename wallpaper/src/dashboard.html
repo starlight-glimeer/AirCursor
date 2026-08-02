@@ -79,7 +79,7 @@
      而那种抖动读起来很廉价（用户不会说"这里字宽不一致"，只会觉得"糙"）。
      ⟹ `tabular-nums` 让所有数位等宽。⚠️ 只给数字，不给正文 ——
        中文正文用等宽数位反而怪。 */
-  .state, .hint, kbd, #build-stamp, .log, #live { font-variant-numeric: tabular-nums; }
+  .state, .hint, kbd, .log, #live { font-variant-numeric: tabular-nums; }
   /* ⚠️⚠️ **布局改成"顶部 tab + 内容区"**（0.9.54）。用户 2026-08-01 给了
      Wallpaper Engine 的界面截图：「我感觉我们也应该应用这种，我们现在的布局
      左侧的菜单栏，右侧展示，太 dashboard 了，这个图我看菜单是在左上角，
@@ -238,14 +238,6 @@
   }
   .we-group:first-child { margin-top: 0; border-top: none; padding-top: 0; }
 
-  #build-stamp {
-    font-size: 11px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--dim);
-    margin: 2px 0 10px;
-    letter-spacing: .2px;
-    user-select: text;      /* 要能选中复制给我看 */
-  }
   #launch .sub {
     margin-top: 14px; font-size: 11px; letter-spacing: .34em;
     text-transform: uppercase; color: var(--dim);
@@ -289,7 +281,7 @@
     /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。 */
     -webkit-app-region: drag;
   }
-  nav button, #build-stamp { -webkit-app-region: no-drag; }
+  nav button { -webkit-app-region: no-drag; }
   /* ⚠️ 96px 左内边距是给红绿灯**横向**让位 —— 它们在 x=13..70 那一带，
      而 tab 现在是水平排的 ⟹ 第一个 tab 会跑到按钮底下。
      ⚠️ `.brand` 撤了：窗口标题栏已经写着 GestureWall，tab 条上再写一遍是重复
@@ -308,9 +300,6 @@
     background: rgba(108,199,255,.07);
   }
   nav .spacer { flex: 1; }
-  /* ⚠️ build 标识挪到 tab 条右侧（原来在左栏）—— 它是**来回测试时核对版本的
-     唯一依据**，必须常驻可见。放右侧靠边，不抢 tab 的位置。 */
-  #build-stamp { margin: 0 10px 0 0; }
   /* 齿轮：tab 条最右。⚠️ 0.9.51 起它是设置的唯一入口。 */
   #settings-open { padding: 9px 12px 10px; }
   #settings-open .gear {
@@ -938,12 +927,19 @@
   <button data-tab="we">创意工坊</button>
   <button data-tab="gesture">手势录制</button>
   <div class="spacer"></div>
-  <!-- ⚠️ build 标识必须放在**常驻可见**的地方。
-       第一版我放进了 #launch（开屏页），而那个页会 .gone 淡出 ⟹ 看不见 ——
-       用户报「没看到任何类似 v0.9.10 … 的字样」。
-       打包版没有终端，这是唯一能确认"我跑的是哪个版本"的地方。
-       ⚠️ 0.9.54 从左栏挪到 tab 条右侧（靠边，不抢 tab 的位置）。 -->
-  <div id="build-stamp"></div>
+  <!-- ⚠️⚠️ 这里原来是版本标识（`v0.9.119 a910ffa 打包版`）—— **0.9.121 删了**。
+       用户 2026-08-02：「右上角这句话也删掉」
+       「我每次不都会重新编译打包然后运行这些吗，终端里面会显示版本的，
+         所以不需要担心版本定位这个问题」
+
+       ⚠️ 它 0.9.54 加进来是为了"打包版没有终端、看不到自己跑的哪一版"，
+         而那个前提对**这个用户**不成立：他自己 build、自己装、终端里就有版本号。
+         ⟹ 那条理由服务的是"拿到 dmg 的别人"，而现在还没有别人。
+       ⚠️ 而版本号在两个地方仍然拿得到（删的是显示，不是信息）：
+         ① `install-dmg.sh` 的输出（「版本 0.9.x」）
+         ② 诊断报告里的 `app.build`（要发给别人看的场合）
+       ⚠️ `renderBuildStamp()` 那个函数**留着**：它还负责解析"是不是打包版"，
+         而鼠标诊断那段靠它决定说哪句话（见 dashboard.js 里那段注释）。 -->
   <!-- ⚠️⚠️ **齿轮 = 设置的唯一入口**（0.9.51）。用户当时说的是"左下方"，
        而 0.9.54 布局改成顶部 tab 条之后左下角不存在了 ⟹ 挪到 tab 条最右。
        位置变了，**它承载的东西没变**：目录行 / 快捷键 / 开发者选项（含全部诊断）。

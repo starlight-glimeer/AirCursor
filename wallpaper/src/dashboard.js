@@ -1123,19 +1123,32 @@ function isPackagedBuild() {
   return packagedBuild === true;
 }
 
+// ⚠️⚠️⚠️ **版本标识不再显示在界面上**（0.9.121）。用户 2026-08-02：
+//   「右上角这句话也删掉 v0.9.119 a910ffa 打包版」
+//
+// ⚠️ 而**这个函数留着** —— 它有一件不可见但承重的活：
+//   从 build 标识里解析出「是不是打包版」（`packagedBuild`），
+//   而 `isPackagedBuild()` 决定鼠标诊断那段说哪句话
+//   （打包版说"去系统设置找 GestureWallMouse"，开发模式说"要打包成 .app"）。
+//   ⟹ 只删 DOM 那两行，数据流照旧。
+//
+// ⚠️⚠️ 而它原来存在的理由是真的：**打包版没有终端，那是唯一能确认"我跑的是
+//   哪一版"的地方**，而这个项目为"测了旧版本"栽过两次（改了没生效 → 去查一个
+//   已经修好的问题）。用户 0.9.54 那次点名要求它常驻可见。
+//   ⟹ 现在它移到**诊断报告里**（`report.build`，一直都有）——
+//     那是"要发给别人看"的场合，也正是需要版本号的场合。
+//   ⚠️ 判据：删一个观测点之前，先确认那件事**别处还看得到**。
 async function renderBuildStamp() {
-  const node = document.getElementById('build-stamp');
-  if (!node) return;
   try {
     const status = await window.gw.weStatus();
-    node.textContent = (status && status.build) || '版本未知';
-    // ⚠️ 顺手记下"是不是打包版" —— 给 renderMouseDiag 用（见 isPackagedBuild）。
+    // ⚠️ 这一句是这个函数现在唯一的产出 —— 给 renderMouseDiag 用。
     if (status && typeof status.build === 'string') {
       packagedBuild = status.build.includes('打包版');
     }
   } catch {
-    // 拿不到也要说话 —— 空白会被读成"这个功能没做"。
-    node.textContent = '版本读不到';
+    // ⚠️ 拿不到就保持 null（"不知道"），别当成 false ——
+    //   `isPackagedBuild()` 判的是 `=== true`，所以 null 会走"开发模式"那支说明，
+    //   而那在真打包版上是错的话。⟹ 宁可两句都不说，也不说错的那句。
   }
 }
 

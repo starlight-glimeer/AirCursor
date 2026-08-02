@@ -2240,9 +2240,14 @@ function sendWEProperties() {
 
 function weStatus(error) {
   return {
-    // ⚠️ build 标识跟着状态一起送 —— 打包版没有终端，面板是唯一能看到它的地方。
-    // 而"我跑的是哪个版本"是打包来回测试里最容易搞错、后果最大的一件事：
-    // 测了旧版本会得出"改了没生效"的结论，然后去查一个已经修好的问题。
+    // ⚠️⚠️ build 标识跟着状态一起送。**0.9.121 起面板不再把它显示出来**
+    //（用户点名删掉：他自己编译打包，终端里就有版本号）——
+    //   但这个字段**不能删**：面板那边靠 `status.build.includes('打包版')`
+    //   判断"是不是打包版"，而鼠标诊断那段说哪句话取决于它
+    //   （见 dashboard.js 的 renderBuildStamp / isPackagedBuild）。
+    // ⚠️ 而"我跑的是哪个版本"这件事本身仍然重要（测了旧版本会得出
+    //   "改了没生效"的结论，然后去查一个已经修好的问题）——
+    //   现在它的出口是终端启动横幅 + 诊断报告的 `app.build`。
     build: buildStamp(),
     // 菜单栏覆盖的核对结果 —— 那条缝和壁纸装载是两件事，但用户看到的是同一块屏幕。
     menuBar: menuBarState,
@@ -3574,6 +3579,11 @@ ipcMain.handle('export-diagnostics', () => {
     } : null,
     app: {
       version: app.getVersion(),
+      // ⚠️⚠️ **完整 build 标识**（版本 + commit + 打包与否），0.9.121 加。
+      //   面板右上角那行版本标识删掉之后，这里是"报告里能看出跑的是哪一版"的
+      //   唯一地方 —— 而 `version` 单独不够：版本号不变时改了几轮 commit 分辨不出，
+      //   而这个项目为"测了旧版本"栽过两次。
+      build: buildStamp(),
       // ⚠️ packaged 必须在最前面：它决定权限类结论是否可信
       //（npm start 下屏幕录制/辅助功能根本不可达）。
       packaged: app.isPackaged,

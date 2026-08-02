@@ -2048,39 +2048,76 @@ check('build 标识同时报版本、commit、是否打包', () => {
     'build 标识没说是否打包 —— 而那决定权限能不能拿到（npm start 拿不到）');
 });
 
-check('build 标识送到面板（打包版没有终端）', () => {
+// ⚠️⚠️ **0.9.121：面板不再显示版本标识**（用户点名删掉 ——
+//   他每次自己编译打包，终端里就有版本号，界面上那行是噪声）。
+//   ⟹ 原来"#build-stamp 容器在不在 / 在不在开屏页 / 在不在 nav 里"那三条守卫
+//     全部作废（它们守的东西已经不存在了）。
+//
+// ⚠️⚠️ 而**留下来的是那条不可见的数据流**：weStatus 仍然送 build，
+//   面板从它解析出"是不是打包版"，鼠标诊断那段靠它决定说哪句话
+//   （打包版说"去系统设置找 GestureWallMouse"，开发模式说"要先打包成 .app"）。
+//   ⟹ 删 UI 时最容易顺手删掉的正是这条 —— 它没有任何可见症状，
+//     错了只表现为"诊断里那句话说反了"。所以它必须有守卫。
+check('build 标识仍然送到面板（那是"是不是打包版"的唯一来源）', () => {
   const main = codeOnly(mainSrc);
-  assert.match(main, /build: buildStamp\(\)/, 'weStatus 载荷里没有 build');
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
-  assert.ok(html.includes('id="build-stamp"'),
-    '缺 #build-stamp 容器 ⟹ 打包版里根本看不到版本');
-  assert.match(codeOnly(dash), /build-stamp/, '面板没渲染 build 标识');
+  // ⚠️⚠️ `build: buildStamp()` 现在在**两处**出现（weStatus 和诊断报告）
+  //   ⟹ 全文件 match 的话破坏任一处另一处都能满足它 ⟹ 断言是死的
+  //   （反向验证逮到的）。⟹ 切到 weStatus 函数体里再验。
+  const wsAt = main.indexOf('function weStatus(');
+  assert.ok(wsAt > 0, '找不到 weStatus() —— 锚点变了，这条守卫要跟着改');
+  const wsBody = main.slice(wsAt, wsAt + 2500);
+  assert.match(wsBody, /build: buildStamp\(\)/, 'weStatus 载荷里没有 build');
+  const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // ⚠️ 锚定**那一行本身**，不是"提到 packagedBuild"—— 这个文件里
+  //   `packagedBuild` 出现 3 次，只验存在的话删掉赋值那行照样绿。
+  assert.match(dash, /packagedBuild = status\.build\.includes\('打包版'\)/,
+    '面板不再从 status.build 解析"是不是打包版" ⟹ isPackagedBuild() 永远是 null，'
+    + '鼠标诊断会给打包版说"要先打包成 .app"（说反了）');
+  // ⚠️ 不能只 match `/isPackagedBuild\(\)/` —— 那会命中**它自己的声明**
+  //   （`function isPackagedBuild()`）⟹ 把唯一的调用点删掉断言照样绿
+  //   （反向验证逮到的）。⟹ 锚定"调用点"：`(isPackagedBuild()` 后面跟三元。
+  assert.match(dash, /\(isPackagedBuild\(\)\s*\n?\s*\?/,
+    '没人用 isPackagedBuild —— 那条数据流白留了（诊断那句话不再分打包/开发模式）');
 });
 
-// ⚠️ 这两条是用户实测烧出来的：他报「没看到任何类似 v0.9.10 … 的字样」。
-// 两个原因叠在一起，而**每一个单独都足以让标识不可见**：
-//   ① 我放进了 `#launch`（开屏页），而那个页会 `.gone` 淡出
-//   ② 我在 `renderWEStatus()` 里赋值，而那个函数不一定在启动时跑
-check('build 标识在常驻容器里（不能放开屏页 —— 那会淡出）', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
-  const at = html.indexOf('id="build-stamp"');
-  assert.ok(at > 0, '缺 #build-stamp');
-  // 找它落在哪个块里：launch 是开屏页（会淡出），nav 是常驻的。
-  const launchAt = html.indexOf('id="launch"');
-  const navAt = html.indexOf('<nav>');
-  assert.ok(navAt > 0, '找不到 nav —— 锚点变了，这条守卫要跟着改');
-  assert.ok(at > navAt,
-    'build 标识在 nav 之前 ⟹ 它大概在开屏页 #launch 里，而那个页会 .gone 淡出，'
-    + '用户实测报"没看到任何字样"');
-  if (launchAt > 0 && launchAt < navAt) {
-    const launchBlock = html.slice(launchAt, navAt);
-    assert.ok(!launchBlock.includes('id="build-stamp"'),
-      'build 标识在 #launch 里 —— 那个开屏页会淡出，标识跟着消失');
-  }
+// ⚠️ 面板不显示了，那"跑的是哪一版"要在**别处**看得到 —— 否则
+//   下次再撞上"改了没生效"就没有判据了（这个项目为它栽过两次）。
+check('版本号在终端和诊断报告里都拿得到（面板已经不显示了）', () => {
+  const main = codeOnly(mainSrc);
+  // ① 启动横幅（用户自己编译打包 ⟹ 终端就是他的主要出口）
+  assert.match(main, /console\.log\([^\n]*buildStamp\(\)/,
+    '启动时没往终端打 build 标识 ⟹ 用户唯一的版本出口也没了');
+  // ② 诊断报告（要发给别人看的场合）
+  const at = main.indexOf("ipcMain.handle('export-diagnostics'");
+  assert.ok(at > 0, '找不到 export-diagnostics');
+  const body = main.slice(at, at + 6000);
+  assert.match(body, /build: buildStamp\(\)/,
+    '诊断报告里没有完整 build 标识 —— app.version 单独不够（版本号不变时'
+    + '改几轮 commit 分辨不出，而"测了旧版本"这个项目栽过两次）');
 });
 
-check('build 标识从 apply() 渲染（不依赖"恰好装载了壁纸"）', () => {
+// ⚠️ 反过来也要守：**别再把它加回界面上**。
+check('面板上不再有版本标识（用户点名删的）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.ok(!html.includes('id="build-stamp"'),
+    '版本标识又回到界面上了 —— 用户 2026-08-02 点名删掉：'
+    + '「右上角这句话也删掉 v0.9.119 a910ffa 打包版」');
+});
+
+// ⚠️⚠️ 这里原来有一条「build 标识在常驻容器里（不能放开屏页 —— 那会淡出）」——
+//   0.9.121 **整条删了**：标识本身已经不显示了，它守的东西不存在。
+//   ⚠️ 那条守卫当年是用户实测烧出来的（「没看到任何类似 v0.9.10 的字样」），
+//     两个原因叠在一起：① 我放进了会淡出的 `#launch` ② 我在
+//     `renderWEStatus()` 里赋值而那个函数不一定跑。**教训归档，守卫作废** ——
+//     一条守着已删功能的断言不是"多一层保险"，它只会在下次改动时误报。
+
+// ⚠️⚠️ 而这一条**留着**，因为它守的不是"标识可见"，是**时机**：
+//   `renderBuildStamp()` 现在唯一的产出是 `packagedBuild`，
+//   而鼠标诊断（renderMouseDiag）读它。如果这个函数的调用点从 apply()
+//   挪到"装载壁纸时才跑"的地方，那 packagedBuild 会在诊断跑的时候还是 null
+//   ⟹ 诊断给打包版说"要先打包成 .app"（说反了，而且没有任何报错）。
+//   ⟹ apply() 是"配置一到就跑"的必然入口，这个调用必须在里面。
+check('renderBuildStamp 从 apply() 跑（packagedBuild 要在诊断之前就位）', () => {
   const dash = codeOnly(fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   assert.match(dash, /function renderBuildStamp/,
     '没有独立的 renderBuildStamp —— 塞在别的函数里会跟着那个函数的时机走');
@@ -2089,8 +2126,8 @@ check('build 标识从 apply() 渲染（不依赖"恰好装载了壁纸"）', ()
   assert.ok(applyAt > 0, '找不到 apply()');
   const applyBody = dash.slice(applyAt, applyAt + 1500);
   assert.match(applyBody, /renderBuildStamp\(\)/,
-    'apply() 里没调 renderBuildStamp ⟹ 标识的出现依赖别的时机，'
-    + '而"没装载壁纸时看不到版本"正是用户撞到的');
+    'apply() 里没调 renderBuildStamp ⟹ packagedBuild 一直是 null，'
+    + '而鼠标诊断会给打包版说"要先打包成 .app"（说反了）');
 });
 
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
