@@ -185,8 +185,29 @@ const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'u
 
 // 去掉整行注释。源码守卫要查"代码里有没有这个写法"，而注释里常常故意写着错法当
 // 反例 —— 全文匹配会把解释当违规。我在这上面栽过两次，所以抽出来共用。
+// ⚠️⚠️⚠️ **行尾注释也要剥**（0.9.134）。
+//   原来只过滤"整行以 // 开头"的 ⟹ `foo(); // 提到 bar` 这种**行尾注释留着**
+//   ⟹ 断言会命中注释里的词。
+//   实测：闸门那段里有 `setWEWallpaper(...);   // ⚠️ 它自己会 broadcast('we-status')`
+//   ⟹ 删掉真正那行 `broadcast(...)`，`/broadcast\('we-status'/` 照样为真、守卫全绿。
+//   ⚠️ 这是这轮**第七次**撞到"关键词命中注释"，而前六次我都是逐条改断言 ——
+//     那是治症状。真正的修法是**让 codeOnly 名副其实**。
+//   ⚠️ 而它不能简单按 `//` 切：字符串里可能有 `//`（URL、正则）。
+//     ⟹ 只在"`//` 之前没有引号/反引号"时切，那覆盖了这个仓里的实际情况；
+//       剩下的边角（模板串里带 // 又带关键词）宁可漏剥也不误剥代码。
 function codeOnly(source) {
-  return source.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+  return source.split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .map((line) => {
+      const at = line.indexOf('//');
+      if (at < 0) return line;
+      const before = line.slice(0, at);
+      // 引号数是奇数 ⟹ 这个 `//` 在字符串里面，别切
+      const odd = (q) => ((before.match(new RegExp(q, 'g')) || []).length % 2) === 1;
+      if (odd("'") || odd('"') || odd('`')) return line;
+      return before;
+    })
+    .join('\n');
 }
 
 // ⚠️ 这一节全部是"接线漏了但测试全绿"那一类的守卫。我在这个项目里反复栽在同一个形状上：
@@ -2795,6 +2816,64 @@ check('正在放的壁纸不在列表里时，面板要说出来（别让状态�
   assert.match(block, /不在当前壁纸目录里/, '提示没说清"为什么列表里没有它"');
   assert.match(block, /拷进当前目录|点下面任意一张/,
     '提示没给可执行的下一步 ⟹ 光报告异常，用户还得自己想办法');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **闸门推迟了壁纸装载 ⟹ 面板要被通知重扫**（0.9.134，真事故）。
+//    用户 2026-08-02：「开机之后我看这个默认使用了、其实就是我上一次操作的
+//    那个壁纸，然后轮播这块…还是没有正常显示，我自己在点它才能正常对应起来」
+//
+//  ⚠️ 时序缺口（我 0.9.128 加启动闸门时引入的）：
+//      whenReady：openDashboard() ⟹ 壁纸**还没装**（等 launch-dismissed）
+//      面板：apply() → renderMine() → workshopLocal()
+//            ⟹ 那时 weProject 是 null ⟹ 每一项 active 都是 false
+//      用户点进入：壁纸**现在才**装上
+//      ⟹ 而没有人再跑一次 renderMine ⟹ active 永远停在 false
+//      ⟹ 轮播摘要行一直说"没有在放壁纸"，直到用户手动点一张
+//
+//  ⟹ 判据：**把一件事推迟之后，要问"谁在它之前已经读过那个状态了"** ——
+//    那些读过的地方需要一次重读，而"推迟"本身不会通知它们。
+// ═══════════════════════════════════════════════════════════════════════
+check('壁纸装载完（含回落）要广播，面板据此重扫列表', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ① 闸门的**两支**都要有结论广播
+  const gateAt = main.indexOf('function releaseWallpaperGate()');
+  assert.ok(gateAt > 0, '找不到 releaseWallpaperGate');
+  // ⚠️⚠️ **先剥注释再匹配** —— 这一段里我自己写了
+  //   `// ⚠️ 它自己会 broadcast('we-status')` 和
+  //   `// ⚠️ 用现成的 we-status 广播…` 两句注释
+  //   ⟹ 不剥的话删掉真正那行 `broadcast(...)` 断言照样绿（实测过）。
+  //   ⚠️ 这轮**第七次**撞到同一件事（关键词命中注释/导出/失败消息）——
+  //     判据早就写在 MODULES.md ⑪ 里了，而我还是又栽了一次。
+  //     ⟹ 所以这里用 `codeOnly()`（这个文件顶部已有的工具），别手写正则。
+  const gate = codeOnly(main.slice(gateAt, main.indexOf('\n}', gateAt)));
+  assert.match(gate, /setWEWallpaper\(config\.we\.dir\)/, '闸门里没恢复上次的壁纸');
+  // ⚠️ 回落那支（createWallWindow）**不会自己广播** ⟹ 必须显式发
+  //   否则"上次那张不在了 ⟹ 用了内置的"这件事面板上完全看不到。
+  assert.match(gate, /broadcast\('we-status'/,
+    '闸门的回落分支没广播 ⟹ 面板首次渲染在闸门之前，它会一直以为"还没装壁纸"'
+    + '（而其实已经在放内置那个了）');
+  // ⚠️ 而"上次存过路径却没恢复成功"要说出来 —— 用户会问"我上次那张呢"
+  // ⚠️⚠️ 这句话在这一段里出现**两次**（console.warn 给终端、logEvent 进事件环）
+  //   ⟹ 只 match 字串的话破坏任一处另一处还在，断言是弱的。
+  //   ⟹ 两条通道分别断言：终端那条给开发时看，事件环那条进诊断报告。
+  assert.match(gate, /console\.warn\([^)]*上次的壁纸目录不在了/,
+    '回落时终端里没说原因 ⟹ 从终端启动也看不出为什么不是他上次那张');
+  assert.match(gate, /logEvent\('launch'[^)]*上次的壁纸目录不在了/,
+    '回落这件事没进事件环 ⟹ 诊断报告里查不到（而那是用户能发给我的东西）');
+
+  // ② 面板收到 we-status 要重扫壁纸列表（不只是刷状态行）
+  const at = dash.indexOf('window.gw.onWeStatus(');
+  assert.ok(at > 0, '找不到 onWeStatus');
+  const handler = dash.slice(at, dash.indexOf('});', at));
+  assert.match(handler, /renderMine\(\)/,
+    'onWeStatus 里没重扫壁纸列表 ⟹ items 里的 active 停在装载之前的快照，'
+    + '轮播摘要行会一直说"没有在放壁纸"');
+  // ⚠️ 而它必须**只在那个 tab 是当前页时**扫 —— 扫描要遍历磁盘
+  assert.match(handler, /classList\.contains\('on'\)/,
+    '无条件重扫 ⟹ 在别的 tab 上也遍历磁盘，而那份列表没人看');
 });
 
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把

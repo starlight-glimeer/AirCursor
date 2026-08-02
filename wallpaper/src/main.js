@@ -1348,9 +1348,23 @@ function releaseWallpaperGate() {
 
   // 上次装的 WE 壁纸还在就恢复它，否则用我们自己的三层景深。
   if (config.we.dir && fs.existsSync(path.join(config.we.dir, 'project.json'))) {
-    setWEWallpaper(config.we.dir);
+    setWEWallpaper(config.we.dir);   // ⚠️ 它自己会 broadcast('we-status')
   } else {
+    // ⚠️⚠️ **回落这一支也要广播**（0.9.134）。用户 0.9.133 那轮问到的：
+    //   「壁纸不在了 ⟹ 回落到三层景深」这件事面板上也看不到 ——
+    //   `createWallWindow` 不发任何通知，而面板首次渲染发生在闸门之前
+    //   ⟹ 它以为"还没装壁纸"，而其实已经在放内置那个了。
+    // ⚠️ 而**上次存过路径却没恢复成功**是需要说出来的：
+    //   用户会问"我上次那张呢"，而答案是"那个目录不在了"。
+    if (config.we.dir) {
+      console.warn(`[launch] 上次的壁纸目录不在了，回落到内置壁纸：${config.we.dir}`);
+      logEvent('launch', `上次的壁纸目录不在了（${config.we.dir}）⟹ 回落到内置的三层景深`);
+    }
     wallWindow = createWallWindow(config.wallStrategy);
+    // ⚠️ 用**现成的** we-status 广播（setWEWallpaper 那支也发它）——
+    //   面板据此知道"壁纸这件事有结论了"，然后重扫列表。
+    //   ⚠️ 不新造通道：这个项目为"新造一个没人听的频道"栽过。
+    broadcast('we-status', weStatus(null));
   }
   // ⚠️ **轮播要在恢复壁纸之后起** —— `rotateNext()` 靠 `weProject.dir` 判断
   // "当前是列表里的第几个"，而那时 weProject 才有值。

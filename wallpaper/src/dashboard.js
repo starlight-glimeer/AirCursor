@@ -3930,7 +3930,31 @@ window.addEventListener('focus', () => {
   if (mine && mine.classList.contains('on')) renderMine();
 });
 
-window.gw.onWeStatus(() => renderWEStatus());
+// ⚠️⚠️⚠️ **装载了别的壁纸 ⟹ 壁纸列表也要重扫**（0.9.134）。用户 2026-08-02：
+//   「开机之后我看这个默认使用了、其实就是我上一次操作的那个壁纸，
+//     然后轮播这块…还是没有正常显示，我自己在点它才能正常的对应起来」
+//
+// ⚠️⚠️ 根因是我 0.9.128 那个启动闸门引入的**时序缺口**：
+//     主进程 whenReady：openDashboard() ⟹ 壁纸**还没装**（等 launch-dismissed）
+//     面板加载完：apply() → renderMine() → workshopLocal()
+//                 ⟹ 那时 `weProject` 是 null ⟹ 每一项 `active` 都是 false
+//     用户点「点击进入」：壁纸**现在才**装上，weProject 有值了
+//     ⟹ 而**没有人再跑一次 renderMine** ⟹ `lastWallpapers` 里的 active
+//       永远停在 false ⟹ 轮播摘要行一直说"没有在放壁纸"，
+//       直到用户手动点一张（那时 renderMine 重跑）—— 正是他描述的现象。
+//
+// ⟹ 判据：**把一件事推迟之后，要问"谁在它之前已经读过那个状态了"** ——
+//   那些读过的地方需要一次重读，而"推迟"本身不会通知它们。
+//
+// ⚠️ 用**现成的 `we-status` 广播**（`setWEWallpaper` 装完就发），不新造通道 ——
+//   这个项目为"新造一个没人听的频道"栽过（0.9.123 的 `library-changed`）。
+// ⚠️ 只在「我的壁纸」是当前页时重扫 —— 扫描要遍历磁盘，而在别的 tab 上
+//   那份列表没人看（切回去时 renderTab 自己会扫）。
+window.gw.onWeStatus(() => {
+  renderWEStatus();
+  const mine = document.getElementById('tab-mine');
+  if (mine && mine.classList.contains('on')) renderMine();
+});
 // ⚠️ 订阅实际频谱 —— 没有它，"参数调多少"只能靠猜（我猜了三轮）。
 if (window.gw.onWeAudioFrame) window.gw.onWeAudioFrame(renderAudioFrame);
 
