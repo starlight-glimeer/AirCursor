@@ -2305,6 +2305,31 @@ function setWEWallpaper(dir) {
 }
 
 // 壁纸自己调 wallpaperReady 了 —— 这是"里面的 JS 活着"的唯一证据。
+// ⚠️⚠️⚠️ **`we-ready` 一直是个死信号**（0.9.114 修）。
+//
+// `we-preload.js:86` 在壁纸调 `wallpaperReady()` 时 `send('we-ready')`，
+// 而**主进程从来没接过它** ⟹ `weReady` 永远是 false
+// ⟹ 面板上那个"壁纸就绪"状态一直显示错的（`weStatus().ready`）。
+// 而 createWEWindow 里那句注释还写着"见 ipcMain.on('we-ready')" —— **那个 handler
+// 压根不存在**。注释指向一个不存在的东西，比没注释更误导。
+//
+// ⚠️⚠️ 而它同时是**补发媒体数据的最佳时机**：
+//   媒体是轮询来的（1.5 秒一次），而壁纸是随时装载的
+//   ⟹ 装载那一刻 `window.__mediaState` 还不存在
+//   ⟹ 壁纸初始化读到的是它自己的兜底值（全空、position 0）。
+//   那个粒子壁纸恰好订阅了 `_callbacks` 所以会被纠正，但**一个只读一次
+//   不订阅的壁纸会永远是空的** —— 而那完全合法（契约里
+//   `window.__mediaState || {…}` 那个兜底就说明作者预期"可能没有这个对象"）。
+ipcMain.on('we-ready', () => {
+  weReady = true;
+  broadcast('we-status', weStatus(null));
+  // ⚠️ 立刻把最近一次的歌曲信息补给它 —— 不等下一轮轮询。
+  //   ⚠️ `lastTrack` 可能是 null（没在放歌）—— 那也要发：
+  //     发一个全空的 __mediaState 比让对象不存在好，
+  //     因为壁纸能区分"有对象但没在放歌"和"宿主不支持这个接口"。
+  sendWEMedia(lastTrack);
+});
+
 ipcMain.on('we-mouse-seen', (_event, payload) => {
   pageMouseSeen = { ...payload, at: Date.now() };
 });
@@ -3791,6 +3816,20 @@ ipcMain.handle('we-set-audio-source', (_event, source) => {
 //
 // 四个通道分开发，因为壁纸注册的是四个独立 listener，而它们的更新频率差一个量级
 // （歌名换歌才变、进度每秒都变）。合成一个通道会让壁纸每秒重跑换封面的过渡动画。
+// ⚠️⚠️⚠️ **最近一次的歌曲信息**（0.9.114）。
+//
+// 媒体数据是**轮询**来的（nowplaying 每 1.5 秒读一次），而壁纸是**随时**装载的
+// ⟹ 装载的那一刻 `window.__mediaState` 还不存在
+// ⟹ 壁纸初始化时读到的是它自己的兜底值（全空、position 0）。
+//
+// ⚠️ 而那个壁纸恰好**订阅了** `_callbacks`，所以最多 1.5 秒后会被纠正 ——
+//   但**一个只读一次不订阅的壁纸会永远是空的**，而那种壁纸完全合法
+//   （契约里 `_callbacks` 是可选的，`window.__mediaState || {…}` 那个兜底
+//    就说明作者预期"可能压根没有这个对象"）。
+//
+// ⟹ 缓存最近一次，装载完立刻补一发。代价是一个变量，收益是"装上就有数据"。
+let lastTrack = null;
+
 function sendWEMedia(track) {
   if (!weWindow || weWindow.isDestroyed()) return;
   const wc = weWindow.webContents;
@@ -4496,6 +4535,8 @@ require('./nowplaying').install({
   getConfig: () => config,
   onTrack: (track) => {
     broadcast('track', track);
+    // ⚠️ 记住最近一次 —— 壁纸**装载的瞬间**要能立刻拿到（见 lastTrack 那段注释）。
+    lastTrack = track;
     // WE 壁纸走自己的四通道 media 协议，不是我们的 'track' 事件。
     sendWEMedia(track);
   },

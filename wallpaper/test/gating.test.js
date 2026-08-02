@@ -6514,6 +6514,29 @@ check('__mediaState：建一次 / 保住订阅 / 字段名照壁纸的契约', (
   // ⚠️ 而它必须**真的被调**（换歌/进度更新那条链上）
   assert.match(src, /sendMediaState\(track\);/,
     'sendMediaState 没在 sendWEMedia 里调 ⟹ 那个全局永远不更新');
+
+  // ③⚠️⚠️⚠️ **`we-ready` 必须被接住**（0.9.114）。
+  //   `we-preload.js` 在壁纸调 `wallpaperReady()` 时 send 它，而主进程**从来没接过**
+  //   ⟹ `weReady` 永远 false ⟹ 面板那个"壁纸就绪"状态一直是错的。
+  //   ⚠️ 而 createWEWindow 里的注释还写着"见 ipcMain.on('we-ready')" ——
+  //     **那个 handler 压根不存在**。注释指向不存在的东西比没注释更误导。
+  assert.match(src, /ipcMain\.on\('we-ready'/,
+    'we-ready 没人接 ⟹ weReady 永远 false，面板的「壁纸就绪」一直显示错的'
+    + '（而 we-preload 一直在发它）');
+  assert.match(src, /weReady = true/, 'weReady 从来不置 true');
+  // ⚠️⚠️ 而它同时是**补发媒体数据的时机** —— 媒体是 1.5 秒轮询来的，
+  //   而壁纸随时装载 ⟹ 装载那刻 __mediaState 还不存在 ⟹ 壁纸初始化读到全空。
+  //   那个粒子壁纸订阅了所以会被纠正，但**只读一次不订阅的壁纸会永远空着**
+  //   （而那完全合法：`window.__mediaState || {…}` 那个兜底就说明作者预期
+  //    "可能没有这个对象"）。
+  const ready = src.slice(src.indexOf("ipcMain.on('we-ready'"),
+    src.indexOf("ipcMain.on('we-mouse-seen'"));
+  assert.ok(ready.length > 80, `切不出 we-ready（长度 ${ready.length}）⟹ 断言失效`);
+  assert.match(ready, /sendWEMedia\(lastTrack\)/,
+    '壁纸就绪时没补发媒体数据 ⟹ 只读一次不订阅的壁纸会永远显示空的');
+  // ⚠️ lastTrack 要真的被记下来
+  assert.match(src, /lastTrack = track;/,
+    '没缓存最近一次 track ⟹ 补发时手里没数据');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
