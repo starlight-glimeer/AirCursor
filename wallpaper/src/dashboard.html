@@ -731,14 +731,14 @@
      长得一样是**有意的**：用户学一次就会用第二个。
      ⚠️ 共用选择器而不是各写一遍：各写一遍的话改一个忘一个，
      而"两个弹窗长得不一样"是那种看得见但没人报的缺陷。 */
-  #rotate-modal, #settings-modal { position: fixed; inset: 0; z-index: 150; }
-  #rotate-modal-mask, #settings-modal-mask {
+  #rotate-modal, #settings-modal, #ai-modal { position: fixed; inset: 0; z-index: 150; }
+  #rotate-modal-mask, #settings-modal-mask, #ai-modal-mask {
     position: absolute; inset: 0;
     background: rgba(4,5,9,.62);
     /* 毛玻璃：底下的面板还能看见轮廓 ⟹ "这是个浮层"而不是"换了一页" */
     backdrop-filter: blur(3px);
   }
-  #rotate-modal-box, #settings-modal-box {
+  #rotate-modal-box, #settings-modal-box, #ai-modal-box {
     position: absolute; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
     max-width: calc(100vw - 48px);
@@ -750,6 +750,67 @@
   /* 宽度是两者唯一的区别：轮播那个装一排缩略图，设置那个要装目录路径和诊断读数。 */
   #rotate-modal-box { width: 460px; }
   #settings-modal-box { width: 560px; }
+
+  /* ═══════════════════════════════════════════════════════════════
+     ⚠️⚠️ **AI 壁纸工坊**（0.9.123）。用户 2026-08-02：
+       「就像和 ChatGPT 对话一样，有个对话框，然后他上面会显示一下我的工作目录
+         在哪儿，就是我的壁纸存储目录，他生成壁纸就要放在这儿」
+
+     ⚠️ 复用 #rotate-modal / #settings-modal 那套定位和遮罩（同一条 CSS 规则里
+        加上 #ai-modal）—— 三个弹窗的外壳完全一样，只有宽度和内容不同。
+        另写一套的话下次改遮罩要改三处。
+     ⚠️ 而它**比那两个宽**（620px）：对话记录要能读，而 560px 装不下代码行数
+        和检查结果那种两三行的条目。
+     ═══════════════════════════════════════════════════════════════ */
+  #ai-modal-box { width: 620px; }
+  /* 对话流。⚠️ 固定高度 + 自己滚 —— 内容会越来越长，
+     而让整个弹窗长高会顶到屏幕边缘然后整体滚动（那时输入框会滚出视野）。 */
+  #ai-log {
+    height: 300px; overflow-y: auto;
+    margin: 10px 0; padding: 10px;
+    background: var(--log-bg-a); border: 1px solid var(--line); border-radius: 8px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .ai-msg {
+    max-width: 88%; padding: 7px 10px; border-radius: 9px;
+    font-size: 12px; line-height: 1.65;
+    /* ⚠️ 要能选中复制 —— 报错原文是用户唯一能发给我的东西。 */
+    user-select: text;
+    /* ⚠️ `pre-line` 而不是默认：这些文本里的 \n 是有意义的（分点说明），
+       而 textContent 不解析 markdown（这个项目为它栽过一次：
+       面板上出现了字面的 `**音轨**` 而且换行全被吃掉）。 */
+    white-space: pre-line;
+    /* ⚠️ 长路径/长报错要能折行，否则会把弹窗撑宽 */
+    overflow-wrap: anywhere;
+  }
+  .ai-msg.me { align-self: flex-end; background: rgba(108,199,255,.14); }
+  .ai-msg.bot { align-self: flex-start; background: var(--btn-bg-a); }
+  /* 进度那种"正在做什么"的行 —— 比正文淡，居中，不占气泡 */
+  .ai-msg.step {
+    align-self: center; max-width: 100%;
+    background: none; color: var(--dim); font-size: 11px; padding: 2px 0;
+  }
+  .ai-msg.bad { align-self: flex-start; background: rgba(255,180,84,.13); color: #ffd9a8; }
+  .ai-msg.ok { align-self: flex-start; background: rgba(138,255,193,.12); color: #b6ffd8; }
+  /* 工作目录那一行。⚠️ 用户点名要显示它 —— 那是"生成的东西去哪了"的答案。 */
+  #ai-dir {
+    font: 400 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--dim); user-select: text; overflow-wrap: anywhere;
+    /* ⚠️⚠️ 它写的是两行（"生成的壁纸放在这里：\n<路径>"）⟹ 必须保留换行。
+       不保留的话挤成一行，而一条长路径挤在说明后面就是读不了。
+       ⚠️ 这条是 gating 里那个守卫逮到的 —— 我忘了写，而它当场报了。 */
+    white-space: pre-line;
+    padding: 7px 9px; background: var(--log-bg-a); border-radius: 7px;
+  }
+  #ai-input-row { display: flex; gap: 8px; align-items: flex-end; }
+  /* ⚠️ textarea 而不是 input：用户要描述一个效果，那常常是两三句话，
+     而 input 里只能看到最后十几个字。 */
+  #ai-want {
+    flex: 1; min-height: 58px; max-height: 140px; resize: vertical;
+    padding: 8px 10px; font: 400 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    background: var(--btn-bg-a); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
   /* .sm-* = 设置弹窗自己的东西。.rm-head 那套沿用（下面 .rm-head 那条已经带上了）。 */
   .sm-head { display: flex; align-items: center; margin-bottom: 12px; }
   .sm-head b { flex: 1; font-size: 14px; }
@@ -973,6 +1034,24 @@
             </div>
             <span id="rotate-chevron">›</span>
           </div>
+        </div>
+        <!-- ⚠️⚠️ **AI 壁纸工坊入口**（0.9.123）。用户 2026-08-02：
+             「我感觉我们现在我的壁纸这个界面…我觉得这里可以做设计，比如说我在
+               这里也点一个按钮，比如说合成台/DIY 工坊/AI 助手…之后来个弹窗，
+               我跟他对话，然后他帮我生成这个壁纸放在指定目录下，因为我左边
+               这个预览直接就是指定位置，那我可以看到这个预览图的就很直观」
+
+             ⚠️ 位置就在网格上方 —— 判据是**生成完的反馈在同一屏**：
+                生成落进壁纸目录 ⟹ 下面的网格立刻多一张卡片 ⟹
+                预览图就是"做出来什么样"的直接答案，不需要跳到别处看。
+             ⚠️ 叫「AI 壁纸工坊」而不是「AI 助手」：它不聊天、只产出壁纸，
+                而"助手"会让人期待它能回答别的问题。 -->
+        <div class="bar-row" style="margin-bottom:10px">
+          <button class="act primary" id="ai-open" type="button"
+                  title="说一句你想要什么效果，它生成一张壁纸放进壁纸目录">
+            ✨ AI 壁纸工坊
+          </button>
+          <span class="hint" style="flex:1">说一句想要什么效果，它写好放进下面</span>
         </div>
         <div id="mine-state" class="hint" style="margin-bottom:10px"></div>
         <div id="mine-grid" class="ws-grid"></div>
@@ -1532,6 +1611,59 @@
   </div>
 </div>
 
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     ⚠️⚠️ **AI 壁纸工坊**（0.9.123）。用户 2026-08-02：
+       「就像和 ChatGPT 对话一样，有个对话框，然后他上面会显示一下我的工作目录
+         在哪儿，就是我的壁纸存储目录，他生成壁纸就要放在这儿」
+       「不能给用户提供让他自主选择模型，我们就把调用大模型这个打通就行」
+
+     ⟹ 所以这里**没有模型选择器**。只有：工作目录 + 一个 key 输入 + 对话框。
+       ⚠️ 判据：用户对"选哪个模型"没有认知，给选项是纯副作用
+         （而 llm.js 那边两个提供方都实现了、都有测试 —— 以后要换很容易）。
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="ai-modal" hidden>
+  <div id="ai-modal-mask"></div>
+  <div id="ai-modal-box" role="dialog" aria-modal="true" aria-labelledby="ai-modal-title">
+    <div class="rm-head">
+      <b id="ai-modal-title">✨ AI 壁纸工坊</b>
+      <button class="act" id="ai-close" type="button" title="关闭（Esc）">✕</button>
+    </div>
+
+    <!-- ⚠️⚠️ 工作目录 —— **用户点名要显示它**（「他上面会显示一下我的工作目录
+         在哪儿」）。判据：那是"生成的东西去哪了"这个问题的答案，
+         而不显示的话整个功能是个黑盒。
+         ⚠️ 可选中复制 + 一个「打开」按钮（壁纸是文件，而用户对文件的直觉
+            操作是"在 Finder 里看看"）。 -->
+    <div class="bar-row" style="gap:8px;align-items:center">
+      <div id="ai-dir" style="flex:1">—</div>
+      <button class="act" id="ai-reveal" type="button" title="在 Finder 里打开">打开</button>
+    </div>
+
+    <!-- ⚠️ key 那一行**折叠**：填过一次就不用再看到它。
+         ⚠️ 而它默认展开当且仅当"还没填" —— 那时它是唯一的门槛。 -->
+    <details id="ai-key-wrap" style="margin-top:10px">
+      <summary class="hint" style="cursor:pointer">模型凭证（填一次就行，存在本机）</summary>
+      <div class="bar-row" style="margin-top:8px">
+        <input id="ai-key" type="password" placeholder="粘贴 API key" style="flex:1">
+        <button class="act" id="ai-key-save" type="button">保存</button>
+        <button class="act" id="ai-ping" type="button" title="发一个最小请求看通不通">测一下</button>
+      </div>
+      <p class="hint" id="ai-key-hint" style="margin-top:6px"></p>
+    </details>
+
+    <!-- 对话流 -->
+    <div id="ai-log"></div>
+
+    <div id="ai-input-row">
+      <textarea id="ai-want" placeholder="说一句你想要什么效果。&#10;例如：音乐驱动的极光帷幕，低频让它涨起来、高频撒光点，没音乐时缓慢呼吸"></textarea>
+      <button class="act primary" id="ai-go" type="button">生成</button>
+    </div>
+    <p class="hint" style="margin-top:8px">
+      ⚠️ 一次要几十秒到几分钟 —— 它会生成、自动检查、发现问题自己修，最多三轮。
+    </p>
+  </div>
+</div>
 
 <script src="system.js"></script>
 <script src="templates.js"></script>

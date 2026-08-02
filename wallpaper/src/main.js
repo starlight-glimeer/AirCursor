@@ -45,6 +45,11 @@ const Workshop = globalThis.GestureWallWorkshop;
 
 const AudioSource = require('./audio-source.js');
 const MouseBridge = require('./mouse-bridge.js');
+// ⚠️ 0.9.123：AI 生成壁纸。两个模块都是**纯逻辑**（不碰 Electron）——
+//   那是有意的：闸门的判定逻辑必须能在测试里跑（见 test/gen.test.js），
+//   而"开窗口真跑"那部分留在这个文件里（它绕不开 Electron）。
+const LLM = require('./llm.js');
+const Gen = require('./wallpaper-gen.js');
 // ⚠️ 0.9.111：去音轨那个 helper 也走预编译优先那条路（和音频/鼠标一样）。
 const { findPrebuilt } = require('./prebuilt-helper.js');
 
@@ -427,6 +432,30 @@ const defaultConfig = {
     // 导诊断报告时和密码一起脱敏。
     steam: { username: null, password: null, guardCode: null, apiKey: null },
     steamCmdPath: null,
+    // ⚠️⚠️ **AI 生成壁纸的凭证**（0.9.123）。用户 2026-08-02：
+    //   「调用大模型 api，帮我做壁纸」
+    //   「这些东西肯定是不能上传 GitHub 的，这个我自己填就行，但是你要支持这个能力」
+    //
+    // ⚠️ 它们和 Steam 那套走**同一条路**，不需要为 LLM 另开一套：
+    //   落盘在 `app.getPath('userData')/config.json`（`~/Library/Application
+    //   Support/GestureWall/`）—— 那在仓外，`.gitignore` 都不用管。
+    //   而诊断报告里由 `redactConfig` 打码（报告是要发给别人看的）。
+    //
+    // ⚠️⚠️ **只做一家（Bedrock）**。用户 2026-08-02 明确收窄：
+    //   「不能给用户提供，让他自主选择模型，我们就把调用大模型这个打通就行」
+    //   ⟹ `provider` 这个字段留着（llm.js 那边两支都实现了、都有测试），
+    //     但面板上不给选 —— 那是"以后要换很容易"和"现在别让用户面对选择"
+    //     两件事同时成立的写法。
+    //
+    // ⚠️ region/model 有默认值（能直接用），**只有 apiKey 必须用户自己填** ——
+    //   那是唯一的凭证，也是这个功能唯一的门槛。
+    ai: {
+      provider: 'bedrock',
+      region: 'us-west-2',
+      // ⚠️ 绝对不许在这里写任何 key。默认 null = "用户还没填"。
+      apiKey: null,
+      model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    },
     // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
     // 这里是"我从别处拿到的壁纸放在哪"。
     // ⚠️⚠️ **轮播**（0.9.43）。用户 2026-08-01：
@@ -3567,6 +3596,333 @@ ipcMain.on('video-status', (_event, payload) => {
 });
 
 // ---------------------------------------------------------------------------
+// AI 生成壁纸（0.9.123）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02：「调用大模型 api，帮我做壁纸」
+//   「就像和 ChatGPT 对话一样，有个对话框，然后他上面会显示一下我的工作目录在哪儿，
+//     就是我的壁纸存储目录，他生成壁纸就要放在这儿」
+//   「不能给用户提供让他自主选择模型，我们就把调用大模型这个打通就行」
+//
+// ⚠️⚠️⚠️ **这个功能的成败不在"能不能调 API"（那是 30 行），在"生成完怎么收敛"。**
+//
+// 用户原话：「这个东西你拆成不烂，找一下性啥的写好提示词设计一套 agent 的
+//   那种流程肯定能做出来的呀」—— **他说得对**，而我原来那句"做不出来"框错了问题：
+//   我说的是"一次性生成做不到"，他问的是"拆开、设计流程能不能做到"。
+//   而他抓的那个点是关键：**粒子效果不需要素材，它就是代码**
+//   ⟹ 产物在模型能力范围内，瓶颈只在"一轮出不来"，而那是流程问题。
+//
+// ⚠️⚠️ 实测（2026-08-02，Bedrock Sonnet 4.5，真跑三轮）：
+//     v1 262 行 → 机器闸门报 1 个问题（**鼠标一个事件都没接**）
+//     v2 334 行 → 报 1 个（接了 mousemove 但没用 e.buttons）
+//     v3 343 行 → **0 个，收敛**。总共约 10k 输出 token。
+//   ⟹ 三轮上限是照实测定的，不是拍的。
+//
+// ⚠️⚠️⚠️ **而"模型审模型"不可信** —— 同一次实测里我让模型审自己的产物，
+//   它判错两次、方向还相反：鼠标完全没接它判 pass（漏报）、
+//   Math.random 用对了它判 fail（误报）。
+//   ⟹ 所以闸门是**代码**（Gen.inspect / Gen.judgeRuntime），模型不参与判定。
+//
+// 三层闸门：
+//   ① 机器闸门（Gen.inspect，纯函数，有 52 项测试）
+//   ② 真跑闸门（下面那个隐藏窗口 —— 这一层绕不开 Electron）
+//   ③ 用户的眼睛（"好不好看"只有他能判 —— 所以我们不在这上面加任何模型判断）
+
+// 生成过程的进度往面板推。⚠️ 一次生成要几十秒到几分钟（实测三轮约 10k token），
+// 而**没有进度的等待和卡死分不开** —— 这个项目为"静默"栽过很多次。
+function genProgress(stage, detail) {
+  console.log(`[gen] ${stage}${detail ? `：${detail}` : ''}`);
+  broadcast('gen-progress', { stage, detail: detail || '' });
+}
+
+// ⚠️ 语法检查：`new Function` 只**解析**不执行 —— 这点很重要，
+//   我们绝不能执行模型生成的代码来判断它对不对。
+function checkJsSyntax(code) {
+  try {
+    // eslint-disable-next-line no-new-func
+    new Function(code);
+    return null;
+  } catch (error) {
+    return error.message;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ② 真跑闸门 —— 在一个隐藏窗口里跑 3 秒，看它到底活不活
+// ---------------------------------------------------------------------------
+//
+// ⚠️⚠️ 这是"静态检查过了但跑起来是白的/黑的/报错的"唯一的判据。
+//   而那三种失败**静态检查一个都看不出来**：
+//     · ctx.roundRect 在旧 Chromium 上不存在 ⟹ 运行时抛
+//     · 坐标算错画到屏幕外 ⟹ 画面全黑，但日志完全干净
+//     · shader 编译失败 ⟹ 同上
+//
+// ⚠️ 用 `show: false` 的独立窗口，**不碰真的壁纸层** ——
+//   生成过程中用户的壁纸不该闪一下。
+//
+// ⚠️⚠️ 而这个函数**我在云端验不了**（要 Electron 窗口）⟹ 它里面
+//   **不放判定逻辑**，只负责"跑起来收集数据"，判定全在 `Gen.judgeRuntime`
+//   （纯函数，有测试）。这样万一出问题，能分清是"没收集到数据"还是"判错了"。
+async function probeWallpaperRuntime(dir) {
+  const probe = {
+    ready: false,
+    errors: [],
+    frames: 0,
+    ms: 0,
+    sampledPixels: null,
+  };
+  let win = null;
+  try {
+    win = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 720,
+      webPreferences: {
+        // ⚠️ **不挂 we-preload** —— 那样宿主接口全都不存在，
+        //   而这恰好测的是"在浏览器里直开也能跑"那条硬约束
+        //   （壁纸必须 if 保护每个 window.wallpaperXxx）。
+        //   ⟹ 如果它裸调了某个接口，这一层会抓到那个 TypeError。
+        offscreen: false,
+        backgroundThrottling: false,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    win.webContents.on('console-message', (...args) => {
+      const d = args[1] && typeof args[1] === 'object' ? args[1] : null;
+      const level = d ? ({ error: 3, warning: 2 }[d.level] ?? 1) : args[1];
+      const message = d ? d.message : args[2];
+      if (level < 3) return;   // 只收 error
+      if (probe.errors.length < 10) probe.errors.push(String(message).slice(0, 300));
+    });
+    win.webContents.on('render-process-gone', (_e, details) => {
+      probe.errors.push(`渲染进程挂了：${details.reason}`);
+    });
+
+    // ⚠️⚠️ 用 `file://` 而**不是** `wall://`。我第一版写的是 wall://（想着
+    //   "和真装载走同一条路"），而那是错的：`protocol.handle` 那个 handler
+    //   **只服务当前装载的壁纸**（`if (!weProject || !weProject.dir) return 404`
+    //   —— 见 registerWEProtocol），而我们探测的是一个刚生成、还没装载的目录
+    //   ⟹ 必然 404，探针会把每一个产物都判成坏的。
+    //
+    // ⚠️ 代价说清楚：file:// 漏掉了"wall:// 协议本身有问题"那一类。
+    //   而那类问题**不是单个壁纸的问题**（协议对所有壁纸一视同仁），
+    //   所以它不该由"这张壁纸行不行"这个闸门来管。
+    // ⚠️ 而生成的壁纸是**单文件、零外部资源**（机器闸门 A 组强制了这点）
+    //   ⟹ 它根本不会去请求别的资源 ⟹ 两种协议下的行为在这里是一样的。
+    await win.loadURL(pathToFileURL(path.join(dir, 'index.html')).href);
+
+    // ⚠️ 在页面里装一个计帧器 + wallpaperReady 的探针。
+    //   ⚠️⚠️ 必须在 loadURL **之后** 注入 —— 之前注入的话页面一加载就被冲掉。
+    //   而这意味着我们**测不到"页面加载那一瞬间就调了 wallpaperReady"** ——
+    //   所以下面用"函数存在与否"而不是"有没有被调过"来判。
+    await win.webContents.executeJavaScript(`
+      (function(){
+        window.__gwProbe = { frames: 0, ready: false, t0: performance.now() };
+        var raf = window.requestAnimationFrame;
+        window.requestAnimationFrame = function(cb){
+          return raf(function(t){ window.__gwProbe.frames++; return cb(t); });
+        };
+        // ⚠️ 页面可能已经调过 wallpaperReady 了（我们注入得晚）——
+        //   那种情况这里补挂一个也没用。⟹ 判据放宽：
+        //   只要页面的源码里有 wallpaperReady 调用（①机器闸门已经查过），
+        //   这里就不把"没收到"当失败。见下面 ready 的处理。
+        if (!window.wallpaperReady) {
+          window.wallpaperReady = function(){ window.__gwProbe.ready = true; };
+        }
+        return true;
+      })();
+    `);
+
+    // 跑 3 秒。⚠️ 不能太短 —— 有的壁纸头一秒在做初始化（建粒子、编译 shader）。
+    const RUN_MS = 3000;
+    const t0 = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, RUN_MS));
+    probe.ms = Date.now() - t0;
+
+    const stat = await win.webContents.executeJavaScript(`
+      (function(){
+        var p = window.__gwProbe || {};
+        return { frames: p.frames || 0, ready: !!p.ready };
+      })();
+    `);
+    probe.frames = stat.frames;
+    probe.ready = stat.ready;
+
+    // ⚠️⚠️ **采样像素判"是不是全黑"** —— 这是"跑起来了但什么都看不见"的
+    //   唯一自动判据，而那种失败在日志里完全干净。
+    //   ⚠️ 用 capturePage 而不是读 canvas：壁纸可能用 WebGL，
+    //     而 WebGL 的 canvas 读像素要 preserveDrawingBuffer（我们改不了它的代码）。
+    try {
+      const image = await win.webContents.capturePage();
+      const size = image.getSize();
+      if (size.width > 0 && size.height > 0) {
+        // ⚠️ 缩到 20×20 再数 —— 400 个采样点足够判"是不是一片黑"，
+        //   而全尺寸是 92 万像素（白费）。
+        const small = image.resize({ width: 20, height: 20, quality: 'good' });
+        const bitmap = small.toBitmap();   // BGRA
+        let black = 0;
+        let total = 0;
+        for (let i = 0; i + 3 < bitmap.length; i += 4) {
+          const b = bitmap[i];
+          const g = bitmap[i + 1];
+          const r = bitmap[i + 2];
+          total += 1;
+          // ⚠️ 阈值 18 而不是 0：深色壁纸的底色常常是 #05060a 这种
+          //   （不是纯黑但肉眼看不出区别）⟹ 把它算成"黑"才符合观感。
+          if (r < 18 && g < 18 && b < 18) black += 1;
+        }
+        probe.sampledPixels = { black, total };
+      }
+    } catch (error) {
+      // ⚠️ 截图失败不算壁纸的问题 —— 那是我们这边的能力缺失。
+      //   ⟹ 留 null，`judgeRuntime` 那边会跳过全黑判定（它判 `px && px.total > 0`）。
+      console.warn('[gen] 截图失败，跳过全黑判定：', error.message);
+    }
+  } catch (error) {
+    probe.errors.push(`探测本身失败：${error.message}`);
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+  return probe;
+}
+
+// ---------------------------------------------------------------------------
+// 生成主流程
+// ---------------------------------------------------------------------------
+ipcMain.handle('gen-wallpaper', async (_event, payload) => {
+  const want = String((payload && payload.want) || '').trim();
+  if (!want) return { ok: false, error: '说一句你想要什么效果' };
+
+  const ai = (config.we && config.we.ai) || {};
+  if (!ai.apiKey) {
+    return {
+      ok: false,
+      needsKey: true,
+      error: '还没填 API key —— 在上面那个框里填一次就行（存在本机，不会上传）',
+    };
+  }
+
+  // ⚠️⚠️ 目录名带时间戳 —— 同一句描述生成两次要是两个目录，
+  //   否则第二次覆盖第一次，而用户可能还想对比。
+  const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, '');
+  const dirName = Gen.slugifyTitle(want, stamp);
+  const dir = path.join(ensureOurWallpaperDir(), dirName);
+
+  // ⚠️⚠️ **三轮上限是实测定的**（v1→v3 收敛），不是拍的。
+  //   而"还没过就交给用户"也是有意的 —— 见最后那段。
+  const MAX_ROUNDS = 3;
+  let html = null;
+  let problems = [];
+  const history = [];
+
+  try {
+    for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+      const isRepair = round > 1;
+      genProgress(isRepair ? `第 ${round} 轮：按检查结果修` : '正在生成',
+        isRepair ? `上一轮 ${problems.length} 个问题` : '');
+
+      const prompt = isRepair
+        ? Gen.buildRepairPrompt(html, problems)
+        : Gen.buildGeneratePrompt(want);
+      const out = await LLM.chat(ai, [{ role: 'user', content: prompt }],
+        { maxTokens: 16000 });
+      html = Gen.extractHtml(out.text);
+
+      // ── ① 机器闸门
+      genProgress('检查代码', `${html.split('\n').length} 行`);
+      problems = Gen.inspect(html, { checkJsSyntax });
+
+      // ⚠️ 静态检查没过就不必开窗口跑 —— 语法错的东西跑起来必然白屏，
+      //   而多花 3 秒得不到新信息。
+      if (!problems.length) {
+        // ── ② 真跑闸门。⚠️ 要先落盘才能用 wall:// 打开它。
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'index.html'), html);
+        fs.writeFileSync(path.join(dir, 'project.json'),
+          JSON.stringify(Gen.buildProjectJson(want.slice(0, 40), want), null, 2));
+
+        genProgress('试跑 3 秒', '看它到底活不活');
+        const probe = await probeWallpaperRuntime(dir);
+        problems = Gen.judgeRuntime(probe);
+        history.push({ round, lines: html.split('\n').length, probe, problems });
+        if (!problems.length) {
+          genProgress('done', `${dirName} —— 通过全部检查`);
+          // ⚠️⚠️ **不广播"库变了"** —— 我第一版写的是
+          //   `broadcast('library-changed', …)`，而那个频道**根本没人听**
+          //   （preload 和 dashboard 里 grep 零命中）⟹ 一个静默 no-op。
+          //   ⟹ 刷新网格由面板在拿到这个返回值之后自己调 `renderMine()`
+          //     （那本来就是"重扫磁盘"的入口，见 dashboard.js）。
+          //   判据：**别新造一个通知通道，用现成那条已经在工作的路。**
+          return { ok: true, dir, dirName, rounds: round, history };
+        }
+      } else {
+        history.push({ round, lines: html.split('\n').length, problems });
+      }
+    }
+
+    // ⚠️⚠️ 三轮还没过 —— **仍然落盘并交给用户**，不是丢掉。
+    //   判据：机器闸门是"必然出事"的清单，而剩下的问题可能只影响某个细节
+    //   （比如没接鼠标 ⟹ 点不出效果，但画面照样好看）。
+    //   ⟹ 让用户自己看一眼再决定，比我替他扔掉好。
+    //   ⚠️ 但**必须说清还剩什么问题** —— 否则他会以为是我们的播放器坏了。
+    if (html) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'index.html'), html);
+      fs.writeFileSync(path.join(dir, 'project.json'),
+        JSON.stringify(Gen.buildProjectJson(want.slice(0, 40), want), null, 2));
+    }
+    genProgress('done', `${MAX_ROUNDS} 轮还有 ${problems.length} 个问题`);
+    return {
+      ok: true,
+      partial: true,
+      dir,
+      dirName,
+      rounds: MAX_ROUNDS,
+      problems,
+      history,
+      note: `跑了 ${MAX_ROUNDS} 轮，还剩 ${problems.length} 个问题没修掉。`
+        + '壁纸已经放进目录了 —— 先看看效果，能接受就用，不行就再说一遍要求重生成',
+    };
+  } catch (error) {
+    genProgress('failed', error.message);
+    return { ok: false, error: error.message, history };
+  }
+});
+
+// ⚠️ 面板要能"先测一下通不通"，而不是把连通性问题混在生成失败里
+//   （生成失败有十几种原因，而"key 填错了"应该 3 秒内就知道）。
+ipcMain.handle('gen-ping', async () => {
+  const ai = (config.we && config.we.ai) || {};
+  if (!ai.apiKey) return { ok: false, error: '还没填 API key' };
+  try {
+    const out = await LLM.ping(ai);
+    return { ok: true, reply: out.reply };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle('gen-set-key', (_event, apiKey) => {
+  config.we.ai = { ...(config.we.ai || {}), apiKey: apiKey || null };
+  writeConfig();
+  return { ok: true, hasKey: !!apiKey };
+});
+
+// 面板打开时要知道：工作目录在哪、key 填了没。
+// ⚠️ 用户点名要显示工作目录（「他上面会显示一下我的工作目录在哪儿」）——
+//   那是"生成的东西去哪了"这个问题的答案，而不显示的话它是个黑盒。
+ipcMain.handle('gen-meta', () => ({
+  dir: ensureOurWallpaperDir(),
+  hasKey: !!(config.we.ai && config.we.ai.apiKey),
+  // ⚠️ **key 也回填** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122）。
+  //   判据：能保存的字段就要能回填，否则用户没法确认它存了没有。
+  apiKey: (config.we.ai && config.we.ai.apiKey) || '',
+  model: (config.we.ai && config.we.ai.model) || '',
+}));
+
+// ---------------------------------------------------------------------------
 // 诊断报告（C 层）
 // ---------------------------------------------------------------------------
 //
@@ -3714,6 +4070,12 @@ function redactConfig(source) {
     // ⚠️ API key 也是凭证 —— 泄漏了别人能用你的额度、而且它绑在你账号上。
     if (copy.we.steam.apiKey) copy.we.steam.apiKey = '***';
   }
+  // ⚠️⚠️ **AI 那个 key 同样要打码**（0.9.123）。它是 Bedrock 的长期凭证，
+  //   泄漏了别人能用你的额度调模型。而诊断报告是**要发给别人看的**
+  //   ⟹ 漏一个字段就等于把 key 贴出去了。
+  //   ⚠️ region/model 不打码 —— 那两个不是秘密，而且"用的哪个模型"
+  //     正是排查生成质量时要看的东西。
+  if (copy.we && copy.we.ai && copy.we.ai.apiKey) copy.we.ai.apiKey = '***';
   return copy;
 }
 

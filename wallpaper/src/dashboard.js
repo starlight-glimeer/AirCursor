@@ -3297,6 +3297,11 @@ window.addEventListener('keydown', (e) => {
   for (const [id, close] of [
     ['settings-modal', closeSettingsModal],
     ['rotate-modal', closeRotateModal],
+    // ⚠️ AI 壁纸工坊（0.9.123）。**加在这里而不是另写一个 handler** ——
+    //   上面那段注释早就说了另写会出什么问题（两个都开着时 Esc 同时关掉两个），
+    //   而"以后加第三个弹窗"就是现在。
+    // ⚠️ 它排在最后：生成中按 Esc 更可能是想关掉前面那两个（如果同时开着）。
+    ['ai-modal', () => { const m = document.getElementById('ai-modal'); if (m) m.hidden = true; }],
   ]) {
     const modal = document.getElementById(id);
     if (modal && !modal.hidden) { e.stopPropagation(); close(); return; }
@@ -3791,6 +3796,198 @@ window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
 //   用户："设置这里的权限展示还是有问题，删掉这里的展示吧，没啥用，
 //   我们把功能调通就行"。理由见 main.js 那段（我改了六版还在错，
 //   而根因是这个面板回答的是一个用户不需要问的问题）。
+
+// ---------------------------------------------------------------------------
+// AI 壁纸工坊（0.9.123）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02：「就像和 ChatGPT 对话一样，有个对话框，然后他上面会显示一下
+//   我的工作目录在哪儿，就是我的壁纸存储目录，他生成壁纸就要放在这儿」
+//   「不能给用户提供让他自主选择模型，我们就把调用大模型这个打通就行」
+//
+// ⚠️⚠️ 整块 try 住 —— 这是我加的初始化，它抛了不该把 apply() 挡在后面
+//   （那会让所有开关都绑不上，而症状是"点什么都没反应、也没报错"）。
+//   这个项目为这件事栽过一轮，见文件末尾那段注释。
+try {
+// ⚠️ 每个 getElementById 都可能是 null（HTML 改了而这里没跟上）
+//   ⟹ 统一用一个取值器，拿不到就整块不启用，而不是在某一行抛。
+const aiEl = (id) => document.getElementById(id);
+const aiModal = aiEl('ai-modal');
+const aiLog = aiEl('ai-log');
+
+// 往对话流里加一条。⚠️ 用 textContent 不是 innerHTML ——
+//   这些文本里有模型返回的报错原文，而那可能包含 HTML 标签。
+function aiSay(kind, text) {
+  if (!aiLog) return null;
+  const node = document.createElement('div');
+  node.className = `ai-msg ${kind}`;
+  node.textContent = String(text || '');
+  aiLog.appendChild(node);
+  // ⚠️ 自动滚到底 —— 不滚的话进度条目在视野外，看起来像"卡住了"
+  aiLog.scrollTop = aiLog.scrollHeight;
+  return node;
+}
+
+let aiBusy = false;
+
+function aiSetBusy(busy) {
+  aiBusy = busy;
+  const go = aiEl('ai-go');
+  if (go) {
+    go.disabled = busy;
+    // ⚠️ 按钮上要说"在忙什么" —— 一个灰掉的按钮不解释原因是最糟的等待
+    go.textContent = busy ? '生成中…' : '生成';
+  }
+}
+
+async function aiRefreshMeta() {
+  const meta = await window.gw.genMeta();
+  if (!meta) return;
+  // ⚠️⚠️ 这一处**故意用 `document.getElementById` 而不是 `aiEl`**。
+  //   gating 里那条「多行容器要保留换行」的守卫是按 `getElementById('id')`
+  //   切窗口来归属的 —— 用包装器的话这里的多行写入不产生站点边界，
+  //   会被算到**上一个** getElementById 的头上（实测：它报的是 we-audio-frame）。
+  //   ⟹ 那种误报比没有守卫糟（它指着一个没问题的元素）。
+  //   ⟹ 判据：**别让自己的写法把别人的守卫弄瞎。**
+  const dirNode = document.getElementById('ai-dir');
+  // ⚠️ 目录要**带一句说明**，不是只有一条路径 —— 那条路径本身不解释
+  //   "生成的东西会去这儿"。⚠️ 这里有 \n ⟹ CSS 必须有 white-space: pre-line。
+  if (dirNode) dirNode.textContent = `生成的壁纸放在这里：\n${meta.dir}`;
+  const keyInput = aiEl('ai-key');
+  // ⚠️ **回填已存的 key** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122，
+  //   根因是 mergeConfig 撞 null 默认值抛异常，整份 config 被静默重置）。
+  //   判据：能保存的字段就要能回填，否则用户没法确认它存了没有。
+  if (keyInput && meta.apiKey) keyInput.value = meta.apiKey;
+  const wrap = aiEl('ai-key-wrap');
+  // ⚠️ 只在"还没填"时展开 —— 那时它是唯一的门槛。填过就收起来。
+  if (wrap) wrap.open = !meta.hasKey;
+  const hint = aiEl('ai-key-hint');
+  if (hint) {
+    hint.textContent = meta.hasKey
+      ? `已存在本机（不会上传、诊断报告里打码）。当前模型：${meta.model}`
+      : '还没填。填一次就行 —— 它存在本机的配置文件里，不进代码仓、不上传。';
+  }
+  return meta;
+}
+
+if (aiEl('ai-open')) {
+  aiEl('ai-open').onclick = async () => {
+    if (aiModal) aiModal.hidden = false;
+    try {
+      const meta = await aiRefreshMeta();
+      // ⚠️ 首次打开给一句引导 —— 空白的对话框不告诉用户该说什么。
+      //   ⚠️ 而**只在第一次**说（aiLog 是空的时候），否则每次打开都刷一条。
+      if (aiLog && !aiLog.children.length) {
+        aiSay('bot', meta && meta.hasKey
+          ? '说一句你想要什么效果，我写一张壁纸放进上面那个目录。\n'
+            + '我会自己检查代码、发现问题自己修，最多三轮。'
+          : '先填一下模型凭证（上面那个折叠区），然后说一句你想要什么效果。');
+      }
+    } catch (error) {
+      aiSay('bad', `读配置失败：${error.message}`);
+    }
+    const want = aiEl('ai-want');
+    if (want) want.focus();
+  };
+}
+
+const aiHide = () => { if (aiModal) aiModal.hidden = true; };
+if (aiEl('ai-close')) aiEl('ai-close').onclick = aiHide;
+if (aiEl('ai-modal-mask')) aiEl('ai-modal-mask').onclick = aiHide;
+
+if (aiEl('ai-reveal')) {
+  aiEl('ai-reveal').onclick = async () => {
+    // ⚠️ 不传参数 = 打开我们自己的壁纸目录（见 main.js 的 reveal-wallpaper-dir）
+    await window.gw.revealWallpaperDir();
+  };
+}
+
+if (aiEl('ai-key-save')) {
+  aiEl('ai-key-save').onclick = async () => {
+    const input = aiEl('ai-key');
+    const value = input ? input.value.trim() : '';
+    const r = await window.gw.genSetKey(value);
+    // ⚠️ 保存后**重读一次** —— 那是"真的存下来了"的唯一证据。
+    //   这个项目刚为"以为存了其实没存"栽过一轮。
+    await aiRefreshMeta();
+    aiSay(r && r.hasKey ? 'ok' : 'bad',
+      r && r.hasKey ? '存好了（在本机配置文件里）' : '清空了 —— 现在没有凭证');
+  };
+}
+
+if (aiEl('ai-ping')) {
+  aiEl('ai-ping').onclick = async () => {
+    // ⚠️ 这个按钮的全部价值是**把连通性问题和生成失败分开** ——
+    //   生成失败有十几种原因，而"key 填错了"应该 3 秒内就知道。
+    aiSay('step', '测连通…');
+    const r = await window.gw.genPing();
+    if (r && r.ok) aiSay('ok', `通了 —— 模型回了「${r.reply}」`);
+    else aiSay('bad', `不通：\n${(r && r.error) || '没说原因'}`);
+  };
+}
+
+// 进度：主进程每一步都推过来。
+// ⚠️ 一次生成要几十秒到几分钟，而**没有进度的等待和卡死分不开**。
+window.gw.onGenProgress((p) => {
+  if (!p || !p.stage) return;
+  // done / failed 有自己的收尾消息（在 aiGo 里），这里不重复报
+  if (p.stage === 'done' || p.stage === 'failed') return;
+  aiSay('step', p.detail ? `${p.stage} · ${p.detail}` : p.stage);
+});
+
+async function aiGo() {
+  if (aiBusy) return;
+  const input = aiEl('ai-want');
+  const want = input ? input.value.trim() : '';
+  if (!want) { aiSay('bad', '先说一句你想要什么效果'); return; }
+  aiSay('me', want);
+  aiSetBusy(true);
+  try {
+    const r = await window.gw.genWallpaper({ want });
+    if (!r || !r.ok) {
+      aiSay('bad', `没做出来：\n${(r && r.error) || '没说原因'}`);
+      // ⚠️ 缺 key 是最常见的一种，而它有明确的下一步 ⟹ 把折叠区展开
+      if (r && r.needsKey) {
+        const wrap = aiEl('ai-key-wrap');
+        if (wrap) wrap.open = true;
+      }
+      return;
+    }
+    if (r.partial) {
+      // ⚠️⚠️ 三轮没修完**仍然给用户**（见 main.js 那段判据）——
+      //   但必须说清还剩什么，否则他会以为是播放器坏了。
+      aiSay('bad', `${r.note}\n\n还剩的问题：\n${
+        (r.problems || []).map((p) => `· ${p.detail}`).join('\n')}`);
+    } else {
+      aiSay('ok', `做好了：${r.dirName}\n`
+        + `（${r.rounds} 轮通过全部检查）\n`
+        + '下面的壁纸网格已经刷新 —— 点那张卡片就能装载看效果。');
+    }
+    // ⚠️⚠️ **刷新网格** —— 这是这个功能的全部反馈来源。
+    //   用户原话：「我左边这个预览直接就是指定位置，那我可以看到这个预览图的
+    //   就很直观」⟹ 生成完网格立刻多一张卡片。
+    //   ⚠️ 主进程那边**没有**广播"库变了"（我第一版写了个 `library-changed`，
+    //     而那个频道根本没人听 —— 静默 no-op）⟹ 刷新在这里做，
+    //     用现成那条已经在工作的路（renderMine 本来就是重扫磁盘的入口）。
+    if (typeof renderMine === 'function') await renderMine();
+    if (input) input.value = '';
+  } catch (error) {
+    aiSay('bad', `出错了：${error.message}`);
+  } finally {
+    aiSetBusy(false);
+  }
+}
+
+if (aiEl('ai-go')) aiEl('ai-go').onclick = aiGo;
+// ⚠️ ⌘↵ / Ctrl+↵ 发送 —— textarea 里裸 Enter 要留给换行（描述常常是两三句）。
+if (aiEl('ai-want')) {
+  aiEl('ai-want').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); aiGo(); }
+  });
+}
+} catch (error) {
+  console.error('[dashboard] AI 壁纸工坊初始化失败：', error);
+}
 
 window.gw.getConfig().then(apply).catch((error) => {
   // apply 自己抛的话开关全绑不上，那是最坏的情况 —— 必须能看见。

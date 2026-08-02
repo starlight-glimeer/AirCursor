@@ -77,6 +77,16 @@ contextBridge.exposeInMainWorld('gw', {
   workshopRemoveDir: (dir) => ipcRenderer.invoke('workshop-remove-dir', dir),
   workshopLoadLocal: (dir) => ipcRenderer.invoke('workshop-load-local', dir),
 
+  // ⚠️⚠️ AI 生成壁纸（0.9.123）。用户 2026-08-02：「调用大模型 api，帮我做壁纸」
+  //   凭证存在 userData/config.json（仓外），诊断报告里由 redactConfig 打码。
+  genMeta: () => ipcRenderer.invoke('gen-meta'),
+  genSetKey: (key) => ipcRenderer.invoke('gen-set-key', key),
+  genPing: () => ipcRenderer.invoke('gen-ping'),
+  genWallpaper: (payload) => ipcRenderer.invoke('gen-wallpaper', payload),
+  // ⚠️ 进度必须有：一次生成要几十秒到几分钟（实测三轮约 10k token），
+  //   而**没有进度的等待和卡死分不开** —— 这个项目为"静默"栽过很多次。
+  onGenProgress: on('gen-progress'),
+
   // 诊断报告
   exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
   revealDiagnostics: () => ipcRenderer.invoke('reveal-diagnostics'),
