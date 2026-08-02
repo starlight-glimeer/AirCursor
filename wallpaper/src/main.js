@@ -3876,8 +3876,15 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       const prompt = isRepair
         ? Gen.buildRepairPrompt(html, problems)
         : Gen.buildGeneratePrompt(want);
+      // ⚠️⚠️ **32000 而不是 16000**（0.9.126）。用户 2026-08-02 的账单证明了
+      //   16000 不够：2 次请求 17,304 token，探针约 16、生成输入约 1,240
+      //   ⟹ 输出**正好 16,000**、撞上限、而 content 是空的
+      //   ⟹ 全烧在 reasoning_content 里了。
+      // ⚠️ 而这**不是根本修法**：思考多少 token 是模型自己定的，
+      //   给 32000 它可能思考 30000。真正的修法是**别用推理模型**
+      //   （探针现在会提前提醒），这里只是把"够写完"的余量留出来。
       const out = await LLM.chat(ai, [{ role: 'user', content: prompt }],
-        { maxTokens: 16000 });
+        { maxTokens: 32000 });
       html = Gen.extractHtml(out.text);
 
       // ── ① 机器闸门
@@ -3948,7 +3955,14 @@ ipcMain.handle('gen-ping', async () => {
   if (!ai.apiKey) return { ok: false, error: '还没填 API key' };
   try {
     const out = await LLM.ping(ai);
-    return { ok: true, reply: out.reply };
+    // ⚠️⚠️ `thinks` 那几个字段要透到面板去（0.9.126）——
+    //   用户 2026-08-02 撞到的：探针通了但生成返回空，因为模型是推理型的、
+    //   把 16000 输出 token 全烧在思考上。⟹ 探针现在能提前说这件事。
+    return {
+      ok: true, reply: out.reply, model: ai.model,
+      thinks: out.thinks, reasoningChars: out.reasoningChars,
+      outputTokens: out.outputTokens, finish: out.finish,
+    };
   } catch (error) {
     return { ok: false, error: error.message };
   }

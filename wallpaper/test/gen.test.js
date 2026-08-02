@@ -627,6 +627,72 @@ check('存量迁移：磁盘上存着 bedrock 的会被换成 deepseek，但 api
     '迁移里动了 apiKey —— 那是用户自己填的，迁移只该改旧默认值');
 });
 
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ 探针要测"能不能完成真实任务"，不是"能不能握手"（0.9.126，真事故）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02：探针通了（模型回「通了」），而生成壁纸返回空正文。
+// **账单定性了它**：2 次请求 17,304 token —— 探针约 16、生成输入约 1,240
+// ⟹ 输出**正好 16,000**、撞 max_tokens、而 content 是空的
+// ⟹ 全烧在 reasoning_content：deepseek-v4-flash 是推理模型，
+//   它"想"到上限，一行 HTML 都没开始写。
+//
+// ⚠️⚠️ 而"探针通了"给了一个**错的安全感** —— 它只证明凭证和网络，
+//   而真正会让功能失败的是"模型类型不对"，探针那时对此一无所知。
+check('探针问的是"写一行代码"，不是"回两个字"（推理模型才会露出思考）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'llm.js'), 'utf8');
+  const at = src.indexOf('async function ping(');
+  assert.ok(at > 0, '找不到 ping()');
+  const body = src.slice(at, at + 3000);
+  assert.match(body, /JavaScript|canvas/,
+    '探针还在问"回两个字" —— 推理模型对那种问题可能直接答，测不出它会不会思考。'
+    + '要让它写代码（那才是真实任务的形状）');
+  // ⚠️ 探针必须**报告**思考情况，否则测出来了也没人知道
+  assert.match(body, /reasoning_content/, '探针没读 reasoning_content');
+  assert.match(body, /thinks/, '探针没把"会不会思考"报出来 ⟹ 面板无从提醒');
+  // ⚠️⚠️ 而它**不能调 parseResponse** —— 那个函数在正文为空时会抛，
+  //   而探针恰恰要把"正文空但有思考"当成一个有用的结论报出来。
+  //
+  // ⚠️⚠️ 这条断言我第一版写成 `!/parseResponse/.test(body)`，而它**当场误报** ——
+  //   命中的是我自己那句注释「这里不能用 parseResponse」加上模块导出列表里的
+  //   那一行（我切的 3000 字符窗口盖到了文件末尾的 module.exports）。
+  //   ⟹ 判据：**"这个词不出现"从来不是一条可靠的断言** ——
+  //     注释、导出、字符串里都会出现它。要锚定的是「**调用**」这个形状。
+  assert.ok(!/parseResponse\s*\(\s*cfg\.provider/.test(body),
+    '探针调了 parseResponse(cfg.provider, …) ⟹ 正文空时它会抛，'
+    + '而那正是探针最该报告的情况');
+});
+
+check('面板：探针发现是推理模型要当场提醒（"通了"不等于"能用"）', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const at = dash.indexOf("aiEl('ai-ping')");
+  assert.ok(at > 0, '找不到探针按钮的处理');
+  const body = dash.slice(at, at + 2500);
+  assert.match(body, /r\.thinks/,
+    '面板没检查 thinks ⟹ 用户会看到"通了"然后等几分钟再失败');
+  assert.match(body, /推理模型/, '提醒里没说清是"推理模型"这个原因');
+});
+
+check('生成的预算是 32000（16000 被实测证明不够）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const at = main.indexOf("LLM.chat(ai, [{ role: 'user', content: prompt }]");
+  assert.ok(at > 0, '找不到生成时的 LLM.chat 调用');
+  assert.match(main.slice(at, at + 200), /maxTokens: 32000/,
+    '生成预算不是 32000 —— 用户账单实测：输出正好撞在 16000 上而正文是空的');
+});
+
+check('提示词里要求"直接写代码、别长篇分析"（生成和回喂两条都要）', () => {
+  // ⚠️ 那是我们唯一能对模型行为施加的影响 —— 换模型是用户的事，
+  //   而提示词是我们的。
+  for (const [name, prompt] of [
+    ['生成', G.buildGeneratePrompt('极光')],
+    ['回喂', G.buildRepairPrompt('<html></html>', [{ id: 'X', detail: 'y' }])],
+  ]) {
+    assert.match(prompt, /不要先长篇分析|不要先长篇/,
+      `${name}提示词里没要求"直接写代码" ⟹ 推理模型会把预算烧在思考上`);
+  }
+});
+
 check('⚠️ 这个仓里不许出现任何真凭证', () => {
   // ⚠️⚠️ 用户 2026-08-02：「这些东西肯定是不能上传 GitHub 的」
   //   ⟹ 凭证只在 userData/config.json（仓外）。这条守卫盯着代码里没有硬编码。

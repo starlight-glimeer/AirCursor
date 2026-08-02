@@ -278,14 +278,57 @@ async function chat(cfg, messages, options) {
 
 // ⚠️ 面板要能"先测一下通不通"，而不是把连通性问题混在生成失败里。
 //   ⟹ 一个最小请求：能回话就算通。
+// ⚠️⚠️⚠️ 探针**不只测连通，还要测"这个模型会不会思考"**（0.9.126）。
+//
+// 用户 2026-08-02 实测踩到的：探针通了（模型回「通了」），而生成壁纸返回空正文。
+// 账单给出了答案：2 次请求共 17,304 token，其中探针约 16、生成的输入约 1,240
+// ⟹ **输出约 16,000，正好撞在 max_tokens 上，而 content 是空的**
+// ⟹ 那 16,000 全烧在 `reasoning_content` 里了：deepseek-v4-flash 是推理模型，
+//   它"想"到上限，一行 HTML 都没开始写。
+//
+// ⚠️ 而**"探针通了"当时给了人一个错的安全感** —— 它只证明了凭证和网络，
+//   而真正会让这个功能失败的是"模型类型不对"，探针那时对此一无所知。
+//   ⟹ 判据：**探针要测的是"这条路能不能完成真实任务"，不是"能不能握手"。**
+//     所以它现在多问一句话（要求写一小段代码），并报告：
+//       · 有没有 reasoning_content（会思考 ⟹ 生成长代码大概率烧光预算）
+//       · 思考花了多少 token（那是"烧得多不多"的量）
 async function ping(cfg) {
-  const out = await chat(cfg, [{ role: 'user', content: '只回两个字：通了' }], {
-    maxTokens: 64,
-    // ⚠️ 探针用短超时 —— 它的意义就是"快速告诉我通不通"，
-    //   等 300 秒的探针没有存在价值。
-    timeoutMs: 30000,
-  });
-  return { ok: true, reply: out.text.trim().slice(0, 40) };
+  const { url, headers, body } = buildRequest(cfg,
+    // ⚠️ 让它写一行代码而不是"回两个字" —— 推理模型对"写代码"这类任务
+    //   才会启动长链思考，而问"通了吗"它可能直接答（那就测不出来）。
+    [{ role: 'user', content: '只输出一行 JavaScript：把 canvas 清成黑色。不要解释。' }],
+    { maxTokens: 800 });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 40000);
+  let response;
+  try {
+    response = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('等了 40 秒还没回 —— 模型太慢或网络不通');
+    throw new Error(`连不上：${error.message}\n\n⚠️ 这类服务在国内常常要代理`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const raw = await response.text();
+  if (!response.ok) throw new Error(explainHttpError(response.status, raw));
+  let data;
+  try { data = JSON.parse(raw); } catch { throw new Error(`响应不是 JSON：${raw.slice(0, 300)}`); }
+
+  // ⚠️ 这里**不能用 parseResponse** —— 它在正文为空时会抛，
+  //   而探针恰恰要把"正文空但有思考"当成一个**有用的结论**报出来，不是失败。
+  const msg = (data.choices && data.choices[0] && data.choices[0].message) || {};
+  const reasoning = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
+  const text = typeof msg.content === 'string' ? msg.content : '';
+  const usage = data.usage || {};
+  return {
+    ok: true,
+    reply: String(text).trim().slice(0, 60),
+    // ⚠️⚠️ 这两个字段是这次事故的直接产物 —— 面板拿它们提醒用户换模型。
+    thinks: !!reasoning,
+    reasoningChars: reasoning.length,
+    outputTokens: usage.completion_tokens,
+    finish: (data.choices && data.choices[0] && data.choices[0].finish_reason) || null,
+  };
 }
 
 module.exports = {
