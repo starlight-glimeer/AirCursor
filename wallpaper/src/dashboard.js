@@ -3830,9 +3830,14 @@ async function renderPermissions() {
       toggle.disabled = true;
       toggle.title = '这一个授权管下面几个功能 —— 分别开关';
     } else if (row.on === null) {
-      toggle.textContent = '总是需要';
+      // ⚠️ 系统授权没有"我们这边的开关" —— 它给了就是给了。
+      //   ⚠️ 这里原来写"总是需要"，而用户点名那种既没开关又没状态的行是噪声
+      //     （自动化那条已经整条删了）⟹ 这一栏干脆留空。
+      //   ⚠️ 不能 `toggle.remove()` —— 它还没被 append，remove 是空操作
+      //     （我第一版就这么写的，那会留下一个"总是需要"的按钮）。
+      toggle.textContent = '';
       toggle.disabled = true;
-      toggle.title = '这一项没有开关 —— 它是装载壁纸流程的一部分';
+      toggle.className = '';        // 去掉按钮外观，就是个占位的空格子
     } else {
       toggle.textContent = row.on ? '已开启' : '已关闭';
       if (row.on) toggle.classList.add('on');
@@ -3894,7 +3899,10 @@ async function renderPermissions() {
     // 几乎不可能找到它 ⟹ 等于"要授权但没有路"。
     // ⟹ 只在**真的需要**时（开着 + 没授权/查不到）给这个按钮：
     //   它在 Finder 里选中那个 helper，用户直接拖进列表。
-    if (row.revealHelper && row.on && row.auth !== 'granted') {
+    // ⚠️⚠️ 条件里**不能再要求 `row.on`**（0.9.94）—— 辅助功能那条的 `on` 现在是
+    //   `null`（它是系统授权，不是我们能开关的东西）⟹ 要求 on 为真的话
+    //   那两个按钮永远不出现，而这一栏就又变成"只告诉你不行、不告诉你怎么办"。
+    if (row.revealHelper && row.auth !== 'granted') {
       const wrap = document.createElement('div');
       wrap.className = 'perm-subs';
       const go = document.createElement('button');
@@ -3919,8 +3927,22 @@ async function renderPermissions() {
       recheck.onclick = async () => {
         recheck.disabled = true;
         recheck.textContent = '③ 正在重启 helper…';
-        try { await window.gw.permissionsRecheck(); } catch (error) {
-          logLine('wall', `重新检测失败：${error.message}`);
+        let failed = null;
+        try {
+          const res = await window.gw.permissionsRecheck();
+          if (!res || !res.ok) failed = (res && res.error) || '没返回';
+        } catch (error) { failed = error.message; }
+        // ⚠️⚠️ **失败要显示在面板上**（0.9.94）。上一版只写 logLine ——
+        //   而那在「?」页里，用户点了③什么反应都没有 ⟹ 以为"点了没用"。
+        //   用户 2026-08-02 撞到的就是这个（他授权完点③，徽章没变，也没有原因）。
+        if (failed) {
+          const err = document.createElement('div');
+          err.className = 'perm-detail';
+          err.innerHTML = `<b>③ 没能重启 helper：</b>${failed}`;
+          el.append(err);
+          recheck.disabled = false;
+          recheck.textContent = '③ 授权完了，重新检测';
+          return;
         }
         renderPermissions();
       };

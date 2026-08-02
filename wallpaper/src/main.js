@@ -3570,63 +3570,46 @@ const PERMISSIONS = [
     pane: 'Privacy_Camera',
   },
   {
-    // ⚠️⚠️⚠️ **辅助功能只有一条**（0.9.91）。用户 2026-08-02：
-    //   「为什么辅助功能有两个？我理解辅助功能不是有一个就行了」
+    // ⚠️⚠️⚠️ **辅助功能就是一条，而且不放我们自己的功能开关**（0.9.94）。
     //
-    // **他说得对。** 我按"功能"拆成了两行（鼠标转发 / 手势控光标），
-    // 而**授权是一个** —— macOS 的辅助功能就是一个开关，勾了对所有程序生效。
-    // 拆成两行的结果是：同一个权限显示两遍、两行都说"未授权"、
-    // 用户以为要给两次。⟹ 一条，里面说清它管哪几件事。
+    // 用户 2026-08-02：「对于用户来说就是辅助功能吗？我对于 Mac 来说就是辅助功能，
+    //   我点开了，然后就 OK 了，你为什么还要分什么转发给壁纸手势移动鼠标指针…
+    //   手势移动鼠标指针这个不是我们 App 自己的触发条件吗？它的触发前置条件是
+    //   辅助功能，有了辅助功能以后如果我们 App 不设置那个权限，其实就已经能使用了，
+    //   是我们自己又设了一套权限而已，那这种就没必要放在这里」
+    //
+    // **他说得对，而这是我把两件事混在一起了**：
+    //   · **辅助功能** = macOS 的授权，一个，给了就给了 ⟹ 这一栏该管的
+    //   · **鼠标转发 / 手势控光标** = 我们自己的功能开关 ⟹ 它们的归属地是
+    //     「壁纸层」和「手势」那两个 tab，不是权限面板
+    // 混在一起的结果就是他看到的：一个系统授权底下挂两个看不懂的开关。
+    //
+    // ⟹ 权限面板只回答一个问题：**这个授权给了没有**。功能开关回各自的家。
     id: 'accessibility',
     name: '辅助功能',
-    what: '① 把鼠标点击转发给壁纸（「点一下掉流星」那类特效）'
-      + '　② 手势直接移动鼠标指针',
-    // ⚠️ 两个开关任一开着就算"开着" —— 它们共用这一个授权。
-    get on() {
-      return !!((config && config.we && config.we.mouseForward)
-        || (config && config.controlCursor));
-    },
-    // ⚠️ 这一条有**两个独立开关**，面板要能分别开关 ⟹ 见 subToggles。
-    subToggles: [
-      { id: 'mouseForward', label: '鼠标点击转发给壁纸',
-        get on() { return !!(config && config.we && config.we.mouseForward); } },
-      { id: 'controlCursor', label: '手势移动鼠标指针',
-        get on() { return !!(config && config.controlCursor); } },
-    ],
-    // ⚠️⚠️⚠️ **不能拿 `isTrustedAccessibilityClient` 当答案**（0.9.91 修）。
-    //
-    // 用户 2026-08-02：「要么直接跟我说开着他没授权，要么我也不知道他到底有没有
-    //   作用…现在到底是没权限还是代码有问题」
-    //
-    // **面板骗了他，而这是我的 bug**：那个 API 查的是**主应用（GestureWall）**
-    // 有没有辅助功能授权 —— 而主应用**从来不需要**这个权限，需要的是两个 helper
-    // （GestureWallMouse / AirCursorPointer，TCC 按可执行文件记）。
-    // ⟹ 主应用永远是 false ⟹ 面板永远显示"未授权"，**哪怕 helper 已经授权了**。
-    // 那正是他说的"我好像点过了、但面板说没有"。
-    //
-    // ⟹ 真值只有一个来源：**helper 自己上报**（它调 AXIsProcessTrusted()，
-    //   那查的是它自己）。而 helper 没跑起来时我们**不知道** —— 那就说不知道。
+    what: '给了它，壁纸才能收到鼠标点击（「点一下掉流星」那类特效）、'
+      + '手势才能移动鼠标指针',
+    // ⚠️ "开没开"对系统授权没有意义 —— 它不是我们能开关的东西。
+    //   ⟹ null = 这一栏不显示开关（见面板那边 row.on === null 那支）。
+    on: null,
     authQueryable: true,
     auth: () => {
-      // ⚠️ 优先看鼠标 helper（它是"流星"那条链，用户最常撞到的）
+      // ⚠️ 真值只有一个来源：**helper 自己上报**（它调 AXIsProcessTrusted()，
+      //   查的是它自己）。主应用查出来的永远是 false —— 它不需要这个权限。
       if (mouseStatus && typeof mouseStatus.trusted === 'boolean') {
         return mouseStatus.trusted ? 'granted' : 'denied';
       }
-      // 再看 pointer helper 的健康信息
       const ph = systemBridge.health ? systemBridge.health() : null;
       if (ph && typeof ph.trusted === 'boolean') return ph.trusted ? 'granted' : 'denied';
       // ⚠️⚠️ 两个 helper 都没跑 ⟹ **真的不知道**，别猜。
-      //   （而"没跑"最常见的原因就是开关关着 —— 那时也没必要知道。）
       return 'unknown';
     },
-    unknownWhy: '要等 helper 真的跑起来才知道 —— 打开下面任一个开关、装载一个壁纸，'
-      + '它会自己上报。⚠️ 主应用（GestureWall）本身不需要这个权限，'
-      + '所以查它没有意义（0.9.90 的面板就是这么显示错的）',
+    unknownWhy: '要等 helper 真的跑起来才知道 —— 在「壁纸与音乐」里打开'
+      + '「转发鼠标给壁纸」并装载一个壁纸，它会自己上报。'
+      + '⚠️ 主应用（GestureWall）本身不需要这个权限，所以查它没有意义',
     listedAs: 'GestureWallMouse / AirCursorPointer',
-    pane: 'Privacy_Accessibility',
-    // ⚠️ 这一条需要"把 helper 拖进列表"那条路（见 permissions-reveal-helper）——
-    //   0.9.87 删掉所有弹框之后，用户没有别的办法给这个授权。
     revealHelper: 'mouse',
+    pane: 'Privacy_Accessibility',
   },
   {
     id: 'audio',
@@ -3655,20 +3638,14 @@ const PERMISSIONS = [
     listedAs: 'AirCursorVoice',
     pane: 'Privacy_SpeechRecognition',
   },
-  {
-    id: 'appleEvents',
-    name: '自动化（系统事件）',
-    what: '换桌面壁纸的静态帧、按媒体键 —— 走 osascript',
-    // ⚠️ 这条没有开关：它是壁纸装载流程的一部分（换系统壁纸消掉切桌面的闪烁）。
-    on: null,
-    // ⚠️⚠️ **查不到真值**，而且**不该主动查** —— 查它的唯一办法是真发一个
-    //   AppleEvent，而那本身就会触发授权框。⟹ 不查。
-    authQueryable: false,
-    unknownWhy: '查它的唯一办法是真发一个 AppleEvent，而那本身就会弹授权框'
-      + ' —— 所以不查。没授权的表现是切桌面时闪一下，不影响别的',
-    listedAs: 'GestureWall',
-    pane: 'Privacy_Automation',
-  },
+  // ⚠️⚠️ 这里原来有一条「自动化（系统事件）」—— **0.9.94 删了**。
+  //   用户 2026-08-02：「你最下面那个什么自动化系统事件也是这样的，
+  //     你来个总是需要、查不到，那你显示啥呢？删掉这块」
+  //
+  // **他说得对。** 那一行给出的全部信息是"总是需要"+"查不到"——
+  // 既没有开关可点、又不知道状态、也没有任何要用户做的事。
+  // ⟹ 一行占位的噪声。而它真的没授权时的表现只是"切桌面闪一下"，
+  //   不影响任何功能 ⟹ 不值得占一行。
 ];
 
 function permissionSnapshot() {
@@ -3775,6 +3752,25 @@ ipcMain.handle('permissions-reveal-helper', (_event, which) => {
 //   （`Identifier=GestureWallMouse-5555…`、`TeamIdentifier=not set`）
 //   ⟹ 主应用的授权覆盖不到它。要覆盖得有 Apple 开发者证书把两者签成同一身份。
 ipcMain.handle('permissions-recheck', () => {
+  // ⚠️⚠️⚠️ **重启不了要说出来**（0.9.94 修）。用户 2026-08-02：
+  //   「我授权完了，然后你这边显示还是未授权」
+  //
+  // 上一版这里**无论有没有真的重启，都返回 `ok: true`** —— 而
+  // `syncMouseForward` 里的 `need` 要求 `weProject`（必须装载了壁纸）
+  // ⟹ 没装载壁纸时点③，helper 压根不会起来，徽章当然还是旧的，
+  //   而面板一声不响。**那就是"静默无效"**，这个项目栽过最多次的形状。
+  //
+  // ⟹ 先判前提，不满足就直接说清缺什么。
+  if (!weProject) {
+    return Promise.resolve({ ok: false,
+      error: '还没装载壁纸 —— 那个 helper 只在壁纸装载后才启动。'
+        + '先去「我的壁纸」点一个壁纸，再回来点这里。' });
+  }
+  if (!config.we.mouseForward) {
+    return Promise.resolve({ ok: false,
+      error: '「转发鼠标给壁纸」没开 —— 去「壁纸与音乐 → 壁纸层」打开它，'
+        + '那个 helper 才会启动。' });
+  }
   // ⚠️ 杀掉再同步 —— syncMouseForward 里 `if (mouseTap) return` 会让"已经在跑"
   //   直接返回，所以必须先清掉才会重新 spawn（和 we-set-mouse-forward 一致）。
   if (mouseTap) { mouseTap.stop(); mouseTap = null; }
@@ -3782,6 +3778,12 @@ ipcMain.handle('permissions-recheck', () => {
   //   而那正是"重启了但显示没变"的来源。
   mouseStatus = null;
   syncMouseForward();
+  // ⚠️ 再确认一次真的起来了 —— 编译失败/二进制不可执行都会让它是 null，
+  //   而那时返回 ok: true 又是一次静默无效。
+  if (!mouseTap) {
+    return Promise.resolve({ ok: false,
+      error: 'helper 没能启动 —— 看面板「?」页里鼠标那段的状态。' });
+  }
   // ⚠️ helper 启动 + 上报要一点时间（spawn → NSApplication 初始化 → emit）。
   //   不等就读的话必然还是旧值 ⟹ 用户会以为没生效。
   //   ⚠️ 800ms 是估的：实测 helper 从 spawn 到第一条 status 大约几十毫秒，

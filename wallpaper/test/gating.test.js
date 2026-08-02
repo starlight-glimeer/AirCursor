@@ -6169,9 +6169,31 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   const perms = src.slice(src.indexOf('const PERMISSIONS = ['),
     src.indexOf('function permissionSnapshot'));
   assert.ok(perms.length > 500, '切不出 PERMISSIONS ⟹ 断言失效');
-  for (const id of ['gestures', 'accessibility', 'audio', 'voice', 'appleEvents']) {
+  for (const id of ['gestures', 'accessibility', 'audio', 'voice']) {
     assert.ok(perms.includes(`id: '${id}'`), `权限面板漏了 ${id} ⟹ "都集中在一个面板"没做到`);
   }
+  // ⚠️⚠️⚠️ **「自动化（系统事件）」那条删了**（0.9.94）。用户 2026-08-02：
+  //   「你最下面那个什么自动化系统事件也是这样的，你来个总是需要、查不到，
+  //     那你显示啥呢？删掉这块」
+  //   **他说得对**：那一行给的全部信息是"总是需要"+"查不到" —— 没开关可点、
+  //   不知道状态、也没有任何要用户做的事 ⟹ 纯噪声。而它真没授权时的表现只是
+  //   "切桌面闪一下"，不影响功能 ⟹ 不值得占一行。
+  assert.ok(!perms.includes("id: 'appleEvents'"),
+    '「自动化」那条又回来了 ⟹ 它是"总是需要 + 查不到"的纯噪声（用户点名删掉）');
+
+  // ⚠️⚠️⚠️ **权限面板里不许放我们自己的功能开关**（0.9.94）。用户 2026-08-02：
+  //   「对于用户来说就是辅助功能吗？我点开了然后就 OK 了，你为什么还要分什么
+  //     转发给壁纸手势移动鼠标指针…手势移动鼠标指针这个不是我们 App 自己的
+  //     触发条件吗？…是我们自己又设了一套权限而已，那这种就没必要放在这里」
+  //
+  // **他说得对，而这是我把两件事混在一起了**：
+  //   · 辅助功能 = macOS 的授权，一个，给了就给了 ⟹ 这一栏该管的
+  //   · 鼠标转发 / 手势控光标 = 我们自己的功能开关 ⟹ 归「壁纸层」和「手势」tab
+  // ⟹ 判据：辅助功能那条**不许有 subToggles**，它的 `on` 是 null（系统授权
+  //   不是我们能开关的东西）。
+  assert.ok(!/subToggles/.test(perms),
+    '权限面板里又出现了我们自己的功能开关（subToggles）⟹ 那是「壁纸层」和'
+    + '「手势」tab 的事；这一栏只回答"这个系统授权给了没有"');
   // ⚠️⚠️⚠️ **辅助功能只许有一条**（0.9.91）。用户 2026-08-02：
   //   「为什么辅助功能有两个？我理解辅助功能不是有一个就行了」
   //   **他说得对**：macOS 的辅助功能就是一个开关，勾了对所有程序生效。
@@ -6181,11 +6203,7 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   assert.strictEqual(axPanes, 1,
     `权限面板里有 ${axPanes} 条辅助功能 ⟹ 同一个系统授权显示多遍，`
     + '用户以为要授权多次（他点名"不是有一个就行了"）');
-  assert.match(perms, /subToggles: \[/,
-    '辅助功能没有子开关 ⟹ 合成一条之后鼠标转发和手势控光标就没法分别开关了');
-  for (const sub of ['mouseForward', 'controlCursor']) {
-    assert.ok(perms.includes(`{ id: '${sub}'`), `子开关漏了 ${sub}`);
-  }
+  // ⚠️ 这里原来断言"必须有 subToggles" —— **0.9.94 反过来了**（见上面那段）。
   // ⚠️ 每一条都要有 pane（跳系统设置）和 listedAs（列表里叫什么名字）——
   //   授权列表里显示的是 **helper 的二进制名**，不说的话用户找不到该勾哪一项。
   // ⚠️ 不能数 `id: '` —— subToggles 里的子开关也是 `{ id: '…'` ⟹ 多算 2
@@ -6194,7 +6212,7 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   const idCount = (perms.match(/^ {4}id: '/gm) || []).length;
   const paneCount = (perms.match(/pane: '/g) || []).length;
   const listedCount = (perms.match(/listedAs: '/g) || []).length;
-  assert.ok(idCount >= 5, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
+  assert.ok(idCount >= 4, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
   assert.strictEqual(paneCount, idCount, `${idCount} 条权限只有 ${paneCount} 个 pane ⟹ 有的跳不到系统设置`);
   assert.strictEqual(listedCount, idCount,
     `${idCount} 条权限只有 ${listedCount} 个 listedAs ⟹ 用户在授权列表里找不到那一项`);
@@ -6247,10 +6265,9 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   assert.match(voiceRow, /authQueryable: false/,
     '语音识别标成"能查" ⟹ 那是猜的（macOS 没给这个查询接口）');
   assert.match(voiceRow, /unknownWhy:/, '语音识别没说清为什么查不到');
-  const aeRow = perms.slice(perms.indexOf("id: 'appleEvents'"));
-  assert.match(aeRow, /authQueryable: false/,
-    '自动化标成"能查" ⟹ 查它就得真发 AppleEvent，而那会弹框');
-  assert.match(aeRow, /unknownWhy:/, '自动化没说清为什么查不到');
+  // ⚠️ 这里原来有两条断言"自动化那行必须标 authQueryable: false" ——
+  //   **0.9.94 整条行都删了**（见上面那段：它是"总是需要 + 查不到"的纯噪声）。
+  //   ⟹ 断言的对象不存在了，删掉。而"不许加回来"那条已经在上面。
   // ⚠️ 而 authQueryable: false 的那两条**不许有 auth 查询函数** ——
   //   有的话迟早被人接上，然后就是"标着查不到、实际在猜"。
   assert.ok(!/authQueryable: false,\s*\n\s*auth:/.test(perms),
@@ -6321,8 +6338,12 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   //   一直露着就是又一个"正常使用不需要碰"的东西。
   const dashEarly = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  assert.match(dashEarly, /row\.revealHelper && row\.on && row\.auth !== 'granted'/,
-    '"去授权"按钮的显示条件不对 ⟹ 该只在"开着但没授权"时出现');
+  // ⚠️⚠️ 这条 0.9.92 要求条件里带 `row.on` —— **0.9.94 去掉了那一项**：
+  //   辅助功能那条的 `on` 现在是 `null`（系统授权不是我们能开关的东西）
+  //   ⟹ 要求 on 为真的话按钮**永远不出现**，这一栏就又变成
+  //   "只告诉你不行、不告诉你怎么办"。
+  assert.match(dashEarly, /row\.revealHelper && row\.auth !== 'granted'/,
+    '"去授权"按钮的显示条件不对 ⟹ 该在"没授权/查不到"时出现（而 on 已经是 null）');
   // ⚠️⚠️ 这条 0.9.92 断言的是"必须说要退出重开**整个应用**" —— **0.9.93 翻了**。
   //   用户：「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接就生效」
   //   **他说得对** —— 那条 macOS 规则只针对**那个进程**，而 helper 是子进程
@@ -6354,6 +6375,24 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   // ⚠️ 要等 helper 启动+上报 —— 立刻读必然是旧值
   assert.match(recheck, /setTimeout/,
     'recheck 不等 helper 上报就返回 ⟹ 读到的必然还是旧值，用户以为没生效');
+  // ⚠️⚠️⚠️ **重启不了要说出来**（0.9.94）。用户 2026-08-02：
+  //   「我授权完了，然后你这边显示还是未授权」
+  // 上一版**无论有没有真的重启都返回 `ok: true`** —— 而 syncMouseForward 的
+  // `need` 要求 `weProject`（必须装载了壁纸）⟹ 没装载时点③ helper 压根不会起来，
+  // 徽章当然是旧的，而面板一声不响。**那就是"静默无效"**，栽过最多次的形状。
+  assert.match(recheck, /if \(!weProject\)/,
+    'recheck 不判"有没有装载壁纸" ⟹ 没装载时 helper 不会启动，'
+    + '而它照样返回成功（静默无效，用户点了③什么都不知道）');
+  assert.match(recheck, /if \(!config\.we\.mouseForward\)/,
+    'recheck 不判"转发开关开没开" ⟹ 同上');
+  assert.match(recheck, /if \(!mouseTap\)/,
+    'recheck 不确认 helper 真的起来了 ⟹ 编译失败/不可执行时又是一次静默成功');
+  // ⚠️ 而失败原因必须**显示在面板上**，不能只写 logLine（那在「?」页里，
+  //   用户点了③什么反应都没有 ⟹ 以为"点了没用"）。
+  const dashRecheck = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dashRecheck, /③ 没能重启 helper：/,
+    '③ 失败时没把原因显示在面板上 ⟹ 用户只看到徽章没变，不知道为什么');
 
   // ⚠️⚠️ **面板必须说清"给 GestureWall 授权是不够的"**。
   //   `codesign` 证明 helper 是独立的 TCC 身份（Identifier=GestureWallMouse-5555…、
