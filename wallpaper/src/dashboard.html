@@ -1376,7 +1376,11 @@
 <h3>壁纸层</h3>
     <div class="card">
       <div id="we-strategy" class="we-src"></div>
-      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸（真壁纸层需要）</label></div>
+      <!-- ⚠️⚠️ 标签里必须说清**代价**（0.9.88）。用户 2026-08-02 连问五轮
+           「这都需要辅助功能吗？辅助功能起什么作用啊？」—— 而他问得对：
+           面板上从来没有任何地方说过"那个框是这个开关换来的"。
+           ⟹ 开关自己就得写明：它要辅助功能授权，换来的是点击特效。 -->
+      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸 —— 默认关（开了会要一次「辅助功能」授权）</label></div>
       <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
       <div id="mouse-state" class="hint">—</div>
       <p class="hint">
@@ -1388,6 +1392,11 @@
         （<code>npm run dist:mac</code>）。
         <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
         然后静默收不到任何事件。）
+        <br>⚠️⚠️ <b>那个授权框是 macOS 自己弹的</b>，不是本应用弹的 ——
+        未授权的进程一调用全局监听，系统就弹。所以<b>没授权的话每次开应用、
+        装载第一个壁纸时都会弹一次</b>（进程每次都是新的）。
+        <br>⟹ 这就是<b>默认关</b>的原因：不开这个开关，一个框都不会出现。
+        要点击特效就开它、授权一次（授权后要重开本应用），从此不再弹。
         <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
         再转发一次会变成双份事件（点一下算两下）。
       </p>

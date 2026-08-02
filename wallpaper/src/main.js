@@ -456,8 +456,29 @@ const defaultConfig = {
     // mac 原生壁纸没有那条缝，而鼠标交互失效不可接受。他是对的。
     strategy: 'desktop',
     // 鼠标转发。desktop 层收不到鼠标，靠 helper 抓全局事件再注入。
-    // ⚠️ 监听鼠标不需要辅助功能权限（键盘才需要），所以 npm start 就能用。
-    mouseForward: true,
+    //
+    // ⚠️⚠️⚠️ **默认关**（0.9.88）。用户 2026-08-02，第五轮：
+    //   「点一下壁纸，它会给我弹要辅助功能…关闭程序之后再打开再点一个壁纸，
+    //     又会弹。这都需要辅助功能吗？辅助功能起什么作用啊？」
+    //
+    // ⚠️⚠️ **上面原来那句注释是错的**，而这个 bug 整个建在它上面：
+    //   我写「监听鼠标不需要辅助功能权限（键盘才需要）」—— **不对**。
+    //   `NSEvent.addGlobalMonitorForEvents` 监听**其他应用**的事件，
+    //   macOS 把它算作辅助功能范畴 ⟹ 需要授权。
+    //
+    // ⚠️⚠️⚠️ 而这也是**前四版修不掉"反复弹"的真正原因**：
+    //   那个框**不是我们的代码弹的**。0.9.87 我把所有
+    //   `AXIsProcessTrustedWithOptions` 都删了，全仓库零个弹框调用点 ——
+    //   而它照样弹，因为 **macOS 自己在未授权进程调用那个 API 时弹**。
+    //   ⟹ 只要这个 helper 被启动，就必然弹一次。删弹框调用没用，
+    //     唯一的办法是**不启动它**。
+    //
+    // 而它换来的是什么：让「点一下掉流星」那类**点击特效**能工作。
+    // 那是少数壁纸的少数功能 —— 拿"每次开应用点第一个壁纸都被要权限"换它，
+    // 完全不值。
+    // ⟹ 默认关。面板「壁纸与音乐」里那个开关照旧，真想要点击特效的人自己开，
+    //   而那时弹一次框是他主动换来的，不是应用替他决定的。
+    mouseForward: false,
     // 「只在桌面被聚焦（前台是 Finder）时转发」这个门。
     //
     // ⚠️ 默认**关**。我一开始设成 true，而那让整个功能看起来是坏的 ——
@@ -536,8 +557,31 @@ function migrateConfig(cfg) {
     console.log('[config] 迁移：we.strategy bottom-normal → desktop'
       + '（真壁纸层能覆盖菜单栏，鼠标靠转发补回来）');
   }
-  // 老配置里没有这两个键（mergeConfig 会补上默认值，但如果用户存过 false 就不动）
-  if (we.mouseForward === undefined) { we.mouseForward = true; changed = true; }
+  // ⚠️⚠️⚠️ **把存量的 mouseForward: true 关掉**（0.9.88）。
+  //
+  // 光改默认值**救不了任何现有用户** —— 他们的 config 文件里已经存着 true
+  // （包括我自己那台测试机），而 mergeConfig 只补缺失的键。
+  // ⟹ 不迁移的话"点第一个壁纸弹框"原样存在，而我会以为修好了。
+  //
+  // ⚠️ 这条迁移**会覆盖用户主动开过的选择**，而那是有意的取舍：
+  //   · 主动开过的人：极少（这个开关藏在「壁纸与音乐」里，而且它默认就是开的
+  //     ⟹ 存着 true 的人几乎全是"从没碰过这个开关"）
+  //   · 代价：真主动开过的人要再开一次
+  //   · 收益：所有人不再被莫名要权限
+  // 而"从没碰过"和"主动开过"在配置里长得一模一样，分不出来 ⟹ 只能按多数来。
+  // ⚠️ 一次性的：跑完就写盘，之后用户自己开了不会再被关掉
+  //（判据是"值为 true"而不是标记，所以严格说不是一次性 —— 见下面那个 flag）。
+  if (we.mouseForward === true && !we.mouseForwardMigrated) {
+    we.mouseForward = false;
+    we.mouseForwardMigrated = true;
+    changed = true;
+    console.log('[config] 迁移：mouseForward true → false'
+      + '（它要辅助功能授权，而那让每次开应用点第一个壁纸都被要权限；'
+      + '想要点击特效的在面板里自己开）');
+  }
+  // ⚠️ 上面那个 flag 让迁移真的只跑一次 —— 否则用户自己开了，
+  //   下次启动又被关掉，而那种"我明明开了"的诡异比原问题更难查。
+  if (we.mouseForward === undefined) { we.mouseForward = false; changed = true; }
   // ⚠️ 轮播的默认值要逐字段补 —— 老配置里没有这个对象，而代码里到处
   // 读 `config.we.rotate.list` ⟹ 少一层就是 `undefined.list` 崩溃。
   if (!we.rotate || typeof we.rotate !== 'object') {
