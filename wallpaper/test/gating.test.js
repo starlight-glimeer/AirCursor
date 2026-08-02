@@ -6217,4 +6217,53 @@ check('进阶模式那道锁删了：所有手势动作无条件可用', () => {
   assert.ok(!/config\.proTier/.test(dash), 'dashboard.js 还在读 config.proTier');
 });
 
+// ⚠️⚠️⚠️ **video 壁纸：音轨解码失败要说对话**（0.9.109）。用户 2026-08-02：
+//   「我们的 video 这种类型的壁纸不稳定，运行着会弹出来」+ 截图原文：
+//       code 3: PIPELINE_ERROR_DECODE: **Failed to send audio packet** for decoding
+//
+// ⚠️ 挂掉的是**音轨**，而 `<video>` 上有 `muted`
+//   ⟹ **Chromium 即使静音也照样解码音轨**（muted 只管"不输出到设备"）
+//   ⟹ 一个视频轨完全正常的壁纸会因为音轨编码不支持而整个黑屏。
+//
+// ⚠️⚠️ 而当时那条提示说的是"换一个 H.264 的壁纸，或者用 ffmpeg 转一次"——
+//   **对这个 case 是错的方向**（视频可能本来就是 H.264，转码白折腾）。
+//   而那条错误分支的注释里自己写着"**还没被真实触发过**，它是按已知事实写的"。
+//   ⟹ 教训：**一条从未触发过的错误分支，它的"下一步建议"是推断**。
+//     真触发时第一件事是核对"错误说的是什么"，而不是照搬那个建议。
+check('video 壁纸：音轨解码失败的提示和重试', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
+  const code = codeOnly(src);
+
+  // ① code 3 的提示必须指向**音轨**，而且给出确切命令
+  assert.match(code, /audio packet/,
+    'code 3 的提示没提"audio packet" ⟹ 用户对不上错误原文里那句');
+  assert.match(code, /-c:v copy -an/,
+    '没给"去掉音轨"的确切命令 ⟹ 用户只知道"编码不支持"，'
+    + '而正解是丢音轨（-c:v copy 不重编码，秒完）');
+  // ⚠️ 而"转视频"那条**不许当成首选** —— 它对这个 case 是白折腾
+  const spec3 = code.slice(code.indexOf('  3: {'), code.indexOf('  4: {'));
+  assert.ok(spec3.length > 100, '切不出 code 3 那段 ⟹ 断言失效');
+  assert.ok(spec3.indexOf('-an') < spec3.indexOf('libx264'),
+    '"转视频编码"排在"去音轨"之前 ⟹ 顺序反了，用户会先做那个白折腾的');
+
+  // ②⚠️ 自动重试只许针对音轨、只许一次、而且**必须报出来**
+  assert.match(code, /\/audio packet\/i\.test\(msg\)/,
+    '重试没判"是不是音轨挂的" ⟹ 别的错误重试就是白等');
+  assert.match(code, /let retried = false/, '没有"只重试一次"的标志 ⟹ 会无限重载');
+  assert.match(code, /if \(audioOnly && !retried\)/, '重试条件不对');
+  // ⚠️⚠️ **静默重试是这个项目栽过最多次的形状** —— 它会让"偶尔能放"变成一个谜
+  const retryBlock = code.slice(code.indexOf('if (audioOnly && !retried)'),
+    code.indexOf('// err.message 常常是空字符串'));
+  assert.match(retryBlock, /report\(/,
+    '重试没上报 ⟹ 静默重试，而"偶尔能放"会变成一个查不出来的谜');
+  // ⚠️ 重试要走 load()（错误状态下 play() 不会重新解封装）
+  assert.match(retryBlock, /video\.load\(\)/,
+    '重试只调 play() ⟹ 错误状态下不会重新解封装，等于没重试');
+
+  // ③⚠️ `muted` 必须还在 —— 壁纸出声是个更糟的 bug
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.html'), 'utf8');
+  assert.match(html, /<video[^>]*\bmuted\b/,
+    '<video> 没有 muted ⟹ 壁纸会出声（而且 autoplay 会被浏览器挡）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -1,0 +1,63 @@
+{
+  "title": "唱片环绕 / Album Orbit",
+  "name": "Album Orbit",
+  "description": "专辑封面环绕成一圈，鼠标拖拽 360° 转视角、滚轮拉近拉远、点击暂停旋转。\n跟着系统正在播放的音乐动：低频推近处的封面、高频让远处的粒子闪。\n灵感来自 Open Wallpaper Engine 的歌单背景。\n\n⚠️ 需要在「壁纸与音乐 → 壁纸层」打开「转发鼠标给壁纸」才能拖拽（不需要任何系统授权）。",
+  "file": "index.html",
+  "preview": "preview.png",
+  "type": "Web",
+  "version": 1,
+  "audio": {
+    "enabled": true
+  },
+  "tags": [
+    "Abstract",
+    "Music"
+  ],
+  "contentrating": "Everyone",
+  "general": {
+    "properties": {
+      "ringCount": {
+        "text": "封面圈数 / Rings",
+        "type": "slider",
+        "value": 3,
+        "min": 1,
+        "max": 5,
+        "step": 1
+      },
+      "perRing": {
+        "text": "每圈数量 / Per ring",
+        "type": "slider",
+        "value": 14,
+        "min": 6,
+        "max": 24,
+        "step": 1
+      },
+      "autoSpin": {
+        "text": "自动旋转 / Auto spin",
+        "type": "slider",
+        "value": 0.25,
+        "min": 0,
+        "max": 1,
+        "step": 0.05
+      },
+      "audioPush": {
+        "text": "音频推力 / Audio push",
+        "type": "slider",
+        "value": 0.6,
+        "min": 0,
+        "max": 1.5,
+        "step": 0.05
+      },
+      "showTrack": {
+        "text": "显示歌曲信息 / Show track info",
+        "type": "bool",
+        "value": true
+      },
+      "accent": {
+        "text": "主色 / Accent",
+        "type": "color",
+        "value": "0.33 0.84 0.98"
+      }
+    }
+  }
+}

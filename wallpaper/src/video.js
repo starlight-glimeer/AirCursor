@@ -33,12 +33,28 @@ const MEDIA_ERRORS = {
     // 打包的 Chromium **默认不带 HEVC 解码器**。同样 AV1 也常常没有。
     // 那种壁纸会黑屏，而原因和"我们的代码坏了"完全不同 —— 必须能分开。
     //
-    // ⚠️ 状态：2026-07-30 真机验过一个工坊视频壁纸能正常播放，
-    // 说明那个是 H.264。**这条 HEVC 分支还没被真实触发过** ——
-    // 它是按"Chromium 不带 HEVC 解码器"这个已知事实写的，不是从一次失败反推的。
-    // 所以哪天真撞上 HEVC 壁纸，要确认这条报错真的会出现（而不是别的症状）。
-    hint: '这个视频的编码 Chromium 放不了（最常见是 HEVC/H.265 或 AV1）。'
-      + '换一个 H.264 的壁纸，或者用 ffmpeg 转一次。',
+    // ⚠️⚠️⚠️ **2026-08-02：这条第一次真的被触发了，而当时的提示是错的。**
+    //
+    // 用户报"video 这种类型的壁纸不稳定，运行着会弹出来"，截图里的原文是：
+    //     code 3: PIPELINE_ERROR_DECODE: **Failed to send audio packet** for
+    //     decoding: {timestamp=0 duration=21333 size=847 …}
+    //
+    // ⚠️ 关键在 **audio packet** —— 挂掉的是**音轨**，不是视频轨。
+    //   而 `<video>` 上明明有 `muted`（video.html 那行）⟹ 那说明
+    //   **Chromium 即使静音也照样解码音轨**（muted 只是不输出到设备）。
+    //   ⟹ 一个视频轨完全能放的壁纸，会因为音轨编码不支持而整个失败。
+    //
+    // ⚠️⚠️ 而当时那句提示说"换一个 H.264 的壁纸，或者用 ffmpeg 转一次" ——
+    //   **对这个 case 是错的方向**：视频可能本来就是 H.264，转码是白折腾。
+    //   正解是**把音轨去掉**（壁纸本来就不该出声）。
+    //   ⟹ 教训：一条从未被触发过的错误分支，它的"下一步建议"是**推断**。
+    //     真触发时第一件事是核对"错误说的是什么"，而不是照搬那个建议。
+    hint: '解码挂在**音轨**上（错误里那句 "audio packet" 就是它）——'
+      + '壁纸本来不需要声音，把音轨去掉最省事：\n'
+      + 'ffmpeg -i 原文件 -c:v copy -an 新文件.mp4\n'
+      + '（-c:v copy = 视频不重新编码，秒完；-an = 丢掉音轨）\n'
+      + '如果去掉音轨还是这个错，那才是视频轨的编码不支持'
+      + '（HEVC/H.265 或 AV1）⟹ 再加 -c:v libx264 转一次。',
   },
   4: {
     title: '格式不支持',
@@ -60,12 +76,56 @@ function report(payload) {
   }
 }
 
+// ⚠️⚠️⚠️ **音轨挂掉时自动重试一次（丢掉音轨）**（0.9.109）。
+//
+// 用户 2026-08-02 报"video 这种壁纸不稳定，运行着会弹出来"，截图原文：
+//     code 3: PIPELINE_ERROR_DECODE: **Failed to send audio packet** for decoding
+//
+// ⚠️ 挂掉的是**音轨** —— 而 `<video>` 上有 `muted`（video.html 那行）
+//   ⟹ **Chromium 即使静音也照样解码音轨**，muted 只管"不输出到设备"。
+//   ⟹ 一个视频轨完全正常的壁纸，会因为音轨编码不支持而整个黑屏。
+//
+// ⟹ 而这件事我们能自己救：`disableRemotePlayback` 不管用，但
+//   **重新加载时用 MediaSource 只挑视频轨**太重（要解封装）——
+//   代价最低的是 `video.audioTracks`（能关就关）+ 重试一次。
+//   ⚠️ 而 audioTracks 在 Chromium 里**默认没有**（要 flag）⟹ 大概率拿不到。
+//   ⟹ 所以真正的兜底是：**报错时告诉用户去掉音轨的确切命令**（见上面 hint），
+//     而不是假装能修好。
+//
+// ⚠️ 这里只做一件有把握的事：**同一个源只重试一次，且必须报出来**。
+//   静默重试是这个项目栽过最多次的形状 —— 它会让"偶尔能放"变成一个谜。
+let retried = false;
+
 video.addEventListener('error', () => {
   const err = video.error;
   const code = err ? err.code : 0;
+  const msg = (err && err.message) || '';
   const spec = MEDIA_ERRORS[code] || { title: '未知错误', hint: '' };
+
+  // ⚠️ 只有"音轨解码失败"这一种值得重试 —— 别的重试就是白等。
+  const audioOnly = code === 3 && /audio packet/i.test(msg);
+  if (audioOnly && !retried) {
+    retried = true;
+    // ⚠️ 关掉音轨（Chromium 通常没这个 API —— 有就用，没有就往下走）
+    let killed = false;
+    const tracks = video.audioTracks;
+    if (tracks && tracks.length) {
+      for (let i = 0; i < tracks.length; i += 1) tracks[i].enabled = false;
+      killed = true;
+    }
+    report({ ok: false, kind: '音轨解码失败，重试一次', detail: msg,
+      hint: killed ? '已关掉音轨' : 'Chromium 没给 audioTracks API，直接重载试试' });
+    // ⚠️ 重新 load 而不是 play() —— 错误状态下 play() 不会重新解封装。
+    const src = video.currentSrc || video.src;
+    video.removeAttribute('src');
+    video.load();
+    video.src = src;
+    video.load();
+    return;
+  }
+
   // err.message 常常是空字符串，所以带上码 —— 没有它连"是哪一类"都不知道。
-  fail(spec.title, `code ${code}${err && err.message ? `: ${err.message}` : ''}`, spec.hint);
+  fail(spec.title, `code ${code}${msg ? `: ${msg}` : ''}`, spec.hint);
 });
 
 // ⚠️ 这条是"放了但看不见"的唯一证据。

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Album Orbit</title>
+<style>
+  /* ⚠️ 壁纸铺满且不滚动 —— 它是桌面，不是网页。 */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #06070b; }
+  /* ⚠️⚠️ `cursor: default` 而不是 grab/grabbing：壁纸层的光标由系统管，
+     我们改不动（真鼠标在桌面上，我们只是收到转发的事件）。写 grab 会让人
+     以为"没生效"，而实际是那个属性在这一层没有意义。 */
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* 歌曲信息卡：左下角，毛玻璃。⚠️ pointer-events: none —— 它不该吃掉拖拽。 */
+  #track {
+    position: fixed; left: 40px; bottom: 40px; pointer-events: none;
+    display: flex; gap: 16px; align-items: center;
+    padding: 14px 20px 14px 14px; border-radius: 16px;
+    background: rgba(12,14,20,.55); backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,.07);
+    font: 400 13px/1.5 -apple-system, "PingFang SC", sans-serif;
+    color: #e9ecf2; opacity: 0; transition: opacity .6s ease;
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,.8);
+  }
+  #track.on { opacity: 1; }
+  #track img {
+    width: 56px; height: 56px; border-radius: 10px; object-fit: cover;
+    background: #14161d; box-shadow: 0 8px 24px -8px rgba(0,0,0,.9);
+  }
+  #track .t { font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+  #track .a { font-size: 12px; opacity: .58; margin-top: 3px; }
+
+  /* 提示：只在还没收到过鼠标事件时出现 —— 那正是"转发没开"的表现。
+     ⚠️ 而它必须会自己消失，否则就是一块永久的水印。 */
+  #hint {
+    position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
+    pointer-events: none; text-align: center;
+    font: 400 12px/1.7 -apple-system, "PingFang SC", sans-serif;
+    color: rgba(233,236,242,.42); opacity: 0; transition: opacity 1s ease;
+  }
+  #hint.on { opacity: 1; }
+  #hint b { color: rgba(233,236,242,.72); font-weight: 600; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="track">
+  <img id="art" alt="">
+  <div>
+    <div class="t" id="title">—</div>
+    <div class="a" id="artist"></div>
+  </div>
+</div>
+
+<div id="hint">
+  <b>拖动</b>转视角　<b>滚轮</b>拉近拉远　<b>点击</b>暂停旋转
+</div>
+
+<script src="assets/orbit.js"></script>
+</body>
+</html>
