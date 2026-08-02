@@ -190,11 +190,28 @@ find "$HOME/Library/Application Support" -maxdepth 2 -name config.json \
   -newermt '2026-08-01' 2>/dev/null | head -5 | sed 's/^/      /' \
   || echo "      （扫不到 / find 不支持 -newermt）"
 
+# ⚠️⚠️⚠️ **挑"最近写的"那个，不是"目录名排第一"的**（0.9.101 修）。
+#
+# 上一版是 `for d in GestureWall aircursor; do … break; done` —— 拿目录名的
+# 顺序当优先级 ⟹ 它选中了 `GestureWall/`（三天前、dir=null），
+# 而应用真正在写的是 `aircursor/`（刚刚、dir=粒子效果_网易云监听）。
+# ⟹ **探针自己给出了假结论**："壁纸没装载"，而用户明明装载了。
+# 他连着两轮告诉我"我就是装载了呀"，是对的。
+#
+# ⚠️ 为什么是 aircursor：`app.getPath('userData')` 用 `app.getName()`，
+#   而它读 package.json 的**顶层 `name`**（= aircursor），
+#   不是 `build.productName`（= GestureWall）。我猜错了优先级。
+# ⟹ 判据：**有多个候选时按 mtime 选，别按我猜的顺序选。**
 CFG=""
-for d in GestureWall aircursor; do
+NEWEST=0
+for d in GestureWall aircursor Electron; do
   C="$HOME/Library/Application Support/$d/config.json"
-  [ -f "$C" ] && CFG="$C" && break
+  if [ -f "$C" ]; then
+    M=$(stat -f '%m' "$C" 2>/dev/null || stat -c '%Y' "$C" 2>/dev/null || echo 0)
+    if [ "$M" -gt "$NEWEST" ]; then NEWEST="$M"; CFG="$C"; fi
+  fi
 done
+[ -n "$CFG" ] && echo "   ⟹ 用最近写的那个：$CFG"
 if [ -n "$CFG" ]; then
   echo "   $CFG"
   # ⚠️ 文件的修改时间 —— 判断"应用有没有真的写过它"
@@ -260,6 +277,44 @@ if [ -n "$GW" ]; then
 else
   echo "      ${WARN}GestureWall 没在跑 ⟹ ⑦ 读到的配置是上次退出时的状态，"
   echo "         而 ⑧ 当然也是 ❌。⟹ **先打开应用再跑这个探针**"
+fi
+
+# ── ⑨ 页面到底收到了什么事件 ──────────────────────────
+# ⚠️⚠️ 这是**最后一段**，前八条都通了之后就剩它：
+#   我们注入 `mouseDown`/`mouseUp`（带 clickCount: 1），靠 Chromium **自己合成**
+#   `click`。而那个壁纸的流星听的是 `click`（⑥ 已确认 `onClick:pt`）。
+#   ⟹ 如果 mousedown 收到了而 click 是 0，断点就在"合成"这一步。
+#
+# ⚠️ 数据来源：`we-preload.js` 在页面里 capture 阶段数了
+#   mousedown/pointerdown/click/wheel/mousemove，上报给主进程 ⟹ 进诊断报告。
+echo ""
+echo "⑨ 壁纸页面收到了什么事件（mousedown 有而 click 没有 = 断点在合成）"
+DIAG_DIR="$(dirname "${CFG:-/nonexistent}")/diagnostics"
+LATEST=$(ls -t "$DIAG_DIR"/gesturewall-*.json 2>/dev/null | head -1)
+if [ -n "$LATEST" ]; then
+  echo "   最近的诊断报告：$LATEST"
+  echo "      写入 $(stat -f '%Sm' "$LATEST" 2>/dev/null || stat -c '%y' "$LATEST" 2>/dev/null)"
+  node -e "
+    try {
+      const r = require('$LATEST');
+      const m = (r.mouse) || {};
+      console.log('      injected（注进壁纸的事件数）=', m.injected);
+      console.log('      pageSaw（页面真收到的）     =', JSON.stringify(m.pageSaw));
+      console.log('      lastEvent                  =', JSON.stringify(m.lastEvent));
+      const saw = m.pageSaw || {};
+      if (saw.mousedown > 0 && !saw.click) {
+        console.log('      ❌ mousedown 收到了但 click 是 0 ⟹ **断点在 click 合成**');
+      } else if (saw.click > 0) {
+        console.log('      ✅ click 收到了 ⟹ 事件链完整，流星不出来是壁纸自己的条件');
+      } else if (!saw.mousedown) {
+        console.log('      ❌ 连 mousedown 都没收到 ⟹ 注入没进去（坐标/窗口）');
+      }
+    } catch (e) { console.log('      读不了：' + e.message); }
+  " 2>/dev/null
+else
+  echo "   ⚠️  没有诊断报告 ⟹ 在面板里点一次「导出诊断」再跑这个探针"
+  echo "      （⌃⇧W → ⚙ → 开发者选项 → 导出诊断）"
+  echo "      ⚠️ 导出**之前**先在桌面上点几下 —— 那些计数是点出来的"
 fi
 
 echo ""
