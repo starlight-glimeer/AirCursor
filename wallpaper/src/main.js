@@ -3553,30 +3553,59 @@ const PERMISSIONS = [
     pane: 'Privacy_Camera',
   },
   {
-    id: 'mouseForward',
+    // ⚠️⚠️⚠️ **辅助功能只有一条**（0.9.91）。用户 2026-08-02：
+    //   「为什么辅助功能有两个？我理解辅助功能不是有一个就行了」
+    //
+    // **他说得对。** 我按"功能"拆成了两行（鼠标转发 / 手势控光标），
+    // 而**授权是一个** —— macOS 的辅助功能就是一个开关，勾了对所有程序生效。
+    // 拆成两行的结果是：同一个权限显示两遍、两行都说"未授权"、
+    // 用户以为要给两次。⟹ 一条，里面说清它管哪几件事。
+    id: 'accessibility',
     name: '辅助功能',
-    what: '把鼠标点击转发给壁纸 —— 「点一下掉流星」那类特效靠它',
-    get on() { return !!(config && config.we && config.we.mouseForward); },
-    // ⚠️ 辅助功能**能查真值**：isTrustedAccessibilityClient(false)（false = 不弹框）。
-    //   ⚠️⚠️ 但它查的是**主进程**有没有授权，而真正需要授权的是 helper
-    //     （GestureWallMouse，TCC 按可执行文件记）⟹ **两者可能不一致**。
-    //     helper 那边的真实状态由它自己上报（mouseStatus.trusted），
-    //     所以下面 permissionSnapshot 会把两个都给出去。
+    what: '① 把鼠标点击转发给壁纸（「点一下掉流星」那类特效）'
+      + '　② 手势直接移动鼠标指针',
+    // ⚠️ 两个开关任一开着就算"开着" —— 它们共用这一个授权。
+    get on() {
+      return !!((config && config.we && config.we.mouseForward)
+        || (config && config.controlCursor));
+    },
+    // ⚠️ 这一条有**两个独立开关**，面板要能分别开关 ⟹ 见 subToggles。
+    subToggles: [
+      { id: 'mouseForward', label: '鼠标点击转发给壁纸',
+        get on() { return !!(config && config.we && config.we.mouseForward); } },
+      { id: 'controlCursor', label: '手势移动鼠标指针',
+        get on() { return !!(config && config.controlCursor); } },
+    ],
+    // ⚠️⚠️⚠️ **不能拿 `isTrustedAccessibilityClient` 当答案**（0.9.91 修）。
+    //
+    // 用户 2026-08-02：「要么直接跟我说开着他没授权，要么我也不知道他到底有没有
+    //   作用…现在到底是没权限还是代码有问题」
+    //
+    // **面板骗了他，而这是我的 bug**：那个 API 查的是**主应用（GestureWall）**
+    // 有没有辅助功能授权 —— 而主应用**从来不需要**这个权限，需要的是两个 helper
+    // （GestureWallMouse / AirCursorPointer，TCC 按可执行文件记）。
+    // ⟹ 主应用永远是 false ⟹ 面板永远显示"未授权"，**哪怕 helper 已经授权了**。
+    // 那正是他说的"我好像点过了、但面板说没有"。
+    //
+    // ⟹ 真值只有一个来源：**helper 自己上报**（它调 AXIsProcessTrusted()，
+    //   那查的是它自己）。而 helper 没跑起来时我们**不知道** —— 那就说不知道。
     authQueryable: true,
-    auth: () => (systemPreferences.isTrustedAccessibilityClient(false) ? 'granted' : 'denied'),
-    helperAuth: () => (mouseStatus && typeof mouseStatus.trusted === 'boolean'
-      ? (mouseStatus.trusted ? 'granted' : 'denied') : 'unknown'),
-    listedAs: 'GestureWallMouse',
-    pane: 'Privacy_Accessibility',
-  },
-  {
-    id: 'controlCursor',
-    name: '辅助功能（手势控光标）',
-    what: '手势直接移动鼠标指针',
-    get on() { return !!(config && config.controlCursor); },
-    authQueryable: true,
-    auth: () => (systemPreferences.isTrustedAccessibilityClient(false) ? 'granted' : 'denied'),
-    listedAs: 'AirCursorPointer',
+    auth: () => {
+      // ⚠️ 优先看鼠标 helper（它是"流星"那条链，用户最常撞到的）
+      if (mouseStatus && typeof mouseStatus.trusted === 'boolean') {
+        return mouseStatus.trusted ? 'granted' : 'denied';
+      }
+      // 再看 pointer helper 的健康信息
+      const ph = systemBridge.health ? systemBridge.health() : null;
+      if (ph && typeof ph.trusted === 'boolean') return ph.trusted ? 'granted' : 'denied';
+      // ⚠️⚠️ 两个 helper 都没跑 ⟹ **真的不知道**，别猜。
+      //   （而"没跑"最常见的原因就是开关关着 —— 那时也没必要知道。）
+      return 'unknown';
+    },
+    unknownWhy: '要等 helper 真的跑起来才知道 —— 打开下面任一个开关、装载一个壁纸，'
+      + '它会自己上报。⚠️ 主应用（GestureWall）本身不需要这个权限，'
+      + '所以查它没有意义（0.9.90 的面板就是这么显示错的）',
+    listedAs: 'GestureWallMouse / AirCursorPointer',
     pane: 'Privacy_Accessibility',
   },
   {
@@ -3629,6 +3658,11 @@ function permissionSnapshot() {
       on: typeof p.on === 'boolean' || p.on === null ? p.on : p.on,
       listedAs: p.listedAs, pane: p.pane,
       authQueryable: p.authQueryable,
+      // ⚠️ 一个授权底下可能挂**多个功能开关**（辅助功能就是：鼠标转发 +
+      //   手势控光标共用同一个系统授权）⟹ 面板要能分别开关。
+      subToggles: p.subToggles
+        ? p.subToggles.map((t) => ({ id: t.id, label: t.label, on: t.on }))
+        : null,
     };
     if (process.platform !== 'darwin') {
       row.auth = 'granted';           // 非 macOS 没有这套东西
@@ -3645,6 +3679,9 @@ function permissionSnapshot() {
       row.auth = 'unknown';
       row.note = `查询失败：${error.message}`;
     }
+    // ⚠️⚠️ 标了"能查"但这次**确实查不到**（helper 还没跑）—— 也要说清为什么。
+    //   不说的话面板就是一个孤零零的"查不到"，而用户下一步该干什么全靠猜。
+    if (row.auth === 'unknown' && !row.note && p.unknownWhy) row.note = p.unknownWhy;
     // ⚠️ helper 自己上报的状态（如果有）—— 它和主进程的查询**可能不一致**，
     //   而不一致本身就是最有用的诊断信息（主应用授权了、helper 没有）。
     if (p.helperAuth) {
@@ -3707,6 +3744,11 @@ ipcMain.handle('permissions-set', (_event, id, enabled) => {
       writeConfig();
       if (!on) systemBridge.stopVoice();
       break;
+    case 'accessibility':
+      // ⚠️ 这一条是**两个开关的合并行**（0.9.91）—— 它自己没有"开/关"，
+      //   面板该点的是它底下的 subToggles（mouseForward / controlCursor）。
+      return { ok: false,
+        error: '辅助功能这一条管两个功能，请点下面那两个小开关（鼠标转发 / 手势控光标）' };
     default:
       return { ok: false, error: `这一项不能从面板开关：${id}` };
   }

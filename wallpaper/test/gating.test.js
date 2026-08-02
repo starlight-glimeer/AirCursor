@@ -6150,25 +6150,74 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   const perms = src.slice(src.indexOf('const PERMISSIONS = ['),
     src.indexOf('function permissionSnapshot'));
   assert.ok(perms.length > 500, '切不出 PERMISSIONS ⟹ 断言失效');
-  for (const id of ['gestures', 'mouseForward', 'controlCursor', 'audio',
-    'voice', 'appleEvents']) {
+  for (const id of ['gestures', 'accessibility', 'audio', 'voice', 'appleEvents']) {
     assert.ok(perms.includes(`id: '${id}'`), `权限面板漏了 ${id} ⟹ "都集中在一个面板"没做到`);
+  }
+  // ⚠️⚠️⚠️ **辅助功能只许有一条**（0.9.91）。用户 2026-08-02：
+  //   「为什么辅助功能有两个？我理解辅助功能不是有一个就行了」
+  //   **他说得对**：macOS 的辅助功能就是一个开关，勾了对所有程序生效。
+  //   我按"功能"拆成两行 ⟹ 同一个权限显示两遍、都说未授权、用户以为要给两次。
+  //   ⟹ 一条，两个功能开关挂在它底下（subToggles）。
+  const axPanes = (perms.match(/pane: 'Privacy_Accessibility'/g) || []).length;
+  assert.strictEqual(axPanes, 1,
+    `权限面板里有 ${axPanes} 条辅助功能 ⟹ 同一个系统授权显示多遍，`
+    + '用户以为要授权多次（他点名"不是有一个就行了"）');
+  assert.match(perms, /subToggles: \[/,
+    '辅助功能没有子开关 ⟹ 合成一条之后鼠标转发和手势控光标就没法分别开关了');
+  for (const sub of ['mouseForward', 'controlCursor']) {
+    assert.ok(perms.includes(`{ id: '${sub}'`), `子开关漏了 ${sub}`);
   }
   // ⚠️ 每一条都要有 pane（跳系统设置）和 listedAs（列表里叫什么名字）——
   //   授权列表里显示的是 **helper 的二进制名**，不说的话用户找不到该勾哪一项。
-  const idCount = (perms.match(/id: '/g) || []).length;
+  // ⚠️ 不能数 `id: '` —— subToggles 里的子开关也是 `{ id: '…'` ⟹ 多算 2
+  //   （0.9.91 加子开关之后这条在正确代码上报红了）。
+  //   ⟹ 数**顶层**那些：顶层每条是行首缩进 4 空格的 `id:`，子开关是 `{ id:`。
+  const idCount = (perms.match(/^ {4}id: '/gm) || []).length;
   const paneCount = (perms.match(/pane: '/g) || []).length;
   const listedCount = (perms.match(/listedAs: '/g) || []).length;
+  assert.ok(idCount >= 5, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
   assert.strictEqual(paneCount, idCount, `${idCount} 条权限只有 ${paneCount} 个 pane ⟹ 有的跳不到系统设置`);
   assert.strictEqual(listedCount, idCount,
     `${idCount} 条权限只有 ${listedCount} 个 listedAs ⟹ 用户在授权列表里找不到那一项`);
 
-  // ②⚠️⚠️ **查询不许弹框** —— 那是这个面板存在的前提（用户连问六轮"别弹了"）
-  assert.match(perms, /isTrustedAccessibilityClient\(false\)/,
-    '权限面板查辅助功能时没传 false ⟹ 它会自己弹系统框，而这个面板就是为了'
-    + '"不弹框也能看清状态"');
+  // ②⚠️⚠️⚠️ **辅助功能的授权状态只许来自 helper 自己上报**（0.9.91 修）。
+  //
+  // 用户 2026-08-02：「要么直接跟我说开着他没授权，要么我也不知道他到底有没有
+  //   作用…现在到底是没权限还是代码有问题」
+  //
+  // **面板骗了他，而这是我的 bug**：0.9.90 那版用
+  // `isTrustedAccessibilityClient` 查 —— 而它查的是**主应用（GestureWall）**，
+  // 而主应用**从来不需要**辅助功能，需要的是 helper（TCC 按可执行文件记）
+  // ⟹ 主应用永远 false ⟹ 面板永远显示"未授权"，**哪怕 helper 已经授权了**。
+  //
+  // ⟹ 判据：辅助功能那一条**不许**出现 isTrustedAccessibilityClient。
+  const axRow = perms.slice(perms.indexOf("id: 'accessibility'"),
+    perms.indexOf("id: 'audio'"));
+  assert.ok(axRow.length > 200, '切不出辅助功能那一条 ⟹ 断言失效');
+  assert.ok(!/isTrustedAccessibilityClient/.test(axRow),
+    '辅助功能的授权状态又拿 isTrustedAccessibilityClient 查了 ⟹ 那是**主应用**的，'
+    + '而主应用不需要这个权限 ⟹ 永远显示"未授权"（0.9.90 就是这么骗了用户）');
+  assert.match(axRow, /mouseStatus\.trusted/,
+    '不读鼠标 helper 上报的 trusted ⟹ 那是唯一的真值来源（helper 调的'
+    + ' AXIsProcessTrusted() 查的是它自己）');
+  // ⚠️⚠️ 而 helper 没跑时必须返回 **unknown**，不许当成"未授权" ——
+  //   "不知道"和"没授权"的下一步动作完全不同。
+  assert.match(axRow, /return 'unknown'/,
+    'helper 没跑时没返回 unknown ⟹ 会把"不知道"显示成"未授权"，'
+    + '而用户会去给一个可能已经给过的授权');
+  // ⚠️ 别处（面板之外）查主应用授权仍然不许弹框
   assert.ok(!/isTrustedAccessibilityClient\(true\)/.test(src),
     'isTrustedAccessibilityClient(true) 会弹框 ⟹ 打开设置面板就弹，比原问题更糟');
+  // ⚠️⚠️ system-bridge 的 health() **不许**用主应用的查询覆盖 helper 上报的真值
+  const sbSrc = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  assert.ok(!/health: \(\) => \(\{ \.\.\.pointerHealth, trusted: refreshTrustState\(\) \}\)/.test(sbSrc),
+    'health() 又用 refreshTrustState() 覆盖 trusted ⟹ 那查的是主应用，'
+    + '会把 helper 上报的真值覆盖成 false（0.9.90 的根因之一）');
+  // ⚠️ helper 的 `ready` 消息也带 trusted —— 原来只读 pong，那要等一次 ping
+  assert.match(sbSrc, /message\.type === "ready" \|\| message\.type === "pong"/,
+    'pointer helper 的 ready 消息被扔掉了 ⟹ 它一启动就报了自身授权真值，'
+    + '只读 pong 的话在第一次 ping 之前面板只能显示错的');
 
   // ③⚠️⚠️⚠️ **查不到真值的不许猜。**
   //   语音识别（SFSpeechRecognizer 的状态 Electron 不暴露）和自动化
@@ -6202,6 +6251,9 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   assert.match(setter, /if \(mouseTap\) \{ mouseTap\.stop\(\); mouseTap = null; \}/,
     '从面板关掉鼠标转发时没杀 helper ⟹ 面板说"已关闭"而进程还在跑'
     + '（用户："关闭了呢那就是应该关掉了"）');
+  // ⚠️ 合并行本身不该被当开关 —— 点它要给一句人话，而不是静默失败
+  assert.match(setter, /case 'accessibility':/,
+    "permissions-set 没处理 'accessibility' ⟹ 面板万一传了它就是静默失败");
   assert.match(setter, /syncOverlayVisibility\(\)/,
     '关摄像头没同步骨架层 ⟹ 关了摄像头还开着');
   assert.match(setter, /syncAudioSource\(\)/, '改音源没同步 ⟹ 关了采集还在跑');

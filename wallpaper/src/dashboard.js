@@ -3814,11 +3814,22 @@ async function renderPermissions() {
     wt.textContent = row.what;
     left.append(nm, wt);
 
-    // 开关。⚠️ `on === null` = 这一项**没有开关**（比如自动化，它是壁纸装载
-    //   流程的一部分）⟹ 显示一个不可点的说明，而不是一个假开关。
+    // 开关。⚠️ 三种情况：
+    //   · `subToggles` 有值 —— 一个授权底下挂多个功能开关（辅助功能就是这样：
+    //     鼠标转发 + 手势控光标**共用同一个系统授权**）⟹ 这一行不放开关，
+    //     开关放到详情行里分别列。用户 2026-08-02：「为什么辅助功能有两个？
+    //     我理解辅助功能不是有一个就行了」—— 他说得对，授权是一个。
+    //   · `on === null` —— 这一项没有开关（自动化，它是装载壁纸流程的一部分）
+    //   · 其余 —— 一个普通开关
     const toggle = document.createElement('button');
     toggle.className = 'act perm-toggle';
-    if (row.on === null) {
+    if (row.subToggles && row.subToggles.length) {
+      const openCount = row.subToggles.filter((t) => t.on).length;
+      toggle.textContent = openCount ? `${openCount} 项开着` : '都关着';
+      if (openCount) toggle.classList.add('on');
+      toggle.disabled = true;
+      toggle.title = '这一个授权管下面几个功能 —— 分别开关';
+    } else if (row.on === null) {
       toggle.textContent = '总是需要';
       toggle.disabled = true;
       toggle.title = '这一项没有开关 —— 它是装载壁纸流程的一部分';
@@ -3874,6 +3885,30 @@ async function renderPermissions() {
       d.className = 'perm-detail';
       d.innerHTML = bits.join('<br>');
       el.append(d);
+    }
+    // ⚠️ 子开关：一个授权底下的多个功能，各自一个开关。
+    if (row.subToggles && row.subToggles.length) {
+      const wrap = document.createElement('div');
+      wrap.className = 'perm-subs';
+      for (const sub of row.subToggles) {
+        const b = document.createElement('button');
+        b.className = `act perm-toggle${sub.on ? ' on' : ''}`;
+        b.textContent = `${sub.on ? '✓' : '　'} ${sub.label}`;
+        b.onclick = async () => {
+          b.disabled = true;
+          try {
+            const res = await window.gw.permissionsSet(sub.id, !sub.on);
+            if (!res || !res.ok) {
+              logLine('wall', `权限开关失败（${sub.label}）：${(res && res.error) || '没返回'}`);
+            }
+          } catch (error) {
+            logLine('wall', `权限开关抛了（${sub.label}）：${error.message}`);
+          }
+          renderPermissions();
+        };
+        wrap.append(b);
+      }
+      el.append(wrap);
     }
     host.append(el);
   }

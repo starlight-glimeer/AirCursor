@@ -219,7 +219,13 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
         if (!text.startsWith("{")) continue;
         try {
           const message = JSON.parse(text);
-          if (message.type === "pong") {
+          // ⚠️⚠️ **`ready` 也带 trusted，而它原来被扔掉了**（0.9.91）。
+          //   helper 一启动就 `emit(["type":"ready","trusted":AXIsProcessTrusted()])`
+          //   —— 那是**它自己**的授权真值（TCC 按可执行文件记，所以只有它知道）。
+          //   原来只读 `pong` ⟹ 要等一次 ping 才知道，而在那之前面板只能显示
+          //   主应用的查询结果，**而主应用永远是 false**（它不需要这个权限）。
+          //   ⟹ 用户看到"未授权"，哪怕 helper 已经授权了。
+          if (message.type === "ready" || message.type === "pong") {
             setPointerHealth({
               trusted: Boolean(message.trusted),
               ...(message.trusted
@@ -419,7 +425,24 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
       if (voiceHelper && !voiceHelper.killed) voiceHelper.kill();
     },
     send: sendPointer,
-    health: () => ({ ...pointerHealth, trusted: refreshTrustState() }),
+    // ⚠️⚠️⚠️ **trusted 以 helper 上报的为准**（0.9.91 修）。
+    //
+    // 原来是 `trusted: refreshTrustState()`，而那个函数查的是
+    // `isTrustedAccessibilityClient` = **主应用（GestureWall）**有没有辅助功能授权。
+    // 而主应用**从来不需要**这个权限 —— 需要的是 helper（AirCursorPointer /
+    // GestureWallMouse，TCC 按可执行文件记）⟹ 主应用永远 false
+    // ⟹ 它把 helper 上报的真值**覆盖成了 false**。
+    //
+    // 用户 2026-08-02：「要么直接跟我说开着他没授权，要么我也不知道他到底有没有
+    //   作用…现在到底是没权限还是代码有问题」—— 是面板在骗他，而这是根因。
+    //
+    // ⟹ helper 报过就用它的；没报过（helper 还没跑）就是 `null` = **不知道**。
+    //   ⚠️ 不拿主应用的查询当兜底 —— 那不是"近似值"，是**确定的错值**。
+    health: () => ({ ...pointerHealth }),
+    // ⚠️ 主应用自己的辅助功能授权状态 —— 单独暴露，别和 helper 的混。
+    //   （它有用的场合只有一个：判断"整个 App 是否在授权列表里"，而那不是
+    //    任何功能的前提。⟹ 目前没人用，但留个明确的名字比让 health() 撒谎好。）
+    mainAppTrusted: refreshTrustState,
     voiceStatus: () => voiceStatus,
     setCursorHidden(hidden) {
       if (systemCursorHidden === hidden) return;
