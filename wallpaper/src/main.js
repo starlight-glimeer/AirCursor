@@ -3607,6 +3607,9 @@ const PERMISSIONS = [
       + '所以查它没有意义（0.9.90 的面板就是这么显示错的）',
     listedAs: 'GestureWallMouse / AirCursorPointer',
     pane: 'Privacy_Accessibility',
+    // ⚠️ 这一条需要"把 helper 拖进列表"那条路（见 permissions-reveal-helper）——
+    //   0.9.87 删掉所有弹框之后，用户没有别的办法给这个授权。
+    revealHelper: 'mouse',
   },
   {
     id: 'audio',
@@ -3660,6 +3663,7 @@ function permissionSnapshot() {
       authQueryable: p.authQueryable,
       // ⚠️ 一个授权底下可能挂**多个功能开关**（辅助功能就是：鼠标转发 +
       //   手势控光标共用同一个系统授权）⟹ 面板要能分别开关。
+      revealHelper: p.revealHelper || null,
       subToggles: p.subToggles
         ? p.subToggles.map((t) => ({ id: t.id, label: t.label, on: t.on }))
         : null,
@@ -3696,6 +3700,49 @@ ipcMain.handle('permissions-read', () => ({
   packaged: app.isPackaged,
   rows: permissionSnapshot(),
 }));
+
+// ⚠️⚠️⚠️ **在 Finder 里选中那个 helper**（0.9.92）。
+//
+// 0.9.87 我把所有会弹授权框的调用删干净了（用户连问六轮"别弹了"，那是对的）——
+// **但那留下一个洞：现在没有任何东西会触发系统那个授权框。**
+// 而 helper 藏在 `.app/Contents/Resources/prebuilt-helpers/` 里
+// ⟹ 用户在「辅助功能」列表点「+」也几乎不可能找到它（那个路径在 .app 包内部，
+//   Finder 默认不给进）。等于"要授权但没有路"。
+//
+// ⟹ 给一条路：在 Finder 里**选中**它，用户直接把它拖进那个列表。
+// ⚠️ `showItemInFolder` 而不是 `openPath` —— 前者在 Finder 里高亮那个文件
+//   （用户看得到该拖哪个），后者只是打开文件夹（里面 8 个文件，还要自己找）。
+// ⚠️ 而 .app 包内部的路径 Finder **能**通过这个 API 打开（它是我们主动给的路径，
+//   不需要用户自己"进入包内容"）。
+ipcMain.handle('permissions-reveal-helper', (_event, which) => {
+  // ⚠️ 白名单 —— 渲染进程传进来的字符串不能直接当路径用。
+  const names = { mouse: 'GestureWallMouse', pointer: 'AirCursorPointer',
+    audio: 'GestureWallAudio', voice: 'AirCursorVoice' };
+  const name = names[which];
+  if (!name) return { ok: false, error: `未知的 helper：${which}` };
+
+  // ⚠️ 两个可能的位置，顺序要和运行时找它的顺序一致（见 prebuilt-helper.js /
+  //   各 ensureHelper）：打包版优先用 Resources 里预编译的，
+  //   开发模式下是 userData 里现场编译的。
+  const candidates = [];
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'prebuilt-helpers', name));
+  }
+  candidates.push(path.join(app.getPath('userData'), name));
+  candidates.push(path.join(app.getPath('userData'), 'native', name));
+
+  for (const full of candidates) {
+    if (fs.existsSync(full)) {
+      shell.showItemInFolder(full);
+      return { ok: true, path: full };
+    }
+  }
+  // ⚠️ 找不到要说清**为什么** —— 最常见的原因是那个功能还没开过，
+  //   helper 从没被编译/解压出来。
+  return { ok: false,
+    error: `找不到 ${name}。它要等对应功能第一次启动才会出现`
+      + `（打开开关 + 装载一个壁纸），找过这些位置：\n${candidates.join('\n')}` };
+});
 
 // 打开系统设置里对应的那一页。
 // ⚠️ 只接受 PERMISSIONS 里出现过的 pane —— 不然这就是个"任意 URL scheme 打开器"。

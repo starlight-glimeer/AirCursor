@@ -6272,7 +6272,44 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   assert.match(opener, /PERMISSIONS\.some\(\(p\) => p\.pane === pane\)/,
     'permissions-open-pane 没校验 pane ⟹ 渲染进程能让它打开任意 URL scheme');
 
-  // ⑥ 面板那边：三个接口 + DOM 容器 + 每次打开重查
+  // ⑥⚠️⚠️⚠️ **必须有一条"去授权"的路**（0.9.92）。
+  //
+  // 0.9.87 我把所有会弹授权框的调用删干净了（用户连问六轮"别弹了"，那是对的）——
+  // **但那留下一个洞：现在没有任何东西会触发系统那个框**。而 helper 藏在
+  // `.app/Contents/Resources/prebuilt-helpers/` 里 ⟹ 用户在「辅助功能」列表点
+  // 「+」几乎不可能找到它（那个路径在 .app 包内部）⟹ 等于**要授权但没有路**。
+  //
+  // 用户 2026-08-02 的面板截图就是这个状态：「开着但没授权 ⟹ 这个功能现在是
+  // 不工作的」—— 面板说得对，但没告诉他**怎么办**。
+  assert.match(src, /ipcMain\.handle\('permissions-reveal-helper'/,
+    '没有"在 Finder 里找到 helper"这条路 ⟹ 0.9.87 删掉所有弹框之后，'
+    + '用户没有任何办法把 helper 加进辅助功能列表（要授权但没有路）');
+  const reveal = src.slice(src.indexOf("ipcMain.handle('permissions-reveal-helper'"),
+    src.indexOf('// 打开系统设置里对应的那一页'));
+  assert.ok(reveal.length > 300, `切不出 reveal（长度 ${reveal.length}）⟹ 断言失效`);
+  // ⚠️ `showItemInFolder` 而不是 `openPath` —— 前者高亮那个文件（用户看得到该拖哪个），
+  //   后者只是打开文件夹，里面 8 个文件还要自己找。
+  assert.match(reveal, /shell\.showItemInFolder/,
+    'reveal 用的不是 showItemInFolder ⟹ 只打开文件夹的话用户不知道该拖哪个'
+    + '（那个目录里有 8 个文件）');
+  // ⚠️⚠️ 名字必须走白名单 —— 渲染进程传进来的字符串不能直接拼路径
+  assert.match(reveal, /const names = \{/,
+    'reveal 没做名字白名单 ⟹ 渲染进程能让它在 Finder 里打开任意路径');
+  // ⚠️ 找不到时要说清为什么（最常见：那个功能还没开过，helper 从没被解压出来）
+  assert.match(reveal, /它要等对应功能第一次启动才会出现/,
+    'reveal 找不到时没说为什么 ⟹ 用户只看到"找不到"，不知道下一步');
+  // ⚠️ 而面板只在**真的需要**时露这个按钮（开着 + 没授权）——
+  //   一直露着就是又一个"正常使用不需要碰"的东西。
+  const dashEarly = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dashEarly, /row\.revealHelper && row\.on && row\.auth !== 'granted'/,
+    '"去授权"按钮的显示条件不对 ⟹ 该只在"开着但没授权"时出现');
+  // ⚠️ 而且要说清**授权后要重开** —— 不说的话用户会"授权了但还是不行"
+  assert.match(dashEarly, /退出、重新打开本应用/,
+    '没说"授权后要重开应用" ⟹ macOS 的授权对已在跑的进程不生效，'
+    + '用户会以为是 bug');
+
+  // ⑦ 面板那边：三个接口 + DOM 容器 + 每次打开重查
   const dash = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');

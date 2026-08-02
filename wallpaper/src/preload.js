@@ -71,6 +71,9 @@ contextBridge.exposeInMainWorld('gw', {
   permissionsRead: () => ipcRenderer.invoke('permissions-read'),
   permissionsSet: (id, enabled) => ipcRenderer.invoke('permissions-set', id, enabled),
   permissionsOpenPane: (pane) => ipcRenderer.invoke('permissions-open-pane', pane),
+  // ⚠️ 在 Finder 里选中 helper —— 0.9.87 删掉所有弹框之后，
+  //   这是用户把它加进辅助功能列表的唯一路径（见 main.js 那段注释）。
+  permissionsRevealHelper: (which) => ipcRenderer.invoke('permissions-reveal-helper', which),
 
   // 创意工坊
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),

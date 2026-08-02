@@ -3886,6 +3886,37 @@ async function renderPermissions() {
       d.innerHTML = bits.join('<br>');
       el.append(d);
     }
+    // ⚠️⚠️ **「去授权」那条路**（0.9.92）。
+    //
+    // 0.9.87 删掉了所有会弹授权框的调用（用户连问六轮"别弹了"，那是对的）——
+    // **但那留下一个洞：现在没有任何东西会触发系统那个框**，而 helper 藏在
+    // `.app/Contents/Resources/prebuilt-helpers/` 里，用户在辅助功能列表点「+」
+    // 几乎不可能找到它 ⟹ 等于"要授权但没有路"。
+    // ⟹ 只在**真的需要**时（开着 + 没授权/查不到）给这个按钮：
+    //   它在 Finder 里选中那个 helper，用户直接拖进列表。
+    if (row.revealHelper && row.on && row.auth !== 'granted') {
+      const wrap = document.createElement('div');
+      wrap.className = 'perm-subs';
+      const go = document.createElement('button');
+      go.className = 'act perm-toggle on';
+      go.textContent = '① 在 Finder 里找到它';
+      go.title = '在 Finder 里选中那个 helper —— 直接把它拖进「辅助功能」列表';
+      go.onclick = async () => {
+        const res = await window.gw.permissionsRevealHelper(row.revealHelper);
+        if (!res || !res.ok) logLine('wall', (res && res.error) || '找不到 helper');
+      };
+      const open = document.createElement('button');
+      open.className = 'act perm-toggle';
+      open.textContent = '② 打开辅助功能设置';
+      open.onclick = () => window.gw.permissionsOpenPane(row.pane);
+      const hint = document.createElement('div');
+      hint.className = 'perm-detail';
+      hint.innerHTML = '把 ① 里选中的那个文件<b>拖进</b> ② 打开的列表，'
+        + '然后 <b>⌃⇧Q 退出、重新打开本应用</b>'
+        + '（macOS 的授权对已经在跑的进程不生效）。';
+      wrap.append(go, open);
+      el.append(wrap, hint);
+    }
     // ⚠️ 子开关：一个授权底下的多个功能，各自一个开关。
     if (row.subToggles && row.subToggles.length) {
       const wrap = document.createElement('div');
