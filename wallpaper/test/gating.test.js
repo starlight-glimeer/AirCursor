@@ -6375,4 +6375,59 @@ check('自带壁纸是标准 Web 类型（不是特例路径）', () => {
   assert.ok(fs.existsSync(path.join(dir, proj.preview)), `preview ${proj.preview} 不在`);
 });
 
+// ⚠️⚠️⚠️ **进度字段名又是错的**（0.9.113）。用户 2026-08-02：
+//   「粒子壁纸会显示音乐的进度条，但是到达一定时间会自动重置，
+//     反正不是和真实的音乐时间同步的」
+//
+// `mediaTimeline()` 读 `track.position` —— 而 media-control 给的字段叫
+// **`elapsedTime`**（证据：`test/nowplaying.test.js:34` 的 fixture 用的就是它，
+// 而 src 里**零处**读过那个名字）⟹ 我们一直在给壁纸发 0。
+// ⚠️ 而壁纸拿到恒为 0 的进度时通常自己造计时器往前跑 ⟹ 症状正是"跑一会儿自己重置"。
+//
+// ⚠️⚠️ **这是同一个形状的第三次**（字段名跨模块漂）：
+//   ① `mediaThumbnail` 读 `track.artwork`（真名 artworkData）—— 0.9.110
+//   ② 语音的「点」helper 发了主进程不认 —— 0.9.106 删掉
+//   ③ 这一处
+//   ⟹ 而两次都是**测试 fixture 用了假字段名**，让 bug 活着还让修的人报红。
+//     判据：**fixture 的字段名必须来自真实数据，不是来自被测代码。**
+check('进度用 media-control 的真字段名（elapsedTime）', () => {
+  const host = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8'));
+  const fn = host.slice(host.indexOf('function mediaTimeline'),
+    host.indexOf('function mediaTimeline') + 700);
+  assert.match(fn, /track\.elapsedTime/,
+    'mediaTimeline 不读 elapsedTime ⟹ media-control 给的就是这个名字，'
+    + '读 position 拿到的是 undefined ⟹ 进度恒为 0（壁纸会自己造计时器，'
+    + '症状是"跑一会儿自己重置"）');
+  // ⚠️ fixture 必须用真名 —— 否则测试和 bug 互相印证（栽过两次）
+  const t = fs.readFileSync(path.join(__dirname, 'we-host.test.js'), 'utf8');
+  assert.match(t, /elapsedTime: 42/,
+    'we-host.test.js 的 fixture 又用假字段名了 ⟹ 那让 bug 活着还让修的人报红');
+});
+
+// ⚠️⚠️ **面板的三处交互缺失**（0.9.113，用 redesign-skill 审计出来的）。
+// 用户给了几个设计 skill 让我优化界面，而审计的结果是：问题不在配色或字体
+// （那些之前调过几轮），在**交互反馈**——那是清单里"makes the interface feel alive"
+// 那一节，而它在这个界面上有确切的坏处，不是审美偏好：
+//   ① 跳变的数字（fps/计数/耗时/秒数）用比例字体 ⟹ 数字一变整行左右**抖动**
+//   ② 只有 hover 没有 :active ⟹ 在"点了要等几秒"的操作上分不清点没点上
+//   ③ 只有一处 :focus ⟹ 用 Tab 走这个面板看不出焦点在哪
+check('面板：数字等宽 / 按压有反馈 / 键盘看得见焦点', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // ①⚠️ 只给读数类元素，不给中文正文（中文用等宽数位反而怪）
+  assert.match(html, /font-variant-numeric: tabular-nums/,
+    '跳变的读数没用等宽数位 ⟹ 数字一变整行左右抖动（fps/计数/耗时 全是这种）');
+  // ②⚠️ 用 transform 而不是 margin/padding —— 后者触发重排
+  assert.match(html, /button\.act:active[\s\S]{0,120}?transform: translateY/,
+    '按钮没有按压反馈 ⟹ 点下去和没点一样，而这个面板有好几个"点了要等几秒"的操作');
+  assert.ok(!/:active[^{]*\{[^}]*(margin|padding):/.test(html),
+    ':active 用 margin/padding 做位移 ⟹ 触发重排；该用 transform');
+  // ③⚠️ `:focus-visible` 而不是 `:focus` —— 后者会让鼠标点击也画焦点圈
+  assert.match(html, /button:focus-visible[\s\S]{0,140}?outline:/,
+    '没有键盘焦点样式 ⟹ 用 Tab 走这个面板看不出焦点在哪');
+  // ④⚠️ 卡片不该是"四边一样亮的边框" —— 光有方向
+  assert.match(html, /border-top-color: rgba\(255,255,255,\.10\)/,
+    '卡片又变回四边均匀的边框 ⟹ 那是最通用的那种卡片，而光在现实里有方向');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

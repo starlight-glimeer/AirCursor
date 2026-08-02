@@ -27,9 +27,9 @@
       "perRing": {
         "text": "每圈数量 / Per ring",
         "type": "slider",
-        "value": 14,
-        "min": 6,
-        "max": 24,
+        "value": 8,
+        "min": 4,
+        "max": 16,
         "step": 1
       },
       "autoSpin": {

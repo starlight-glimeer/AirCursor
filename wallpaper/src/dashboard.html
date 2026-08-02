@@ -73,6 +73,13 @@
      那不是白做的：换主题只改一处这件事本身有价值（以后真要做浅色时，
      或者用户想调某个色）。⟹ 撤掉的是"半套浅色"，不是"变量化"。 */
   * { box-sizing: border-box; }
+  /* ⚠️⚠️ **跳变的数字要用等宽数位**（0.9.113，redesign 审计）。
+     这个面板全是每帧/每秒变的读数：fps、注入计数、耗时、进度秒数。
+     比例字体下 `1` 比 `8` 窄 ⟹ 数字一变整行就左右**抖动**，
+     而那种抖动读起来很廉价（用户不会说"这里字宽不一致"，只会觉得"糙"）。
+     ⟹ `tabular-nums` 让所有数位等宽。⚠️ 只给数字，不给正文 ——
+       中文正文用等宽数位反而怪。 */
+  .state, .hint, kbd, #build-stamp, .log, #live { font-variant-numeric: tabular-nums; }
   /* ⚠️⚠️ **布局改成"顶部 tab + 内容区"**（0.9.54）。用户 2026-08-01 给了
      Wallpaper Engine 的界面截图：「我感觉我们也应该应用这种，我们现在的布局
      左侧的菜单栏，右侧展示，太 dashboard 了，这个图我看菜单是在左上角，
@@ -465,10 +472,22 @@
      ⟹ 留 backdrop-filter 的只有：`.card`（几个）和弹窗遮罩（一个）。
      ⚠️ `--panel-a` 是半透明版的 --panel（0.72）；不透明那个还留着，
         右侧详情面板和弹窗要用它（那两处不该透）。 */
+  /* ⚠️⚠️ **玻璃不是"背景+一圈边框"**（0.9.113，redesign 审计）。
+     原来是 `background + border 1px 四边 + blur` —— 那是最通用的那种卡片，
+     四边一样亮的边框在现实里不存在（光有方向）。
+     ⟹ 改成：**上缘一道亮线 + 下缘几乎无** —— 那是玻璃边缘折射的样子，
+       而它同时暗示"光从上面来"，和极光背景的方向一致。
+     ⚠️ blur 留着 —— 极光在卡片下面流动，那是这个产品的特征，不是装饰。
+     ⚠️ 阴影**带背景的色相**（偏蓝黑），不用纯黑低透明度：
+       纯黑阴影压在带色的背景上会显灰。 */
   .card {
-    background: var(--panel-a); border: 1px solid var(--line);
-    border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;
+    background: var(--panel-a);
+    border: 1px solid transparent;
+    border-top-color: rgba(255,255,255,.10);
+    border-bottom-color: rgba(0,0,0,.22);
+    border-radius: 12px; padding: 15px 16px 16px; margin-bottom: 12px;
     backdrop-filter: blur(14px) saturate(120%);
+    box-shadow: 0 8px 24px -12px rgba(4,7,16,.7);
   }
   .hint { color: var(--dim); font-size: 11px; line-height: 1.8; margin: 8px 0 0; }
   .warn { color: var(--warn); }
@@ -480,6 +499,20 @@
     font: inherit; font-size: 12px; cursor: pointer;
   }
   button.act:hover { background: var(--btn-hover-a); }
+  /* ⚠️⚠️ **按下要有反馈**（0.9.113）。原来只有 hover ——
+     点下去和没点一模一样 ⟹ 在一个"点了要等几秒才有结果"的界面里
+     （装载壁纸、下载工坊、转视频），那让人分不清"我点没点上"。
+     ⚠️ 用 transform 而不是改 margin/padding：前者走合成器不触发重排。
+     ⚠️ 而位移只给 1px —— 再多就成了"按钮在跳"，那是另一种廉价。 */
+  button.act:active, nav button:active, .we-src button:active {
+    transform: translateY(1px);
+  }
+  /* ⚠️ 键盘可达：原来只有一处 :focus ⟹ 用 Tab 走这个面板看不出焦点在哪。
+     ⚠️ 用 `:focus-visible` 而不是 `:focus` —— 后者会让**鼠标点击**也画出焦点圈，
+       那在按钮上是视觉噪声（Chromium 的默认行为已经是这样，我们只是把它做好看）。 */
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+  }
   button.act.primary { background: var(--accent); color: #06121a; border-color: transparent; font-weight: 600; }
   button.act.danger { color: #ff8b8b; }
   button.act:disabled { opacity: .4; cursor: default; }

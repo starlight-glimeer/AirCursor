@@ -436,8 +436,30 @@ function mediaPlayback(track) {
 }
 
 function mediaTimeline(track) {
+  // ⚠️⚠️⚠️ **字段名又错了一处**（0.9.113）。用户 2026-08-02：
+  //   「粒子壁纸会显示音乐的进度条，但是到达一定时间会自动重置，
+  //     反正不是和真实的音乐时间同步的」
+  //
+  // 这里原来读 `track.position` —— 而 media-control 给的字段叫 **`elapsedTime`**
+  //（证据：`test/nowplaying.test.js:34` 的 fixture 用的就是它，而 src 里
+  //  **零处**读过那个名字）⟹ `position` 恒为 undefined ⟹ 我们一直在发 0。
+  //
+  // ⚠️ 而壁纸拿到恒为 0 的进度时，通常自己造一个计时器往前跑
+  //   ⟹ 症状正是用户说的"跑一会儿自己重置"（它每次收到 0 就归零重来）。
+  //
+  // ⚠️⚠️ **这是同一个形状的第三次**：
+  //   ① `mediaThumbnail` 读 `track.artwork`（真名 artworkData）—— 0.9.110 修
+  //   ② 语音的「点」helper 发了主进程不认 —— 0.9.106 删掉
+  //   ③ 这一处
+  //   ⟹ 判据：**跨模块传数据时，字段名要有一处单一来源**。
+  //     而现在 nowplaying 是 `...data` 直接透传 media-control 的原始字段，
+  //     we-host 这边全靠"我记得它叫什么" —— 那必然会漂。
+  //   ⟹ 下面把两个名字都读，而且**测试 fixture 必须用真实字段名**
+  //     （0.9.110 那次就是 fixture 用了假名字，让 bug 活着还让修的人报红）。
+  const elapsed = track && (track.elapsedTime !== undefined
+    ? track.elapsedTime : track.position);
   return {
-    position: Number.isFinite(track && track.position) ? track.position : 0,
+    position: Number.isFinite(elapsed) ? elapsed : 0,
     duration: Number.isFinite(track && track.duration) ? track.duration : 0,
   };
 }

@@ -311,7 +311,15 @@ const track = {
   //   ⟹ 教训：**fixture 必须长得像真实数据**，否则它测的是一个不存在的世界。
   //     而这个错还骗过了两层：既让 bug 活着，又让修 bug 的人看到"测试红了"。
   artworkData: 'AAA', artworkMimeType: 'image/png', playing: true,
-  position: 42, duration: 210,
+  // ⚠️⚠️ **这里原来写 `position: 42`** —— 而 media-control 给的字段叫
+  //   **`elapsedTime`**（本文件 34 行那个 fixture 用的就是它）。
+  //   ⟹ `mediaTimeline` 一直读 `track.position` 而真实数据里没有这个键
+  //     ⟹ 我们给壁纸发的进度**恒为 0**，而壁纸自己造计时器往前跑
+  //     ⟹ 用户 2026-08-02 看到的"进度条跑一会儿自己重置"。
+  //   ⚠️⚠️ **而这条测试一直是绿的**，因为 fixture 和 src 用了同一个假名字 ——
+  //     两个错互相印证。这是 0.9.110（封面那次）之后**同一个形状的第二次**。
+  //   ⟹ 判据：**fixture 的字段名必须来自真实数据**，不是来自被测代码。
+  elapsedTime: 42, duration: 210,
 };
 
 // ⚠️ 样本读的是 `pb.state === (window.wallpaperMediaIntegration && ...PLAYBACK_PLAYING) || 0`
@@ -340,7 +348,8 @@ check('没歌时给空串和暂停态，不给 null', () => {
 });
 
 check('进度非法时给 0 而不是 NaN', () => {
-  const out = WE.mediaTimeline({ position: 'abc', duration: null });
+  // ⚠️ 同上：用真实字段名 elapsedTime
+  const out = WE.mediaTimeline({ elapsedTime: 'abc', duration: null });
   assert.strictEqual(out.position, 0);
   assert.strictEqual(out.duration, 0);
 });
