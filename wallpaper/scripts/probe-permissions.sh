@@ -38,11 +38,11 @@ if [ -d "$APP" ]; then
   # ⚠️ 仓库里的版本和装的版本要对得上 —— 否则后面全在测旧代码
   REPO_V=$(node -e "console.log(require('./package.json').version)" 2>/dev/null || echo '?')
   if [ "$V" != "$REPO_V" ]; then
-    echo "   $WARN 仓库是 $REPO_V，装的是 $V ⟹ **下面测的是旧版本**"
+    echo "   ${WARN}仓库是 ${REPO_V}，装的是 ${V} ⟹ **下面测的是旧版本**"
   fi
 else
   echo "   $FAIL 没装 —— 先 bash wallpaper/scripts/install-dmg.sh"
-  exit 1
+  echo "      ⚠️ 后面几条照样往下测（配置、壁纸那些不依赖 .app）"
 fi
 
 # ── ② helper 在不在、能不能执行 ──────────────────────────
@@ -84,7 +84,15 @@ sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
 echo ""
 echo "⑤ helper 自己怎么说（跑 6 秒 —— 这几秒里请动一下鼠标、点几下桌面）"
 echo "   ⚠️ 这是**权威口径**：helper 调 AXIsProcessTrusted() 查的是它自己"
+# ⚠️ helper 不在就别白等 6 秒（本地验脚本时就是这样）
+if [ ! -x "$MOUSE" ]; then
+  echo "   $FAIL 跳过 —— ② 已经说了 helper 不在"
+  echo ""
+  echo "⑥ 那个粒子壁纸靠什么触发流星"
+  SKIP_HELPER=1
+fi
 OUT=$(mktemp)
+if [ "${SKIP_HELPER:-0}" != "1" ]; then
 "$MOUSE" > "$OUT" 2>&1 &
 PID=$!
 sleep 6
@@ -112,11 +120,14 @@ if [ "$NEVENTS" -gt 0 ]; then
 else
   echo "   $FAIL 零事件 ⟹ 要么没授权，要么这 6 秒你没动鼠标"
 fi
+fi
 rm -f "$OUT"
 
 # ── ⑥ 那个壁纸听的是什么事件 ────────────────────────────
+if [ "${SKIP_HELPER:-0}" != "1" ]; then
 echo ""
 echo "⑥ 那个粒子壁纸靠什么触发流星"
+fi
 # ⚠️ 壁纸目录不能只猜默认那个 —— 用户可以换（config.we.wallpaperDir）。
 #   ⟹ 先从配置里读，读不到再退回默认。
 WP=""
