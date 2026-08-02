@@ -2130,6 +2130,47 @@ check('renderBuildStamp 从 apply() 跑（packagedBuild 要在诊断之前就位
     + '而鼠标诊断会给打包版说"要先打包成 .app"（说反了）');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ readConfig 不许静默吞异常（0.9.122，真事故）
+//
+//  用户 2026-08-02：「Steam 用户名和 API key 每次打开软件都要填一遍」
+//
+//  根因是 `mergeConfig` 撞上 `typeof null === 'object'` 抛 TypeError，
+//  而 `readConfig` 的 **裸 `catch {}`** 吞掉它并返回全套默认值
+//  ⟹ 用户所有设置静默丢失（不只凭证：we.dir / layers.* / steamCmdPath 全在内）。
+//
+//  ⚠️ 而**这个 bug 本身很好修（一行），真正的问题是它藏了好几个月** ——
+//    终端上一个字都不打，症状只表现为"设置好像没保存"。
+//    我 0.9.120 就是被这个症状骗去修了"回填"（那不是根因）。
+//
+//  ⟹ 判据：**`catch {}` 不写理由，就是在赌"这里只会因为我想到的那个原因失败"。**
+//    这个 catch 想兜的是"文件不存在 / JSON 坏了"（该回默认），
+//    而它顺手把"我们自己的代码抛异常"也兜了 —— 后者的正确反应是**吵**。
+// ═══════════════════════════════════════════════════════════════════════
+check('readConfig 里 mergeConfig 抛异常要吵（那次静默吞掉藏了几个月）', () => {
+  const main = codeOnly(mainSrc);
+  const at = main.indexOf('function readConfig()');
+  assert.ok(at > 0, '找不到 readConfig()');
+  const end = main.indexOf('\nfunction ', at + 10);
+  const body = main.slice(at, end > 0 ? end : at + 2000);
+
+  // ⚠️ 锚定"裸 catch"这个**形状**，不是"有没有 console" ——
+  //   函数里别处有 console.warn 也能让后者绿，而那不代表这条路径会说话。
+  assert.ok(!/catch\s*\{\s*$/m.test(body) && !/catch\s*\{\s*\n\s*return/.test(body),
+    'readConfig 里有裸 catch（不带 error 参数、直接 return）⟹ '
+    + '我们自己的代码抛异常时一个字都不打，而症状只表现为"设置没保存"。'
+    + '用户 2026-08-02 那次就是这么藏了几个月');
+
+  // mergeConfig 那次调用必须单独包，而且要打日志
+  const mAt = body.indexOf('mergeConfig(defaultConfig');
+  assert.ok(mAt > 0, 'readConfig 里没调 mergeConfig —— 锚点变了，这条守卫要跟着改');
+  const after = body.slice(mAt, mAt + 900);
+  assert.match(after, /catch\s*\(\s*error\s*\)/,
+    'mergeConfig 的 catch 没接住 error 对象 ⟹ 没法打出是什么错');
+  assert.match(after, /console\.(error|warn)/,
+    'mergeConfig 抛了不打日志 ⟹ 用户所有设置静默回默认值，而终端上什么都看不到');
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。

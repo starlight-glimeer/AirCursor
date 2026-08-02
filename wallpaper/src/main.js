@@ -547,10 +547,54 @@ const defaultConfig = {
 
 let config = null;
 
+// ⚠️⚠️⚠️ **这个 catch 藏了一个真 bug 好几个月**（0.9.122 修）。
+//
+// 用户 2026-08-02 报「Steam 用户名和 API key 每次打开都要重填」，
+// 而我 0.9.120 当成"存下来的没显示出来"，加了回填代码 —— **没用**，
+// 因为真相是**存下来的东西在读回来时被整体丢弃了**：
+//
+//   `mergeConfig` 递归到 `we.steam.apiKey`（默认值 `null`）时，
+//   `typeof null === 'object'` ⟹ 躲过 `typeof base !== 'object'` 那道闸
+//   ⟹ 走到 `Object.keys(null)` ⟹ **TypeError**
+//   ⟹ 这个 catch 吞掉 ⟹ 返回**全套默认值** ⟹ 所有设置回出厂状态。
+//
+// ⚠️ 而它影响的**远不止凭证** —— 默认值是 null 的字段全在里面：
+//   `we.dir`（上次装的壁纸）、`we.steamCmdPath`、`layers.background/subject/shard`。
+//   用他 0.9.116 那份诊断报告里的真实 config 直接跑 mergeConfig 就抛。
+//
+// ⚠️⚠️ 判据：**`catch {}` 不写理由就是在赌"这里只会因为我想到的那个原因失败"**。
+//   这个 catch 想兜的是"文件不存在 / JSON 坏了"（那两个确实该回默认），
+//   而它顺手把"我们自己的代码抛异常"也兜了 —— 而后者的正确反应是**吵**，
+//   不是静默降级。⟹ 分开处理，并且**任何情况下都留下日志**。
 function readConfig() {
+  let raw;
   try {
-    return mergeConfig(defaultConfig, JSON.parse(fs.readFileSync(CONFIG_FILE(), 'utf8')));
-  } catch {
+    raw = fs.readFileSync(CONFIG_FILE(), 'utf8');
+  } catch (error) {
+    // ⚠️ 首次启动没有这个文件 —— 那是正常的，不值得报警。
+    if (error.code !== 'ENOENT') {
+      console.warn('[config] 读不出来，回默认值：', error.message);
+    }
+    return JSON.parse(JSON.stringify(defaultConfig));
+  }
+  let saved;
+  try {
+    saved = JSON.parse(raw);
+  } catch (error) {
+    // ⚠️ 文件坏了。回默认是对的，但**必须说出来** ——
+    //   否则用户看到的是"我的设置莫名其妙全没了"。
+    console.error('[config] JSON 坏了，回默认值（原文件不动）：', error.message);
+    return JSON.parse(JSON.stringify(defaultConfig));
+  }
+  try {
+    return mergeConfig(defaultConfig, saved);
+  } catch (error) {
+    // ⚠️⚠️ 走到这里说明**是我们自己的 bug**（mergeConfig 抛了）——
+    //   而这正是上面那个"藏了几个月"的场景。
+    //   ⟹ 回默认值仍然是唯一能继续启动的选择，但要**吵到能被发现**：
+    //     带堆栈，而且明说"这是 bug 不是配置问题"。
+    console.error('[config] ⚠️ mergeConfig 抛异常 —— 这是代码 bug，'
+      + '你的设置这次会回到默认值（磁盘上的文件没被改）：', error.stack || error.message);
     return JSON.parse(JSON.stringify(defaultConfig));
   }
 }
@@ -571,6 +615,24 @@ const OPAQUE_DICTS = new Set([
 // undefined downstream. Arrays and primitives are replaced wholesale.
 function mergeConfig(base, saved, key) {
   if (saved === null || saved === undefined) return JSON.parse(JSON.stringify(base));
+  // ⚠️⚠️⚠️ **`base === null` 必须单独判**（0.9.122）。
+  //
+  //   `typeof null === 'object'` —— JS 最有名的那个坑。所以下面那道
+  //   `typeof base !== 'object'` 的闸**拦不住 null**，会一路走到
+  //   `Object.keys(null)` ⟹ TypeError ⟹ readConfig 回默认值
+  //   ⟹ **用户所有设置静默丢失**。
+  //
+  // ⚠️ 而"默认值是 null"在这个 config 里是**常态**，不是边角情况 ——
+  //   它的语义就是"还没设过"：
+  //     we.dir（上次装的壁纸）、we.steam.{username,password,guardCode,apiKey}、
+  //     we.steamCmdPath、layers.{background,subject,shard}
+  //   ⟹ 也就是说这条路径**任何一个存了值的用户每次启动都会踩**。
+  //   （用户 2026-08-02 报"凭证每次都要重填"就是它；而我 0.9.120 把症状
+  //     读成"没回填"，加了回填代码 —— 那读的是一个已经被重置的 config。）
+  //
+  // ⚠️ 返回 `saved` 是对的：默认 null = "没有默认结构可合并"
+  //   ⟹ 用户存的值就是全部信息，整体采用。
+  if (base === null) return saved;
   if (Array.isArray(base) || typeof base !== 'object') return saved;
   if (OPAQUE_DICTS.has(key)) return JSON.parse(JSON.stringify(saved));
   const out = {};

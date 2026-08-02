@@ -122,6 +122,108 @@ check('presets 是深拷贝，不与存档共享引用', () => {
   assert.strictEqual(saved.presets.a.depth.v, 1, '改返回值污染了输入');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ `base === null` —— 这一组是**真事故**的守卫（0.9.122）
+//
+//  用户 2026-08-02：「Steam 用户名和 API key 每次打开软件都要填一遍」
+//
+//  根因不是"没缓存"，是 **mergeConfig 抛异常 ⟹ readConfig 的 catch 吞掉
+//  ⟹ 返回全套默认值 ⟹ 用户所有设置静默丢失**：
+//    `typeof null === 'object'` ⟹ `typeof base !== 'object'` 那道闸拦不住 null
+//    ⟹ `Object.keys(null)` ⟹ TypeError。
+//
+//  ⚠️ 而"默认值是 null"在这个 config 里是**常态**（语义 = "还没设过"）：
+//    we.dir / we.steam.* / we.steamCmdPath / layers.background|subject|shard
+//    ⟹ 任何存过这些值的用户**每次启动都踩**。
+//
+//  ⚠️⚠️ 而它躲过了守卫这么久，是因为**原来的用例全用 `base` 有值的结构**
+//    （`{ layers: { subject: '/a.png' } }`）—— 那恰好绕开了 null 那支。
+//    ⟹ 判据：**用例的"输入形状"要来自真实的 defaultConfig，不是我顺手编的。**
+//      所以下面最后一条直接拿源码里真的 defaultConfig 跑。
+// ═══════════════════════════════════════════════════════════════════════
+
+check('默认值是 null 时不抛（typeof null === "object" 那个坑）', () => {
+  // ⚠️ 这一条单独立着，因为它是**崩不崩**的问题，不是值对不对的问题。
+  //   assert.doesNotThrow 而不是比值 —— 抛异常的后果（全部设置丢失）
+  //   和"值算错了"完全不是一个量级。
+  assert.doesNotThrow(() => mergeConfig({ k: null }, { k: 'v' }),
+    'base 是 null 时抛了 ⟹ readConfig 会吞掉它并返回全默认 ⟹ 用户所有设置丢失');
+});
+
+check('默认值 null + 用户存了值 ⟹ 采用用户的值', () => {
+  const out = mergeConfig({ k: null }, { k: 'v' });
+  assert.strictEqual(out.k, 'v',
+    '默认 null 的字段存不下来 —— 那正是"每次打开都要重填"的症状');
+});
+
+check('默认值 null + 用户存的是对象 ⟹ 整体采用（不按 null 的键去合并）', () => {
+  // ⚠️ 默认是 null ⟹ **没有默认结构可参照** ⟹ 用户存的就是全部信息。
+  const out = mergeConfig({ k: null }, { k: { a: 1, b: { c: 2 } } });
+  assert.deepStrictEqual(out.k, { a: 1, b: { c: 2 } });
+});
+
+check('默认值 null + 用户没存 ⟹ 还是 null（不是 undefined）', () => {
+  // ⚠️ undefined 和 null 在下游不等价：`config.we.dir` 那些地方是
+  //   `if (config.we.dir && ...)` —— 两个都假，但 JSON.stringify 会把
+  //   undefined 的键**整个删掉** ⟹ 写回磁盘的 config 少了字段。
+  const out = mergeConfig({ k: null, other: 1 }, { other: 2 });
+  assert.strictEqual(out.k, null, '没存过的 null 字段变成了别的东西');
+  assert.ok('k' in out, 'k 这个键整个没了 ⟹ 写回磁盘时会丢字段');
+});
+
+// ⚠️⚠️ 这条是上面那些的**兜底**：不编输入形状，直接拿 main.js 里真的
+//   defaultConfig，和一份真实用户 config 的形状跑一遍。
+//   ⟹ 以后再有人加一个"默认值是 null 的新字段"，不需要来这里补用例，
+//     这条自动覆盖到。
+check('真的 defaultConfig × 存了所有 null 字段的存档 ⟹ 不抛且全部保留', () => {
+  // 从源码里抠出 defaultConfig 字面量（和上面抠 mergeConfig 一样，不手抄）
+  const at = source.indexOf('const defaultConfig = {');
+  assert.ok(at > 0, '在 main.js 里找不到 defaultConfig');
+  let depth = 0;
+  let end = source.indexOf('{', at);
+  for (let i = end; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
+  }
+  // eslint-disable-next-line no-new-func
+  const defaultConfig = new Function(`return ${source.slice(source.indexOf('{', at), end + 1)};`)();
+
+  // 找出所有默认值是 null 的路径
+  const nullPaths = [];
+  (function walk(o, prefix) {
+    for (const [k, v] of Object.entries(o)) {
+      const p = prefix ? `${prefix}.${k}` : k;
+      if (v === null) nullPaths.push(p);
+      else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, p);
+    }
+  }(defaultConfig, ''));
+
+  assert.ok(nullPaths.length > 0,
+    'defaultConfig 里一个 null 默认值都没有了 —— 那这条守卫失去意义，'
+    + '要么是重构掉了（好事，删掉这条），要么是我抠错了地方');
+
+  // 给每一条都存一个值，模拟"用户设过了"
+  const saved = JSON.parse(JSON.stringify(defaultConfig));
+  for (const p of nullPaths) {
+    const parts = p.split('.');
+    let node = saved;
+    for (const part of parts.slice(0, -1)) node = node[part];
+    node[parts[parts.length - 1]] = `存过的值:${p}`;
+  }
+
+  let out;
+  assert.doesNotThrow(() => { out = mergeConfig(defaultConfig, saved); },
+    `真实 defaultConfig 合并时抛了 —— null 默认值的路径有 ${nullPaths.length} 条：`
+    + `${nullPaths.join(', ')}`);
+
+  // 每一条都要真的留下来
+  for (const p of nullPaths) {
+    const got = p.split('.').reduce((o, k) => (o == null ? o : o[k]), out);
+    assert.strictEqual(got, `存过的值:${p}`,
+      `${p} 存了值但合并后丢了 ⟹ 用户那一项每次启动都要重设`);
+  }
+});
+
 check('普通配置块仍然逐键深合并（没被 opaque 波及）', () => {
   const out = mergeConfig(
     { depth: { background: -4.5, shard: 2.2 }, presets: {} },
