@@ -1,0 +1,45 @@
+<!doctype html>
+<!--
+  AI 生成壁纸的**外壳**。⚠️ 模型不写这个文件，也不写 runtime.js ——
+  它只写 scene.js（那里面是 window.SCENE 那三个函数）。
+
+  ⚠️ 加载顺序是**硬要求**：
+    three（库）→ scene.js（挂 window.SCENE）→ runtime.js（读它并启动）
+  倒过来的话 runtime 会报"scene.js 没提供 SCENE"。
+
+  ⚠️ 而三个 <script> 都是**同目录的相对路径** —— 壁纸跑在自定义协议
+    `wall://wallpaper/...` 下，绝对路径和 CDN 都到不了。
+-->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>DreamPaper</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05060c; }
+  /* ⚠️ canvas 铺满：`display:block` 去掉行内元素底部那几像素的缝 */
+  #c { display: block; width: 100vw; height: 100vh; }
+
+  /* ⚠️⚠️ 错误框 —— 壁纸层**没有 devtools 入口**，而"黑屏"是所有失败的共同外观。
+     ⟹ 出错要在屏幕上说，否则用户只能看到一片黑而无从判断。
+     ⚠️ `white-space: pre-line` 让 \n 真的换行（这个项目为它栽过一次：
+        提示挤成一坨、命令被折断在句子中间）。 */
+  #err {
+    display: none; position: fixed; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 76vw; padding: 18px 22px;
+    background: rgba(10, 12, 20, .88);
+    border: 1px solid rgba(255, 180, 84, .4); border-radius: 12px;
+    color: #ffd9a8; font: 400 13px/1.9 -apple-system, "PingFang SC", sans-serif;
+    white-space: pre-line; text-align: left; user-select: text;
+  }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="err"></div>
+  <script src="vendor/three.min.js"></script>
+  <script src="scene.js"></script>
+  <script src="runtime.js"></script>
+</body>
+</html>
