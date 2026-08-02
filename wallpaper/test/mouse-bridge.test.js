@@ -273,4 +273,44 @@ check('鼠标 helper 初始化 NSApplication（全局监听的前提）', () => 
 //   而不是参数没传对。授权现在只由主进程的 `ensureAccessibility()` 管，
 //   守卫在 gating.test.js「辅助功能授权只在主进程问一次」那条。
 
+// ⚠️⚠️⚠️ **拖拽必须带按键状态**（0.9.108）。用户 2026-08-02 要做的是
+//   「歌单当壁纸背景，允许鼠标点击和 360° 拖拽」（对着 OWE 那个音乐播放器）。
+//
+// 而 `drag` 原来和 `move` **合在一支**，注入的是**裸 mouseMove**（不带 button）
+// ⟹ 页面收到 `mousemove` 而 `event.buttons === 0` ⟹ **任何"按住拖"的判定都
+// 不成立**，而症状是"点得动、拖不动"、**不报任何错**（壁纸只是收到一串 hover）。
+check('拖拽带按键状态，纯移动不带（否则页面 buttons===0，拖不动）', () => {
+  const pt = { x: 10, y: 20 };
+  // ① 纯移动：不带 button（带了会被当成"按着拖"）
+  const move = M.toInputEvent({ kind: 'move' }, pt);
+  assert.strictEqual(move.type, 'mouseMove');
+  assert.ok(!('button' in move),
+    '纯移动带了 button ⟹ 页面会以为鼠标一直按着（hover 效果全变成拖拽）');
+  // ②⭐ 拖拽：必须带
+  const drag = M.toInputEvent({ kind: 'drag', button: 0 }, pt);
+  assert.strictEqual(drag.type, 'mouseMove');
+  assert.strictEqual(drag.button, 'left',
+    '拖拽没带 button ⟹ 页面 buttons===0，360° 拖拽/orbit 那类交互全部失效'
+    + '（而且不报错，症状只是"拖不动"）');
+  // ③⚠️ 左右键要分开 —— orbit 控制里常见"左键转、右键平移"
+  const rdrag = M.toInputEvent({ kind: 'drag', button: 2 }, pt);
+  assert.strictEqual(rdrag.button, 'right',
+    '右键拖拽被当成左键 ⟹ 该平移的变成转视角（错得很隐蔽）');
+});
+
+// ⚠️⚠️ 而 **helper 那边必须真的发 button** —— 只在 JS 侧读它没用
+//   （`event.button` 会是 undefined ⟹ 恒为 'left'，右键拖拽静默变左键）。
+check('helper 的 drag 事件带 button 字段（左右键分开）', () => {
+  // ⚠️ 这个文件顶部没 require fs（别处也是就地 require）
+  const fs = require('node:fs');
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallMouse.swift'), 'utf8')
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.match(swift, /"kind": "drag"[^\n]*"button": button/,
+    'helper 的 drag 事件没带 button ⟹ JS 侧读到 undefined，恒当左键，'
+    + '而右键拖拽会静默变成左键');
+  assert.match(swift, /event\.type == \.rightMouseDragged \? 2 : 0/,
+    'helper 没区分左右键拖拽 ⟹ orbit 控制里"右键平移"会变成转视角');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -89,7 +89,17 @@ func handle(_ event: NSEvent) {
         lastMoveAt = now
         // 拖拽和纯移动分开：壁纸可能要区分"划过"和"拖着划"。
         let dragging = event.type != .mouseMoved
-        emit(["type": "mouse", "kind": dragging ? "drag" : "move", "x": x, "y": y])
+        // ⚠️⚠️ **拖拽要带上是哪个键**（0.9.108）。
+        //   上层要把它翻成带 button 的 mouseMove（不带的话页面 `buttons === 0`
+        //   ⟹ 任何"按住拖"的判定都不成立，而症状是"点得动、拖不动"且不报错）。
+        //   ⚠️ 而**左右键必须分开** —— orbit 控制里很常见"左键转、右键平移"，
+        //     恒当左键的话右键拖拽会转视角（错得很隐蔽）。
+        if dragging {
+            let button = event.type == .rightMouseDragged ? 2 : 0
+            emit(["type": "mouse", "kind": "drag", "x": x, "y": y, "button": button])
+        } else {
+            emit(["type": "mouse", "kind": "move", "x": x, "y": y])
+        }
     case .leftMouseDown:
         emit(["type": "mouse", "kind": "down", "x": x, "y": y, "button": 0])
     case .leftMouseUp:

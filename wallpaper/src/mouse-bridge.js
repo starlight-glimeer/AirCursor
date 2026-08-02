@@ -71,8 +71,26 @@ function toInputEvent(event, point) {
   if (!event || !point) return null;
   switch (event.kind) {
     case 'move':
-    case 'drag':
       return { type: 'mouseMove', x: point.x, y: point.y };
+    // ⚠️⚠️⚠️ **拖拽必须带按键状态**（0.9.108）。
+    //
+    // 用户 2026-08-02 要做的是"歌单当壁纸背景，允许鼠标点击和 360° 拖拽"
+    // （对着 OWE 那个音乐播放器的效果）。而这一支原来和 `move` **合在一起**，
+    // 注入的是**裸 `mouseMove`**（不带 button）⟹ 页面收到 `mousemove` 而
+    // `event.buttons === 0` ⟹ **任何"按住拖"的判定都不成立**。
+    //
+    // ⚠️ 而症状会是"点得动、拖不动"，而且**不报任何错** ——
+    //   壁纸那边只是收到一串普通的 hover 移动。
+    //   （那个粒子壁纸的 js 里就在读 `buttons`/`which`，OWE 那种 orbit 控制
+    //    更是必然要判"左键有没有按着"。）
+    //
+    // ⚠️⚠️ Electron 的 `sendInputEvent` 对 mouseMove 认 `button` 字段：
+    //   带上它才等价于"拖拽中的移动"。
+    case 'drag':
+      return {
+        type: 'mouseMove', x: point.x, y: point.y,
+        button: event.button === 2 ? 'right' : 'left',
+      };
     case 'down':
       return {
         type: 'mouseDown', x: point.x, y: point.y,
