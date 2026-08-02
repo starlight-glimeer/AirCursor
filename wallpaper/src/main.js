@@ -3605,28 +3605,42 @@ const PERMISSIONS = [
     // ⟹ 权限面板只回答一个问题：**这个授权给了没有**。功能开关回各自的家。
     id: 'accessibility',
     name: '辅助功能',
-    what: '给了它，壁纸才能收到鼠标点击（「点一下掉流星」那类特效）、'
-      + '手势才能移动鼠标指针',
-    // ⚠️ "开没开"对系统授权没有意义 —— 它不是我们能开关的东西。
-    //   ⟹ null = 这一栏不显示开关（见面板那边 row.on === null 那支）。
+    // ⚠️⚠️⚠️ **只有"手势移动鼠标指针"需要它**（0.9.102 修）。用户 2026-08-02：
+    //   「我看还是显示辅助功能未授权，这是什么没授权，还是出 bug 了，
+    //     以及需要这个辅助功能吗」
+    //
+    // **是 bug，而且我把需要它的那条链搞错了。** 探针（用户真机）证明：
+    //   · `GestureWallMouse` —— `addGlobalMonitorForEvents` **监听**鼠标
+    //     ⟹ trusted: false 时照样抓到 148 个事件、页面收到 55 个 click
+    //     ⟹ **不需要辅助功能**
+    //   · `AirCursorPointer` —— `CGEvent.post` **注入**鼠标事件
+    //     ⟹ 那是"控制别的程序"，macOS 必须要辅助功能（源码里那句注释写着：
+    //       "without the Accessibility grant CGEvent.post fails silently"）
+    //
+    // ⟹ 判据：**监听不需要，注入需要。** 而 0.9.91 我让这一栏读
+    //   `mouseStatus`（鼠标转发那个 helper）—— 它永远报 false 且**无所谓**
+    //   ⟹ 面板一直显示"未授权"，而那个"未授权"对流星那条链毫无意义。
+    what: '手势移动鼠标指针需要它。'
+      + '⚠️ 壁纸收鼠标点击（流星那类特效）**不需要** —— 那条链已实测通过',
     on: null,
     authQueryable: true,
     auth: () => {
-      // ⚠️ 真值只有一个来源：**helper 自己上报**（它调 AXIsProcessTrusted()，
-      //   查的是它自己）。主应用查出来的永远是 false —— 它不需要这个权限。
-      if (mouseStatus && typeof mouseStatus.trusted === 'boolean') {
-        return mouseStatus.trusted ? 'granted' : 'denied';
-      }
+      // ⚠️⚠️ 只看 **pointer** helper（AirCursorPointer）——
+      //   它是唯一真需要这个授权的。鼠标转发那个 helper 的 trusted
+      //   **有意不看**：它报 false 也能正常工作（探针实测）。
       const ph = systemBridge.health ? systemBridge.health() : null;
       if (ph && typeof ph.trusted === 'boolean') return ph.trusted ? 'granted' : 'denied';
-      // ⚠️⚠️ 两个 helper 都没跑 ⟹ **真的不知道**，别猜。
+      // ⚠️ pointer helper 没跑过 ⟹ 真的不知道，别猜（而它只在开了
+      //   「手势移动鼠标指针」之后才启动）。
       return 'unknown';
     },
-    unknownWhy: '要等 helper 真的跑起来才知道 —— 在「壁纸与音乐」里打开'
-      + '「转发鼠标给壁纸」并装载一个壁纸，它会自己上报。'
-      + '⚠️ 主应用（GestureWall）本身不需要这个权限，所以查它没有意义',
-    listedAs: 'GestureWallMouse / AirCursorPointer',
-    revealHelper: 'mouse',
+    unknownWhy: '只有开了「手势移动鼠标指针」才需要它，也只有那时才查得到 —— '
+      + '没开的话这一项对你没有影响。'
+      + '⚠️ 壁纸收鼠标点击不需要这个授权（实测：未授权状态下页面照样收到 click）',
+    // ⚠️ 列表里只该找 AirCursorPointer —— GestureWallMouse 授不授权都无所谓，
+    //   写上去只会让用户去授一个不需要的权限。
+    listedAs: 'AirCursorPointer',
+    revealHelper: 'pointer',
     pane: 'Privacy_Accessibility',
   },
   {

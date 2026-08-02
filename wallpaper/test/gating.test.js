@@ -6245,9 +6245,35 @@ check('权限面板：只读三行 macOS 授权 / 查不到的不许猜 / 有去
   assert.ok(!/isTrustedAccessibilityClient/.test(axRow),
     '辅助功能的授权状态又拿 isTrustedAccessibilityClient 查了 ⟹ 那是**主应用**的，'
     + '而主应用不需要这个权限 ⟹ 永远显示"未授权"（0.9.90 就是这么骗了用户）');
-  assert.match(axRow, /mouseStatus\.trusted/,
-    '不读鼠标 helper 上报的 trusted ⟹ 那是唯一的真值来源（helper 调的'
-    + ' AXIsProcessTrusted() 查的是它自己）');
+  // ⚠️⚠️⚠️ **只许看 pointer helper 的 trusted**（0.9.102 修）。用户 2026-08-02：
+  //   「我看还是显示辅助功能未授权，这是什么没授权，还是出 bug 了，
+  //     以及需要这个辅助功能吗」
+  //
+  // **是 bug，而且我把需要它的那条链搞错了。** 探针（真机）证明：
+  //   · `GestureWallMouse`（`addGlobalMonitorForEvents` —— **监听**）
+  //     trusted: false 时照样抓到 148 个事件、页面收到 55 个 click ⟹ **不需要**
+  //   · `AirCursorPointer`（`CGEvent.post` —— **注入**）⟹ 必须要
+  //     （那个 .swift 里的注释写着 "without the Accessibility grant
+  //      CGEvent.post fails silently"）
+  // ⟹ 判据：**监听不需要，注入需要。**
+  //
+  // ⚠️ 而 0.9.91~0.9.101 这一栏读的是 `mouseStatus`（鼠标转发那个 helper）
+  //   ⟹ 永远显示"未授权"，而那个"未授权"对流星那条链毫无意义 ——
+  //   用户照着它去授权，授完还是"未授权"，来回三轮。
+  assert.ok(!/mouseStatus/.test(axRow),
+    '辅助功能那行又在读 mouseStatus（鼠标转发那个 helper）⟹ 它 trusted: false '
+    + '也能正常工作（探针实测 148 个事件），拿它当授权状态是错的');
+  assert.match(axRow, /systemBridge\.health/,
+    '不读 pointer helper 的 trusted ⟹ 那是唯一真需要这个授权的链');
+  // ⚠️ 而 `listedAs` 只该写 AirCursorPointer —— 写上 GestureWallMouse
+  //   会让用户去授一个不需要的权限（他已经这么白折腾过一轮）
+  assert.ok(!/listedAs: 'GestureWallMouse/.test(axRow),
+    'listedAs 还写着 GestureWallMouse ⟹ 那个 helper 不需要授权，'
+    + '让用户去列表里找它是白折腾');
+  // ⚠️ 而"壁纸收点击不需要这个授权"这条实测结论必须写在 what/unknownWhy 里 ——
+  //   不写的话用户看到"未授权"仍然会以为流星是因为这个不工作
+  assert.match(axRow, /不需要/,
+    '没说清"壁纸收鼠标点击不需要这个授权" ⟹ 用户看到未授权还会以为流星坏在这儿');
   // ⚠️⚠️ 而 helper 没跑时必须返回 **unknown**，不许当成"未授权" ——
   //   "不知道"和"没授权"的下一步动作完全不同。
   assert.match(axRow, /return 'unknown'/,
