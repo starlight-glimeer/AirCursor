@@ -172,6 +172,8 @@ for d in GestureWall aircursor; do
 done
 if [ -n "$CFG" ]; then
   echo "   $CFG"
+  # ⚠️ 文件的修改时间 —— 判断"应用有没有真的写过它"
+  echo "      最后写入：$(stat -f '%Sm' "$CFG" 2>/dev/null || stat -c '%y' "$CFG" 2>/dev/null)"
   node -e "
     const c = require('$CFG');
     const w = c.we || {};
@@ -180,6 +182,19 @@ if [ -n "$CFG" ]; then
     console.log('      strategy            =', w.strategy, (w.strategy||'desktop')==='desktop' ? '✅' : '❌ 只有 desktop 才转发');
     console.log('      dir（装载的壁纸）   =', w.dir || '(没装载 ⟹ helper 不会启动)');
     console.log('      controlCursor       =', c.controlCursor);
+    // ⚠️⚠️ **把 we 那一块的原文打出来**（0.9.99）。
+    //   用户 2026-08-02：「什么叫壁纸没装载呀？我就是应用了这个网易云监听里的
+    //     效果…然后才点的呀」
+    //   **他说得对，而 dir 是空的就是个真 bug**（装载成功了但没记下来）。
+    //   ⚠️ 而我上一轮开始靠"哪个函数会清掉它"来猜 —— 那是在读代码猜数据。
+    //   ⟹ 直接把文件里的原文打出来：到底有没有这个键、值是什么、
+    //     文件什么时候被写的。数据说话，不猜。
+    console.log('');
+    console.log('      —— config.we 原文（只印相关字段）——');
+    console.log('      ' + JSON.stringify({
+      dir: w.dir, mouseForward: w.mouseForward, strategy: w.strategy,
+      wallpaperDir: w.wallpaperDir, libraryDirs: w.libraryDirs,
+    }, null, 2).split('\n').join('\n      '));
   " 2>/dev/null || echo "   $WARN 读不了（json 坏了？）"
 else
   echo "   $WARN 两个位置都没有配置文件："
