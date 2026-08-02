@@ -6042,6 +6042,10 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
     //   ⟹ 同屏最多一个实例，而且它只有 15x62px。
     //   ⚠️ 它必须有 blur：它是贴在网格上的一个小条，不透的话是一块黑疙瘩。
     '#side-unfold',
+    // ⚠️ 拖宽度时的提示气泡（0.9.142）：**只在拖拽期间存在**（JS 建、松手删）
+    //   ⟹ 同屏最多 1 个，而且那期间用户在拖鼠标、不在跑摄像头推理。
+    //   ⚠️ 它必须能透出下面的内容 —— 那是"我拖到哪了"的参照。
+    '.side-grip-tip',
   ];
   const extra = users.filter((u) => !ALLOWED.includes(u));
   assert.deepStrictEqual(extra, [],
@@ -7667,9 +7671,23 @@ check('⚠️⚠️ 生成流程里的判定全是代码，模型不参与', () 
   // ⚠️ 而"真跑"必须在**落盘之后** —— 探针是加载磁盘上那个目录
   assert.ok(genBody.indexOf('writeWallpaperFiles(') < genBody.indexOf('probeWallpaperRuntime('),
     '试跑排在落盘之前 ⟹ 探针加载的是不存在的目录');
-  // ⚠️ 三轮没过也要落盘交给用户，不是丢掉
-  assert.match(genBody, /partial: true/,
-    '三轮没过就什么都不给 ⟹ 用户连"差在哪"都看不到');
+  // ⚠️⚠️⚠️ **这条守卫守的决定 0.9.142 翻了。**
+  //   0.9.141：三轮没过也落盘交给用户（`partial: true`），理由是"闸门是必然
+  //     出事的清单，剩下的可能只影响某个细节"。
+  //   0.9.142：**不搬进壁纸目录**。那个理由错了 —— 走到这里的 problems 是
+  //     **真跑之后**的判定（一帧没画 / WebGL 报错 / 画面全黑），那不是细节，
+  //     是这张壁纸放上去就是黑的。用户点开只会以为软件坏了。
+  //
+  // ⟹ 而**要守的东西没变**：失败不能是一句"失败了"，得能查。
+  //   ⟹ 改成守三件：① 报出还剩哪些问题 ② 产物留着且说清在哪 ③ 不进壁纸目录
+  assert.match(genBody, /problems\.map\(\(x\) => x\.id\)\.join/,
+    '三轮没过没报出"还剩哪些问题" ⟹ 用户连差在哪都看不到');
+  assert.match(genBody, /中间产物留在/,
+    '没告诉用户产物在哪 ⟹ 那等于直接丢了（想看也看不到模型写了什么）');
+  // ⚠️ 而**没过的那次不许出现 promoteFromStaging** —— 搬进去就等于生效了
+  const failTail = genBody.slice(genBody.indexOf('轮还有'));
+  assert.ok(!/promoteFromStaging/.test(failTail),
+    '三轮没过还是搬进了壁纸目录 ⟹ 用户点开是黑屏，而他会以为是软件坏了');
 });
 
 check('⚠️ 日志里的数字是算出来的，不是写死的', () => {
@@ -7828,6 +7846,161 @@ check('CSS 用变量吃宽度（不是每处写死 340）', () => {
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
   assert.match(dash, /setProperty\('--side-w'/,
     'JS 没通过 --side-w 改宽度 ⟹ 那就得逐个改元素的 style，必然漏');
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  AI 的工作区 + 把活拆成多次模型调用（0.9.142）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  AI 工作区 / 分步生成');
+
+check('⚠️⚠️ 中间产物写工作区，只有过闸门才搬进壁纸目录', () => {
+  // 用户 2026-08-02：「可以给 AI 自己一个工作区…他该在这写中间产物，
+  //   然后他认为 OK 了，到时候把那个完整壁纸搬到我们的壁纸目录下面让他生效」
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function aiStagingDir\(/, '没有工作区目录');
+  // ⚠️⚠️ 工作区**不能在壁纸目录下** —— 那个目录被扫（2 层深），
+  //   放里面的话工作区自己会被当成壁纸扫出来（点号开头也照样被扫到）
+  const sd = src.slice(src.indexOf('function aiStagingDir('),
+    src.indexOf('function ensureStagingDir('));
+  assert.match(sd, /getPath\('userData'\)/,
+    '工作区不在 userData 下 ⟹ 如果它在壁纸目录里，会被当成壁纸扫出来');
+  assert.ok(!/ourWallpaperDir|wallpaperDir/.test(sd),
+    '工作区建在壁纸目录里了 ⟹ 半成品会出现在壁纸墙上');
+
+  // ⚠️ 试跑必须跑**工作区**那份（不是壁纸目录）
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  assert.match(genBody, /probeWallpaperRuntime\(stageDir\)/,
+    '试跑的不是工作区那份 ⟹ 那意味着已经先落到壁纸目录了');
+  assert.match(genBody, /writeWallpaperFiles\(stageDir,/,
+    '落盘落到壁纸目录了 ⟹ 半成品会出现在壁纸墙上');
+  // ⚠️⚠️ 而"搬进去"必须在**闸门全过之后**
+  const promoteAt = genBody.indexOf('promoteFromStaging(');
+  const judgeAt = genBody.indexOf('Gen.judgeRuntime(probe)');
+  assert.ok(judgeAt > 0 && promoteAt > judgeAt,
+    '搬进壁纸目录排在真跑判定之前 ⟹ 没过闸门的也生效了');
+});
+
+check('搬运是原子的（rename），跨卷退回复制', () => {
+  const src = codeOnly(mainSrc);
+  // ⚠️⚠️⚠️ 反向验证逮住这条：我用的是**定长切片**（900 字），而
+  //   `promoteFromStaging` 只有 ~380 字 ⟹ 窗口跨进了紧跟着的
+  //   `importToOurDir`，**而那个函数也用 renameSync + EXDEV + cpSync**
+  //   ⟹ 把 promoteFromStaging 里的 renameSync 整个删掉，守卫照样绿。
+  //   ⟹ 判据：**切到函数真正的结尾**（下一个顶层 `function`），别选长度。
+  //     （这个项目为"定长切片漂过函数末尾"栽过，这是又一次。）
+  const from = src.indexOf('function promoteFromStaging(');
+  assert.ok(from > 0, '找不到 promoteFromStaging');
+  const after = src.indexOf('\nfunction ', from + 10);
+  const body = src.slice(from, after > 0 ? after : from + 900);
+  assert.ok(!body.includes('importToOurDir'),
+    '切片窗口跨到了下一个函数 ⟹ 断言会被那个函数的代码满足');
+  // ⚠️ rename 是原子的 ⟹ 壁纸墙不会扫到"写了一半"的目录
+  assert.match(body, /renameSync\(stageDir, finalDir\)/,
+    '不是用 renameSync 搬 ⟹ 壁纸墙可能扫到一个文件写了一半的目录');
+  // ⚠️ 而跨卷会 EXDEV（用户可能把壁纸目录设在外置盘）
+  assert.match(body, /EXDEV/,
+    '没兜 EXDEV ⟹ 壁纸目录在外置盘时搬运直接失败');
+  assert.match(body, /cpSync/, 'EXDEV 之后没有复制的退路');
+});
+
+check('工作区会自己清，但留最近几个（失败产物是唯一线索）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function pruneStaging\(keep\)/, '工作区不会清 ⟹ 几十张之后是几百 MB');
+  const ps = src.slice(src.indexOf('function pruneStaging('));
+  assert.match(ps.slice(0, 900), /slice\(keep\)/, '不是"保留最近 keep 个"的形状');
+  // ⚠️⚠️ 那个 rmSync 的作用域必须封闭 —— 只删 ai-staging 下面一层
+  assert.match(ps.slice(0, 900), /path\.join\(root, n\)/,
+    'rmSync 的路径不是 ai-staging 下面一层 ⟹ 那是危险操作');
+  assert.match(src, /pruneStaging\(\d+\)/, 'pruneStaging 定义了但没人调');
+});
+
+check('⚠️⚠️ 活拆成"设计 → 实现 → 修"三次调用', () => {
+  // 用户 2026-08-02：「一次有偷看上限，说明他一次干不下来这个活，
+  //   那我们都已经有骨架了，完全可以把这个活做拆分吗？多用几次模型就 OK 了呀」
+  const gen = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8'));
+  assert.match(gen, /function buildPlanPrompt\(/, '没有"设计"那一步的提示词');
+  assert.match(gen, /function buildImplementPrompt\(/, '没有"实现"那一步的提示词');
+
+  const src = codeOnly(mainSrc);
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  // ⚠️ 设计要排在实现之前（那是这次拆分的全部意义）
+  const planAt = genBody.indexOf('buildPlanPrompt');
+  const implAt = genBody.indexOf('buildImplementPrompt');
+  assert.ok(planAt > 0 && implAt > planAt,
+    '设计那一步没排在实现之前 ⟹ 那等于没拆');
+  // ⚠️⚠️ 设计的预算要**小** —— 它只输出文字，几百 token
+  //   （给大预算的话推理模型会长篇大论，那就回到"预算被烧光"了）
+  const planCall = genBody.slice(planAt, planAt + 700);
+  const m = planCall.match(/maxTokens: (\d+)/);
+  assert.ok(m, '设计那一步没显式给预算');
+  assert.ok(Number(m[1]) <= 8000,
+    `设计那一步预算 ${m[1]} 太大 ⟹ 推理模型会长篇大论，回到"预算烧光"`);
+
+  // ⚠️⚠️⚠️ **plan.md 要落在工作区里** —— 那是"它到底想了什么"唯一的线索，
+  //   也是区分"设计就跑偏了"和"设计对但代码写错了"的唯一依据
+  // ⚠️⚠️ 反向验证逮住这条：`plan.md` 在这个文件里出现**两次**
+  //   （写盘那句 + 紧跟的 logEvent 里那句）⟹ 把写盘删掉守卫照样绿。
+  //   ⟹ 判据：**关键词出现多次时，锚到"做那件事"的那一处。**
+  assert.match(genBody, /fs\.writeFileSync\(path\.join\(stageDir, 'plan\.md'\)/,
+    '设计的产物没真的写盘 ⟹ 失败时无从判断是设计跑偏还是代码写错');
+  // ⚠️ 而设计太短要早停 —— 别拿空规格书去写代码（那等于回到一次干两件事）
+  assert.match(genBody, /plan\.length < \d+/,
+    '没检查设计是不是空的 ⟹ 空规格书会让第二步退化成"自己重新设计"');
+});
+
+check('⚠️ 一次模型调用只有一份实现（心跳 + 想太多重试）', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /async function callModelWithHeartbeat\(/,
+    '模型调用没收口 ⟹ 三处调用点会各抄一份心跳和重试');
+  const calls = (src.match(/callModelWithHeartbeat\(/g) || []).length;
+  assert.ok(calls >= 3, `callModelWithHeartbeat 只出现 ${calls} 次（1 定义 + 至少 2 调用）`);
+  // ⚠️⚠️ 心跳必须在 finally 里清 —— 漏清的话面板上秒数永远在涨而实际早已失败
+  // ⚠️⚠️⚠️ 反向验证逮住这条：我的切片在第一个 `\n}\n` 停下 ——
+  //   而那**正好是 finally 块的收尾**（`  }` 缩进两格，不匹配 `\n}\n`）…
+  //   实际问题更简单：`{0,200}` 的窗口跨过了 finally 里的内容，
+  //   把 `clearInterval(tick)` 删掉之后 `} finally {` 后面 200 字内
+  //   还有别的东西能让整条正则失配 —— 但它失配的方式是"整条不匹配"，
+  //   而我期望的报错信息对不上（守卫报的是别的）。
+  //   ⟹ 判据：**分成两条断言**（"有 finally" + "finally 里清了"），
+  //     一条正则跨多件事时失败信息说不清是哪件。
+  const fn = src.slice(src.indexOf('async function callModelWithHeartbeat('));
+  const stop = fn.indexOf('\nipcMain');
+  const body = fn.slice(0, stop > 0 ? stop : 2500);
+  assert.match(body, /\} finally \{/, 'callModelWithHeartbeat 里没有 finally 块');
+  const fin = body.slice(body.indexOf('} finally {'));
+  assert.match(fin, /clearInterval\(tick\)/,
+    '心跳不是在 finally 里清 ⟹ 抛异常时它会一直跳（那比没有进度更糟：它在说谎）');
+});
+
+check('⚠️ 骨架的闸门只拦"会打架/会坏"，写明了允许什么', () => {
+  // 用户 2026-08-02：「我给你的骨架仅仅是说一种想要在有限空间内高质量的
+  //   一种手段，本质上我们其实还是 agent，不要太死板了」
+  const gen = fs.readFileSync(path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8');
+  // ⚠️ 这条**故意读带注释的原文** —— 它守的就是那段注释在不在
+  //   （那是"以后别把这些加进闸门"的唯一记录）
+  assert.match(gen, /而下面这些是"允许的"/,
+    '闸门表旁边没有"允许清单" ⟹ 下一个人会把"换灯光""改底色"当成违规加进去');
+  for (const allowed of ['defaultLights', 'scene.fog', 'Math.random']) {
+    assert.ok(gen.includes(allowed),
+      `允许清单里没提到 ${allowed} ⟹ 那是最容易被误当成违规的一类`);
+  }
+  // ⚠️ 而闸门表里**不许**真的出现这些
+  const table = gen.slice(gen.indexOf('const FORBIDDEN = ['));
+  const forbidden = table.slice(0, table.indexOf('\n  ];'));
+  for (const [what, why] of [
+    ['defaultLights', '换整套打光是设计，不是违规'],
+    ['scene.fog', '改雾是设计（0.9.138 锁死它导致每张都像）'],
+    ['Math.random', '粒子诞生位置就该随机（F 闸门为此误报三轮）'],
+    ['setTimeout', '一次性延迟不是画帧'],
+  ]) {
+    assert.ok(!forbidden.includes(what),
+      `闸门表里拦了 ${what} —— ${why}`);
+  }
 });
 
 

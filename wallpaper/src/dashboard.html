@@ -430,6 +430,62 @@
      ⚠️ `:has()` 在 Electron 43（Chromium 130+）是稳定的 —— 不是实验特性。
      ⚠️ 加过渡：面板出现/消失时网格宽度是渐变的，那样不会"跳一下"。 */
   .split:has(> .pane-side[hidden]) { grid-template-columns: 1fr; }
+  /* ⚠️⚠️⚠️ **可拖拽的分割线**（0.9.142）。用户 2026-08-02：
+     「右栏拉宽这个功能应该是传统的话，就是他不是有一条数字的分割线吗？
+       应该是我鼠标点到这儿，然后自由的只是说他会自动挡一档两档那样，
+       你现在这个做法太呆了，我就点那个按钮」
+
+     ⟹ 0.9.141 是两个 `‹ ›` 按钮 —— 那是**把连续的操作离散化成点击**，
+       而"改宽度"这件事的天然手势是拖。
+     ⟹ 判据：**别把手势型操作做成按钮。** 一档一档是**结果**（吸附），
+       不该是交互方式。
+
+     ⚠️ 命中区比看得见的线宽 —— 一条 1px 的线鼠标抓不住。
+       ⟹ 6px 的透明命中区，视觉上只有中间那 1px（`::after`）。
+     ⚠️ `cursor: col-resize` 是唯一能让用户知道"这儿能拖"的提示。 */
+  .side-grip {
+    position: absolute; top: 0; bottom: 0;
+    /* ⚠️ 定位在右栅的左边缘上：右栅宽 var(--side-w) ⟹ 从右边缘往左量。
+       ⚠️ 用 `right` 而不是 `left` —— 那样它跟着宽度走，不用 JS 同步位置。 */
+    right: var(--side-w, 340px);
+    width: 9px; margin-right: -4px;
+    cursor: col-resize; z-index: 6;
+    /* ⚠️ 收起时把手要消失（那时候没有边界可拖） */
+    background: none; border: none; padding: 0;
+  }
+  .split:has(> .pane-side[hidden]) .side-grip { display: none; }
+  .side-grip::after {
+    content: ''; position: absolute;
+    left: 4px; top: 0; bottom: 0; width: 1px;
+    background: var(--line);
+    transition: background .15s ease, box-shadow .15s ease;
+  }
+  /* ⚠️ hover / 拖拽中要**明显**变色 —— 否则用户不确定自己抓到了没有 */
+  .side-grip:hover::after { background: var(--accent); }
+  .side-grip.dragging::after {
+    background: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  /* ⚠️⚠️ 拖拽时 `.split` 不能有过渡 —— 那条 `transition: grid-template-columns`
+     会让宽度**追着鼠标慢慢走**（拖起来像有橡皮筋，而且松手后还在动）。
+     ⟹ 拖拽期间关掉它，松手（吸附）时再开回来 —— 那样吸附是有动画的，
+       而跟手的部分是即时的。⚠️ 这两件事要的正好相反，所以必须分开。 */
+  .split.dragging { transition: none; }
+  /* ⚠️ 拖拽时禁掉全局选中 —— 否则横向拖会把面板上的文字全选蓝 */
+  body.col-resizing { user-select: none; cursor: col-resize; }
+
+  /* ⚠️ 拖拽时显示当前宽度和会吸附到哪一档 —— 那是"一档一档"这件事
+     唯一能被看见的地方（不显示的话吸附看起来像"我没拖准"）。 */
+  .side-grip-tip {
+    position: absolute; top: 12px; right: 14px;
+    padding: 4px 9px; border-radius: var(--r-sm);
+    background: var(--glass-panel); backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--line);
+    font: 500 11px/1 ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--text); pointer-events: none; z-index: 7;
+  }
+
   .split { transition: grid-template-columns .22s ease; }
   /* ⚠️⚠️ **`height: 100%` 是必须的**（0.9.56 补的）。用户报「手势录制这个界面
      不能滑动了」。
@@ -947,17 +1003,7 @@
   .side-head b { flex: 1; font-size: 13px; }
   /* ⚠️⚠️ 收起按钮（0.9.129）：一个 CSS 画的右向箭头（"往右边收"）。
      ⚠️ 不用 `›` 那个字符 —— 它在不同字体里粗细差别很大（和 ✕ 那次同一个理由）。 */
-  /* ⚠️⚠️ **加宽/变窄**（0.9.141）：一档一档，不是连续拖。
-     用户："我们不能很精细，因为我们预览图片是有尺寸的吗？所以说我们这边
-     就是一档一档的" ⟹ 点一下换一档。
-     ⚠️ 而**窗口太窄时那一档要禁用**（不是隐藏）—— 禁用能解释"为什么点不了"，
-       隐藏会让人以为功能没了。 */
-  .side-step {
-    position: relative; width: 22px; height: 22px; padding: 0; flex: none;
-    font: 400 15px/1 ui-monospace, monospace;
-  }
-  .side-step:disabled { opacity: .25; cursor: default; }
-  .side-fold { position: relative; width: 24px; height: 22px; padding: 0; flex: none; }
+    .side-fold { position: relative; width: 24px; height: 22px; padding: 0; flex: none; }
   .side-fold::before {
     content: ''; position: absolute; left: 45%; top: 50%;
     width: 6px; height: 6px;
@@ -1082,7 +1128,14 @@
      ⟹ 竖排之后输入框拿到全宽，而按钮通栏在这里是**对的** ——
        它是这一栅唯一的主操作（对比：那个被我放进 `.bar-row` 的入口按钮
        是被网格拉满的，那才是 bug）。 */
-  #ai-input-row { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+  /* ⚠️⚠️ `flex-shrink: 0` + 在 flex 列末尾 ⟹ **它永远在最下面、不被压扁**。
+     ⚠️ 少了 `flex-shrink: 0` 的话：对话流长起来之后 flex 会去压它
+       （textarea 有最小内容高度，但 padding 和按钮会被压）⟹ 输入区越来越薄。
+     ⚠️ 而 `margin-bottom` 换成 `margin-top` —— 它现在贴底，上面才需要留缝。 */
+  #ai-input-row {
+    display: flex; flex-direction: column; gap: 7px;
+    margin-top: 10px; flex-shrink: 0;
+  }
   /* 预览图：16:10，和壁纸卡片一致 */
   #ai-preview {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
@@ -1366,6 +1419,10 @@
          ⚠️ `<h2>我的壁纸</h2>` 撤了 —— tab 条上已经写着「我的壁纸」，
             页面里再写一遍是重复（而这个布局里纵向空间要留给网格）。 -->
     <div class="split">
+      <!-- ⚠️⚠️ 拖拽改宽度的把手（0.9.142）—— 松手吸附到最近一档。
+           ⚠️ 放在 `.split` 里而不是 `.pane-side` 里：收起面板时那一块会被
+             `hidden` 藏掉，把手在里面会跟着消失（和展开把手同一个坑）。 -->
+      <button class="side-grip" type="button" aria-label="拖动改变右栏宽度"></button>
       <div class="pane-grid">
         <!-- 轮播摘要行（0.9.49）：整行可点 → 弹窗。放网格上面 ——
              它管的是"这些壁纸怎么放"，而网格是"有哪些壁纸"。 -->
@@ -1473,11 +1530,6 @@
                    而收起来的价值很实在：网格从两列变三四列，壁纸墙一眼看到更多。
                  ⟹ 两个 body 各放一个，都调同一个 `sideCollapse()`。
                  ⚠️ 用 `‹` 那个方向：它指向"往右边收"。 -->
-            <!-- ⚠️ 分档：窄 ‹ / 宽 ›（0.9.141）。窗口不够宽时"宽"会被禁用。 -->
-            <button class="act ghost side-step" id="side-narrow-params" type="button"
-                    title="窄一档">‹</button>
-            <button class="act ghost side-step" id="side-wide-params" type="button"
-                    title="宽一档（窗口太窄时不可用）">›</button>
             <button class="act ghost side-fold" id="side-fold-params" type="button"
                     title="收起这一栏（网格铺满全宽）"></button>
           </div>
@@ -1501,11 +1553,6 @@
             <b>AI 壁纸工坊</b>
             <button class="act ghost" id="ai-close" type="button"
                     title="回到壁纸参数（Esc）">返回参数</button>
-            <!-- ⚠️ 分档：窄 ‹ / 宽 ›（0.9.141）。窗口不够宽时"宽"会被禁用。 -->
-            <button class="act ghost side-step" id="side-narrow-ai" type="button"
-                    title="窄一档">‹</button>
-            <button class="act ghost side-step" id="side-wide-ai" type="button"
-                    title="宽一档（窗口太窄时不可用）">›</button>
             <button class="act ghost side-fold" id="side-fold-ai" type="button"
                     title="收起这一栏（网格铺满全宽）"></button>
           </div>
@@ -1527,18 +1574,6 @@
             <p class="hint" id="ai-key-hint"></p>
           </details>
 
-          <!-- ⚠️⚠️ **输入在最上面**（0.9.141）。用户 2026-08-02：
-               「我跟你说一句话你给过我…第一要义就是我稳定生成高质量的壁纸」
-               ⟹ 这一栅的主线就是"说一句 → 拿一张"，别的都是它的附属
-               ⟹ 输入框和按钮**在最显眼的位置**，进度和读数在下面。
-               ⚠️ 而砍掉的东西（实时预览 / 多版本回退 / 中途改）用户点名说
-                 "听着就很麻烦，容易出 bug" —— 见 MODULES.md 那段判据。 -->
-          <div id="ai-input-row">
-            <textarea id="ai-want" rows="3"
-                      placeholder="想要什么效果？&#10;例：随音乐起伏的立体结构、低频涟漪"></textarea>
-            <button class="act primary full" id="ai-go" type="button">生成壁纸</button>
-          </div>
-
           <!-- ⚠️ 预览图：生成完在隐藏窗口截一帧（**不动桌面上正在放的壁纸**）。
                ⚠️ 一直占位（不是生成完才出现）—— 否则每次生成界面会跳一下。 -->
           <img id="ai-preview" alt="" hidden>
@@ -1557,6 +1592,21 @@
           <div id="ai-log"></div>
 
           <button class="act primary full" id="ai-use" type="button" hidden>用这张</button>
+
+          <!-- ⚠️⚠️⚠️ **输入区在最下面**（0.9.142）。用户 2026-08-02：
+               「我看你这个输入框怎么在那个显示对话的这块的上面」
+               ⟹ 0.9.141 我把它放在最上面，理由是"主线操作要最显眼" ——
+                 而那个理由**忽略了它长得像什么**：这一栅是一条对话流，
+                 而所有聊天软件的输入框都在下面。
+               ⟹ 判据：**符合这个形态的既有习惯，比我推导的"重要性排序"更重要。**
+                 输入框在上面时，用户打完字眼睛要往下找回复，再往上打下一句。
+               ⚠️ 而它**不跟着对话流滚动**（`flex-shrink: 0` + 在 flex 列的末尾）
+                 ⟹ 对话再长输入框都在原位。 -->
+          <div id="ai-input-row">
+            <textarea id="ai-want" rows="3"
+                      placeholder="想要什么效果？&#10;例：随音乐起伏的立体结构、低频涟漪"></textarea>
+            <button class="act primary full" id="ai-go" type="button">生成壁纸</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1571,6 +1621,10 @@
 
          ⚠️ `<h2>Steam 创意工坊</h2>` 撤了 —— tab 条上已经写着「创意工坊」。 -->
     <div class="split">
+      <!-- ⚠️⚠️ 拖拽改宽度的把手（0.9.142）—— 松手吸附到最近一档。
+           ⚠️ 放在 `.split` 里而不是 `.pane-side` 里：收起面板时那一块会被
+             `hidden` 藏掉，把手在里面会跟着消失（和展开把手同一个坑）。 -->
+      <button class="side-grip" type="button" aria-label="拖动改变右栏宽度"></button>
       <div class="pane-grid">
         <!-- 仿 Steam 创意工坊：搜索框 + 排序 + 三组筛选 + 网格 + 分页。
              ⚠️ 有些类型我们暂不支持（scene / application），但**预览图照样能看** ——

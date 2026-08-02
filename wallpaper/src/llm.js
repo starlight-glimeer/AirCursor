@@ -99,17 +99,34 @@ function buildRequest(cfg, messages, options) {
   // ⚠️ 用户很可能把末尾斜杠带上（复制粘贴的常态）⟹ 拼出 `//chat/completions`。
   //   有的网关容忍，有的返回 404 ⟹ 而 404 看起来像"地址填错了"。⟹ 剥掉。
   const base = String(cfg.baseUrl).replace(/\/+$/, '');
+  const payload = {
+    model: cfg.model,
+    max_tokens: maxTokens,
+    messages,
+  };
+
+  // ⚠️⚠️⚠️ **推理模型会把整个预算烧在思考上**（用户 2026-08-02 实测：
+  //   69,841 字 reasoning_content、正文一个字没写、finish_reason=length）。
+  //   ⟹ 而这不是"预算太小"，是**这类模型不适合一次吐上千行代码**：
+  //     预算调到多大它都可能想到那么大。
+  //
+  // ⟹ 所以对 OpenAI 兼容端点带上"少想"的信号。⚠️ 各家字段名不统一，
+  //   而**多带一个不认识的字段绝大多数网关会忽略**（不是 400）⟹ 都带上：
+  //     · `reasoning_effort`（OpenAI o 系列 / DeepSeek / 多数兼容网关）
+  //     · `thinking: { type: 'disabled' }`（Anthropic 风格漏到兼容端点上的那些）
+  //   ⚠️ 判据：**"让它别想那么多"比"把预算调大"可靠** ——
+  //     后者是赌它想得比新预算少，而前者是直接掐掉那个阶段。
+  if (opts.lessThinking) {
+    payload.reasoning_effort = 'low';
+    payload.thinking = { type: 'disabled' };
+  }
   return {
     url: `${base}/chat/completions`,
     headers: {
       Authorization: `Bearer ${cfg.apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: cfg.model,
-      max_tokens: maxTokens,
-      messages,
-    }),
+    body: JSON.stringify(payload),
   };
 }
 
@@ -184,7 +201,16 @@ function parseResponse(provider, data) {
     if (usage.completion_tokens !== undefined) {
       parts.push(`\ntoken：输入 ${usage.prompt_tokens ?? '?'}、输出 ${usage.completion_tokens}`);
     }
-    throw new Error(parts.join(''));
+    const err = new Error(parts.join(''));
+    // ⚠️⚠️ **把"这次为什么空"变成上层能判断的字段**，而不只是一句人话。
+    //   我第一版只给了报错文字 ⟹ 上层只能放弃、让用户自己去换模型，
+    //   而那是把唯一一条能自动救回来的路堵死了。
+    //   ⟹ 判据：**报错要既能给人看、又能给代码看。**
+    err.emptyBody = true;
+    err.burnedOnThinking = !!reasoning;   // 思考烧光了 ⟹ 重试时要求它少想
+    err.reasoningChars = reasoning.length;
+    err.finish = finish;
+    throw err;
   }
   return { text, stopReason: finish };
 }
@@ -270,8 +296,11 @@ async function chat(cfg, messages, options) {
   //   截断的 HTML 一定跑不起来（标签没闭合 / 函数没写完），
   //   而症状是白屏 ⟹ 如果这里不说，用户会去查"为什么壁纸是白的"。
   if (out.stopReason === 'max_tokens' || out.stopReason === 'length') {
-    throw new Error('生成被长度上限截断了 —— 产物不完整（跑起来会白屏）。'
+    const err = new Error('生成被长度上限截断了 —— 产物不完整（跑起来会白屏）。'
       + '把描述写简单点，或者调高 max_tokens');
+    // ⚠️ 同上：截断也是"重试有可能救回来"的一种（少想 / 提高预算）
+    err.truncated = true;
+    throw err;
   }
   return out;
 }

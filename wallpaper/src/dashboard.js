@@ -3428,68 +3428,153 @@ function sideExpand() {
 //   ⚠️ 同样是模块级变量：实现在下面那个 try 块里，而 renderMineDirs 在它之前。
 let aiRefreshWorkdir = null;
 
-// ⚠️⚠️⚠️ **右栅宽度分档**（0.9.141）。用户 2026-08-02：
-//   「可以左拉右拉…我们不能很精细，因为我们预览图片是有尺寸的吗？
-//     所以说我们这边就是一档一档的，然后也设置一个壁纸的最小容量宽度」
+// ⚠️⚠️⚠️ **右栅宽度：拖拽 + 松手吸附到一档**（0.9.142）。用户 2026-08-02：
+//   「右栏拉宽这个功能应该是传统的话，就是他不是有一条数字的分割线吗？
+//     应该是我鼠标点到这儿，然后自由的只是说他会自动挡一档两档那样，
+//     你现在这个做法太呆了，我就点那个按钮」
 //
-// ⚠️ 挡位**不是固定三个**，是"当前窗口宽度允许的那几个" ——
-//   900px 窗口下右栅 580 会让壁纸区只剩 280px（一列）⟹ 壁纸墙失去意义。
-//   ⟹ 判据：**约束是"壁纸区不能太窄"，挡位是那个约束的结果**。
-//     写死三个按钮的话小窗口上会有一个点不动的按钮（那比没有更糟）。
+// ⚠️ 0.9.141 是两个 `‹ ›` 按钮 —— 那是**把连续的操作离散化成点击**，
+//   而"改宽度"这件事的天然手势是拖。
+//   ⟹ 判据：**一档一档是结果（吸附），不该是交互方式。**
+//
+// ⚠️ 而"一档一档"的原因没变（用户 0.9.141 说的）：预览图有固定尺寸，
+//   无级宽度会让卡片一直停在半格状态。
+//   ⟹ 所以是**跟手拖 + 松手吸附**：拖的时候是连续的（跟手），落点是离散的。
 let sideSteps = [340, 460, 580];
 let gridMin = 460;
 let sideWidth = 340;
 
 // 当前窗口宽度下，哪些挡位是允许的
+// ⚠️ 挡位**不是固定三个**，是"当前窗口宽度允许的那几个" ——
+//   900px 窗口下右栅 580 会让壁纸区只剩 280px（一列）⟹ 壁纸墙失去意义。
+//   ⟹ 判据：**约束是"壁纸区不能太窄"，挡位是那个约束的结果**。
 function allowedSteps() {
   // ⚠️ 40 是 .pane-grid 的左右内边距（20+20）—— 那部分不算"能放卡片的宽度"
   const win = window.innerWidth;
-  return sideSteps.filter((w) => win - w - 40 >= gridMin);
+  const ok = sideSteps.filter((w) => win - w - 40 >= gridMin);
+  // ⚠️⚠️ **至少留一档** —— 窗口小到连最窄那档都不允许时，返回空数组会让
+  //   拖拽算不出任何落点（`Math.min(...[])` 是 Infinity）⟹ 宽度变成 NaN。
+  //   ⟹ 那种情况下就用最窄的那档（壁纸区挤一点，总比布局崩了好）。
+  return ok.length ? ok : [sideSteps[0]];
+}
+
+// ⚠️ 拖到某个像素宽度 ⟹ 吸附到最近的**允许**挡位
+function snapWidth(px) {
+  const allowed = allowedSteps();
+  let best = allowed[0];
+  let bestD = Infinity;
+  for (const w of allowed) {
+    const d = Math.abs(w - px);
+    if (d < bestD) { bestD = d; best = w; }
+  }
+  return best;
 }
 
 function applySideWidth(w) {
   const allowed = allowedSteps();
   // ⚠️⚠️ **窗口变窄时自动退回** —— 存的那一档可能已经不合法了
   //   （用户在大窗口选了 580，然后把窗口拖小）。
-  //   ⟹ 取允许里最接近的、且不超过它的那一档；一个都不允许就用最窄的。
-  const use = allowed.includes(w) ? w : (allowed[allowed.length - 1] || sideSteps[0]);
+  const use = allowed.includes(w) ? w : allowed[allowed.length - 1];
   sideWidth = use;
   document.documentElement.style.setProperty('--side-w', `${use}px`);
-  renderSideSteps();
   return use;
 }
 
-// ⚠️ 按钮的可用状态要跟着窗口走 —— 而"禁用"比"隐藏"好：
-//   禁用能解释"为什么点不了"，隐藏会让人以为功能没了。
-function renderSideSteps() {
-  const allowed = allowedSteps();
-  const i = sideSteps.indexOf(sideWidth);
-  for (const suffix of ['params', 'ai']) {
-    const narrow = document.getElementById(`side-narrow-${suffix}`);
-    const wide = document.getElementById(`side-wide-${suffix}`);
-    if (narrow) narrow.disabled = i <= 0;
-    if (wide) {
-      const next = sideSteps[i + 1];
-      wide.disabled = !next || !allowed.includes(next);
-      wide.title = wide.disabled
-        ? (next ? `窗口太窄：再宽一档壁纸区就只剩不到 ${gridMin}px 了` : '已经是最宽的一档')
-        : '宽一档';
-    }
-  }
-}
+// ═══════════════════════════════════════════════════════════════════════════
+//  拖拽
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️⚠️ 用 **pointer 事件 + setPointerCapture**，不是 mousedown/mousemove：
+//   捕获之后即使鼠标移出把手（拖得快时必然会）事件也照样送到它身上
+//   ⟹ 不用往 document 上挂全局监听、也不会"拖丢"。
+//   ⚠️ 这个项目为"拖拽必须看 e.buttons"栽过（壁纸层那次）—— 而 pointer capture
+//     从根上避开那类问题。
+function bindSideGrips() {
+  const grips = document.querySelectorAll('.side-grip');
+  if (!grips.length) return 0;
+  for (const grip of grips) {
+    let dragging = false;
+    let tip = null;
+    const split = grip.closest('.split');
 
-async function stepSideWidth(delta) {
-  const i = sideSteps.indexOf(sideWidth);
-  const next = sideSteps[i + delta];
-  if (next === undefined) return;
-  if (delta > 0 && !allowedSteps().includes(next)) return;
-  applySideWidth(next);
-  // ⚠️ 存进 config（真偏好，下次打开要记住）
-  if (window.gw.weSetSideWidth) await window.gw.weSetSideWidth(next);
+    grip.addEventListener('pointerdown', (e) => {
+      // ⚠️ 只响应左键 —— 右键拖会和上下文菜单打架
+      if (e.button !== 0) return;
+      dragging = true;
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add('dragging');
+      // ⚠️⚠️ 拖拽期间关掉宽度过渡 —— 那条 transition 会让宽度追着鼠标
+      //   慢慢走（像有橡皮筋，松手后还在动）。见 dashboard.html 那段注释。
+      if (split) split.classList.add('dragging');
+      document.body.classList.add('col-resizing');
+      // 提示气泡：当前宽度 + 会吸附到哪档
+      tip = document.createElement('div');
+      tip.className = 'side-grip-tip';
+      if (split) split.appendChild(tip);
+      e.preventDefault();
+    });
+
+    grip.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      // ⚠️ 宽度 = 窗口右边缘到鼠标的距离（右栅贴在右边）
+      const raw = Math.round(window.innerWidth - e.clientX);
+      const allowed = allowedSteps();
+      // ⚠️ 夹在允许范围内 ⟹ 拖过头不会看到一个不可能的数字
+      const clamped = Math.max(allowed[0], Math.min(allowed[allowed.length - 1], raw));
+      // ⚠️⚠️ 拖动中用**真实像素**（跟手），不是吸附值 ——
+      //   拖的时候就吸附的话手感是"一格一格顿"，那正是用户说"太呆了"的那种。
+      document.documentElement.style.setProperty('--side-w', `${clamped}px`);
+      const target = snapWidth(clamped);
+      if (tip) tip.textContent = `${clamped}px → 吸附 ${target}`;
+    });
+
+    // ⚠️⚠️ `pointerup` 和 `pointercancel` **两个都要** ——
+    //   拖拽过程中窗口失焦 / 触发系统手势时只有 cancel，
+    //   漏了它的话会卡在"永远在拖"的状态（body 的 user-select 也解不开）。
+    const finish = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      grip.classList.remove('dragging');
+      if (split) split.classList.remove('dragging');
+      document.body.classList.remove('col-resizing');
+      if (tip) { tip.remove(); tip = null; }
+      try { grip.releasePointerCapture(e.pointerId); } catch { /* 已经释放了 */ }
+      // ── 吸附
+      const raw = Math.round(window.innerWidth - e.clientX);
+      const use = applySideWidth(snapWidth(raw));
+      // ⚠️ 存进 config（真偏好，下次打开要记住）。⚠️ 收起状态不存（那是临时动作）。
+      if (window.gw.weSetSideWidth) window.gw.weSetSideWidth(use);
+    };
+    grip.addEventListener('pointerup', finish);
+    grip.addEventListener('pointercancel', finish);
+
+    // ⚠️⚠️ **双击 = 在允许的挡位间循环**（0.9.142）——
+    //   那是给"不想拖"的人留的路（也是键盘/触控板不方便拖时的出路）。
+    //   ⚠️ 而它不是主交互 ⟹ 不占界面位置。
+    grip.addEventListener('dblclick', () => {
+      const allowed = allowedSteps();
+      const i = allowed.indexOf(sideWidth);
+      const use = applySideWidth(allowed[(i + 1) % allowed.length]);
+      if (window.gw.weSetSideWidth) window.gw.weSetSideWidth(use);
+    });
+  }
+  return grips.length;
 }
 
 // ⚠️ 窗口尺寸变了要重算 —— 否则拖小窗口之后右栅还是 580，壁纸区被挤成一列
 window.addEventListener('resize', () => applySideWidth(sideWidth));
+
+// ⚠️⚠️⚠️ **在这里就调用它**（不是"以后某个初始化里"）。
+//   这个项目为"注册成功但功能是死的"栽过七次，而形状每次都一样：
+//   写了一个 bind 函数，然后没有任何地方调它 —— 而那不报错。
+//   ⟹ 判据：**绑定函数写完立刻调，别隔着一段距离。**
+//   ⚠️ 而把手是 HTML 里静态存在的（不是 JS 建的）⟹ 这里一定找得到。
+const gripsBound = bindSideGrips();
+if (!gripsBound) {
+  // ⚠️ 一个都没绑上是**结构问题**（HTML 里的 .side-grip 被删了/改名了）
+  //   ⟹ 那时拖拽功能整个不存在，而界面上看不出来 ⟹ 必须吵。
+  console.warn('[side] 一个 .side-grip 都没找到，拖拽改宽度不可用');
+}
 
 let aiCloseWorkshop = null;
 // ⚠️ 打开入口同理 —— 网格里那张「新建」卡片是 renderMine 建的，
@@ -4244,11 +4329,6 @@ if (aiEl('ai-from-params')) aiEl('ai-from-params').onclick = () => aiOpenWorksho
 //   ⚠️ 两个"收起"分别在两个 body 里，但调的是**同一个函数** ——
 //     那保证了两种模式下的行为一致（而各写一份最容易走偏）。
 // ⚠️ 分档按钮：两个 body 各一对，调**同一个函数**（各写一份必然走偏）
-for (const [id, delta] of [['side-narrow-params', -1], ['side-wide-params', 1],
-  ['side-narrow-ai', -1], ['side-wide-ai', 1]]) {
-  const btn = document.getElementById(id);
-  if (btn) btn.onclick = () => stepSideWidth(delta);
-}
 
 for (const id of ['side-fold-params', 'side-fold-ai']) {
   const btn = document.getElementById(id);

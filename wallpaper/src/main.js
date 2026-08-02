@@ -3278,6 +3278,70 @@ function ourWallpaperDir() {
   return defaultWallpaperDir();
 }
 
+// ⚠️⚠️⚠️ **AI 自己的工作区**（0.9.142）。用户 2026-08-02：
+//   「其实可以给 AI 自己一个工作区…他该在这写中间产物，然后他认为 OK 了，
+//     到时候把那个完整壁纸搬到我们的壁纸目录下面让他生效就行」
+//
+// ⚠️ 而这**同时修掉一个真问题**：0.9.140-141 是**先落盘到壁纸目录再试跑**
+//   ⟹ 三轮都没过的半成品会直接出现在壁纸墙上（partial 那条路），
+//     而用户点开它看到的是白屏或者报错框。
+//   ⟹ 判据：**"在做"和"能用"要在物理上分开**，不是靠一个字段标记。
+//     一个 `partial: true` 字段拦不住用户点它，而不在那个目录里就点不到。
+//
+// ⚠️ 放在 userData 下而不是壁纸目录下 —— 壁纸目录被扫（2 层深），
+//   放里面的话暖场区自己会被当成壁纸扫出来。
+//   ⚠️ 我第一版想做成 `Wallpapers/.staging/`，而**点号开头也照样被扫到**
+//     （扫描不跳隐藏目录）⟹ 那是"看起来隔离了"而实际没有。
+function aiStagingDir() {
+  return path.join(app.getPath('userData'), 'ai-staging');
+}
+
+// ⚠️ 每次生成一个独立子目录 ⟹ 中间产物不互相覆盖，失败的那次留着能查。
+function ensureStagingDir(name) {
+  const dir = path.join(aiStagingDir(), name);
+  fs.mkdirSync(path.join(dir, 'vendor'), { recursive: true });
+  return dir;
+}
+
+// ⚠️⚠️ 暖场区要自己清 —— 否则每生成一张留一份，几十张之后是几百 MB。
+//   ⚠️ 而**保留最近几个** ：失败那次的中间产物是唯一能回看"模型写了什么"的东西。
+function pruneStaging(keep) {
+  const root = aiStagingDir();
+  let names = [];
+  try { names = fs.readdirSync(root); } catch { return 0; }
+  const withTime = names.map((n) => {
+    let t = 0;
+    try { t = fs.statSync(path.join(root, n)).mtimeMs; } catch { /* 用 0 */ }
+    return { n, t };
+  }).sort((a, b) => b.t - a.t);
+  let removed = 0;
+  for (const { n } of withTime.slice(keep)) {
+    // ⚠️⚠️ 只删 `ai-staging/` 下面一层 —— 路径是我们自己拼的（userData + 固定名 + readdir 的名字），
+    //   不接受任何外部输入 ⟹ 这个 rmSync 的作用域是封闭的。
+    try { fs.rmSync(path.join(root, n), { recursive: true, force: true }); removed += 1; }
+    catch { /* 删不掉就算了，下次再试 */ }
+  }
+  return removed;
+}
+
+// ⚠️⚠️⚠️ **搬进壁纸目录 —— 这一步才让壁纸"生效"。**
+//   只有过了全部闸门（静态检查 + 真跑 3 秒）才会走到这里。
+//
+// ⚠️ 用 `renameSync` 而不是复制：那是**原子**的 ⟹ 壁纸墙不会扫到一个
+//   "文件写了一半"的目录。⚠️ 而跨卷会 EXDEV（userData 和 Documents 通常同卷，
+//   但用户可能把壁纸目录设在外置盘）⟹ 退回复制 + 删源。
+function promoteFromStaging(stageDir, finalDir) {
+  try {
+    fs.renameSync(stageDir, finalDir);
+    return { moved: true, method: 'rename' };
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error;
+    fs.cpSync(stageDir, finalDir, { recursive: true });
+    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* 留着也无害 */ }
+    return { moved: true, method: 'copy（跨卷）' };
+  }
+}
+
 // 首次启动时建出来 + 放一个说明文件。
 //
 // ⚠️ 空目录对用户是没有信息的 —— 他不知道往里放什么、什么格式认得出来。
@@ -4074,6 +4138,59 @@ async function savePreview(dir) {
   }
 }
 
+// 一次模型调用：带进度心跳 + "想太多"自动重试。
+//
+// ⚠️⚠️ 抽成函数是因为现在有**三处**要它（设计 / 实现 / 修）——
+//   我第一版把这段内联在循环里，而加了"设计"那一步之后就得抄第二份。
+//   ⟹ 判据：**第二个调用点出现时就抽出来**，别等第三个。
+//
+// ⚠️ `label` 是进度上显示的名字 —— 用户要能看出"现在在哪一步"
+//   （用户 2026-08-02：「不知道他是卡在这儿了，还是正在正常运行中」）。
+async function callModelWithHeartbeat(ai, prompt, label, opts) {
+  const o = opts || {};
+  // ⚠️⚠️ **秒数在走 = 它活着**。一个不动的"正在写场景…"和卡死长得一模一样。
+  //   ⚠️ 3 秒一跳而不是每秒 —— 每秒会把事件环刷满，而"它活着"3 秒粒度够了。
+  let waited = 0;
+  const tick = setInterval(() => {
+    waited += 3;
+    genProgress(label, `已等 ${waited} 秒`
+      + (o.hint ? `（${o.hint}）` : ''));
+  }, 3000);
+  const t0 = Date.now();
+  try {
+    let out;
+    try {
+      out = await LLM.chat(ai, [{ role: 'user', content: prompt }],
+        { maxTokens: o.maxTokens || 24000, timeoutMs: o.timeoutMs });
+    } catch (error) {
+      // ⚠️⚠️⚠️ **推理模型会把整个预算烧在思考上**（用户 2026-08-02 实测：
+      //   69,841 字 reasoning_content、正文一个字没写、finish_reason=length）。
+      //   我第一版的反应是"报错说清楚，让用户换模型" —— 而那**把唯一一条
+      //   能自动救回来的路堵死了**：用户手上可能只有这一个 key。
+      //   ⟹ 判据：**能自己救的失败不要转给用户。** 报错说得再清楚，
+      //     也不如它自己成功。
+      // ⚠️ 而**只重试这一种失败** —— 401/403/网络不通重试一百次也一样。
+      if (!error.emptyBody && !error.truncated) throw error;
+      const why = error.burnedOnThinking
+        ? `思考烧了 ${error.reasoningChars} 字，正文没开始写`
+        : '被长度上限截断';
+      genProgress('模型想太多，让它少想再来一次', why);
+      logEvent('gen', `重试（${label}）：${why} ⟹ 带 reasoning_effort=low 重发`);
+      waited = 0;
+      out = await LLM.chat(ai, [{ role: 'user', content: prompt }],
+        { maxTokens: o.maxTokens || 24000, lessThinking: true, timeoutMs: o.timeoutMs });
+    }
+    return { text: out.text, ms: Date.now() - t0 };
+  } finally {
+    // ⚠️⚠️ **`finally` 里清** —— 上面每条 await 都可能抛，而漏清的话
+    //   interval 会一直跳（面板上秒数永远在涨，而实际早已失败）
+    //   ⟹ 那比没有进度更糟：它在说谎。
+    //   ⚠️ 我第一版把 clearInterval 写在 await **之后**（不是 finally）——
+    //     那在成功路径上对，在抛异常时漏。
+    clearInterval(tick);
+  }
+}
+
 // ⚠️⚠️⚠️ **生成一张壁纸 = 复制骨架 + 让模型写一个 scene.js**（0.9.140 重写）。
 //
 // 用户 2026-08-02 定的架构：**固定骨架 + 模型只填变化**，而理由是
@@ -4090,12 +4207,16 @@ async function savePreview(dir) {
 ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   const want = String((payload && payload.want) || '').trim();
 
-  const ai = (config.we && config.we.ai) || {};
+  const ai = resolveAiConfig();
   if (!ai.apiKey) {
     return {
       ok: false,
       needsKey: true,
-      error: '还没填 API key —— 在上面那个框里填一次就行（存在本机，不会上传）',
+      error: '还没填 API key —— 在上面那个框里填一次就行（存在本机，不会上传）'
+        + '\n\n⚠️ 或者从终端启动，让它读环境变量：'
+        + '\n  export AWS_BEARER_TOKEN_BEDROCK=…（Bedrock 的长期 key）'
+        + '\n  open -a DreamPaper 不行 —— 那还是 GUI 启动，读不到 shell 环境'
+        + '\n  要用：/Applications/DreamPaper.app/Contents/MacOS/DreamPaper',
     };
   }
 
@@ -4136,25 +4257,79 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   // ⚠️ 目录名带时间戳 —— 同一句描述生成两次要是两个目录
   const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, '');
   const dirName = Gen.slugifyTitle(want || recipe.layout, stamp);
+  // ⚠️⚠️⚠️ **两个目录**（0.9.142）：
+  //   `stageDir` = AI 自己的工作区（userData/ai-staging/…）—— 中间产物写这儿
+  //   `dir`      = 壁纸目录里的最终位置 —— **只有过了全部闸门才搬进去**
+  //   ⟹ 那让"在做"和"能用"在物理上分开：失败的半成品不会出现在壁纸墙上。
+  const stageDir = ensureStagingDir(dirName);
   const dir = path.join(root, dirName);
+  logEvent('gen', `工作区：${stageDir}`);
+  // ⚠️ 顺手清老的，留最近 5 个（失败那次的产物是唯一能回看"模型写了什么"的东西）
+  const pruned = pruneStaging(5);
+  if (pruned) logEvent('gen', `清掉 ${pruned} 个旧工作区`);
 
+  // ⚠️ 单轮等模型的上限。⚠️ 比 llm.js 的默认 300 秒短 ——
+  //   三轮 × 300 秒 = 15 分钟，那对"我说一句话你给我一张壁纸"太久了。
+  const GEN_TIMEOUT_MS = 150000;
   const MAX_ROUNDS = 3;
   let code = null;
   let problems = [];
   const history_ = [];
 
+  let plan = '';
+
   try {
+    // ═══════════════════════════════════════════════════════════════════
+    //  ⚠️⚠️⚠️ **第 1 步：设计**（0.9.142）。用户 2026-08-02：
+    //    「一次有偷看上限，说明他一次干不下来这个活，那我们都已经有骨架了，
+    //      完全可以把这个活做拆分吗？多用几次模型就 OK 了呀，然后有一个 AI
+    //      自己的工作区中间文件到文档留存方便，就是一步一步可以衔接上就行了呀」
+    //
+    //  ⟹ 设计和实现分成两次调用：这一步只输出**文字**（几百 token），
+    //    不写代码 ⟹ 预算烧不掉；下一步拿着它写代码，不用再做设计决定。
+    //  ⚠️ 而 `plan.md` **落在工作区里** ⟹ 失败时能回看"它到底想了什么"，
+    //    那是唯一能区分"设计就跑偏了"和"设计对但代码写错了"的东西。
+    // ═══════════════════════════════════════════════════════════════════
+    genProgress('第 1 步：设计这一张长什么样', Object.values(recipe).join(' / '));
+    const planOut = await callModelWithHeartbeat(ai,
+      Gen.buildPlanPrompt(want, recipeText, historyText),
+      '第 1 步：设计这一张长什么样',
+      // ⚠️ 设计只要几百字 ⟹ 预算给 4000 就够，而**小预算也让它快**
+      //   （推理模型在小预算下会自己收敛，不会长篇大论）。
+      { maxTokens: 4000, timeoutMs: GEN_TIMEOUT_MS, hint: '通常 10-30 秒' });
+    plan = String(planOut.text || '').trim();
+    if (plan.length < 80) {
+      // ⚠️ 设计太短说明这一步失败了（模型只回了一句话）⟹ 早停，
+      //   别拿一份空规格书去写代码（那等于回到"一次干两件事"）。
+      throw new Error(`设计这一步没给出内容（只有 ${plan.length} 字）：${plan.slice(0, 200)}`);
+    }
+    // ⚠️ 落盘 —— 这是"AI 自己的工作区"里第一份中间产物
+    fs.writeFileSync(path.join(stageDir, 'plan.md'),
+      `# ${want || '（没特别要求）'}\n\n配方：${Object.values(recipe).join(' / ')}\n\n${plan}\n`);
+    logEvent('gen', `设计：${plan.length} 字、${Math.round(planOut.ms / 1000)}s`
+      + ` ⟹ 写到 ${path.join(stageDir, 'plan.md')}`);
+    genProgress('设计好了', `${plan.length} 字 · ${Math.round(planOut.ms / 1000)}s`);
+
     for (let round = 1; round <= MAX_ROUNDS; round += 1) {
       const isRepair = round > 1;
       genProgress(isRepair ? `第 ${round} 轮：按检查结果修` : '正在写场景',
         isRepair ? `上一轮 ${problems.length} 个问题` : Object.values(recipe).join('/'));
 
+      // ⚠️⚠️ **等模型这段要报"已经等了多久"**。用户 2026-08-02：
+      //   「这个生成比较耗时间啊，你现在就我看到了，他现在就是这样，
+      //     不知道他是卡在这儿了，还是正在正常运行中」
+      //   ⟹ 一个不动的"正在写场景…"和卡死**长得一模一样**。
+      //   ⟹ 判据：**长任务的进度必须是变化的东西**（秒数在走 = 它活着），
+      //     而不是一句静态文案。
+      //   ⚠️ 3 秒一跳而不是每秒 —— 每秒会把事件环刷满，而"它活着"这个信息
+      //     3 秒的粒度完全够。
       const prompt = isRepair
         ? Gen.buildRepairPrompt(code, problems, recipeText)
-        : Gen.buildScenePrompt(want, recipe, recipeText, historyText, example);
-      const t0 = Date.now();
-      const out = await LLM.chat(ai, [{ role: 'user', content: prompt }], { maxTokens: 20000 });
-      const ms = Date.now() - t0;
+        : Gen.buildImplementPrompt(plan, example);
+      const out = await callModelWithHeartbeat(ai, prompt,
+        isRepair ? `第 ${round} 轮：按检查结果修` : '第 2 步：照设计写代码',
+        { timeoutMs: GEN_TIMEOUT_MS, hint: '通常 40-90 秒' });
+      const ms = out.ms;
       code = Gen.extractScene(out.text);
       const lines = code.split('\n').length;
       genProgress('检查代码', `${lines} 行 · ${Math.round(ms / 1000)}s`);
@@ -4169,12 +4344,12 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
         continue;
       }
 
-      // ── 落盘：骨架 + scene.js
-      writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc);
+      // ── 落盘到**工作区**（不是壁纸目录）
+      writeWallpaperFiles(stageDir, code, recipe, want, dirName, skelDir, threeSrc);
 
       // ── ② 真跑闸门
       genProgress('试跑 3 秒', '看 WebGL 有没有真的画出东西');
-      const probe = await probeWallpaperRuntime(dir);
+      const probe = await probeWallpaperRuntime(stageDir);
       logEvent('gen', `试跑：${probe.frames} 帧 / ${probe.ms}ms`
         + ` · WebGL ${probe.webgl ? (probe.webgl.context ? 'ok' : '没建起来') : '?'}`
         + ` · 对象 ${probe.webgl ? probe.webgl.objects : '?'}`
@@ -4187,7 +4362,11 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       history_.push({ round, lines, probe, problems: problems.map((x) => x.id) });
       if (!problems.length) {
         // ── ④ 预览图：把试跑那一帧存下来（网格卡片要它）
-        await savePreview(dir);
+        //   ⚠️ 在**工作区**里生成 —— 搬进去的时候一起带过去
+        await savePreview(stageDir);
+        // ── ⑤⚠️⚠️ **搬进壁纸目录 —— 这一步才让它生效**
+        const moved = promoteFromStaging(stageDir, dir);
+        logEvent('gen', `搬进壁纸目录（${moved.method}）：${dir}`);
         genProgress('done', `${dirName} —— ${round} 轮通过`);
         return { ok: true, dir, dirName, rounds: round, recipe, history: history_ };
       }
@@ -4197,23 +4376,40 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     // ⚠️⚠️ 三轮还没过 —— **仍然落盘并交给用户**，不是丢掉。
     //   判据：闸门是"必然出事"的清单，而剩下的问题可能只影响某个细节。
     //   ⟹ 让用户自己看一眼再决定，比我替他扔掉好。但**必须说清还剩什么**。
-    // ⚠️⚠️ 走同一个 `writeWallpaperFiles` —— 我第一版这里是**抄了一份**，
-    //   而那份抄漏了硬链接的日志、也会随时间和上面那份漂移。
-    //   ⟹ 判据：**同一件事只留一份实现**（这个项目为"两个名字一件事"栽过）。
-    if (code && !fs.existsSync(path.join(dir, 'scene.js'))) {
-      writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc);
+    // ⚠️⚠️⚠️ **三轮还没过 ⟹ 留在工作区，不搬进壁纸目录。**
+    //
+    //   0.9.141 是"仍然落盘并交给用户"，理由是"闸门是必然出事的清单，
+    //   剩下的问题可能只影响某个细节"。⚠️ 而那个理由**错了**：
+    //   走到这里的 problems 是**真跑之后**的判定（一帧没画 / WebGL 报错 /
+    //   画面全黑）—— 那不是"某个细节"，是这张壁纸放上去就是黑的。
+    //   ⟹ 用户点开它只会看到白屏，而那时他会以为是软件坏了。
+    //
+    //   ⟹ 判据：**闸门没过就是没过。** "交给用户自己看"听起来尊重用户，
+    //     实际是把我们判定不了的东西推给他 —— 而这次我们判定得很清楚。
+    //   ⚠️ 但**产物留着**（在工作区里，路径报出去）⟹ 想看能看，不占壁纸墙。
+    if (code && !fs.existsSync(path.join(stageDir, 'scene.js'))) {
+      writeWallpaperFiles(stageDir, code, recipe, want, dirName, skelDir, threeSrc);
     }
-    genProgress('done', `${MAX_ROUNDS} 轮还有 ${problems.length} 个问题`);
+    genProgress('failed', `${MAX_ROUNDS} 轮还有 ${problems.length} 个问题`);
     return {
-      ok: true, partial: true, dir, dirName, rounds: MAX_ROUNDS, recipe, problems,
+      ok: false,
+      stageDir,
+      dirName,
+      rounds: MAX_ROUNDS,
+      recipe,
+      problems,
       history: history_,
-      note: `跑了 ${MAX_ROUNDS} 轮，还剩 ${problems.length} 个问题没修掉。`
-        + '壁纸已经放进目录了 —— 先看看效果，能接受就用，不行就再说一遍要求重生成',
+      error: `跑了 ${MAX_ROUNDS} 轮，还剩 ${problems.length} 个问题没修掉`
+        + `（${problems.map((x) => x.id).join(' / ')}）`
+        + '\n⟹ 没放进壁纸目录 —— 那样的壁纸装上去是黑的。'
+        + '\n再说一遍要求（换个说法）会重新生成一张，配方也会换。'
+        + `\n\n中间产物留在：${stageDir}`,
     };
   } catch (error) {
     genProgress('failed', error.message);
     logEvent('gen', `失败：${error.message}`);
-    return { ok: false, error: error.message, recipe, history: history_ };
+    // ⚠️ 带上工作区路径 —— 那是"模型到底写出了什么"唯一能回看的地方
+    return { ok: false, error: error.message, recipe, history: history_, stageDir };
   }
 });
 
@@ -4252,10 +4448,72 @@ function writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc
   logEvent('gen', `落盘：${dir}（scene.js ${code.length} 字节）`);
 }
 
+// ⚠️⚠️⚠️ **AI 凭证的两条来源**（0.9.142）。用户 2026-08-02：
+//   「模型，我感觉就是可以使用 claude 的 /home/moon/.bashrc 这里不就是配置，
+//     我在本地电脑也配置一下不就好」
+//
+// 他云端那份 `.bashrc` 里就是这三个：
+//   CLAUDE_CODE_USE_BEDROCK / AWS_BEARER_TOKEN_BEDROCK / AWS_REGION
+// ⟹ 而那正好是我们 Bedrock 那条路要的东西（bearer token，不是 AK/SK）。
+//
+// ⚠️⚠️ 但**GUI 点图标启动的 app 读不到 `.zshrc`/`.bashrc`** ——
+//   那是 shell 启动时才加载的文件，Finder/launchd 不读它。
+//   ⟹ 症状会是"我明明配了啊"而面板说没填 key。
+//   ⟹ 判据：**环境变量只能当"从终端启动时的便利"，不能当唯一来源。**
+//     所以是两条：环境变量（终端启动自动带上）+ 面板输入框（点图标也能用）。
+//
+// ⚠️ 优先级：**面板里填过的赢** —— 那是用户明确的、最近的动作，
+//   而环境变量可能是几个月前配的、早过期了。
+// ⚠️ 而这个函数**不打印 token 的任何一部分**（连前几位都不打）——
+//   诊断报告是要发给别人看的，见 `redactConfig`。
+function resolveAiConfig() {
+  const saved = (config.we && config.we.ai) || {};
+  const env = process.env;
+
+  // 面板里填过 ⟹ 直接用，不看环境变量
+  if (saved.apiKey) return saved;
+
+  // ⚠️ Bedrock 那条：bearer token + region
+  const token = env.AWS_BEARER_TOKEN_BEDROCK;
+  if (token) {
+    return {
+      ...saved,
+      provider: 'bedrock',
+      apiKey: token,
+      region: saved.region || env.AWS_REGION || 'us-west-2',
+      // ⚠️ 模型 ID 给个能用的默认 —— 环境变量里没有它，
+      //   而让用户为了"我已经配好了"再去填一个模型 ID 很怪。
+      model: saved.model
+        || env.DREAMPAPER_AI_MODEL
+        || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      // ⚠️ 标记来源 ⟹ 面板上要说清"这次用的是环境变量里那个"，
+      //   否则用户会以为面板那个空框是个 bug。
+      fromEnv: 'AWS_BEARER_TOKEN_BEDROCK',
+    };
+  }
+
+  // ⚠️ OpenAI 兼容那条（DeepSeek 等）
+  const openaiKey = env.DREAMPAPER_AI_KEY || env.OPENAI_API_KEY || env.DEEPSEEK_API_KEY;
+  if (openaiKey) {
+    return {
+      ...saved,
+      provider: 'openai',
+      apiKey: openaiKey,
+      baseUrl: saved.baseUrl || env.DREAMPAPER_AI_BASE
+        || (env.DEEPSEEK_API_KEY ? 'https://api.deepseek.com' : 'https://api.openai.com/v1'),
+      model: saved.model || env.DREAMPAPER_AI_MODEL || 'deepseek-chat',
+      fromEnv: env.DREAMPAPER_AI_KEY ? 'DREAMPAPER_AI_KEY'
+        : (env.DEEPSEEK_API_KEY ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY'),
+    };
+  }
+
+  return saved;
+}
+
 // ⚠️ 面板要能"先测一下通不通"，而不是把连通性问题混在生成失败里
 //   （生成失败有十几种原因，而"key 填错了"应该 3 秒内就知道）。
 ipcMain.handle('gen-ping', async () => {
-  const ai = (config.we && config.we.ai) || {};
+  const ai = resolveAiConfig();
   if (!ai.apiKey) return { ok: false, error: '还没填 API key' };
   try {
     const out = await LLM.ping(ai);
@@ -4309,7 +4567,10 @@ ipcMain.handle('gen-meta', () => ({
   // ⚠️⚠️ 已有配方的历史 —— 面板上要能说"这张和那张撞了几维"
   //   （用户说"这两张太像了"时，不用靠感觉调）
   recipeCount: readRecipeHistory(ensureOurWallpaperDir()).length,
-  hasKey: !!(config.we.ai && config.we.ai.apiKey),
+  // ⚠️ 环境变量里有也算"有 key" —— 否则面板会说"还没填"而它其实能用
+  hasKey: !!resolveAiConfig().apiKey,
+  // ⚠️ 而要说清是**哪来的** —— 用户看到空输入框会以为是 bug
+  keyFromEnv: resolveAiConfig().fromEnv || null,
   // ⚠️ **key 也回填** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122）。
   //   判据：能保存的字段就要能回填，否则用户没法确认它存了没有。
   apiKey: (config.we.ai && config.we.ai.apiKey) || '',
