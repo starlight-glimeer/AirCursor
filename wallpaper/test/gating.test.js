@@ -6085,6 +6085,39 @@ check('授权框里说的是 GestureWall，不是 AirCursor', () => {
 //
 // ⟹ **判据：加一个"状态展示"之前先回答"用户看了它之后会做什么"。**
 //   如果答案是"什么都不用做"，那它就不该存在。
+// ⚠️⚠️⚠️ **安装/打包脚本尾部那段授权说明**（0.9.106）。
+//
+// 这几条守卫原来挂在权限面板那条 check 里，而那条 0.9.105 整块删了
+// ⟹ **它们跟着一起没了**，于是 0.9.106 打包时那两个脚本又印出了过时的指引
+//（"看状态：⚙ 设置 → 权限"，而那个面板已经不存在）。
+//
+// ⚠️ 判据两条：
+//   ① **删掉一个界面时，全 repo 搜一遍谁在指向它** —— 这次是两个 shell 脚本，
+//     它们不在任何 import 链上，只有 grep 找得到。
+//   ② **删掉一条 check 时，看清里面有没有搭车的断言** —— 那几条守的是脚本文案，
+//     和权限面板只是"当时写在一起"，删面板不该把它们带走。
+check('安装/打包脚本的授权说明没有过时的话', () => {
+  for (const sh of ['install-dmg.sh', 'build-mac.sh']) {
+    const body = fs.readFileSync(path.join(__dirname, '..', 'scripts', sh), 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+    // ⚠️ 权限面板 0.9.105 删了 —— 别再指过去
+    assert.ok(!/⚙ (设置 )?→ 权限/.test(body),
+      `${sh} 还指向"⚙ → 权限" ⟹ 那个面板 0.9.105 删了，指向不存在的东西比不说更糟`);
+    // ⚠️ GestureWallMouse 不需要授权（真机探针：trusted false 时抓到 148 个事件）
+    assert.ok(!/授权.{0,6}GestureWallMouse/.test(body),
+      `${sh} 又在让用户授权 GestureWallMouse ⟹ 那个 helper 不需要授权，`
+      + '让他去授是白折腾（他真折腾了三轮）');
+    // ⚠️ 0.9.89 起 helper 名字不带 hash ⟹ 重装不会让授权失效
+    assert.ok(!/重新装过之后授权可能要重给/.test(body),
+      `${sh} 还说"重装之后授权要重给" ⟹ 0.9.89 起路径稳定，授权不会失效`);
+    assert.ok(!/把 GestureWall 删掉再加回来/.test(body),
+      `${sh} 又在说"把 GestureWall 删掉再加回来" ⟹ 那是错的`);
+    // ⚠️ 而**正确的那句要在** —— 光删错话不够，用户需要知道"装完能直接用"
+    assert.match(body, /不需要(任何)?授权/,
+      `${sh} 没说清"绝大多数功能不需要授权" ⟹ 用户会以为要先配一堆权限`);
+  }
+});
+
 check('权限面板已删（别再加回来）', () => {
   const src = codeOnly(mainSrc);
   for (const gone of ['const PERMISSIONS = [', 'function permissionSnapshot',
