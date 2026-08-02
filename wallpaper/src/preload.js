@@ -67,16 +67,6 @@ contextBridge.exposeInMainWorld('gw', {
   weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
   weSetStrategy: (id) => ipcRenderer.invoke('we-set-strategy', id),
   weSetMouseForward: (patch) => ipcRenderer.invoke('we-set-mouse-forward', patch),
-  // ⚠️ 权限面板（0.9.90）—— 用户要"一个地方看清有没有权限、开没开"。
-  permissionsRead: () => ipcRenderer.invoke('permissions-read'),
-  // ⚠️ 这里原来有 permissionsSet —— 0.9.95 删了（权限面板改成只读，
-  //   功能开关各回各家的 tab）。留着就是一个没人调的 IPC 通道。
-  permissionsOpenPane: (pane) => ipcRenderer.invoke('permissions-open-pane', pane),
-  // ⚠️ 在 Finder 里选中 helper —— 0.9.87 删掉所有弹框之后，
-  //   这是用户把它加进辅助功能列表的唯一路径（见 main.js 那段注释）。
-  permissionsRevealHelper: (which) => ipcRenderer.invoke('permissions-reveal-helper', which),
-  // ⚠️ 授权完重启 helper（不用退出整个应用 —— 见 main.js 那段）
-  permissionsRecheck: () => ipcRenderer.invoke('permissions-recheck'),
 
   // 创意工坊
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),
@@ -150,8 +140,6 @@ contextBridge.exposeInMainWorld('gw', {
   resetWallpaperDir: () => ipcRenderer.invoke('workshop-reset-dir'),
   onWorkshopProgress: on('workshop-progress'),
   onMouseStatus: on('mouse-status'),
-  // ⚠️ 权限状态变了主动推一次（开关一动、helper 上报授权状态都会推）
-  onPermissions: on('permissions'),
   onVideoStatus: on('video-status'),
   onVideoSource: on('video-source'),
   onCancelRecording: on('cancel-recording'),

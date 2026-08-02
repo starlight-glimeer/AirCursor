@@ -700,7 +700,14 @@ function handleVoiceText(phrase) {
   if (!text) return;
   const hit = VOICE_PATTERNS.find((p) => p.match.test(text));
   if (!hit) {
-    broadcast('voice-status', { text: `没匹配上:${text}` });
+    // ⚠️⚠️ **说清能说什么**（0.9.105）。用户 2026-08-02 对着麦克风说话、
+    //   看到听到：点点点点点、然后什么都没发生 ⟹ 以为功能坏了。
+    //   而原来这里只说没匹配上:xxx—— 那等于告诉他你说错了却不说什么是对的。
+    //   ⚠️ 一个只认六个词的功能，不告诉用户是哪六个 = 不可用。
+    const tail = text.length > 12 ? `…${text.slice(-12)}` : text;
+    broadcast('voice-status', {
+      text: `没匹配上「${tail}」—— 能说：网易云 / 浏览器 / 访达 / 暂停 / 下一首`,
+    });
     return;
   }
   const result = runSystemAction(hit.action, '语音');
@@ -3551,300 +3558,32 @@ let mouseInjected = 0;
 let pageMouseSeen = null;
 
 // ---------------------------------------------------------------------------
-// 权限面板：一个地方看清"要什么权限、开没开、真给了没有"
+// ⚠️⚠️⚠️ 这里原来是**权限面板**（0.9.90~0.9.104）—— **0.9.105 整块删了。**
+//
+// 用户 2026-08-02：「设置这里的权限展示还是有问题，删掉这里的展示吧，没啥用，
+//   我们把功能调通就行」
+//
+// **他说得对，而这是我改了六版还在错的东西：**
+//   0.9.90  建了它，六行，每行带我们自己的开关
+//   0.9.91  辅助功能两条合一条（他："为什么辅助功能有两个？"）
+//   0.9.94  撤掉子开关 + 删掉「自动化」那行（他："那你显示啥呢？删掉这块"）
+//   0.9.95  撤掉摄像头/麦克风的开关，改成只读（他："不是我们自己设置的开关"）
+//   0.9.102 辅助功能那行读错了 helper，一直显示"未授权"（他："还是显示未授权"）
+//   0.9.103 删掉麦克风那行 —— 那条链根本不需要授权，是我编的
+//
+// ⚠️⚠️ 六版都是他指出来我才改，而每一版我都以为"这次对了"。
+//   根因不是某个字段写错，是**这个面板要回答的问题我一直没搞清**：
+//   它想说"你有什么权限"，而用户真正想知道的是"我的功能能不能用"。
+//   那两件事在这个产品里**几乎不重合** —— 探针最后证明：流星不需要授权、
+//   系统声音不需要授权，真正要授权的两条（摄像头/手势控光标）**开了就会自己弹框**。
+//   ⟹ 一个面板，六版，回答的是一个用户不需要问的问题。
+//
+// ⟹ 删掉。授权这件事回归 macOS 自己的机制：**要用到时它自己弹框**。
+//   而"某个功能为什么不工作"由各自的诊断段回答（面板「?」页里那些）。
+//
+// ⚠️ 别再加回来。要加之前先回答：**用户看了它之后会做什么？**
+//   如果答案是"什么都不用做"，那它就不该存在。
 // ---------------------------------------------------------------------------
-// ⚠️⚠️⚠️ 用户 2026-08-02：
-//   「把所有需要授权的放在设置里面一个权限面板里面，这个里面可以主动选择开启或者
-//     关闭…那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常生效了吧，关闭了呢
-//     那就是应该关掉了…都集中在一个面板上，我才方便看现在到底有权限没权限。
-//     这块儿你再给我来一个诊断面板，一点东西让我可清楚看了，到底是不是真的有，
-//     我关了到底是不是真的关了？」
-//
-// 这个设计对，而它的关键是**两种状态必须分开显示**：
-//   · **开关**（我们的 config）—— 用户的意图，我们完全掌握
-//   · **授权**（macOS 的 TCC）—— 系统的事实，我们只能查
-// 混在一起就是"我这儿显示开着，但其实没权限"，那正是他信不过面板的原因。
-//
-// ⚠️⚠️ **而有两条链的授权状态在 macOS 上查不到真值**（下面 authQueryable 标出来）。
-//   那种我**不许猜** —— 面板显示"查不到"，并给一条"怎么自己确认"的路。
-//   假装知道比说不知道糟得多：用户按面板做决定，而面板在骗他。
-const PERMISSIONS = [
-  {
-    id: 'gestures',
-    name: '摄像头',
-    what: '手势识别 —— 看你的手，判断挥手/捏合那些动作',
-    // ⚠️⚠️ **不放开关**（0.9.95）。用户 2026-08-02：
-    //   「我的期望是权限很清晰展示，有啥权限，没啥权限（mac 的那种，
-    //     不是我们自己设置的开关，比如显示骨架这种，这是我们应用内部的）」
-    //   ⟹ 这一栏只回答"macOS 给了什么权限"。功能开关在各自的 tab 里
-    //     （摄像头 = 手势 tab 的「启用手势」）。
-    on: null,
-    // ⚠️ 摄像头的授权状态**能查真值**：Electron 的 getMediaAccessStatus。
-    //   'granted' / 'denied' / 'restricted' / 'not-determined'
-    authQueryable: true,
-    auth: () => systemPreferences.getMediaAccessStatus('camera'),
-    // ⚠️ 这条链的授权挂在**主应用**上（不是 helper）—— 所以列表里叫 GestureWall。
-    listedAs: 'GestureWall',
-    pane: 'Privacy_Camera',
-  },
-  {
-    // ⚠️⚠️⚠️ **辅助功能就是一条，而且不放我们自己的功能开关**（0.9.94）。
-    //
-    // 用户 2026-08-02：「对于用户来说就是辅助功能吗？我对于 Mac 来说就是辅助功能，
-    //   我点开了，然后就 OK 了，你为什么还要分什么转发给壁纸手势移动鼠标指针…
-    //   手势移动鼠标指针这个不是我们 App 自己的触发条件吗？它的触发前置条件是
-    //   辅助功能，有了辅助功能以后如果我们 App 不设置那个权限，其实就已经能使用了，
-    //   是我们自己又设了一套权限而已，那这种就没必要放在这里」
-    //
-    // **他说得对，而这是我把两件事混在一起了**：
-    //   · **辅助功能** = macOS 的授权，一个，给了就给了 ⟹ 这一栏该管的
-    //   · **鼠标转发 / 手势控光标** = 我们自己的功能开关 ⟹ 它们的归属地是
-    //     「壁纸层」和「手势」那两个 tab，不是权限面板
-    // 混在一起的结果就是他看到的：一个系统授权底下挂两个看不懂的开关。
-    //
-    // ⟹ 权限面板只回答一个问题：**这个授权给了没有**。功能开关回各自的家。
-    id: 'accessibility',
-    name: '辅助功能',
-    // ⚠️⚠️⚠️ **只有"手势移动鼠标指针"需要它**（0.9.102 修）。用户 2026-08-02：
-    //   「我看还是显示辅助功能未授权，这是什么没授权，还是出 bug 了，
-    //     以及需要这个辅助功能吗」
-    //
-    // **是 bug，而且我把需要它的那条链搞错了。** 探针（用户真机）证明：
-    //   · `GestureWallMouse` —— `addGlobalMonitorForEvents` **监听**鼠标
-    //     ⟹ trusted: false 时照样抓到 148 个事件、页面收到 55 个 click
-    //     ⟹ **不需要辅助功能**
-    //   · `AirCursorPointer` —— `CGEvent.post` **注入**鼠标事件
-    //     ⟹ 那是"控制别的程序"，macOS 必须要辅助功能（源码里那句注释写着：
-    //       "without the Accessibility grant CGEvent.post fails silently"）
-    //
-    // ⟹ 判据：**监听不需要，注入需要。** 而 0.9.91 我让这一栏读
-    //   `mouseStatus`（鼠标转发那个 helper）—— 它永远报 false 且**无所谓**
-    //   ⟹ 面板一直显示"未授权"，而那个"未授权"对流星那条链毫无意义。
-    what: '手势移动鼠标指针需要它。'
-      + '⚠️ 壁纸收鼠标点击（流星那类特效）**不需要** —— 那条链已实测通过',
-    on: null,
-    authQueryable: true,
-    auth: () => {
-      // ⚠️⚠️ 只看 **pointer** helper（AirCursorPointer）——
-      //   它是唯一真需要这个授权的。鼠标转发那个 helper 的 trusted
-      //   **有意不看**：它报 false 也能正常工作（探针实测）。
-      const ph = systemBridge.health ? systemBridge.health() : null;
-      if (ph && typeof ph.trusted === 'boolean') return ph.trusted ? 'granted' : 'denied';
-      // ⚠️ pointer helper 没跑过 ⟹ 真的不知道，别猜（而它只在开了
-      //   「手势移动鼠标指针」之后才启动）。
-      return 'unknown';
-    },
-    unknownWhy: '只有开了「手势移动鼠标指针」才需要它，也只有那时才查得到 —— '
-      + '没开的话这一项对你没有影响。'
-      + '⚠️ 壁纸收鼠标点击不需要这个授权（实测：未授权状态下页面照样收到 click）',
-    // ⚠️ 列表里只该找 AirCursorPointer —— GestureWallMouse 授不授权都无所谓，
-    //   写上去只会让用户去授一个不需要的权限。
-    listedAs: 'AirCursorPointer',
-    revealHelper: 'pointer',
-    pane: 'Privacy_Accessibility',
-  },
-  // ⚠️⚠️⚠️ 这里原来有一条「麦克风（系统声音）」—— **0.9.103 删了，因为它是错的。**
-  //
-  // 用户 2026-08-02：「我看到下面有个什么麦克风监听说是监听系统音频，那这个我现在
-  //   也是监听音频啊，他给我显示一个未查到怎么的就很奇怪」
-  //
-  // **他说得对。** 我给它写的 auth 是 `getMediaAccessStatus('microphone')`，
-  // 而系统声音采集走的是 **CoreAudio 进程 tap**（`CATapDescription`）——
-  // 那条路**既不要麦克风、也不要屏幕录制**。
-  //
-  // ⚠️⚠️ 而这件事 2026-08-01 就用探针在真机量过了，结论就写在
-  //   `native/GestureWallAudio.swift` 那段注释里：
-  //       ① 不需要屏幕录制：`tapErr: 0` + `screenRecordingGranted: **false**`
-  //       ② 能拿到音频：258 次回调、98% 非零、RMS 0.2013
-  //   **我自己写的探针、自己记的结论，然后在权限面板里又编了一个"要麦克风"。**
-  //
-  // ⟹ 它不需要任何 TCC 授权 ⟹ 不该占权限面板一行。
-  //   （真正会要屏幕录制的是 SCStream 那条**兜底**路 —— 只在 CATap 失败时才走，
-  //    而那时 helper 会自己报 message，面板的音频诊断段里看得到。）
-  // ⚠️⚠️ 这里原来有一条「语音识别」—— **0.9.95 删了**。用户 2026-08-02：
-  //   「语音识别这个能力呢给他撤掉吧，我们暂时先不做」
-  //   ⟹ 功能本身还在（`config.voice`，手势 tab 里那个开关），
-  //     但它不再占权限面板一行 —— 那一行的授权状态本来就查不到
-  //     （macOS 没给 SFSpeechRecognizer 的查询接口），显示"查不到"没有价值。
-  // ⚠️⚠️ 这里原来有一条「自动化（系统事件）」—— **0.9.94 删了**。
-  //   用户 2026-08-02：「你最下面那个什么自动化系统事件也是这样的，
-  //     你来个总是需要、查不到，那你显示啥呢？删掉这块」
-  //
-  // **他说得对。** 那一行给出的全部信息是"总是需要"+"查不到"——
-  // 既没有开关可点、又不知道状态、也没有任何要用户做的事。
-  // ⟹ 一行占位的噪声。而它真的没授权时的表现只是"切桌面闪一下"，
-  //   不影响任何功能 ⟹ 不值得占一行。
-];
-
-function permissionSnapshot() {
-  return PERMISSIONS.map((p) => {
-    const row = {
-      id: p.id, name: p.name, what: p.what,
-      on: typeof p.on === 'boolean' || p.on === null ? p.on : p.on,
-      listedAs: p.listedAs, pane: p.pane,
-      authQueryable: p.authQueryable,
-      // ⚠️ 一个授权底下可能挂**多个功能开关**（辅助功能就是：鼠标转发 +
-      //   手势控光标共用同一个系统授权）⟹ 面板要能分别开关。
-      revealHelper: p.revealHelper || null,
-      subToggles: p.subToggles
-        ? p.subToggles.map((t) => ({ id: t.id, label: t.label, on: t.on }))
-        : null,
-    };
-    if (process.platform !== 'darwin') {
-      row.auth = 'granted';           // 非 macOS 没有这套东西
-      row.note = '非 macOS —— 没有这套授权机制';
-      return row;
-    }
-    if (!p.authQueryable) {
-      row.auth = 'unknown';
-      row.note = p.unknownWhy;
-      return row;
-    }
-    // ⚠️ 查询本身可能抛（API 在某些系统版本上不存在）—— 那也是"查不到"，不是"没授权"。
-    try { row.auth = p.auth(); } catch (error) {
-      row.auth = 'unknown';
-      row.note = `查询失败：${error.message}`;
-    }
-    // ⚠️⚠️ 标了"能查"但这次**确实查不到**（helper 还没跑）—— 也要说清为什么。
-    //   不说的话面板就是一个孤零零的"查不到"，而用户下一步该干什么全靠猜。
-    if (row.auth === 'unknown' && !row.note && p.unknownWhy) row.note = p.unknownWhy;
-    // ⚠️ helper 自己上报的状态（如果有）—— 它和主进程的查询**可能不一致**，
-    //   而不一致本身就是最有用的诊断信息（主应用授权了、helper 没有）。
-    if (p.helperAuth) {
-      try { row.helperAuth = p.helperAuth(); } catch { row.helperAuth = 'unknown'; }
-    }
-    return row;
-  });
-}
-
-ipcMain.handle('permissions-read', () => ({
-  ok: true,
-  packaged: app.isPackaged,
-  rows: permissionSnapshot(),
-}));
-
-// ⚠️⚠️⚠️ **在 Finder 里选中那个 helper**（0.9.92）。
-//
-// 0.9.87 我把所有会弹授权框的调用删干净了（用户连问六轮"别弹了"，那是对的）——
-// **但那留下一个洞：现在没有任何东西会触发系统那个授权框。**
-// 而 helper 藏在 `.app/Contents/Resources/prebuilt-helpers/` 里
-// ⟹ 用户在「辅助功能」列表点「+」也几乎不可能找到它（那个路径在 .app 包内部，
-//   Finder 默认不给进）。等于"要授权但没有路"。
-//
-// ⟹ 给一条路：在 Finder 里**选中**它，用户直接把它拖进那个列表。
-// ⚠️ `showItemInFolder` 而不是 `openPath` —— 前者在 Finder 里高亮那个文件
-//   （用户看得到该拖哪个），后者只是打开文件夹（里面 8 个文件，还要自己找）。
-// ⚠️ 而 .app 包内部的路径 Finder **能**通过这个 API 打开（它是我们主动给的路径，
-//   不需要用户自己"进入包内容"）。
-ipcMain.handle('permissions-reveal-helper', (_event, which) => {
-  // ⚠️ 白名单 —— 渲染进程传进来的字符串不能直接当路径用。
-  const names = { mouse: 'GestureWallMouse', pointer: 'AirCursorPointer',
-    audio: 'GestureWallAudio', voice: 'AirCursorVoice' };
-  const name = names[which];
-  if (!name) return { ok: false, error: `未知的 helper：${which}` };
-
-  // ⚠️ 两个可能的位置，顺序要和运行时找它的顺序一致（见 prebuilt-helper.js /
-  //   各 ensureHelper）：打包版优先用 Resources 里预编译的，
-  //   开发模式下是 userData 里现场编译的。
-  const candidates = [];
-  if (process.resourcesPath) {
-    candidates.push(path.join(process.resourcesPath, 'prebuilt-helpers', name));
-  }
-  candidates.push(path.join(app.getPath('userData'), name));
-  candidates.push(path.join(app.getPath('userData'), 'native', name));
-
-  for (const full of candidates) {
-    if (fs.existsSync(full)) {
-      shell.showItemInFolder(full);
-      return { ok: true, path: full };
-    }
-  }
-  // ⚠️ 找不到要说清**为什么** —— 最常见的原因是那个功能还没开过，
-  //   helper 从没被编译/解压出来。
-  return { ok: false,
-    error: `找不到 ${name}。它要等对应功能第一次启动才会出现`
-      + `（打开开关 + 装载一个壁纸），找过这些位置：\n${candidates.join('\n')}` };
-});
-
-// ⚠️⚠️⚠️ **授权完重启 helper —— 不用退出整个应用**（0.9.93）。
-//
-// 用户 2026-08-02：「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接
-//   就生效」
-//
-// **他说得对。** macOS 那条"授权对已经在跑的进程不生效"是真的，但它只针对
-// **那个进程**。而 helper 是我们 spawn 的子进程 ⟹ **杀掉重启一个就够了**，
-// 主应用完全不用动。我上一版让他退出重开是多余的。
-//
-// ⚠️ 而这条也解释了他为什么"授权了还是未授权"：他给 GestureWall 授了权，
-//   而 `codesign` 的输出证明 helper 是**独立的 TCC 身份**
-//   （`Identifier=GestureWallMouse-5555…`、`TeamIdentifier=not set`）
-//   ⟹ 主应用的授权覆盖不到它。要覆盖得有 Apple 开发者证书把两者签成同一身份。
-ipcMain.handle('permissions-recheck', () => {
-  // ⚠️⚠️⚠️ **重启不了要说出来**（0.9.94 修）。用户 2026-08-02：
-  //   「我授权完了，然后你这边显示还是未授权」
-  //
-  // 上一版这里**无论有没有真的重启，都返回 `ok: true`** —— 而
-  // `syncMouseForward` 里的 `need` 要求 `weProject`（必须装载了壁纸）
-  // ⟹ 没装载壁纸时点③，helper 压根不会起来，徽章当然还是旧的，
-  //   而面板一声不响。**那就是"静默无效"**，这个项目栽过最多次的形状。
-  //
-  // ⟹ 先判前提，不满足就直接说清缺什么。
-  if (!weProject) {
-    return Promise.resolve({ ok: false,
-      error: '还没装载壁纸 —— 那个 helper 只在壁纸装载后才启动。'
-        + '先去「我的壁纸」点一个壁纸，再回来点这里。' });
-  }
-  if (!config.we.mouseForward) {
-    return Promise.resolve({ ok: false,
-      error: '「转发鼠标给壁纸」没开 —— 去「壁纸与音乐 → 壁纸层」打开它，'
-        + '那个 helper 才会启动。' });
-  }
-  // ⚠️ 杀掉再同步 —— syncMouseForward 里 `if (mouseTap) return` 会让"已经在跑"
-  //   直接返回，所以必须先清掉才会重新 spawn（和 we-set-mouse-forward 一致）。
-  if (mouseTap) { mouseTap.stop(); mouseTap = null; }
-  // ⚠️ 顺带把上一轮的状态清掉 —— 不清的话面板会拿旧的 trusted 显示，
-  //   而那正是"重启了但显示没变"的来源。
-  mouseStatus = null;
-  syncMouseForward();
-  // ⚠️ 再确认一次真的起来了 —— 编译失败/二进制不可执行都会让它是 null，
-  //   而那时返回 ok: true 又是一次静默无效。
-  if (!mouseTap) {
-    return Promise.resolve({ ok: false,
-      error: 'helper 没能启动 —— 看面板「?」页里鼠标那段的状态。' });
-  }
-  // ⚠️ helper 启动 + 上报要一点时间（spawn → NSApplication 初始化 → emit）。
-  //   不等就读的话必然还是旧值 ⟹ 用户会以为没生效。
-  //   ⚠️ 800ms 是估的：实测 helper 从 spawn 到第一条 status 大约几十毫秒，
-  //     留足余量。而读早了的代价只是"再点一次"，不是错值（面板会显示"查不到"）。
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      broadcast('permissions', permissionSnapshot());
-      resolve({ ok: true, rows: permissionSnapshot() });
-    }, 800);
-  });
-});
-
-// 打开系统设置里对应的那一页。
-// ⚠️ 只接受 PERMISSIONS 里出现过的 pane —— 不然这就是个"任意 URL scheme 打开器"。
-ipcMain.handle('permissions-open-pane', (_event, pane) => {
-  const known = PERMISSIONS.some((p) => p.pane === pane);
-  if (!known) return { ok: false, error: `未知的设置页：${pane}` };
-  shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
-  return { ok: true };
-});
-
-// ⚠️⚠️⚠️ 这里原来有 `permissions-set`（从面板直接开/关某一项）—— **0.9.95 删了**。
-//
-// 用户 2026-08-02：「我的期望是权限很清晰展示，有啥权限，没啥权限（mac 的那种，
-//   不是我们自己设置的开关，比如显示骨架这种，这是我们应用内部的）」
-//
-// **他说得对，而这是我第三次在同一件事上跑偏**：我把"我们的功能开关"和
-// "macOS 的授权"混在一栏里。前两次是 subToggles（0.9.94 撤）和自动化那行
-// （0.9.94 删），这次是最后两个：摄像头和麦克风那两行的开关。
-//
-// ⟹ 权限面板现在**只读**：三行，每行只回答"这个系统授权给了没有"。
-//   功能开关各回各家：手势 tab 的「启用手势」、壁纸层的「转发鼠标给壁纸」、
-//   音源那几个按钮。⟹ 没有调用方了，所以整块删掉而不是留着。
 
 // ---------------------------------------------------------------------------
 // 清掉 0.9.88 之前那些带 hash 名的 helper 二进制

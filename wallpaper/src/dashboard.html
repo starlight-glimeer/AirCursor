@@ -732,37 +732,7 @@
   .sm-head { display: flex; align-items: center; margin-bottom: 12px; }
   .sm-head b { flex: 1; font-size: 14px; }
   #settings-modal-close { padding: 2px 8px; font-size: 13px; line-height: 1.3; }
-  /* ⚠️ 权限面板（0.9.90）—— 三列：名字+说明 / 开关 / 授权状态。
-     ⚠️ **两种状态必须视觉上分得开** —— 开关是我们的，授权是 macOS 的，
-       混在一起就是"面板显示开着但其实没权限"（用户信不过面板的原因）。 */
-  .sm-h { margin: 16px 0 6px; font-size: 12px; color: var(--dim); font-weight: 600; }
-  .perm-rows { display: grid; gap: 1px; }
-  .perm-row {
-    display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
-    align-items: center; padding: 8px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .perm-row:last-child { border-bottom: 0; }
-  .perm-name { font-size: 12px; font-weight: 600; }
-  .perm-what { font-size: 11px; color: var(--dim); line-height: 1.5; }
-  /* 授权状态的小徽章。⚠️ 颜色只有三种语义：给了 / 没给 / 不知道。
-     "不知道"必须和"没给"**长得不一样** —— 那两个的下一步动作完全不同。 */
-  .perm-auth {
-    font: 400 10px/1.6 ui-monospace, monospace; padding: 2px 7px;
-    border-radius: 999px; white-space: nowrap;
-    border: 1px solid var(--line);
-  }
-  .perm-auth.granted { color: var(--ok); border-color: rgba(138,255,193,.3); }
-  .perm-auth.denied { color: var(--warn); border-color: rgba(255,180,84,.32); }
-  .perm-auth.unknown { color: var(--dim); }
-  .perm-toggle { font-size: 11px; padding: 3px 10px; white-space: nowrap; }
-  /* 开关关着时按钮要"没通电"的样子，开着时高亮 —— 一眼看出哪些是开的 */
-  .perm-toggle.on { color: var(--accent); border-color: rgba(108,199,255,.35); }
-  .perm-subs {
-    grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;
-  }
-  .perm-detail { grid-column: 1 / -1; font-size: 10px; color: var(--dim); line-height: 1.6; }
-  .perm-detail b { color: var(--warn); font-weight: 600; }
+  /* ⚠️ 这里原来是权限面板的样式（.perm-*）—— 0.9.105 随面板一起删。 */
 
   /* 快捷键：从 nav 底部搬来的。横排（弹窗宽），行距松一点。 */
   .sm-keys {
@@ -1144,6 +1114,23 @@
            "每次打开这个产品，正在听的音乐音道就变了"。可选功能不该有这种副作用。 -->
       <div class="toggle"><input type="checkbox" id="voice"><label for="voice">语音命令（会占用麦克风）</label></div>
       <div id="voice-state" class="state" hidden></div>
+      <!-- ⚠️⚠️⚠️ **能说什么必须列出来**（0.9.105）。用户 2026-08-02：
+             「我在手势录制之类点击语音命令，结果出来这个『语音：听到：点点点点点』
+               没有反应」
+           **他说得对，而根因是面板从来没说过能说什么** —— 只有一个开关和一行
+           "听到：xxx"。他对着麦克风说话、看到识别成功了、然后什么都没发生
+           ⟹ 以为功能坏了。而实际是他说的词不在能匹配的那六条里。
+           ⚠️ 一个"只认六个词"的功能，不列出那六个词 = 不可用。 -->
+      <p class="hint" id="voice-cmds" hidden>
+        <b>能说这些</b>（认不出会显示「没匹配上」）：
+        <br>· 「<b>网易云</b>」/「音乐」 → 打开网易云音乐
+        <br>· 「<b>浏览器</b>」/「Chrome」 → 打开浏览器
+        <br>· 「<b>访达</b>」/「Finder」 → 打开访达
+        <br>· 「<b>暂停</b>」/「播放」/「停一下」 → 媒体播放/暂停
+        <br>· 「<b>下一首</b>」/「上一首」 → 切歌
+        <br>⚠️ 「听到：<i>xxx</i>」只是说识别到了声音 —— 要看下一行有没有变成
+        「已执行」才算真的触发。
+      </p>
       <div id="voice-grants" hidden>
         <button class="act" id="grantMic">麦克风权限</button>
         <button class="act" id="grantSpeech">语音识别权限</button>
@@ -1315,41 +1302,12 @@
       <kbd>⌃⇧Q</kbd> 退出
     </div>
 
-    <!-- ⚠️⚠️⚠️ **权限面板**（0.9.90）。用户 2026-08-02：
-           「把所有需要授权的放在设置里面一个权限面板里面，这个里面可以主动选择
-             开启或者关闭…那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常
-             生效了吧，关闭了呢那就是应该关掉了…都集中在一个面板上，我才方便看
-             现在到底有权限没权限。这块儿你再给我来一个诊断面板，一点东西让我
-             可清楚看了，到底是不是真的有，我关了到底是不是真的关了？」
-
-         **这个设计对**，而它的关键是**两种状态分开显示**：
-           · 开关 —— 我们的 config，用户的意图，我们完全掌握
-           · 授权 —— macOS 的 TCC，系统的事实，我们只能查
-         混在一起就是"面板显示开着但其实没权限"，那正是他信不过面板的原因。
-
-         ⚠️ 这一块**不在 DEV-PANEL 里** —— 它是给正常用户看的（"我到底给了什么
-           权限"是 2C 用户会问的问题），而 DEV-PANEL 整块以后要删掉。 -->
-    <h4 class="sm-h">权限</h4>
-    <div class="card">
-      <div id="perm-rows" class="perm-rows">—</div>
-      <!-- ⚠️⚠️ 这一栏**只读**（0.9.95）。用户 2026-08-02：
-             「我的期望是权限很清晰展示，有啥权限，没啥权限（mac 的那种，
-               不是我们自己设置的开关，比如显示骨架这种，这是我们应用内部的）」
-           ⟹ 只显示 macOS 的授权状态。功能开关各回各家（手势 tab 的「启用手势」、
-             壁纸层的「转发鼠标给壁纸」、音源那几个按钮）。 -->
-      <p class="hint" id="perm-note">
-        这里只显示 <b>macOS 的授权</b>状态 —— 不是应用内的开关。
-        <br>功能开关在各自的地方：手势在「手势录制」、鼠标转发在「壁纸与音乐 →
-        壁纸层」、音源在「壁纸与音乐 → 音源」。
-        <!-- ⚠️⚠️ 这两句是 0.9.103 加的。用户 2026-08-02 连问三轮"这个到底要不要
-             授权"，而根因是**面板列了两条根本不需要授权的东西**（鼠标转发、
-             系统声音）⟹ 他照着去授权，授完还是"未授权"。
-             ⟹ 明确写出"哪些不需要"，那比列一堆"未授权"有用。 -->
-        <br><br>⚠️ <b>这两件事不需要任何授权</b>（实测过）：
-        <br>· <b>壁纸收鼠标点击</b>（流星那类特效）—— 全局监听不算辅助功能
-        <br>· <b>系统声音驱动壁纸</b> —— 走 CoreAudio 进程 tap，不要麦克风也不要屏幕录制
-      </p>
-    </div>
+    <!-- ⚠️⚠️ 这里原来是**权限面板**（0.9.90~0.9.104）—— **0.9.105 删了。**
+         用户 2026-08-02：「设置这里的权限展示还是有问题，删掉这里的展示吧，
+         没啥用，我们把功能调通就行」
+         理由见 main.js 里那段长注释：我改了六版还在错，而根因是这个面板回答的是
+         一个用户不需要问的问题（"你有什么权限" vs "我的功能能不能用"）。
+         ⚠️ 别再加回来 —— 要加之前先回答：用户看了它之后会做什么？ -->
 
     <!-- ╔═══════════════════════════════════════════════════════════════════╗
          ║  DEV-PANEL-START  —— 开发者/诊断模块（产品问世时整块删掉）        ║

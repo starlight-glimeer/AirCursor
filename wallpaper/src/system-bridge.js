@@ -319,7 +319,17 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
           broadcast('voice-status', { text: voiceStatus });
         } else if (phrase.startsWith("__AIRCURSOR_VOICE_HEARD__:")) {
           const heard = phrase.replace("__AIRCURSOR_VOICE_HEARD__:", "");
-          voiceStatus = `听到：${heard}`;
+          // ⚠️⚠️⚠️ **只留最后几个字**（0.9.105）。用户 2026-08-02 看到的是
+          //   「语音：听到：点点点点点」。
+          //
+          // macOS 的语音识别给的是**累积转写**（partial results）——
+          // 你一直说话，它就 "点" → "点点" → "点点点"…一路长下去。
+          // ⟹ 面板上那行会滚成一串重复字，看着像卡了/像 bug，
+          //   而实际识别是正常的。
+          // ⚠️ 而**长度本身也是问题**：一句长句会把状态行撑爆。
+          //   ⟹ 只显示尾部 20 个字（那是"我刚说的"），前面加省略号。
+          const tail = heard.length > 20 ? `…${heard.slice(-20)}` : heard;
+          voiceStatus = `听到：${tail}`;
           broadcast('voice-status', { text: voiceStatus });
         } else if (phrase === "__AIRCURSOR_VOICE_TAP__") {
           voiceStatus = "听到：短促确认";

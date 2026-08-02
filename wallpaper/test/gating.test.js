@@ -6136,353 +6136,105 @@ check('授权框里说的是 GestureWall，不是 AirCursor', () => {
     + '改它纯亏）');
 });
 
-// ⚠️⚠️⚠️ **权限面板**（0.9.90）。用户 2026-08-02：
-//   「把所有需要授权的放在设置里面一个权限面板里面，这个里面可以主动选择开启或者
-//     关闭…那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常生效了吧，
-//     关闭了呢那就是应该关掉了…都集中在一个面板上，我才方便看现在到底有权限没权限。
-//     这块儿你再给我来一个诊断面板…到底是不是真的有，我关了到底是不是真的关了？」
+// ⚠️⚠️⚠️ **权限面板删了，别加回来**（0.9.105）。用户 2026-08-02：
+//   「设置这里的权限展示还是有问题，删掉这里的展示吧，没啥用，
+//     我们把功能调通就行」
 //
-// **这个设计对**，而它的关键是**两种状态分开**：
-//   · 开关 —— 我们的 config（关了就真的不跑）
-//   · 授权 —— macOS 的 TCC（只能查，改不了）
-// 混在一起就是"面板显示开着但其实没权限"，那正是他信不过面板的原因。
-check('权限面板：只读三行 macOS 授权 / 查不到的不许猜 / 有去授权的路', () => {
+// **他说得对，而这是我改了六版还在错的东西：**
+//   0.9.90  建了它，六行，每行带我们自己的开关
+//   0.9.91  辅助功能两条合一条（他："为什么辅助功能有两个？"）
+//   0.9.94  撤子开关 + 删「自动化」那行（他："那你显示啥呢？删掉这块"）
+//   0.9.95  撤掉摄像头/麦克风的开关改只读（他："不是我们自己设置的开关"）
+//   0.9.102 辅助功能那行读错 helper，一直显示"未授权"（他："还是显示未授权"）
+//   0.9.103 删掉麦克风那行 —— 那条链根本不需要授权，是我编的
+//
+// ⚠️⚠️ 六版都是他指出来我才改，而每一版我都以为"这次对了"。
+//   根因不是某个字段写错，是**这个面板要回答的问题我一直没搞清**：
+//   它想说"你有什么权限"，而用户真正想知道的是"我的功能能不能用"。
+//   而探针最后证明这两件事在这个产品里**几乎不重合**：
+//   流星不需要授权、系统声音不需要授权，真正要授权的两条（摄像头 /
+//   手势控光标）**开了就会自己弹框** ⟹ 一个面板，六版，回答了一个
+//   用户不需要问的问题。
+//
+// ⟹ **判据：加一个"状态展示"之前先回答"用户看了它之后会做什么"。**
+//   如果答案是"什么都不用做"，那它就不该存在。
+check('权限面板已删（别再加回来）', () => {
   const src = codeOnly(mainSrc);
-
-  // ① 六条授权链都要在面板上 —— 漏一条就是"集中在一个面板"这件事没做到
-  const perms = src.slice(src.indexOf('const PERMISSIONS = ['),
-    src.indexOf('function permissionSnapshot'));
-  assert.ok(perms.length > 500, '切不出 PERMISSIONS ⟹ 断言失效');
-  for (const id of ['gestures', 'accessibility']) {
-    assert.ok(perms.includes(`id: '${id}'`), `权限面板漏了 ${id} ⟹ "都集中在一个面板"没做到`);
+  for (const gone of ['const PERMISSIONS = [', 'function permissionSnapshot',
+    "ipcMain.handle('permissions-read'", "ipcMain.handle('permissions-set'",
+    "ipcMain.handle('permissions-recheck'", "ipcMain.handle('permissions-open-pane'",
+    "ipcMain.handle('permissions-reveal-helper'"]) {
+    assert.ok(!src.includes(gone),
+      `${gone} 又回来了 ⟹ 权限面板改了六版还在错，用户点名删掉。`
+      + '要加之前先回答：用户看了它之后会做什么？');
   }
-  // ⚠️⚠️⚠️ **「麦克风（系统声音）」那条删了**（0.9.103）。用户 2026-08-02：
-  //   「我看到下面有个什么麦克风监听说是监听系统音频，那这个我现在也是监听音频啊，
-  //     他给我显示一个未查到怎么的就很奇怪」
-  //
-  // **他说得对。** 我给那行写的 auth 是 `getMediaAccessStatus('microphone')`，
-  // 而系统声音走的是 **CoreAudio 进程 tap**（`CATapDescription`）——
-  // 那条路**既不要麦克风、也不要屏幕录制**。
-  //
-  // ⚠️⚠️ 而这是 2026-08-01 我自己写探针在真机量过的，结论就记在
-  //   `native/GestureWallAudio.swift` 里（`tapErr: 0` +
-  //   `screenRecordingGranted: false` + 258 次回调 98% 非零）——
-  //   **自己量的、自己记的，然后在权限面板里又编了一个"要麦克风"。**
-  // ⟹ 判据：**权限面板里的每一行都必须是某条链真的会被 TCC 拦住的**，
-  //   不是"这个功能听起来像要什么权限"。
-  assert.ok(!perms.includes("id: 'audio'"),
-    '「麦克风（系统声音）」那行又回来了 ⟹ CoreAudio 进程 tap 不要麦克风也不要'
-    + '屏幕录制（2026-08-01 真机探针：tapErr 0 + screenRecordingGranted false）');
-  assert.ok(!/getMediaAccessStatus\('microphone'\)/.test(perms),
-    '权限面板又在查麦克风授权 ⟹ 没有任何一条链需要它');
-  // ⚠️ 语音那条 0.9.95 撤了（用户："语音识别这个能力呢给他撤掉吧，我们暂时先不做"）
-  assert.ok(!perms.includes("id: 'voice'"),
-    '语音那条又回来了 ⟹ 用户点名暂时不做，而它的授权状态本来就查不到');
-
-  // ⚠️⚠️⚠️ **这一栏只读：只显示 macOS 的授权，不放我们自己的开关**（0.9.95）。
-  //   用户 2026-08-02：「我的期望是权限很清晰展示，有啥权限，没啥权限
-  //     （mac 的那种，不是我们自己设置的开关，比如显示骨架这种，
-  //      这是我们应用内部的）」
-  //
-  // **他说得对，而这是我第三次在同一件事上跑偏**：把"我们的功能开关"和
-  // "macOS 的授权"混在一栏。三次分别是 subToggles（0.9.94 撤）、
-  // 自动化那行（0.9.94 删）、摄像头/麦克风那两个开关（0.9.95 撤）。
-  // ⟹ 判据：**每一行的 `on` 都必须是 null**（没有开关），
-  //   而 `permissions-set` 那条 IPC 整个不该存在。
-  assert.ok(!/get on\(\)/.test(perms),
-    '权限表里又出现 `get on()` ⟹ 那是在读我们自己的配置开关');
-  assert.ok(!/ipcMain\.handle\('permissions-set'/.test(src),
-    'permissions-set 又回来了 ⟹ 权限面板是只读的，改开关请走各自的 tab');
-  const dashRO = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  assert.ok(!/permissionsSet/.test(dashRO),
-    '面板又在调 permissionsSet ⟹ 那条 IPC 已经删了（会静默失败）');
-  // ⚠️⚠️⚠️ **「自动化（系统事件）」那条删了**（0.9.94）。用户 2026-08-02：
-  //   「你最下面那个什么自动化系统事件也是这样的，你来个总是需要、查不到，
-  //     那你显示啥呢？删掉这块」
-  //   **他说得对**：那一行给的全部信息是"总是需要"+"查不到" —— 没开关可点、
-  //   不知道状态、也没有任何要用户做的事 ⟹ 纯噪声。而它真没授权时的表现只是
-  //   "切桌面闪一下"，不影响功能 ⟹ 不值得占一行。
-  assert.ok(!perms.includes("id: 'appleEvents'"),
-    '「自动化」那条又回来了 ⟹ 它是"总是需要 + 查不到"的纯噪声（用户点名删掉）');
-
-  // ⚠️⚠️⚠️ **权限面板里不许放我们自己的功能开关**（0.9.94）。用户 2026-08-02：
-  //   「对于用户来说就是辅助功能吗？我点开了然后就 OK 了，你为什么还要分什么
-  //     转发给壁纸手势移动鼠标指针…手势移动鼠标指针这个不是我们 App 自己的
-  //     触发条件吗？…是我们自己又设了一套权限而已，那这种就没必要放在这里」
-  //
-  // **他说得对，而这是我把两件事混在一起了**：
-  //   · 辅助功能 = macOS 的授权，一个，给了就给了 ⟹ 这一栏该管的
-  //   · 鼠标转发 / 手势控光标 = 我们自己的功能开关 ⟹ 归「壁纸层」和「手势」tab
-  // ⟹ 判据：辅助功能那条**不许有 subToggles**，它的 `on` 是 null（系统授权
-  //   不是我们能开关的东西）。
-  assert.ok(!/subToggles/.test(perms),
-    '权限面板里又出现了我们自己的功能开关（subToggles）⟹ 那是「壁纸层」和'
-    + '「手势」tab 的事；这一栏只回答"这个系统授权给了没有"');
-  // ⚠️⚠️⚠️ **辅助功能只许有一条**（0.9.91）。用户 2026-08-02：
-  //   「为什么辅助功能有两个？我理解辅助功能不是有一个就行了」
-  //   **他说得对**：macOS 的辅助功能就是一个开关，勾了对所有程序生效。
-  //   我按"功能"拆成两行 ⟹ 同一个权限显示两遍、都说未授权、用户以为要给两次。
-  //   ⟹ 一条，两个功能开关挂在它底下（subToggles）。
-  const axPanes = (perms.match(/pane: 'Privacy_Accessibility'/g) || []).length;
-  assert.strictEqual(axPanes, 1,
-    `权限面板里有 ${axPanes} 条辅助功能 ⟹ 同一个系统授权显示多遍，`
-    + '用户以为要授权多次（他点名"不是有一个就行了"）');
-  // ⚠️ 这里原来断言"必须有 subToggles" —— **0.9.94 反过来了**（见上面那段）。
-  // ⚠️ 每一条都要有 pane（跳系统设置）和 listedAs（列表里叫什么名字）——
-  //   授权列表里显示的是 **helper 的二进制名**，不说的话用户找不到该勾哪一项。
-  // ⚠️ 不能数 `id: '` —— subToggles 里的子开关也是 `{ id: '…'` ⟹ 多算 2
-  //   （0.9.91 加子开关之后这条在正确代码上报红了）。
-  //   ⟹ 数**顶层**那些：顶层每条是行首缩进 4 空格的 `id:`，子开关是 `{ id:`。
-  const idCount = (perms.match(/^ {4}id: '/gm) || []).length;
-  const paneCount = (perms.match(/pane: '/g) || []).length;
-  const listedCount = (perms.match(/listedAs: '/g) || []).length;
-  assert.ok(idCount >= 2, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
-  // ⚠️⚠️ **每一行的 `on` 都必须是 null** —— 这一栏只读（见上面那段）。
-  const onCount = (perms.match(/^ {4}on: null,$/gm) || []).length;
-  assert.strictEqual(onCount, idCount,
-    `${idCount} 行里只有 ${onCount} 行是 on: null ⟹ 有的还带着我们自己的开关，`
-    + '而这一栏只该回答"macOS 给了什么权限"（功能开关归各自的 tab）');
-  assert.strictEqual(paneCount, idCount, `${idCount} 条权限只有 ${paneCount} 个 pane ⟹ 有的跳不到系统设置`);
-  assert.strictEqual(listedCount, idCount,
-    `${idCount} 条权限只有 ${listedCount} 个 listedAs ⟹ 用户在授权列表里找不到那一项`);
-
-  // ②⚠️⚠️⚠️ **辅助功能的授权状态只许来自 helper 自己上报**（0.9.91 修）。
-  //
-  // 用户 2026-08-02：「要么直接跟我说开着他没授权，要么我也不知道他到底有没有
-  //   作用…现在到底是没权限还是代码有问题」
-  //
-  // **面板骗了他，而这是我的 bug**：0.9.90 那版用
-  // `isTrustedAccessibilityClient` 查 —— 而它查的是**主应用（GestureWall）**，
-  // 而主应用**从来不需要**辅助功能，需要的是 helper（TCC 按可执行文件记）
-  // ⟹ 主应用永远 false ⟹ 面板永远显示"未授权"，**哪怕 helper 已经授权了**。
-  //
-  // ⟹ 判据：辅助功能那一条**不许**出现 isTrustedAccessibilityClient。
-  const axRow = perms.slice(perms.indexOf("id: 'accessibility'"),
-    perms.indexOf("id: 'audio'"));
-  assert.ok(axRow.length > 200, '切不出辅助功能那一条 ⟹ 断言失效');
-  assert.ok(!/isTrustedAccessibilityClient/.test(axRow),
-    '辅助功能的授权状态又拿 isTrustedAccessibilityClient 查了 ⟹ 那是**主应用**的，'
-    + '而主应用不需要这个权限 ⟹ 永远显示"未授权"（0.9.90 就是这么骗了用户）');
-  // ⚠️⚠️⚠️ **只许看 pointer helper 的 trusted**（0.9.102 修）。用户 2026-08-02：
-  //   「我看还是显示辅助功能未授权，这是什么没授权，还是出 bug 了，
-  //     以及需要这个辅助功能吗」
-  //
-  // **是 bug，而且我把需要它的那条链搞错了。** 探针（真机）证明：
-  //   · `GestureWallMouse`（`addGlobalMonitorForEvents` —— **监听**）
-  //     trusted: false 时照样抓到 148 个事件、页面收到 55 个 click ⟹ **不需要**
-  //   · `AirCursorPointer`（`CGEvent.post` —— **注入**）⟹ 必须要
-  //     （那个 .swift 里的注释写着 "without the Accessibility grant
-  //      CGEvent.post fails silently"）
-  // ⟹ 判据：**监听不需要，注入需要。**
-  //
-  // ⚠️ 而 0.9.91~0.9.101 这一栏读的是 `mouseStatus`（鼠标转发那个 helper）
-  //   ⟹ 永远显示"未授权"，而那个"未授权"对流星那条链毫无意义 ——
-  //   用户照着它去授权，授完还是"未授权"，来回三轮。
-  assert.ok(!/mouseStatus/.test(axRow),
-    '辅助功能那行又在读 mouseStatus（鼠标转发那个 helper）⟹ 它 trusted: false '
-    + '也能正常工作（探针实测 148 个事件），拿它当授权状态是错的');
-  assert.match(axRow, /systemBridge\.health/,
-    '不读 pointer helper 的 trusted ⟹ 那是唯一真需要这个授权的链');
-  // ⚠️ 而 `listedAs` 只该写 AirCursorPointer —— 写上 GestureWallMouse
-  //   会让用户去授一个不需要的权限（他已经这么白折腾过一轮）
-  assert.ok(!/listedAs: 'GestureWallMouse/.test(axRow),
-    'listedAs 还写着 GestureWallMouse ⟹ 那个 helper 不需要授权，'
-    + '让用户去列表里找它是白折腾');
-  // ⚠️ 而"壁纸收点击不需要这个授权"这条实测结论必须写在 what/unknownWhy 里 ——
-  //   不写的话用户看到"未授权"仍然会以为流星是因为这个不工作
-  assert.match(axRow, /不需要/,
-    '没说清"壁纸收鼠标点击不需要这个授权" ⟹ 用户看到未授权还会以为流星坏在这儿');
-  // ⚠️⚠️ 而 helper 没跑时必须返回 **unknown**，不许当成"未授权" ——
-  //   "不知道"和"没授权"的下一步动作完全不同。
-  assert.match(axRow, /return 'unknown'/,
-    'helper 没跑时没返回 unknown ⟹ 会把"不知道"显示成"未授权"，'
-    + '而用户会去给一个可能已经给过的授权');
-  // ⚠️ 别处（面板之外）查主应用授权仍然不许弹框
-  assert.ok(!/isTrustedAccessibilityClient\(true\)/.test(src),
-    'isTrustedAccessibilityClient(true) 会弹框 ⟹ 打开设置面板就弹，比原问题更糟');
-  // ⚠️⚠️ system-bridge 的 health() **不许**用主应用的查询覆盖 helper 上报的真值
-  const sbSrc = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
-  assert.ok(!/health: \(\) => \(\{ \.\.\.pointerHealth, trusted: refreshTrustState\(\) \}\)/.test(sbSrc),
-    'health() 又用 refreshTrustState() 覆盖 trusted ⟹ 那查的是主应用，'
-    + '会把 helper 上报的真值覆盖成 false（0.9.90 的根因之一）');
-  // ⚠️ helper 的 `ready` 消息也带 trusted —— 原来只读 pong，那要等一次 ping
-  assert.match(sbSrc, /message\.type === "ready" \|\| message\.type === "pong"/,
-    'pointer helper 的 ready 消息被扔掉了 ⟹ 它一启动就报了自身授权真值，'
-    + '只读 pong 的话在第一次 ping 之前面板只能显示错的');
-
-  // ③⚠️⚠️⚠️ **查不到真值的不许猜。**
-  //   语音识别（SFSpeechRecognizer 的状态 Electron 不暴露）和自动化
-  //   （查它的唯一办法是真发一个 AppleEvent，而那本身会弹框）——
-  //   这两条必须标 authQueryable: false 并给出"为什么查不到"。
-  //   ⚠️ 假装知道比说不知道糟得多：用户按面板做决定，而面板在骗他。
-  // ⚠️ 语音那两条断言删了 —— 那一行 0.9.95 整条撤掉（用户："暂时先不做"）。
-  // ⚠️ 这里原来有两条断言"自动化那行必须标 authQueryable: false" ——
-  //   **0.9.94 整条行都删了**（见上面那段：它是"总是需要 + 查不到"的纯噪声）。
-  //   ⟹ 断言的对象不存在了，删掉。而"不许加回来"那条已经在上面。
-  // ⚠️ 而 authQueryable: false 的那两条**不许有 auth 查询函数** ——
-  //   有的话迟早被人接上，然后就是"标着查不到、实际在猜"。
-  assert.ok(!/authQueryable: false,\s*\n\s*auth:/.test(perms),
-    '标了 authQueryable: false 却还留着 auth 查询函数 ⟹ 迟早被接上变成猜');
-
-  // ⚠️⚠️ 这里原来有一整段针对 `permissions-set` 的断言（"关了要真的关掉"、
-  //   每支都要 writeConfig、要 broadcast…）—— **0.9.95 整块删了**，
-  //   因为那条 IPC 本身撤掉了（权限面板改成只读，见上面那段）。
-  //   ⚠️ 而"关了要真的关掉"这个判据**没丢** —— 它现在归各自的入口：
-  //     `we-set-mouse-forward`（壁纸层那个开关）和 `set-gestures` 那些，
-  //     而它们本来就有自己的守卫。
-
-  // ⑤⚠️ 跳系统设置的那个 pane **必须白名单校验** ——
-  //   不校验的话这就是个"任意 URL scheme 打开器"（渲染进程能传任何字符串）。
-  const opener = src.slice(src.indexOf("ipcMain.handle('permissions-open-pane'"),
-    src.indexOf("ipcMain.handle('permissions-set'"));
-  assert.match(opener, /PERMISSIONS\.some\(\(p\) => p\.pane === pane\)/,
-    'permissions-open-pane 没校验 pane ⟹ 渲染进程能让它打开任意 URL scheme');
-
-  // ⑥⚠️⚠️⚠️ **必须有一条"去授权"的路**（0.9.92）。
-  //
-  // 0.9.87 我把所有会弹授权框的调用删干净了（用户连问六轮"别弹了"，那是对的）——
-  // **但那留下一个洞：现在没有任何东西会触发系统那个框**。而 helper 藏在
-  // `.app/Contents/Resources/prebuilt-helpers/` 里 ⟹ 用户在「辅助功能」列表点
-  // 「+」几乎不可能找到它（那个路径在 .app 包内部）⟹ 等于**要授权但没有路**。
-  //
-  // 用户 2026-08-02 的面板截图就是这个状态：「开着但没授权 ⟹ 这个功能现在是
-  // 不工作的」—— 面板说得对，但没告诉他**怎么办**。
-  assert.match(src, /ipcMain\.handle\('permissions-reveal-helper'/,
-    '没有"在 Finder 里找到 helper"这条路 ⟹ 0.9.87 删掉所有弹框之后，'
-    + '用户没有任何办法把 helper 加进辅助功能列表（要授权但没有路）');
-  const reveal = src.slice(src.indexOf("ipcMain.handle('permissions-reveal-helper'"),
-    src.indexOf('// 打开系统设置里对应的那一页'));
-  assert.ok(reveal.length > 300, `切不出 reveal（长度 ${reveal.length}）⟹ 断言失效`);
-  // ⚠️ `showItemInFolder` 而不是 `openPath` —— 前者高亮那个文件（用户看得到该拖哪个），
-  //   后者只是打开文件夹，里面 8 个文件还要自己找。
-  assert.match(reveal, /shell\.showItemInFolder/,
-    'reveal 用的不是 showItemInFolder ⟹ 只打开文件夹的话用户不知道该拖哪个'
-    + '（那个目录里有 8 个文件）');
-  // ⚠️⚠️ 名字必须走白名单 —— 渲染进程传进来的字符串不能直接拼路径
-  assert.match(reveal, /const names = \{/,
-    'reveal 没做名字白名单 ⟹ 渲染进程能让它在 Finder 里打开任意路径');
-  // ⚠️ 找不到时要说清为什么（最常见：那个功能还没开过，helper 从没被解压出来）
-  assert.match(reveal, /它要等对应功能第一次启动才会出现/,
-    'reveal 找不到时没说为什么 ⟹ 用户只看到"找不到"，不知道下一步');
-  // ⚠️ 而面板只在**真的需要**时露这个按钮（开着 + 没授权）——
-  //   一直露着就是又一个"正常使用不需要碰"的东西。
-  const dashEarly = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  // ⚠️⚠️ 这条 0.9.92 要求条件里带 `row.on` —— **0.9.94 去掉了那一项**：
-  //   辅助功能那条的 `on` 现在是 `null`（系统授权不是我们能开关的东西）
-  //   ⟹ 要求 on 为真的话按钮**永远不出现**，这一栏就又变成
-  //   "只告诉你不行、不告诉你怎么办"。
-  assert.match(dashEarly, /row\.revealHelper && row\.auth !== 'granted'/,
-    '"去授权"按钮的显示条件不对 ⟹ 该在"没授权/查不到"时出现（而 on 已经是 null）');
-  // ⚠️⚠️ 这条 0.9.92 断言的是"必须说要退出重开**整个应用**" —— **0.9.93 翻了**。
-  //   用户：「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接就生效」
-  //   **他说得对** —— 那条 macOS 规则只针对**那个进程**，而 helper 是子进程
-  //   ⟹ 杀掉重启就够了。⟹ 判据改成"必须给一个重启 helper 的按钮"。
-  assert.match(dashEarly, /③ 授权完了，重新检测/,
-    '没有"授权完重新检测"那个按钮 ⟹ 用户只能退出重开整个应用，'
-    + '而那是多余的（helper 是子进程，杀掉重启就够）');
-
-  // ⑦⚠️⚠️⚠️ **授权完不用退出整个应用**（0.9.93）。用户 2026-08-02：
-  //   「退出去重新打开这个操作本身就不合理，应该是我授权，然后直接就生效」
-  //
-  // **他说得对。** macOS 那条"授权对已经在跑的进程不生效"是真的，但它只针对
-  // **那个进程** —— 而 helper 是我们 spawn 的子进程 ⟹ **杀掉重启一个就够了**。
-  // 我上一版让他退出重开整个应用是多余的。
-  assert.match(src, /ipcMain\.handle\('permissions-recheck'/,
-    '没有"重启 helper 再检测"这条路 ⟹ 用户每次授权都得退出重开整个应用'
-    + '（他点名"这个操作本身就不合理"）');
-  const recheck = src.slice(src.indexOf("ipcMain.handle('permissions-recheck'"),
-    src.indexOf("ipcMain.handle('permissions-open-pane'"));
-  assert.ok(recheck.length > 200, `切不出 recheck（长度 ${recheck.length}）⟹ 断言失效`);
-  // ⚠️ 必须**先杀掉** —— syncMouseForward 里 `if (mouseTap) return` 会让
-  //   "已经在跑"直接返回，不清的话压根不会重新 spawn（那就是静默无效）。
-  assert.match(recheck, /if \(mouseTap\) \{ mouseTap\.stop\(\); mouseTap = null; \}/,
-    'recheck 没先杀掉 helper ⟹ syncMouseForward 会因为"已经在跑"直接返回，'
-    + '什么都不做（静默无效）');
-  // ⚠️ 旧状态要清 —— 不清的话面板拿旧的 trusted 显示，就是"重启了但显示没变"
-  assert.match(recheck, /mouseStatus = null/,
-    'recheck 没清掉旧的 mouseStatus ⟹ 面板会显示上一轮的授权状态');
-  // ⚠️ 要等 helper 启动+上报 —— 立刻读必然是旧值
-  assert.match(recheck, /setTimeout/,
-    'recheck 不等 helper 上报就返回 ⟹ 读到的必然还是旧值，用户以为没生效');
-  // ⚠️⚠️⚠️ **重启不了要说出来**（0.9.94）。用户 2026-08-02：
-  //   「我授权完了，然后你这边显示还是未授权」
-  // 上一版**无论有没有真的重启都返回 `ok: true`** —— 而 syncMouseForward 的
-  // `need` 要求 `weProject`（必须装载了壁纸）⟹ 没装载时点③ helper 压根不会起来，
-  // 徽章当然是旧的，而面板一声不响。**那就是"静默无效"**，栽过最多次的形状。
-  assert.match(recheck, /if \(!weProject\)/,
-    'recheck 不判"有没有装载壁纸" ⟹ 没装载时 helper 不会启动，'
-    + '而它照样返回成功（静默无效，用户点了③什么都不知道）');
-  assert.match(recheck, /if \(!config\.we\.mouseForward\)/,
-    'recheck 不判"转发开关开没开" ⟹ 同上');
-  assert.match(recheck, /if \(!mouseTap\)/,
-    'recheck 不确认 helper 真的起来了 ⟹ 编译失败/不可执行时又是一次静默成功');
-  // ⚠️ 而失败原因必须**显示在面板上**，不能只写 logLine（那在「?」页里，
-  //   用户点了③什么反应都没有 ⟹ 以为"点了没用"）。
-  const dashRecheck = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  assert.match(dashRecheck, /③ 没能重启 helper：/,
-    '③ 失败时没把原因显示在面板上 ⟹ 用户只看到徽章没变，不知道为什么');
-
-  // ⚠️⚠️ **面板必须说清"给 GestureWall 授权是不够的"**。
-  //   `codesign` 证明 helper 是独立的 TCC 身份（Identifier=GestureWallMouse-5555…、
-  //   TeamIdentifier=not set）⟹ 主应用的授权覆盖不到它。而用户正是这么试的：
-  //   「我直接打开这个隐私与安全辅助功能，这个按钮它里面就有这个 Wall 软件啊，
-  //     我给他授权了」—— 而那不管用，面板得先告诉他。
-  const dashAx = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  assert.match(dashAx, /给 GestureWall 授权是不够的/,
-    '面板没说"给 GestureWall 授权不够" ⟹ 用户会在列表里给主应用授权然后发现没用'
-    + '（他已经这么试过一次了）');
-  assert.match(dashAx, /不需要退出整个应用/,
-    '面板还在让用户退出整个应用 ⟹ 只需要重启 helper');
-  // ⚠️ 而安装脚本里那句"把 GestureWall 删掉再加回来"是**错的**，不许回来
-  for (const sh of ['install-dmg.sh', 'build-mac.sh']) {
-    const body = fs.readFileSync(path.join(__dirname, '..', 'scripts', sh), 'utf8')
-      .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
-    assert.ok(!/把 GestureWall 删掉再加回来/.test(body),
-      `${sh} 又在说"把 GestureWall 删掉再加回来" ⟹ 那是错的（授权按可执行文件记）`);
-    // ⚠️⚠️⚠️ **不许再让用户去授权 GestureWallMouse**（0.9.104）。
-    //   真机探针（2026-08-02）证明它**不需要任何授权**：trusted: false 的同时
-    //   抓到 148 个鼠标事件、页面收到 55 个 click。
-    //   ⟹ 那句话让用户白折腾了三轮（他在辅助功能列表里拖文件、重开应用、
-    //     反复问"到底要不要这个权限"）。
-    // ⚠️ 而 0.9.89 起 helper 名字不带 hash ⟹ 重装也不会让授权失效，
-    //   "重装之后授权要重给"那句同样是过时的。
-    assert.ok(!/授权.{0,6}GestureWallMouse/.test(body),
-      `${sh} 又在让用户授权 GestureWallMouse ⟹ 探针证明那个 helper 不需要授权`
-      + '（trusted: false 时照样抓到 148 个事件），让他去授是白折腾');
-    assert.ok(!/重新装过之后授权可能要重给/.test(body),
-      `${sh} 还说"重装之后授权要重给" ⟹ 0.9.89 起 helper 名字不带 hash，`
-      + '路径稳定、授权不会失效');
-  }
-
-  // ⑧ 面板那边：三个接口 + DOM 容器 + 每次打开重查
+  // ⚠️ 面板那边也要清干净 —— 留着渲染函数就是一个调不到的死通道
   const dash = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.ok(!/renderPermissions|permissionsRead|permissionsRecheck/.test(dash),
+    '面板还留着权限面板的渲染/调用 ⟹ 那些 IPC 已经删了，调用会静默失败');
+  const pre = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'preload.js'), 'utf8'));
+  assert.ok(!/permissions/.test(pre), 'preload 还暴露着 permissions* ⟹ 没人接了');
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
-  assert.match(html, /id="perm-rows"/, '设置弹窗里没有权限面板的容器');
-  assert.match(dash, /function renderPermissions/, '面板没有渲染权限的函数');
-  // ⚠️⚠️ **每次打开设置都重查** —— 用户可能刚在系统设置里改过，而那件事
-  //   我们收不到任何通知。缓存的话面板显示的是历史，
-  //   而"面板说有权限、实际没有"正是用户信不过它的原因。
-  assert.match(dash, /function openSettingsModal\(\)[\s\S]{0,600}?renderPermissions\(\)/,
-    '打开设置时没重查权限 ⟹ 显示的是上次的状态（用户刚在系统设置里改过就不对了）');
-  // ⚠️⚠️ 这里原来两条针对"点开关"的断言（点完要重查 / 失败要提示）——
-  //   **0.9.95 删了**，因为权限面板改成只读，那些开关不在这儿了。
-  //   ⚠️ 而"失败不许静默"这个判据**没丢**：它现在盯的是 ③ 那个按钮
-  //     （上面 `③ 没能重启 helper：` 那条）。
-  // ⚠️⚠️ helper 和主应用授权不一致时要**明确说出来** ——
-  //   TCC 按可执行文件记，主应用授权了、helper 没有 ⟹ 功能是死的，
-  //   而那正是用户这几轮一直撞到的状态。
-  assert.match(dash, /row\.helperAuth !== row\.auth/,
-    '不比较 helper 和主应用的授权 ⟹ "主应用授权了但 helper 没有"这个状态看不出来，'
-    + '而那正是"我明明开了却不工作"的来源');
-  // ⚠️ 开发模式下这些读数没有意义（跑的是 node_modules 里的 Electron）—— 要说清
-  assert.match(dash, /out\.packaged/,
-    '面板不区分开发模式 ⟹ npm start 下看到一堆"未授权"会以为是 bug');
+  assert.ok(!/id="perm-rows"/.test(html), 'HTML 里还有权限面板的容器');
+
+  // ⚠️⚠️ 而**那两条真需要授权的链要留着自己的解释** —— 删面板不等于
+  //   把"为什么不工作"也删了。摄像头和辅助功能各自的诊断段必须还在。
+  assert.match(dash, /没有辅助功能授权/,
+    '面板不再解释"没有辅助功能授权" ⟹ 手势控光标不工作时用户没有任何线索');
+});
+
+// ⚠️⚠️⚠️ **语音：能说什么必须列出来**（0.9.105）。用户 2026-08-02：
+//   「我在手势录制之类点击语音命令，结果出来这个『语音：听到：点点点点点』
+//     没有反应」
+//
+// **他说得对，而根因是面板从来没说过能说什么** —— 只有一个开关和一行"听到：xxx"。
+// 他对着麦克风说话、看到识别成功了、然后什么都没发生 ⟹ 以为功能坏了。
+// 而实际是他说的词不在能匹配的那六条里。
+// ⚠️ **一个只认六个词的功能，不列出那六个词 = 不可用。**
+//
+// ⚠️ 而「点点点点点」本身是另一件事：macOS 给的是**累积转写**
+//   （partial results，一直说就一路长下去）⟹ 状态行滚成一串重复字，
+//   看着像卡了，而识别是正常的。
+check('语音：面板列出能说的词 / 累积转写要截尾 / 没匹配上要给出路', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const src = codeOnly(mainSrc);
+
+  // ① 面板要列出命令，而且**每一条都要和代码里的 VOICE_PATTERNS 对得上** ——
+  //    列了一个代码不认的词比不列更糟（用户会一直试那个词）。
+  assert.match(html, /id="voice-cmds"/, '面板没有语音命令清单 ⟹ 用户不知道能说什么');
+  const patterns = src.slice(src.indexOf('const VOICE_PATTERNS = ['),
+    src.indexOf('function handleVoiceText'));
+  assert.ok(patterns.length > 100, '切不出 VOICE_PATTERNS ⟹ 断言失效');
+  for (const word of ['网易云', '浏览器', '访达', '暂停', '下一首']) {
+    assert.ok(patterns.includes(word),
+      `代码里的 VOICE_PATTERNS 不认「${word}」，而面板列了它 ⟹ 用户会一直试一个没用的词`);
+    assert.ok(html.includes(word),
+      `面板没列「${word}」，而代码认它 ⟹ 一个能用的命令用户不知道`);
+  }
+  // ⚠️ 清单要跟着开关显隐 —— 常驻的话它就是又一块噪声
+  const dash2 = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // ⚠️ 不能只查 `voice-cmds` 出现过 —— 删掉赋值那行，getElementById 里那个
+  //   字符串还在 ⟹ 断言照样绿（反向验证第 ⑨ 条逮到）。第 15 次栽在锚点太弱。
+  //   ⟹ 锚**真正让它显示出来**的那一句。
+  assert.match(dash2, /if \(cmds\) cmds\.hidden = !v;/,
+    '命令清单没跟着开关显隐 ⟹ 它永远 hidden，等于没加');
+
+  // ②⚠️ 累积转写要截尾，否则状态行滚成"点点点点点…"
+  const sb = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  assert.match(sb, /heard\.length > 20 \? `…\$\{heard\.slice\(-20\)\}`/,
+    '"听到：xxx"没截尾 ⟹ macOS 给的是累积转写，一直说就滚成一串重复字'
+    + '（用户看到的"点点点点点"）');
+
+  // ③⚠️ "没匹配上"必须给出路 —— 只说"你说错了"不说什么是对的等于没说
+  assert.match(src, /没匹配上「/, '"没匹配上"的提示没改 ⟹ 该带上能说什么');
+  const noMatch = src.slice(src.indexOf('const hit = VOICE_PATTERNS.find'),
+    src.indexOf('const result = runSystemAction'));
+  assert.match(noMatch, /网易云 \/ 浏览器/,
+    '"没匹配上"时没列出能说的词 ⟹ 用户只知道自己错了，不知道什么是对的');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
