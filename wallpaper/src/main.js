@@ -449,12 +449,36 @@ const defaultConfig = {
     //
     // ⚠️ region/model 有默认值（能直接用），**只有 apiKey 必须用户自己填** ——
     //   那是唯一的凭证，也是这个功能唯一的门槛。
+    // ⚠️⚠️ **默认走 DeepSeek**（0.9.124，从 Bedrock 换过来）。
+    //   用户 2026-08-02：「我填了 deepseek 的 api key 然后呢」
+    //
+    // ⚠️ 换掉 Bedrock 的理由不是"Bedrock 不好"，是**拿到 key 的门槛**：
+    //   Bedrock 要 AWS 账号 → 申请模型访问权（可能等审批）→ 区域对上 → 建 key，
+    //   而 DeepSeek 注册完就能建。而这个功能的门槛应该只有"填一个 key"。
+    // ⚠️ 而我云端实测用的是 Bedrock（那是 Claude Code 注给云端进程的凭证，
+    //   **不是用户的**，也不该长期绑进桌面应用）⟹ 用户必须有一个属于自己的 key。
+    //
+    // ⚠️⚠️ base URL **不带 `/v1`** —— 这是用户贴的 DeepSeek 官方文档说的
+    //   （`base_url (OpenAI) = https://api.deepseek.com`）。
+    //   而 llm.js 拼的是 `{base}/chat/completions` ⟹ 最终
+    //   `https://api.deepseek.com/chat/completions`（已验证拼装结果）。
+    //   ⚠️ 我原来在 llm.js 的提示文案里写的是"要带到版本号，例如 .../v1" ——
+    //     那是 OpenAI 自己的形状，**照搬到 DeepSeek 上是错的**。
+    //
+    // ⚠️ 模型名同样来自那份文档：`deepseek-v4-flash` / `deepseek-v4-pro`。
+    //   默认用 flash —— 生成壁纸这件事一轮就一万来个 token，
+    //   而 flash 便宜得多；不够好再换 pro（改 config 一行）。
     ai: {
-      provider: 'bedrock',
-      region: 'us-west-2',
+      // ⚠️ `provider` 留着（llm.js 两支都实现了、都有测试）——
+      //   面板上不给选，但换一家只是改这几个字段。
+      provider: 'openai',
+      baseUrl: 'https://api.deepseek.com',
       // ⚠️ 绝对不许在这里写任何 key。默认 null = "用户还没填"。
       apiKey: null,
-      model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      model: 'deepseek-v4-flash',
+      // ⚠️ region 只有 Bedrock 那支用得上。留着字段（不然切回去要改两处），
+      //   但它对 openai 那支没有意义。
+      region: 'us-west-2',
     },
     // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
     // 这里是"我从别处拿到的壁纸放在哪"。
@@ -744,6 +768,32 @@ function migrateConfig(cfg) {
     changed = true;
     console.log('[config] 迁移：音源 off → system'
       + '（默认值改了；采集只在壁纸真的要音频时才启动）');
+  }
+
+  // ⚠️⚠️ **AI 提供方从 bedrock 迁到 deepseek**（0.9.124）。
+  //
+  // ⚠️ 为什么必须显式迁移：0.9.123 装过一次之后，磁盘上的 config 里已经存了
+  //   `provider: 'bedrock'` + Bedrock 的模型 ID ——而 `mergeConfig` 会**保留
+  //   用户存过的值**（那是对的：用户改过的设置不该被新版本覆盖）
+  //   ⟹ 光改 defaultConfig 对存量用户**完全无效**。
+  //   这个项目为同一件事栽过（we.strategy 那次三个现象一个根因）。
+  //
+  // ⚠️⚠️ 而判据是"**这个值是从没选过还是主动选的**"：
+  //   0.9.123 到 0.9.124 之间**面板上没有任何地方能选提供方**
+  //   ⟹ 磁盘上的 'bedrock' 100% 是旧默认值，不可能是用户的选择
+  //   ⟹ 迁移它是安全的。
+  // ⚠️ 但 **apiKey 一个字都不动** —— 那是用户自己填的东西。
+  //   （而 Bedrock 的 key 在 DeepSeek 上会返回 401，
+  //     那条错误 llm.js 会说"API key 填错了或者过期了"—— 说得对。）
+  const ai = we.ai || {};
+  if (ai.provider === 'bedrock' && String(ai.model || '').includes('anthropic')) {
+    ai.provider = 'openai';
+    ai.baseUrl = 'https://api.deepseek.com';
+    ai.model = 'deepseek-v4-flash';
+    we.ai = ai;
+    changed = true;
+    console.log('[config] 迁移：AI 提供方 bedrock → deepseek'
+      + '（Bedrock 要申请模型访问权，门槛太高；apiKey 保持不动）');
   }
 
   cfg.we = we;

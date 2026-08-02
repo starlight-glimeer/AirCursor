@@ -522,6 +522,57 @@ check('HTTP 错误要说"该动哪里"，不是只给个状态码', () => {
     '服务端返回的原文没带上');
 });
 
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ 默认配置 + 存量迁移（0.9.124：bedrock → deepseek）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02：「我填了 deepseek 的 api key 然后呢」
+// ⚠️ 换掉 Bedrock 的理由是**拿到 key 的门槛**（AWS 账号 → 申请模型访问权 →
+//   区域对上 → 建 key），不是 Bedrock 不好。
+//
+// ⚠️⚠️ 而**光改 defaultConfig 对存量用户无效** —— `mergeConfig` 会保留用户
+//   存过的值（那是对的），而 0.9.123 装过一次就已经把 bedrock 写进磁盘了。
+//   ⟹ 必须有显式迁移。这个项目为同一件事栽过（we.strategy 那次）。
+check('默认走 DeepSeek，且 base URL 不带 /v1（官方文档的形状）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const at = main.indexOf('    ai: {');
+  assert.ok(at > 0, 'defaultConfig 里找不到 ai 块 —— 锚点变了，这条守卫要跟着改');
+  const block = main.slice(at, at + 700);
+  assert.match(block, /provider: 'openai'/, '默认提供方不是 openai 兼容那支');
+  // ⚠️ 锚定"不带 /v1" —— DeepSeek 官方文档写的是 https://api.deepseek.com。
+  //   加了 /v1 的症状是 404，而那看起来像"地址填错了"。
+  assert.match(block, /baseUrl: 'https:\/\/api\.deepseek\.com'/,
+    'DeepSeek 的 base URL 不对 —— 官方文档是 https://api.deepseek.com（**不带 /v1**）');
+  assert.match(block, /model: 'deepseek-v4-flash'/, '默认模型不是 deepseek-v4-flash');
+  assert.match(block, /apiKey: null/, 'apiKey 的默认值必须是 null（绝不许硬编码 key）');
+});
+
+check('URL 拼装：DeepSeek 的 base URL 拼出正确端点', () => {
+  // ⚠️ 这条直接验"配置 + 拼装"这条链的产物，而不是只看配置字符串对不对
+  const r = LLM.buildRequest({
+    provider: 'openai', baseUrl: 'https://api.deepseek.com',
+    apiKey: 'K', model: 'deepseek-v4-flash',
+  }, [{ role: 'user', content: 'x' }]);
+  assert.strictEqual(r.url, 'https://api.deepseek.com/chat/completions',
+    'DeepSeek 的端点拼错了');
+});
+
+check('存量迁移：磁盘上存着 bedrock 的会被换成 deepseek，但 apiKey 不动', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const at = main.indexOf('function migrateConfig');
+  assert.ok(at > 0, '找不到 migrateConfig');
+  const body = main.slice(at, main.indexOf('\n}', at));
+  assert.match(body, /ai\.provider === 'bedrock'/,
+    'migrateConfig 里没有把存量的 bedrock 迁走 ⟹ 0.9.123 装过的人改了默认值也没用'
+    + '（mergeConfig 会保留他们存过的 bedrock）');
+  assert.match(body, /ai\.model = 'deepseek-v4-flash'/, '迁移没换模型名');
+  // ⚠️⚠️ **apiKey 一个字都不许动** —— 那是用户自己填的东西。
+  //   迁移的边界是"旧默认值"，不是"用户的数据"。
+  const migLines = body.slice(body.indexOf("ai.provider === 'bedrock'"));
+  assert.ok(!/ai\.apiKey\s*=/.test(migLines),
+    '迁移里动了 apiKey —— 那是用户自己填的，迁移只该改旧默认值');
+});
+
 check('⚠️ 这个仓里不许出现任何真凭证', () => {
   // ⚠️⚠️ 用户 2026-08-02：「这些东西肯定是不能上传 GitHub 的」
   //   ⟹ 凭证只在 userData/config.json（仓外）。这条守卫盯着代码里没有硬编码。

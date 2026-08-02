@@ -43,8 +43,14 @@ const PROVIDERS = {
     id: 'openai',
     label: 'OpenAI 兼容',
     fields: ['baseUrl', 'apiKey', 'model'],
-    hint: 'base URL 要带到版本号，例如 https://api.deepseek.com/v1。'
-      + 'DeepSeek / 硅基流动 / OpenRouter / 自建代理都走这一支',
+    // ⚠️⚠️ 这条文案我写错过：原本写的是「base URL **要带到版本号**，例如
+    //   `https://api.deepseek.com/v1`」——而那是 **OpenAI 自己的形状**，
+    //   照搬到 DeepSeek 上是错的：它的官方文档写的是
+    //   `base_url (OpenAI) = https://api.deepseek.com`（**不带 /v1**）。
+    //   ⟹ 判据：别把一家的路径习惯当成"OpenAI 兼容"这个协议的一部分。
+    //     `/v1` 在不在是各家自己定的，而拼错的症状是 404 —— 那看起来像"地址填错了"。
+    hint: 'base URL 照各家文档原样填 —— DeepSeek 是 https://api.deepseek.com（不带 /v1），'
+      + 'OpenAI 官方和多数代理是 .../v1。硅基流动 / OpenRouter / Kimi 都走这一支',
   },
 };
 
@@ -154,8 +160,10 @@ function explainHttpError(status, bodyText) {
     401: '凭证不对（401）—— API key 填错了或者过期了',
     403: '没权限（403）—— key 是对的但没开这个模型的访问权限。'
       + 'Bedrock 要在控制台的「模型访问」里申请开通对应模型',
+    // ⚠️ 不要说"要带到版本号" —— 各家不一样（DeepSeek 不带 /v1，OpenAI 带）。
+    //   说错的话用户会去加一个本来不该有的 /v1，然后 404 变成另一个 404。
     404: '地址不对（404）—— base URL 或模型 ID 写错了。'
-      + 'base URL 要带到版本号（例如 .../v1）',
+      + 'base URL 要和你那家的文档一字不差（有的带 /v1、有的不带）',
     413: '请求太大（413）—— 提示词或者回喂的代码超了这个网关的上限',
     429: '被限流（429）—— 等一会儿再试，或者换个模型/区域',
   };
