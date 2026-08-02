@@ -202,7 +202,7 @@ echo "⑧ 应用**自己**在跑的那个 helper（⑤ 测的是探针启动的�
 #   ⟹ `pgrep -x` 精确匹配**进程名**。
 RUNNING=$(pgrep -x GestureWallMouse 2>/dev/null || true)
 if [ -n "$RUNNING" ]; then
-  echo "   ${PASS}应用的 helper 在跑（pid $RUNNING）"
+  echo "   ${PASS}应用的 helper 在跑（pid ${RUNNING}）"
   # ⚠️ 把它的完整路径打出来 —— 要确认是 .app 里那个，不是 userData 下的旧编译产物
   ps -o command= -p "$RUNNING" 2>/dev/null | sed 's/^/      /'
 else
@@ -216,7 +216,7 @@ echo "   —— GestureWall 自己在跑吗 ——"
 # ⚠️ 同上：`-x` 精确匹配进程名（主进程就叫 GestureWall）
 GW=$(pgrep -x GestureWall 2>/dev/null || true)
 if [ -n "$GW" ]; then
-  echo "      ${PASS}GestureWall 在跑（pid $GW）"
+  echo "      ${PASS}GestureWall 在跑（pid ${GW}）"
 else
   echo "      ${WARN}GestureWall 没在跑 ⟹ ⑦ 读到的配置是上次退出时的状态，"
   echo "         而 ⑧ 当然也是 ❌。⟹ **先打开应用再跑这个探针**"
