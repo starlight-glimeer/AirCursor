@@ -497,6 +497,60 @@ check('响应解析：OpenAI 的形状', () => {
   assert.strictEqual(out.text, '通了');
 });
 
+// ---------------------------------------------------------------------------
+// ⚠️⚠️⚠️ 推理模型的 reasoning_content —— **真事故**（0.9.125）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02 实测：「测一下」通了（模型回了「通了」），
+// 而生成壁纸报「模型没返回内容（choices[0].message.content 是空的）」。
+//
+// ⚠️ **那两件事同时成立就是这个形状的指纹**：探针只要几个 token（够写完
+//   "通了"），而生成要上万 —— 如果预算在"还在思考"的阶段就烧完了，
+//   `content` 是空字符串、`reasoning_content` 满的、`finish_reason=length`。
+//
+// ⚠️⚠️ 而**我第一版的报错把唯一有用的信息全丢了** —— 只说"content 是空的"，
+//   没有 finish_reason、没说有没有 reasoning_content、没有 token 数
+//   ⟹ 我只能去猜原因。
+//   ⟹ 判据：**一个不带证据的报错，等于把排查成本转给下一轮猜测。**
+check('推理模型：content 空而 reasoning_content 满 ⟹ 要说清是"思考烧完了预算"', () => {
+  let msg = '';
+  try {
+    LLM.parseResponse('openai', {
+      choices: [{
+        message: { content: '', reasoning_content: '让我想想这个壁纸该怎么写…'.repeat(20) },
+        finish_reason: 'length',
+      }],
+      usage: { prompt_tokens: 1200, completion_tokens: 16000 },
+    });
+  } catch (e) { msg = e.message; }
+  assert.match(msg, /reasoning_content|思考/,
+    '没提到 reasoning_content —— 那是这次失败唯一的线索，而报错里不说的话没人查得到');
+  assert.match(msg, /length/, '没带上 finish_reason');
+  assert.match(msg, /16000/, '没带上 token 用量 —— 那是"预算烧在哪了"的直接证据');
+  // ⚠️ 而**不许把思考过程当正文返回** —— 那里面没有完整 HTML，
+  //   当正文用的话会一路走到"写进文件然后白屏"。
+  assert.ok(!/^让我想想/.test(msg), 'reasoning_content 被当成正文了');
+});
+
+check('推理模型：reasoning 也没有时，把 message 的字段名列出来', () => {
+  // ⚠️ 那是"这家的响应形状和我们预期的不一样"唯一能带回来的线索
+  let msg = '';
+  try {
+    LLM.parseResponse('openai', {
+      choices: [{ message: { role: 'assistant', 某个新字段: 'x' }, finish_reason: 'stop' }],
+    });
+  } catch (e) { msg = e.message; }
+  assert.match(msg, /某个新字段/,
+    '没列出 message 里实际有哪些字段 ⟹ 换一家网关时无从下手');
+});
+
+check('OpenAI 兼容：正文包在 content 数组里也认（Anthropic 形状漏过来）', () => {
+  const out = LLM.parseResponse('openai', {
+    choices: [{ message: { content: [{ type: 'text', text: '正文' }] }, finish_reason: 'stop' }],
+  });
+  assert.strictEqual(out.text, '正文', '数组形式的 content 没兜住');
+});
+
 check('响应解析：200 但没内容要报人话（不是 TypeError）', () => {
   // ⚠️ 裸访问 data.content[0].text 会抛
   //   "Cannot read properties of undefined" —— 那对用户毫无意义

@@ -137,9 +137,56 @@ function parseResponse(provider, data) {
   }
   const choice = data.choices && data.choices[0];
   if (!choice) throw new Error('响应里没有 choices');
-  const text = choice.message && choice.message.content;
-  if (!text) throw new Error('模型没返回内容（choices[0].message.content 是空的）');
-  return { text, stopReason: choice.finish_reason || null };
+  const msg = choice.message || {};
+  // ⚠️⚠️⚠️ **推理模型把思考过程放在 `reasoning_content`、正文放 `content`**
+  //   （DeepSeek 的 deepseek-reasoner / V4 系列、以及多数走 OpenAI 兼容协议的
+  //   推理模型都是这个形状）。
+  //
+  // ⚠️ 而那导致一种**很难查的失败**：如果 token 预算在"还在思考"的阶段就用完了，
+  //   `content` 是**空字符串**而 `reasoning_content` 满的，`finish_reason` 是
+  //   `length` ⟹ 症状是"200 成功但没内容"。
+  //   ⟹ 用户 2026-08-02 实测就撞到这个：探针（只要几个 token）通了、
+  //     而生成壁纸（要上万 token）返回空。**两件事同时成立正是这个形状的指纹。**
+  //
+  // ⚠️ 所以这里**不能只看 content** —— 但也**不能拿 reasoning_content 当正文**
+  //   （那是思考过程，里面没有完整 HTML）。⟹ 只用它来把报错说清楚。
+  let text = typeof msg.content === 'string' ? msg.content : '';
+  // ⚠️ 有的网关把正文包在 content 数组里（`[{type:'text',text:'…'}]`）——
+  //   Anthropic 风格的形状漏到 OpenAI 兼容端点上。⟹ 顺手兜住。
+  if (!text && Array.isArray(msg.content)) {
+    text = msg.content.filter((c) => c && (c.type === 'text' || c.text))
+      .map((c) => c.text || '').join('');
+  }
+  const finish = choice.finish_reason || null;
+  if (!text) {
+    // ⚠️⚠️ 报错**必须带上现场** —— 我第一版只说"content 是空的"，
+    //   而那句话把唯一有用的信息（finish_reason、有没有 reasoning_content、
+    //   花了多少 token）全丢了 ⟹ 我只能去猜原因。
+    //   ⟹ 判据：**一个不带证据的报错等于把排查成本转给下一轮猜测。**
+    const reasoning = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
+    const usage = data.usage || {};
+    const parts = [`模型返回 200 但正文是空的（finish_reason=${finish || '?'}）`];
+    if (reasoning) {
+      // ⚠️ 这是最常见的一种，而它有明确的下一步 ⟹ 直接说该怎么办。
+      parts.push(`\n⚠️ 但它有 ${reasoning.length} 字的 reasoning_content（思考过程）`
+        + '—— 说明**预算在思考阶段就用完了**，正文还没开始写。'
+        + '\n⟹ 这个模型是推理型的，不适合一次生成上千行代码。'
+        + '换一个非推理模型（deepseek-chat 那类），或者把描述写简单点。');
+      parts.push(`\n它思考的开头：${reasoning.slice(0, 200)}`);
+    } else if (finish === 'length') {
+      parts.push('\n⚠️ finish_reason=length ⟹ 被 token 上限截断，'
+        + '而截断的位置在正文之前。把描述写简单点，或者换个模型。');
+    } else {
+      // ⚠️ 都不是的话把消息对象的键列出来 —— 那是"这家的响应形状和我们
+      //   预期的不一样"唯一能带回来的线索。
+      parts.push(`\nmessage 里有这些字段：${Object.keys(msg).join(', ') || '（空）'}`);
+    }
+    if (usage.completion_tokens !== undefined) {
+      parts.push(`\ntoken：输入 ${usage.prompt_tokens ?? '?'}、输出 ${usage.completion_tokens}`);
+    }
+    throw new Error(parts.join(''));
+  }
+  return { text, stopReason: finish };
 }
 
 // ---------------------------------------------------------------------------
