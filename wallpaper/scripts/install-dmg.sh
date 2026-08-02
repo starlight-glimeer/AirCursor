@@ -135,14 +135,19 @@ print(d.get("CFBundleShortVersionString", "?"))
 ' 2>/dev/null || echo "?")
 echo "   版本 $VER"
 echo ""
-echo "⚠️ **重新装过之后授权可能要重给** —— 辅助功能/屏幕录制是按二进制路径挂的。"
-echo "   症状：鼠标转发不工作（面板会说「零事件」）。"
-# ⚠️⚠️ 这句原来写"把 GestureWall 删掉再加回来" —— **错的**（0.9.93）。
-# `codesign` 证明 helper 是**独立的 TCC 身份**（Identifier=GestureWallMouse-5555…、
-# TeamIdentifier=not set）⟹ 给 GestureWall 授权覆盖不到它。要授权的是 helper 本身。
-# ⟹ 而那条路面板上有（⚙ → 权限 → 辅助功能 → ①②③），不该让用户自己在这里摸。
-echo "   ⟹ 打开面板 ⌃⇧W → ⚙ 设置 → 权限 → 辅助功能，按那里的 ①②③ 走。"
-echo "      （授权要给 GestureWallMouse 那个 helper，不是 GestureWall 本身 ——"
-echo "        它在 macOS 眼里是独立程序，没有开发者证书把两者签成同一身份。）"
+# ⚠️⚠️⚠️ 这段话 0.9.103 之前是**错的**：它说"重装之后授权要重给、去授权
+# GestureWallMouse"。而真机探针（2026-08-02）证明**那个 helper 不需要任何授权**：
+#     trusted: false 的同时抓到 148 个鼠标事件、页面收到 55 个 click。
+# ⟹ 让用户去授权它是白折腾一轮（他真去折腾了三轮）。
+# ⚠️ 而 0.9.89 起 helper 名字不带 hash 了 ⟹ 重装**也不会**让路径变、授权失效。
+echo "⚠️ **绝大多数功能不需要任何授权** —— 装完直接用："
+echo "   · 壁纸收鼠标点击（流星那类特效）：不需要（全局监听不算辅助功能）"
+echo "   · 系统声音驱动壁纸：不需要（走 CoreAudio 进程 tap）"
+echo ""
+echo "   真正会要授权的只有两个，而且都是你主动开了才问："
+echo "   · 手势识别 → 摄像头"
+echo "   · 手势移动鼠标指针 → 辅助功能（那条是「注入」，替你动鼠标 —— 要授权）"
+echo ""
+echo "   看当前状态：面板 ⌃⇧W → ⚙ 设置 → 权限"
 echo ""
 echo "然后：打开 GestureWall，⌃⇧W 开面板"

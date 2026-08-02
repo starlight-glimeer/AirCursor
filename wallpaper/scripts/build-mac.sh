@@ -169,9 +169,8 @@ fi
 
 echo "--- ③ 打开 GestureWall，⌃⇧W 开面板 ---"
 echo ""
-echo "  ⚠️ **重新装过之后授权可能要重给** —— 辅助功能/屏幕录制是按"
-echo "     二进制路径挂的。症状：鼠标转发不工作（面板会说「零事件」）。"
-# ⚠️ 同 install-dmg.sh：授权要给 helper，不是 GestureWall（见那边的注释）。
-echo "     ⟹ 面板 ⌃⇧W → ⚙ → 权限 → 辅助功能，按那里的 ①②③ 走"
-echo "        （授权给 GestureWallMouse 那个 helper，不是 GestureWall 本身）"
+# ⚠️ 同 install-dmg.sh：那句"授权给 GestureWallMouse"是错的（它不需要授权）。
+echo "  ⚠️ **装完直接用** —— 壁纸收点击、系统声音都不需要授权。"
+echo "     只有手势（摄像头）和手势控光标（辅助功能）会问，而且是你开了才问。"
+echo "     看状态：⌃⇧W → ⚙ → 权限"
 echo ""

@@ -6443,8 +6443,20 @@ check('权限面板：只读三行 macOS 授权 / 查不到的不许猜 / 有去
     const body = fs.readFileSync(path.join(__dirname, '..', 'scripts', sh), 'utf8')
       .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
     assert.ok(!/把 GestureWall 删掉再加回来/.test(body),
-      `${sh} 又在说"把 GestureWall 删掉再加回来" ⟹ 那是错的，`
-      + '要授权的是 GestureWallMouse 那个 helper（codesign 已证实它是独立身份）');
+      `${sh} 又在说"把 GestureWall 删掉再加回来" ⟹ 那是错的（授权按可执行文件记）`);
+    // ⚠️⚠️⚠️ **不许再让用户去授权 GestureWallMouse**（0.9.104）。
+    //   真机探针（2026-08-02）证明它**不需要任何授权**：trusted: false 的同时
+    //   抓到 148 个鼠标事件、页面收到 55 个 click。
+    //   ⟹ 那句话让用户白折腾了三轮（他在辅助功能列表里拖文件、重开应用、
+    //     反复问"到底要不要这个权限"）。
+    // ⚠️ 而 0.9.89 起 helper 名字不带 hash ⟹ 重装也不会让授权失效，
+    //   "重装之后授权要重给"那句同样是过时的。
+    assert.ok(!/授权.{0,6}GestureWallMouse/.test(body),
+      `${sh} 又在让用户授权 GestureWallMouse ⟹ 探针证明那个 helper 不需要授权`
+      + '（trusted: false 时照样抓到 148 个事件），让他去授是白折腾');
+    assert.ok(!/重新装过之后授权可能要重给/.test(body),
+      `${sh} 还说"重装之后授权要重给" ⟹ 0.9.89 起 helper 名字不带 hash，`
+      + '路径稳定、授权不会失效');
   }
 
   // ⑧ 面板那边：三个接口 + DOM 容器 + 每次打开重查
