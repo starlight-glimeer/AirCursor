@@ -2003,7 +2003,12 @@ function renderMineSide(item) {
     if (body) body.hidden = true;
     return;
   }
-  side.hidden = false;
+  // ⚠️⚠️ **用户手动收起过就别顶开**（0.9.129）。
+  //   参数照常渲染（下面那些 DOM 写入都在跑）—— 只是这一栅保持收着，
+  //   等他点把手展开时看到的就是最新那张的参数。
+  //   ⚠️ 不这么做的话"收起"只活到下一次点壁纸，而那种"我明明关了它又回来"
+  //     是最让人烦的一类交互。
+  side.hidden = sideCollapsed;
   const body = document.getElementById('mine-side-body');
   if (body) body.hidden = aiOpen;
 
@@ -3340,6 +3345,54 @@ document.getElementById('settings-modal-mask').onclick = closeSettingsModal;
 // ⚠️⚠️ AI 工坊的关闭入口（0.9.127）。
 //   它的实现在文件后面那个 `try` 块里（`aiSetOpen`），而**那是块级作用域**
 //   ⟹ 这里必须用一个模块级变量接住它，否则 Esc 那条永远拿不到。
+// ⚠️⚠️⚠️ **右栅的收起状态**（0.9.129）。用户 2026-08-02：
+//   「不管我是 AI 界面还是参数界面，我都可以把这一个展示界面给他收缩起来，
+//     我们现在默认是只有初次打开、没有点任何壁纸的时候他才是收缩的，
+//     那其实打开以后我们应该也有收缩能力的」
+//
+// ⚠️ 他说得对：0.9.62 做的是"没选中壁纸就不占位"，而那是**自动**的 ——
+//   一旦点了壁纸就再也收不回去（除了重开面板）。
+//   而收起来的价值很实在：网格从两列变三四列，壁纸墙一眼看到更多。
+//
+// ⚠️⚠️ 这个状态必须是**粘的**（sticky）：收起之后再点壁纸**不能**把它顶开。
+//   否则"收起"只活到下一次点击，而那种"我明明关了它又回来"最让人烦。
+//   ⟹ renderMineSide / aiSetOpen 都要先看这个标志。
+//   ⚠️ 而它**不进 config**（不跨启动记住）—— 判据：这是一个"我现在想多看几张
+//     壁纸"的临时动作，不是一个偏好。存下来的话下次打开发现面板不见了，
+//     而那时用户已经不记得自己收过。
+let sideCollapsed = false;
+
+function sideSyncCollapse() {
+  const side = document.getElementById('mine-side');
+  const handle = document.getElementById('side-unfold');
+  if (!side) return;
+  if (sideCollapsed) side.hidden = true;
+  // ⚠️ 把手只在**收起状态**出现。而"收起"和"根本没东西可显示"是两种情况：
+  //   后者（没选壁纸、AI 也没开）不该显示把手 —— 点开是一片空白。
+  if (handle) handle.hidden = !sideCollapsed;
+}
+
+// 收起：两个 body 的按钮都调它。
+function sideCollapse() {
+  sideCollapsed = true;
+  sideSyncCollapse();
+}
+
+// 展开：把手调它。⚠️ 展开之后要**决定露出哪个 body** ——
+//   AI 开着就还是 AI，否则回到壁纸参数（而没选壁纸的话就没得可露 ⟹ 保持收起）。
+function sideExpand() {
+  sideCollapsed = false;
+  const side = document.getElementById('mine-side');
+  const ai = document.getElementById('ai-body');
+  const params = document.getElementById('mine-side-body');
+  const title = document.getElementById('side-title');
+  const aiOpen = ai && !ai.hidden;
+  const hasPick = !!(title && title.textContent.trim());
+  if (side) side.hidden = !(aiOpen || hasPick);
+  if (params) params.hidden = aiOpen || !hasPick;
+  sideSyncCollapse();
+}
+
 let aiCloseWorkshop = null;
 // ⚠️ 打开入口同理 —— 网格里那张「新建」卡片是 renderMine 建的，
 //   而 renderMine 在这个文件里比 AI 那个 try 块**靠前** ⟹ 也拿不到 aiSetOpen。
@@ -3896,8 +3949,12 @@ function aiSetOpen(open) {
   if (!side || !body) return;
   body.hidden = !open;
   if (open) {
+    // ⚠️⚠️ 打开 AI 工坊是一个**明确的意图** ⟹ 它可以解掉收起状态。
+    //   （对比：点壁纸不解 —— 那时用户要的是"换壁纸"，不是"把面板叫回来"。）
+    sideCollapsed = false;
     side.hidden = false;
     if (params) params.hidden = true;
+    sideSyncCollapse();
   } else {
     // ⚠️⚠️ 关掉 AI 之后**整栅收不收，取决于有没有选中壁纸** ——
     //   而"有没有选中"的唯一真相是参数 body 里有没有内容（标题非空）。
@@ -3908,6 +3965,7 @@ function aiSetOpen(open) {
     if (params) params.hidden = !hasPick;
     side.hidden = !hasPick;
   }
+  sideSyncCollapse();
 }
 
 // 往对话流里加一条。⚠️ 用 textContent 不是 innerHTML ——
@@ -3997,6 +4055,23 @@ aiOpenWorkshop = async () => {
 aiCloseWorkshop = () => aiSetOpen(false);
 
 if (aiEl('ai-close')) aiEl('ai-close').onclick = () => aiSetOpen(false);
+
+// ⚠️⚠️ 参数面板里那条「AI 生成」（0.9.129）——和「返回参数」互为往返。
+//   ⚠️ 这个按钮是**静态 DOM**（写在 HTML 里），不像网格那张卡片是每次
+//     renderMine 重建的 ⟹ 这里绑一次就够，不需要走 aiOpenWorkshop 那个变量。
+if (aiEl('ai-from-params')) aiEl('ai-from-params').onclick = () => aiOpenWorkshop();
+
+// ⚠️⚠️ 收起 / 展开（0.9.129）。三个按钮都是静态 DOM ⟹ 绑一次就够。
+//   ⚠️ 两个"收起"分别在两个 body 里，但调的是**同一个函数** ——
+//     那保证了两种模式下的行为一致（而各写一份最容易走偏）。
+for (const id of ['side-fold-params', 'side-fold-ai']) {
+  const btn = document.getElementById(id);
+  if (btn) btn.onclick = () => sideCollapse();
+}
+{
+  const handle = document.getElementById('side-unfold');
+  if (handle) handle.onclick = () => sideExpand();
+}
 
 // ⚠️⚠️ 工作目录那一行**本身就是按钮**（0.9.127）——
 //   原来是"一行说明文字 + 一个「打开」按钮"，而那两个是同一件事

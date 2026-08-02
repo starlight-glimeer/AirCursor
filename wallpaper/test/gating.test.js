@@ -2323,6 +2323,92 @@ check('AI 工坊在右栅里，不是弹窗（用户点名「弹窗好难看」�
   assert.match(dash, /aiSetOpen\(false\)/, '没有人调 aiSetOpen(false) ⟹ 关不掉');
 });
 
+// ⚠️⚠️ **两个 body 互为往返**（0.9.129）。用户 2026-08-02：
+//   「你看我现在右边这里展示出来是对话界面的时候有个返回参数，
+//     那我是参数的时候是不是也应该有一个按钮是说 AI 生成一类的」
+//
+// ⚠️ 他补的是一个真缺口：AI 入口原来**只在网格里**，而装载了壁纸之后
+//   右栅被参数占着 ⟹ 那时想生成一张，眼睛得先挪回网格去找那张卡片。
+//   ⟹ 判据：**一个"两种模式共用一个槽位"的设计，每种模式都要有去对面的路**，
+//     否则其中一边就是单向的。
+check('右栅两种 body 各有一条去对面的路（参数 ⇄ AI 工坊）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ⚠️ 各自的按钮要落在**自己那个 body 里**，不是随便在页面上
+  const paramsAt = html.indexOf('id="mine-side-body"');
+  const aiAt = html.indexOf('id="ai-body"');
+  assert.ok(paramsAt > 0 && aiAt > paramsAt, '两个 body 的顺序或 id 变了');
+  const paramsBody = html.slice(paramsAt, aiAt);
+  const aiBody = html.slice(aiAt);
+  assert.match(paramsBody, /id="ai-from-params"/,
+    '参数面板里没有去 AI 工坊的入口 ⟹ 装载壁纸之后右栅被参数占着，'
+    + '想生成一张得把眼睛挪回网格');
+  assert.match(aiBody, /id="ai-close"/, 'AI 工坊里没有回参数的按钮');
+
+  // ⚠️ 而两条都要真的接上线
+  assert.match(dash, /aiEl\('ai-from-params'\)\.onclick/,
+    "ai-from-params 没接线 ⟹ 点了没反应");
+
+  // ⚠️⚠️ 两个 body 各自有标题，那让"这一栅有两种模式"看得出来。
+  //   ⚠️ 而标题**不能和壁纸名字混**（#side-title）：一个说"这块面板是什么"，
+  //     一个说"当前是哪张壁纸"。
+  assert.match(paramsBody, /<div class="side-head">/,
+    '参数面板没有标题行 ⟹ 和 AI 那边不对称，看不出这一栅有两种模式');
+});
+
+// ⚠️⚠️ **右栅能手动收起**（0.9.129）。用户 2026-08-02：
+//   「不管我是 AI 界面还是参数界面，我都可以把这一个展示界面给他收缩起来，
+//     我们现在默认是只有初次打开、没有点任何壁纸的时候他才是收缩的，
+//     那其实打开以后我们应该也有收缩能力的」
+//
+// ⚠️ 0.9.62 做的是"没选中壁纸就不占位"，而那是**自动**的 ——
+//   点了壁纸就再也收不回去（除了重开面板）。
+check('右栅能手动收起，而且收起是粘的（点壁纸不会顶开）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ⚠️ 两个 body 各要有一个收起按钮（用户点名"不管我是 AI 界面还是参数界面"）
+  const paramsAt = html.indexOf('id="mine-side-body"');
+  const aiAt = html.indexOf('id="ai-body"');
+  assert.match(html.slice(paramsAt, aiAt), /id="side-fold-params"/,
+    '参数面板里没有收起按钮');
+  assert.match(html.slice(aiAt), /id="side-fold-ai"/, 'AI 工坊里没有收起按钮');
+
+  // ⚠️⚠️ **展开把手不能放在被隐藏的那块里面** ——
+  //   收起的做法是给 `.pane-side` 加 hidden，把手放里面会跟着消失
+  //   ⟹ "收起"变成单向操作，用户点了再也打不开（除了重开面板）。
+  const sideAt = html.indexOf('id="mine-side"');
+  const handleAt = html.indexOf('id="side-unfold"');
+  assert.ok(handleAt > 0, '没有展开把手 ⟹ 收起之后回不来');
+  assert.ok(handleAt < sideAt,
+    '展开把手在 .pane-side 里面（或它之后）⟹ 那块被 hidden 时把手跟着消失，'
+    + '"收起"就成了单向操作。判据：隐藏某块的按钮不能放在那块里面');
+
+  // ⚠️ 把手是 .split 的子元素 ⟹ 必须脱离网格流，否则它会占掉一个网格单元
+  // ⚠️⚠️ **要先剥注释**：那条规则里的注释原文就写着 `position: absolute`
+  //   （解释为什么需要它）⟹ 不剥的话删掉真正那行声明，断言照样绿。
+  //   这轮第五次撞到同一件事：**匹配代码前先去掉注释**。
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = css.match(/#side-unfold\s*\{[^}]*\}/);
+  assert.ok(rule, '找不到 #side-unfold 的样式');
+  assert.match(rule[0], /position:\s*absolute/,
+    '把手不是 absolute ⟹ 它是 .split（grid）的子项，会占掉一个网格单元、把网格挤下一行');
+
+  // ⚠️⚠️ **粘性**：这是这条需求的实质 —— 收起之后再点壁纸不能把它顶开
+  assert.match(dash, /let sideCollapsed = false;/, '没有收起状态');
+  assert.match(dash, /side\.hidden = sideCollapsed;/,
+    'renderMineSide 里没有尊重 sideCollapsed ⟹ 点一下壁纸面板就又弹出来了，'
+    + '而那种"我明明关了它又回来"是最让人烦的交互');
+  // ⚠️ 两个收起按钮要调**同一个函数**（各写一份最容易走偏）
+  assert.match(dash, /function sideCollapse\(\)/, '没有 sideCollapse()');
+  assert.match(dash, /function sideExpand\(\)/, '没有 sideExpand()');
+  const foldWiring = dash.match(/for \(const id of \['side-fold-params', 'side-fold-ai'\]\)/);
+  assert.ok(foldWiring,
+    '两个收起按钮没走同一条接线 ⟹ 两种模式下的行为会走偏');
+});
+
 check('Esc 关 AI 工坊那条能真的拿到函数（块级作用域的坑）', () => {
   // ⚠️⚠️ 真事故：`aiSetOpen` 是**声明在一个 try 块里的 function**
   //   ⟹ 块级作用域 ⟹ 文件前面那个 Esc handler 看不到它。
@@ -5451,6 +5537,10 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
     '.card-menu',             // 右键菜单，JS 动态建，一次一个
     '#rotate-modal-mask, #settings-modal-mask',   // 模态遮罩
     '#rotate-modal-box, #settings-modal-box',     // 模态面板
+    // ⚠️ 展开把手（0.9.129）：**1 个**，而且只在右栅收起时才 `hidden=false`
+    //   ⟹ 同屏最多一个实例，而且它只有 15x62px。
+    //   ⚠️ 它必须有 blur：它是贴在网格上的一个小条，不透的话是一块黑疙瘩。
+    '#side-unfold',
   ];
   const extra = users.filter((u) => !ALLOWED.includes(u));
   assert.deepStrictEqual(extra, [],

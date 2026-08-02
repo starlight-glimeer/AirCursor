@@ -397,6 +397,9 @@
   .split {
     display: grid; grid-template-columns: 1fr 340px;
     height: 100%; min-height: 0;
+    /* ⚠️ 展开把手是 `position: absolute` 贴右边缘的 ⟹ 这里要给它定位上下文。
+       不给的话它会相对**视口**定位，跑到整个窗口的右边（越过面板边界）。 */
+    position: relative;
   }
   /* ⚠️⚠️ **右侧面板隐藏时网格铺满全宽**（0.9.62）。
      `[hidden]` 只让那个元素不显示，**但 grid 的那一列还在**
@@ -920,6 +923,46 @@
     border-bottom: 1px solid var(--line);
   }
   .side-head b { flex: 1; font-size: 13px; }
+  /* ⚠️⚠️ 收起按钮（0.9.129）：一个 CSS 画的右向箭头（"往右边收"）。
+     ⚠️ 不用 `›` 那个字符 —— 它在不同字体里粗细差别很大（和 ✕ 那次同一个理由）。 */
+  .side-fold { position: relative; width: 24px; height: 22px; padding: 0; flex: none; }
+  .side-fold::before {
+    content: ''; position: absolute; left: 45%; top: 50%;
+    width: 6px; height: 6px;
+    border-right: 1.5px solid currentColor; border-top: 1.5px solid currentColor;
+    transform: translate(-50%, -50%) rotate(45deg);
+  }
+
+  /* ⚠️⚠️⚠️ **展开把手**：收起之后要有路回来。
+     ⚠️ 没有它的话"收起"是个单向操作 —— 用户点了就再也打不开
+       （除了重开面板，而那是最差的答案）。
+     ⟹ 贴在右边缘中间的一个窄条，鼠标靠近才明显。
+     ⚠️ 它只在**收起状态**出现（JS 控 hidden）。 */
+  #side-unfold {
+    /* ⚠️⚠️ 它是 `.split`（grid）的子元素 ⟹ **默认会占掉一个网格单元**，
+       而 `.split` 是 `1fr 340px` 两列 ⟹ 它会被塞进第一列、把网格挤下去一行。
+       ⟹ `position: absolute` 让它脱离网格流（那是它本来就该有的），
+         **再显式 `grid-area: 1/1`** 兜住 —— 万一以后有人改成 static，
+         至少它不会自己新开一行。
+       ⚠️ 这个坑 `#app-bg` 那次踩过（fixed 定位的 canvas 仍是 grid 的一个子项）。 */
+    grid-area: 1 / 1;
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    z-index: 3;
+    width: 15px; height: 62px; padding: 0;
+    border: 1px solid var(--line); border-right: none;
+    border-radius: var(--r-md) 0 0 var(--r-md);
+    background: var(--glass-side); backdrop-filter: var(--glass-blur-thin);
+    color: var(--dim); cursor: pointer;
+    opacity: .5; transition: opacity .16s ease, color .16s ease;
+  }
+  #side-unfold:hover { opacity: 1; color: var(--text); }
+  /* 左向箭头（"从右边拉出来"） */
+  #side-unfold::before {
+    content: ''; position: absolute; left: 52%; top: 50%;
+    width: 6px; height: 6px;
+    border-left: 1.5px solid currentColor; border-top: 1.5px solid currentColor;
+    transform: translate(-50%, -50%) rotate(-45deg);
+  }
 
   /* ⚠️⚠️ **工作目录做成一个按钮**，不是一行说明文字 + 一个「打开」按钮。
      用户点名要看到目录（「他上面会显示一下我的工作目录在哪儿」），
@@ -1339,8 +1382,43 @@
 
            ⚠️ 而这比弹窗好的地方不只是"不难看"：弹窗会盖住壁纸网格，
              而生成完的反馈**就在网格里**（多一张卡片）⟹ 弹窗挡住的正是结果。 -->
+      <!-- ⚠️⚠️ **展开把手放在 `.split` 里，不是 `.pane-side` 里**（0.9.129）。
+           收起的做法就是给 `.pane-side` 加 `hidden` ⟹ 把手放在它里面会跟着消失
+           ⟹ 那样"收起"就是个单向操作，用户点了再也打不开（除了重开面板）。
+           ⚠️ 判据：**一个隐藏某块的按钮，不能放在那块里面。** -->
+      <button id="side-unfold" type="button" title="展开右侧面板" hidden></button>
       <div class="pane-side" id="mine-side" hidden>
         <div id="mine-side-body">
+          <!-- ⚠️⚠️ **两个 body 各有一条去对面的路**（0.9.129）。用户 2026-08-02：
+               「你看我现在右边这里展示出来是对话界面的时候有个返回参数，
+                 那我是参数的时候是不是也应该有一个按钮是说 AI 生成一类的」
+
+               ⚠️ 他补的是一个真缺口：AI 入口原来**只在网格里**，
+                 而装载了壁纸之后右栅被参数占着 ⟹ 那时想生成一张，
+                 眼睛得先挪回网格去找那张卡片。
+               ⟹ 两个 body 的**同一个位置**各放一个 ghost 按钮，互为往返：
+                   参数 body → 「AI 生成」
+                   AI body  → 「返回参数」
+                 而两边的标题也对上（「壁纸参数」/「AI 壁纸工坊」）——
+                 那让"这一栅有两种模式"这件事在界面上看得出来。
+               ⚠️ 标题不和 `#side-title`（壁纸名字）重复：一个是**这块面板是什么**，
+                 一个是**当前是哪张壁纸**。 -->
+          <div class="side-head">
+            <b>壁纸参数</b>
+            <button class="act ghost" id="ai-from-params" type="button"
+                    title="说一句你想要什么效果，AI 写一张壁纸放进壁纸目录">AI 生成</button>
+            <!-- ⚠️⚠️ **收起这一栅**（0.9.129）。用户 2026-08-02：
+                 「不管我是 AI 界面还是参数界面，我都可以把这一个展示界面给他收缩起来，
+                   我们现在默认是只有初次打开、没有点任何壁纸的时候他才是收缩的，
+                   那其实打开以后我们应该也有收缩能力的」
+                 ⚠️ 他说得对：0.9.62 做的是"没选中就不占位"，而那是**自动**的 ——
+                   一旦点了壁纸就再也收不回去了（除了重开面板）。
+                   而收起来的价值很实在：网格从两列变三四列，壁纸墙一眼看到更多。
+                 ⟹ 两个 body 各放一个，都调同一个 `sideCollapse()`。
+                 ⚠️ 用 `‹` 那个方向：它指向"往右边收"。 -->
+            <button class="act ghost side-fold" id="side-fold-params" type="button"
+                    title="收起这一栏（网格铺满全宽）"></button>
+          </div>
           <img id="side-preview" alt="">
           <div id="side-title"></div>
           <div id="side-meta" class="hint"></div>
@@ -1360,7 +1438,9 @@
           <div class="side-head">
             <b>AI 壁纸工坊</b>
             <button class="act ghost" id="ai-close" type="button"
-                    title="关闭（Esc）">返回参数</button>
+                    title="回到壁纸参数（Esc）">返回参数</button>
+            <button class="act ghost side-fold" id="side-fold-ai" type="button"
+                    title="收起这一栏（网格铺满全宽）"></button>
           </div>
 
           <!-- ⚠️ 工作目录：用户点名要显示（「他上面会显示一下我的工作目录在哪儿」）。
