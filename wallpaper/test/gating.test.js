@@ -2723,6 +2723,80 @@ check('MODULES.md 的「承重决定」和代码对得上（会漂的文档比�
     '文档说产品名从单一来源读，而这个文件里没有 PRODUCT');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **`hidden` 必须真的能藏住**（0.9.133，真事故）。用户 2026-08-02：
+//    「我理解参数和 AI 生成不是两个状态吗？他们互相独占这个位置，
+//      我点击按钮切换，这怎么还共存了呀？」
+//
+//  ⚠️ 根因是 **CSS 层叠**，不是逻辑：`hidden` 属性的实现是 **UA 样式表**里的
+//    `[hidden] { display: none }`，而**作者层 > UA 层**（层叠顺序的第一优先级，
+//    和选择器权重无关）。我给 `#ai-body` 写了 `display: flex`
+//    ⟹ `hidden = true` 之后 display 仍然是 flex ⟹ **它从来没被藏住**。
+//
+//  ⚠️⚠️ 而**既有的三条守卫全都测不到它**：它们查 DOM 结构（ai-body 在右栅里）、
+//    查 JS 逻辑（aiSetOpen 存在、被调用）、查 Esc 接线 —— 全绿，
+//    而那个面板一直可见。
+//    ⟹ 判据：**"逻辑对"和"用户看到的对"之间还有一层 CSS**，
+//      而那一层要单独测。
+// ═══════════════════════════════════════════════════════════════════════
+check('[hidden] 在作者层被声明（否则任何 display 规则都能让它失效）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // ⚠️ 全局兜底规则必须在，而且必须 !important ——
+  //   否则一个 `#foo { display: flex }` 就能盖过它（那是这次的原始 bug）。
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/,
+    '作者层没有 `[hidden] { display: none !important }` ⟹ 任何给元素写了 display 的'
+    + '规则都会让它的 hidden 失效（UA 层的 [hidden] 拦不住作者层的 display）。'
+    + '\n⟹ 而这不该靠"每处记得加 [hidden]"，那是会漏的');
+
+  // ⚠️⚠️ 而**顺便把有风险的元素列出来** —— 那些给了 display 又靠 hidden 开合的。
+  //   有全局规则之后它们是安全的，但这个清单本身是有价值的观测：
+  //   它告诉下一个人"这些元素依赖那条全局规则活着"。
+  const body = html.slice(html.indexOf('<body>'));
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const ids = new Set([
+    ...[...body.matchAll(/id="([\w-]+)"[^>]*\shidden/g)].map((m) => m[1]),
+    ...[...dash.matchAll(/getElementById\('([\w-]+)'\)[^;]*\.hidden\s*=/g)].map((m) => m[1]),
+  ]);
+  assert.ok(ids.size >= 5,
+    `只找到 ${ids.size} 个受 hidden 控制的元素 —— 抠取的正则可能失效了`);
+  // ⚠️ 这一条不是"不许给 display"（那太严，#ai-body 真的需要 flex 列布局），
+  //   而是"给了 display 的话，全局那条规则必须在" —— 上面已经断言过了。
+  //   ⟹ 这里只确认我们知道有哪些，别让这个清单变成 0（那意味着正则坏了）。
+});
+
+// ⚠️⚠️ **正在放的那张不在列表里时要说出来**（0.9.133）。用户 2026-08-02：
+//   「我点击进以后会自动运行一张壁纸，这张壁纸我不知道为啥会自动运行，
+//     而且我看那里也没有显示正在播放的壁纸」
+//
+// ⚠️ 机制：启动装的是 `config.we.dir`（绝对路径），而列表扫的是当前壁纸目录
+//   ⟹ 两者不一致时（改名后搬了目录）`active` 全 false
+//   ⟹ 桌面上在放东西而面板上零线索。
+// ⟹ 判据：**一个正在生效的状态，界面上必须有地方能看到它** ——
+//   "在列表里找一下"不算，因为找不到时那个状态就从界面上消失了（而它还在生效）。
+check('正在放的壁纸不在列表里时，面板要说出来（别让状态凭空消失）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+
+  // ① 主进程要单独报出真实的当前壁纸（不能只靠 items 里的 active 标记）
+  assert.match(main, /activeDir: weProject \? weProject\.dir : null/,
+    'workshop-local 没报出真实的当前壁纸路径 ⟹ 面板只能靠"在列表里找 active"，'
+    + '而找不到时那个状态就从界面上消失了');
+  assert.match(main, /activeListed: !!\(weProject && items\.some/,
+    '没报"当前那张在不在这次扫到的列表里" ⟹ 面板无从判断要不要提示');
+
+  // ② 面板要真的用它，而且给出可执行的下一步
+  assert.match(dash, /result\.activeDir && !result\.activeListed/,
+    '面板没检查"正在放的不在列表里" ⟹ 用户看到的还是"莫名放了一张、列表里没标记"');
+  const at = dash.indexOf('result.activeDir && !result.activeListed');
+  const block = dash.slice(at, dash.indexOf('\n  }', at));
+  assert.match(block, /不在当前壁纸目录里/, '提示没说清"为什么列表里没有它"');
+  assert.match(block, /拷进当前目录|点下面任意一张/,
+    '提示没给可执行的下一步 ⟹ 光报告异常，用户还得自己想办法');
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。

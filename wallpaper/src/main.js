@@ -3496,6 +3496,25 @@ ipcMain.handle('workshop-local', () => {
 
   return {
     ok: true, items, truncated,
+    // ⚠️⚠️⚠️ **正在放的那张如果不在列表里，要说出来**（0.9.133）。
+    //   用户 2026-08-02：「我点击进以后会自动运行一张壁纸，这张壁纸我不知道
+    //   为啥会自动运行，而且我看那里也没有显示正在播放的壁纸」
+    //
+    // ⚠️ 机制：启动时装的是 `config.we.dir`（一条**绝对路径**），
+    //   而列表扫的是当前壁纸目录 ⟹ 两者不一致时（他 0.9.131 改名之后
+    //   把壁纸搬到了 `~/Documents/DreamPaper/Wallpapers`，而 config 里存的
+    //   还是旧路径）`active` 全是 false
+    //   ⟹ **桌面上在放一张壁纸，而面板上没有任何东西对应它**。
+    //   那正是"我不知道为啥会自动运行"的来源 —— 不是它乱放，
+    //   是面板没告诉他放的是哪个、为什么。
+    //
+    // ⟹ 判据：**"当前状态"和"可选项列表"是两回事，不能靠"在列表里找一下"
+    //   来表示当前状态** —— 找不到时那个状态就消失了，而它其实还在生效。
+    // ⟹ 把真实的当前壁纸单独报出来，面板据此提示。
+    activeDir: weProject ? weProject.dir : null,
+    activeTitle: weProject ? weProject.title : null,
+    // 当前那张在不在这次扫到的列表里
+    activeListed: !!(weProject && items.some((i) => i.dir === weProject.dir)),
     roots: roots.filter((r) => fs.existsSync(r)),
     // ⚠️ 报出"扫了哪些目录 + 在不在 + 找到几个"。
     //
