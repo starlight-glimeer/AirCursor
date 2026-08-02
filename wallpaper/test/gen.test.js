@@ -643,7 +643,12 @@ check('探针问的是"写一行代码"，不是"回两个字"（推理模型才
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'llm.js'), 'utf8');
   const at = src.indexOf('async function ping(');
   assert.ok(at > 0, '找不到 ping()');
-  const body = src.slice(at, at + 3000);
+  // ⚠️⚠️ **切到结构边界，不用固定长度** —— gating 里那条守卫逮到了我这三处。
+  //   而它不是形式主义：我原来写 `at + 3000`，那个窗口**盖过了函数末尾、
+  //   吃到了文件底部的 module.exports**，直接导致下面那条 parseResponse 断言
+  //   当场误报。⟹ 固定长度的锚点会漂，而漂了之后断言测的不是它以为的那段代码。
+  const end = src.indexOf('\nasync function ', at + 10);
+  const body = src.slice(at, end > 0 ? end : src.indexOf('\nmodule.exports', at));
   assert.match(body, /JavaScript|canvas/,
     '探针还在问"回两个字" —— 推理模型对那种问题可能直接答，测不出它会不会思考。'
     + '要让它写代码（那才是真实任务的形状）');
@@ -667,17 +672,32 @@ check('面板：探针发现是推理模型要当场提醒（"通了"不等于"�
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
   const at = dash.indexOf("aiEl('ai-ping')");
   assert.ok(at > 0, '找不到探针按钮的处理');
-  const body = dash.slice(at, at + 2500);
+  // ⚠️ 切到下一个 `aiEl('…')` 的绑定处（那是这一段的天然结尾），不用固定长度
+  const end = dash.indexOf('\nwindow.gw.onGenProgress', at);
+  const body = dash.slice(at, end > 0 ? end : at + 2500);
   assert.match(body, /r\.thinks/,
     '面板没检查 thinks ⟹ 用户会看到"通了"然后等几分钟再失败');
-  assert.match(body, /推理模型/, '提醒里没说清是"推理模型"这个原因');
+  // ⚠️ 不能只 match /推理模型/ —— 这段里它出现**两次**（提醒的标题句 + 解释句）
+  //   ⟹ 破坏任一处另一处照样满足它，断言是死的（反向验证逮到的）。
+  //   ⟹ 锚定那句**给用户看的话**的完整形状：`${r.model} 是**推理模型**`。
+  assert.match(body, /\$\{r\.model\} 是\*\*推理模型\*\*/,
+    '提醒里没点名"这个模型是推理模型" ⟹ 用户不知道该换哪个');
+  // ⚠️ 而"为什么这会失败"也要说 —— 只说"是推理模型"用户不知道那有什么问题。
+  //   ⚠️⚠️ 而这条不能 match /预算|思考/：这段里"思考"出现 5 次、"预算" 2 次
+  //     ⟹ 破坏任一处都还剩一堆，断言是死的（反向验证逮到的）。
+  //   ⟹ 锚定那句**完整的因果**：预算先花在思考上 ⟹ 常常一行代码都没写。
+  assert.match(body, /输出预算先花在思考上/,
+    '没解释"为什么"推理模型会导致生成失败 ⟹ 用户只知道要换、不知道换成什么样的');
+  assert.match(body, /一行代码都没写|没返回内容/,
+    '没说清失败的症状长什么样 ⟹ 下次撞到同一件事时对不上号');
 });
 
 check('生成的预算是 32000（16000 被实测证明不够）', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const at = main.indexOf("LLM.chat(ai, [{ role: 'user', content: prompt }]");
-  assert.ok(at > 0, '找不到生成时的 LLM.chat 调用');
-  assert.match(main.slice(at, at + 200), /maxTokens: 32000/,
+  // ⚠️ 不切窗口 —— 直接用一条正则匹配「那个调用 + 它的 maxTokens」这个整体形状。
+  //   ⚠️ 判据：能一条正则锚定的就别切片。切片要选长度，而任何长度都会漂。
+  assert.match(main,
+    /LLM\.chat\(ai, \[\{ role: 'user', content: prompt \}\],\s*\n?\s*\{ maxTokens: 32000 \}\)/,
     '生成预算不是 32000 —— 用户账单实测：输出正好撞在 16000 上而正文是空的');
 });
 
