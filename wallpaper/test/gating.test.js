@@ -2171,6 +2171,143 @@ check('readConfig 里 mergeConfig 抛异常要吵（那次静默吞掉藏了几�
     'mergeConfig 抛了不打日志 ⟹ 用户所有设置静默回默认值，而终端上什么都看不到');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️ 外观一致性（0.9.127）。用户 2026-08-02：
+//    「你现在这种弹窗好难看」「还有那个巨长的按钮」
+//    「我找到一个项目 taste-skill 是 ui 设计，审美 skill。
+//      你好好把我们的产品设计美观一些」
+//
+//  ⚠️ 这几条守的都是**能数出来的东西**，不是"好不好看" ——
+//    审计当时的真实数字：border-radius 11 种、token 之外的硬编码色 11 种、
+//    界面可见 em-dash 41 个（HTML）+ 43 处（JS 文案）。
+//    ⟹ 判据：**审美不可测，一致性可测。** 只守后者。
+//  ⚠️ 而 taste-skill 自己说它是给 landing page / portfolio 的，
+//    "not dashboards, not multi-step product UI" ⟹ 它的 hero / bento /
+//    eyebrow 那套**不适用**于这个面板。取的是：shape lock、一个调色板、
+//    em-dash 禁用、界面不用装饰 emoji、CTA 不被拉伸。
+// ═══════════════════════════════════════════════════════════════════════
+
+check('圆角只走三档 token（审计时是 11 种散值）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const bad = [];
+  for (const m of style.matchAll(/border-radius:\s*([^;}]+)/g)) {
+    const v = m[1].trim();
+    if (v.startsWith('var(--r-')) continue;
+    // ⚠️ 几何必然的两个：圆点和胶囊
+    if (v === '50%' || v === '999px') continue;
+    // ⚠️ 小于 token 尺度的图形（1px / 1.5px 线、9x7px 的文件夹）——
+    //   4px 圆角会把它们变成圆点。这类按几何需要走，不算破坏 shape lock。
+    if (/^1(\.5)?px/.test(v)) continue;
+    bad.push(v);
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些 border-radius 没走 token：${bad.join(' / ')}\n`
+    + '⟹ 混着用的圆角就是坏设计（方卡片配药丸按钮）。用 --r-sm/--r-md/--r-lg');
+});
+
+check('界面可见文案里没有 em-dash（taste-skill 的硬禁）', () => {
+  // ⚠️⚠️ 只查**用户看得到的文本**，不查注释 —— 注释里的 em-dash 是这个仓的
+  //   书写风格（几千处），而 skill 管的是界面文案。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const body = html.slice(html.indexOf('<body>'))
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script[\s\S]*?<\/script>/g, '');
+  const n = (body.match(/—/g) || []).length;
+  assert.strictEqual(n, 0,
+    `dashboard.html 的可见文案里还有 ${n} 个 em-dash。`
+    + '中文里它的作用是"引出解释"⟹ 用冒号');
+
+  // JS 那边：只看字符串字面量，且跳过整行注释
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const strings = dash.split('\n')
+    .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+    .join('\n')
+    .match(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g) || [];
+  const withEm = strings.filter((x) => x.includes('—'));
+  assert.deepStrictEqual(withEm.slice(0, 4), [],
+    `dashboard.js 的界面文案里还有 ${withEm.length} 处 em-dash`);
+});
+
+check('界面上没有装饰性 emoji（⚙ / ✕ / ✨ 那类）', () => {
+  // ⚠️ `⚠️` **不在禁用范围**：它出现在开发者选项的告警文案里，
+  //   标记的是真实风险（"这一项要打包成 .app 才能用"），那是语义不是装饰。
+  //   ⟹ 禁的是"拿 emoji 当图标用"：齿轮、叉、星星。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const body = html.slice(html.indexOf('<body>'))
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script[\s\S]*?<\/script>/g, '');
+  const banned = body.match(/[⚙✕✨✅❌🔍📁🎨🚀💡]/g) || [];
+  assert.deepStrictEqual([...new Set(banned)], [],
+    `界面上有拿 emoji 当图标用的：${[...new Set(banned)].join(' ')}\n`
+    + '⟹ 换纯文字或 CSS 画的形状（这个项目零 UI 依赖，不引图标库）');
+});
+
+check('AI 工坊在右栅里，不是弹窗（用户点名「弹窗好难看」）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // ⚠️ 锚定"它在 .pane-side 里面" —— 那是这次改动的实质
+  const sideAt = html.indexOf('id="mine-side"');
+  assert.ok(sideAt > 0, '找不到 #mine-side');
+  const sideEnd = html.indexOf('</section>', sideAt);
+  const sideBlock = html.slice(sideAt, sideEnd);
+  assert.match(sideBlock, /id="ai-body"/,
+    'AI 工坊不在右栅（#mine-side）里 ⟹ 又变回弹窗了。'
+    + '用户 2026-08-02：「你现在这种弹窗好难看，我想的是和壁纸参数一样右边显示」');
+  assert.ok(!html.includes('id="ai-modal"'),
+    '那个 620px 的 AI 弹窗又回来了');
+  // ⚠️ 而它必须和参数面板**互斥** —— 否则两个挤在 340px 里
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  // ⚠️ 要有词边界：`/function aiSetOpen/` 会命中 `function aiSetOpenX`
+  //   （前缀匹配）⟹ 改个名字断言照样绿（反向验证逮到的）。
+  assert.match(dash, /function aiSetOpen\s*\(/,
+    '没有 aiSetOpen() ⟹ 开合逻辑散在各处，"关掉 AI 回到壁纸参数"那条会漏');
+  // ⚠️ 而它必须**真的被调用** —— 只有定义没有调用等于没做
+  assert.match(dash, /aiSetOpen\(true\)/, '没有人调 aiSetOpen(true) ⟹ 打不开');
+  assert.match(dash, /aiSetOpen\(false\)/, '没有人调 aiSetOpen(false) ⟹ 关不掉');
+});
+
+check('Esc 关 AI 工坊那条能真的拿到函数（块级作用域的坑）', () => {
+  // ⚠️⚠️ 真事故：`aiSetOpen` 是**声明在一个 try 块里的 function**
+  //   ⟹ 块级作用域 ⟹ 文件前面那个 Esc handler 看不到它。
+  //   我第一版写的是 `typeof aiSetOpen === 'function' && aiSetOpen(false)`，
+  //   那**永远是 false** ⟹ Esc 静默失效（不报错、只是没反应）。
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const declAt = dash.indexOf('let aiCloseWorkshop = null;');
+  const useAt = dash.indexOf('if (aiCloseWorkshop) aiCloseWorkshop();');
+  const assignAt = dash.indexOf('aiCloseWorkshop = () => aiSetOpen(false);');
+  assert.ok(declAt > 0, '没有模块级的 aiCloseWorkshop ⟹ Esc 拿不到关闭函数');
+  assert.ok(useAt > declAt, 'Esc handler 在声明之前用它（TDZ）');
+  assert.ok(assignAt > useAt, '赋值点应该在 AI 那个 try 块里（在 Esc handler 之后）');
+  // ⚠️⚠️ 这条断言**第一版命中了自己**：它的失败消息里就写着
+  //   `typeof aiSetOpen === 'function'`，而消息本身也在这个文件里…
+  //   不，真正的原因是**被查的文件**（dashboard.js）里那句注释记录了这个坑，
+  //   而注释里原样引用了那个表达式 ⟹ 正则命中注释。
+  //   ⟹ 判据（这轮第三次撞到同一件事）：**"这个词不出现"从来不可靠** ——
+  //     注释、导出、失败消息里都会出现它。要锚定**代码形状**。
+  //   ⟹ 改成"它不能出现在 Esc handler 那一段里"（那才是会出错的地方）。
+  const escAt = dash.indexOf("['ai-body',");
+  assert.ok(escAt > 0, '找不到 Esc handler 里的 ai-body 那一条');
+  const escLine = dash.slice(escAt, dash.indexOf('\n', escAt));
+  assert.ok(!/typeof aiSetOpen/.test(escLine),
+    "Esc handler 还在用 `typeof aiSetOpen` 判断 ⟹ 那永远是 false（块级作用域）");
+});
+
+check('.bar-row 的第一格不放按钮（那会被 1fr 拉成通栏）', () => {
+  // ⚠️⚠️ 用户 2026-08-02：「还有那个巨长的按钮」
+  //   根因：`.bar-row` 是 `grid-template-columns: 1fr auto`，
+  //   而我把按钮放进了第一格 ⟹ 它吃掉所有剩余宽度。
+  //   那个网格本来是给"输入框 + 按钮"设计的。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const body = html.slice(html.indexOf('<body>')).replace(/<!--[\s\S]*?-->/g, '');
+  const bad = [];
+  for (const m of body.matchAll(/<div class="bar-row(?! tight)[^"]*"[^>]*>\s*<(\w+)/g)) {
+    if (m[1] === 'button') bad.push(m[0].replace(/\s+/g, ' '));
+  }
+  assert.deepStrictEqual(bad, [],
+    `这些 .bar-row 的第一个子元素是 button ⟹ 会被 1fr 拉成通栏：\n  ${bad.join('\n  ')}\n`
+    + '⟹ 用 .bar-row.tight（两格都 auto），或者别用这个网格');
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。

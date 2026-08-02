@@ -656,7 +656,7 @@ const SLOT_OPTIONS = [
 function renderGestureLead() {
   const t = T.template(config.template);
   document.getElementById('ges-lead').textContent =
-    `「${t.label}」这套模板的手势。换模板会换一整套动作 —— 手势和模板是绑定的。`;
+    `「${t.label}」这套模板的手势。换模板会换一整套动作：手势和模板是绑定的。`;
 }
 
 // 录制选项：静态还是动态、几只手。
@@ -745,7 +745,7 @@ function wireDiagnostics() {
     const corners = m.map((p) => `${p.at} ${p.x},${p.y}`).join(' · ');
     node.textContent = g.consistent
       ? `骨架几何：正常 · 逻辑 ${g.logical.w}x${g.logical.h} · dpr ${g.dpr} · ${corners}`
-      : `骨架几何：⚠️ 画布被缩放显示 —— 缓冲 ${g.buffer.w}x${g.buffer.h} / CSS ${g.css.w}x${g.css.h} / 逻辑 ${g.logical.w}x${g.logical.h}`;
+      : `骨架几何：⚠️ 画布被缩放显示：缓冲 ${g.buffer.w}x${g.buffer.h} / CSS ${g.css.w}x${g.css.h} / 逻辑 ${g.logical.w}x${g.logical.h}`;
     node.className = g.consistent ? 'state ok' : 'state warn';
   });
 
@@ -766,7 +766,7 @@ function wireDiagnostics() {
     const ok = payload.withHands > 0;
     state.textContent = ok
       ? `已存 ${payload.frames} 帧（其中 ${payload.withHands} 帧有手）`
-      : `存了 ${payload.frames} 帧但一帧手都没有 —— 这份没法用来标定,重录一次`;
+      : `存了 ${payload.frames} 帧但一帧手都没有：这份没法用来标定,重录一次`;
     state.className = ok ? 'state ok' : 'state warn';
   });
 }
@@ -780,7 +780,7 @@ function renderPointerHealth(health) {
   // 授权按钮只在真缺的时候出现:常显一个"去授权"会让已经授权的人以为还有事没做。
   if (grants) grants.hidden = health.trusted !== false;
   if (health.trusted === false) {
-    node.textContent = '点击通道：无辅助功能授权 —— 手势能识别，但鼠标事件被系统静默丢弃';
+    node.textContent = '点击通道：无辅助功能授权：手势能识别，但鼠标事件被系统静默丢弃';
     node.className = 'state warn';
     return;
   }
@@ -1187,7 +1187,7 @@ function renderToggles() {
   // ⟹ 删掉它们(元素本来就不该回来);上面的 missing 报告负责逮住下一次同类漏删。
   if (missing.length) {
     console.warn(`[dashboard] 这些开关的 HTML 元素不在了,已跳过:${missing.join(', ')}`
-      + ' —— 要么补回元素,要么删掉这里的 bind 调用');
+      + '：要么补回元素,要么删掉这里的 bind 调用');
   }
 }
 
@@ -1260,7 +1260,7 @@ window.gw.onConfig(apply);
 window.gw.onStrategy((s) => { strategy = s; renderWEStrategy(); });
 
 window.gw.onSensorStatus((s) => {
-  document.getElementById('live').textContent = s && s.text ? s.text : '—';
+  document.getElementById('live').textContent = s && s.text ? s.text : '-';
   // 摄像头被拒时也把授权按钮露出来 —— 和辅助功能同一个道理:说了缺什么就得给路径。
   if (s && s.denied) {
     const grants = document.getElementById('grant-row');
@@ -1368,7 +1368,7 @@ window.gw.onRecordingResult((r) => {
     // 在用的东西，而"我明明把它关了"和"它还在挡我"看起来是矛盾的。
     const label = T.ACTIONS[r.conflictWith] ? T.ACTIONS[r.conflictWith].label : r.conflictWith;
     text = `❌ 和「${label}」的手势太像（距离 ${r.distance}，至少要 ${r.need ?? '?'}）`
-      + (r.otherDisabled ? '。那个手势现在是关着的，但关掉不代表可以撞 ——'
+      + (r.otherDisabled ? '。那个手势现在是关着的，但关掉不代表可以撞：'
         + '重新打开它的时候两个就串了。要么把它清除，要么换一个差别更大的手势'
         : '，换一个差别更大的');
   } else if (r) text = `❌ ${r.error || '录制失败'}`;
@@ -1399,13 +1399,13 @@ const pointerHealthNode = document.getElementById('pointer-health');
 cursorToggle.onchange = () => window.gw.setConfig({ controlCursor: cursorToggle.checked });
 
 function renderPointerHealth(health) {
-  if (!health) { pointerHealthNode.textContent = '—'; return; }
+  if (!health) { pointerHealthNode.textContent = '-'; return; }
   // ⚠️ trusted 是最要紧的一位：false 意味着后面所有 sent 都被系统丢掉了，
   // 而 sent 那个数字照常增长 —— 只看 sent 会以为一切正常。这正是 AirCursor
   // 烧掉四轮的那件事（缺权限时 CGEvent.post 静默丢弃）。
   if (health.trusted === false) {
     pointerHealthNode.innerHTML =
-      '<span class="warn">没有辅助功能权限 —— 手势移动光标会被系统静默丢弃</span>\n'
+      '<span class="warn">没有辅助功能权限：手势移动光标会被系统静默丢弃</span>\n'
       + '去「系统设置 → 隐私与安全性 → 辅助功能」勾上本应用';
     return;
   }
@@ -1423,7 +1423,7 @@ if (window.gw.pointerHealth) window.gw.pointerHealth().then(renderPointerHealth)
 const captureState = document.getElementById('capture-state');
 
 document.getElementById('capture-start').onclick = async () => {
-  captureState.textContent = '正在录 5 秒 —— 就做平时会做的动作，别刻意摆姿势。';
+  captureState.textContent = '正在录 5 秒：就做平时会做的动作，别刻意摆姿势。';
   const result = await window.gw.startCapture();
   // ⚠️ 主进程返回的是 {ok:false, reason:…} 不是 error。读错字段只会显示兜底文案，
   // 而"摄像头没开"恰恰是最常见的失败原因。
@@ -1575,7 +1575,7 @@ mouseGateBox.onchange = () =>
   window.gw.weSetMouseForward({ mouseGateFinder: mouseGateBox.checked });
 
 window.gw.onMouseStatus((status) => {
-  if (!status) { mouseStateNode.textContent = '—'; return; }
+  if (!status) { mouseStateNode.textContent = '-'; return; }
   mouseStateNode.innerHTML = status.ok
     ? `✅ ${status.text}`
     : `<span class="warn">${status.text}</span>`;
@@ -1609,21 +1609,21 @@ function renderMouseDiag(mouse) {
       // ⚠️⚠️ 判"是不是打包版"用的是 **build 标识里那三个字**，
       //   而不是 `window.gw.isPackaged`（**那个不存在** —— 我差点直接写上去，
       //   而它会静默 undefined ⟹ 打包版永远走到 else 那支，说"要打包成 .app"）。
-      return '\n⚠️ 没有辅助功能授权 —— 监听建立了但收不到任何事件。'
+      return '\n⚠️ 没有辅助功能授权：监听建立了但收不到任何事件。'
         + (isPackagedBuild()
           ? '\n\n应该已经弹过授权框了。如果错过了：'
             + '\n系统设置 → 隐私与安全性 → 辅助功能 → 找 GestureWallMouse 打开'
-            + '\n\n⚠️ 勾选之后**要重开本应用**（⌃⇧Q 退出再打开）——'
+            + '\n\n⚠️ 勾选之后**要重开本应用**（⌃⇧Q 退出再打开）：'
             + '那是 macOS 的要求，授权对已经在跑的进程不生效。'
           : '\n开发模式（npm start）拿不到那个授权，要打包成 .app：npm run dist:mac');
     }
     return '\n⚠️ 一个鼠标事件都没转发进去。三种可能：'
-      + '\n① 没有辅助功能授权（最常见）—— 上面那行状态会说'
+      + '\n① 没有辅助功能授权（最常见）：上面那行状态会说'
       + '\n② 「只在桌面被聚焦时」那个开关开着'
-      + '\n③ helper 没起来 —— 看上面那行状态';
+      + '\n③ helper 没起来：看上面那行状态';
   }
   if (!saw) {
-    return `\n⚠️ 已转发 ${injected} 个事件，但页面一个都没收到 —— `
+    return `\n⚠️ 已转发 ${injected} 个事件，但页面一个都没收到：`
       + `坐标可能算错了${mouse.lastEvent ? `（最近注入位置 ${mouse.lastEvent.x},${mouse.lastEvent.y}）` : ''}`;
   }
   const parts = [`已转发 ${injected}`];
@@ -1650,7 +1650,7 @@ function renderMouseDiag(mouse) {
   // ⚠️ 这条区分最关键：我们注入的是 mouseDown，而很多壁纸监听 pointerdown。
   // Chromium 通常会合成，但如果没合成，症状就是"点了没反应"而事件其实到了。
   if (saw.mousedown > 0 && saw.pointerdown === 0) {
-    parts.push('\n⚠️ mousedown 到了但 pointerdown 没有 —— '
+    parts.push('\n⚠️ mousedown 到了但 pointerdown 没有：'
       + '这个壁纸监听的是 pointer 事件，而注入的 mouse 事件没被合成成 pointer。'
       + '这是个真问题，把这行发给我。');
   }
@@ -1686,7 +1686,7 @@ function propsLine(props) {
       return `\n<span class="warn">⚠️ 有 ${props.count} 项属性，但壁纸没挂`
         + ' wallpaperPropertyListener ⟹ 一项都没进去。'
         + '它的圆环/粒子/时间都靠属性驱动，所以画面会缺一大块。'
-        + '常见原因：脚本在挂 listener 之前就抛了 —— ⌃⇧D 看 Console 第一条报错</span>';
+        + '常见原因：脚本在挂 listener 之前就抛了：⌃⇧D 看 Console 第一条报错</span>';
     }
     return `\n<span class="warn">⚠️ 属性发不进去：${props.reason}</span>`;
   }
@@ -1718,13 +1718,13 @@ async function renderWEStatus() {
   // 所以这里只在**尺寸真的不对**时报警，而"那条带子"用另一句话解释。
   const menuBarNote = status.menuBar && status.menuBar.sizeOk
     && !status.menuBar.coversMenuBar
-    ? '\n顶部那 25px 是系统菜单栏画的（我们的窗口已经铺满整屏）—— '
+    ? '\n顶部那 25px 是系统菜单栏画的（我们的窗口已经铺满整屏）：'
       + '想让那块也有内容就切「真壁纸层」，代价是壁纸收不到鼠标。'
     : '';
   const menuBar = menuBarNote || (status.menuBar && !status.menuBar.sizeOk && status.menuBar.gap
     ? `\n⚠️ 顶部菜单栏那条带子盖不住（推了 ${status.menuBar.pushes} 次，`
       + `还差 ${status.menuBar.gap.height || status.menuBar.gap.y}px，`
-      + `最近因 ${status.menuBar.lastReason}）—— macOS 把窗口夹进了可见区域。`
+      + `最近因 ${status.menuBar.lastReason}）：macOS 把窗口夹进了可见区域。`
       + '⌃⇧L 切到 desktop 层能盖住，代价是鼠标交互失效。'
     : '');
 
@@ -1736,14 +1736,14 @@ async function renderWEStatus() {
     // "现在显示的是某个我不知道的东西"，那比只说"未装载"更让人迷惑。
     //
     // ⟹ 只说事实：没装壁纸，现在是内置的那个。
-    node.innerHTML = '还没装载壁纸 —— 现在显示的是内置壁纸' + menuBar;
+    node.innerHTML = '还没装载壁纸：现在显示的是内置壁纸' + menuBar;
   } else if (status.error) {
     node.innerHTML = `<span class="warn">${status.error}</span>\n${status.dir}`;
   } else {
     node.innerHTML = `<b>${status.title}</b>\n${status.dir}\n`
       + (status.ready
         ? '✅ 壁纸里的脚本已经跑起来了'
-        : '⏳ 页面加载了，但壁纸还没报 ready —— 如果一直这样，是里面的脚本没跑起来')
+        : '⏳ 页面加载了，但壁纸还没报 ready：如果一直这样，是里面的脚本没跑起来')
       + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频')
       + propsLine(status.props)
       + menuBar;
@@ -1782,8 +1782,8 @@ function renderAudioFrame(frame) {
   //   逐段值      —— 具体哪一段不对
   const shape = frame.lowMean > frame.highMean * 1.5 ? '✅ 低频>高频（像音乐）'
     : (frame.highMean > frame.lowMean * 1.2
-      ? '⚠️ 高频>低频 —— 那不是音乐的形状，分箱或加权有问题'
-      : '⚠️ 低高频差不多 —— 大概是白噪声或者加权把差异抹平了');
+      ? '⚠️ 高频>低频：那不是音乐的形状，分箱或加权有问题'
+      : '⚠️ 低高频差不多：大概是白噪声或者加权把差异抹平了');
   // ⚠️ 报出**这是哪个音源的数据**。
   //
   // 用户实测撞到：切到「单段扫描」后，状态行说"只有第 40 段有值"，
@@ -1806,11 +1806,11 @@ function renderAudioFrame(frame) {
   if ((frame.source === 'system' || frame.source === 'netease') && frame.max > 0.02) {
     const spread = frame.max / Math.max(0.01, frame.mean);
     if (frame.lowMean > frame.highMean * 4) {
-      advice = '<br><span class="warn">⚠️ 低频比高频大 4 倍以上 —— '
+      advice = '<br><span class="warn">⚠️ 低频比高频大 4 倍以上：'
         + 'WE 的频段加权本该把它压平（低频 ×0.351、高频 ×1.393）。'
         + '如果画面上一片长一片没有，说明加权没生效</span>';
     } else if (spread > 25) {
-      advice = `<br><span class="warn">⚠️ 峰值是均值的 ${spread.toFixed(0)} 倍 —— `
+      advice = `<br><span class="warn">⚠️ 峰值是均值的 ${spread.toFixed(0)} 倍：`
         + '太尖了，正常音乐下 WE 的算法应该在 10 倍以内</span>';
     } else {
       advice = '<br>✅ 形状像 WE 的输出（动态压到位、低高频接近）';
@@ -1863,7 +1863,7 @@ function renderAudioFrame(frame) {
           ? ' ⚠️ 音量很大 ⟹ 柱子长可能是音量，不是实现'
           : (frame.inputRMS > 0.02
             ? ' ✅ 正常听感音量 ⟹ 柱子长就是我们的实现偏大'
-            : ' ⚠️ 几乎没有声音 —— 是不是没在放歌')}`
+            : ' ⚠️ 几乎没有声音：是不是没在放歌')}`
       : '')
     // ⚠️ 帧节奏 —— 判"柱子突兀的长"是不是 push 模型的批大小抖动。
     // WE 是 pull 模型（渲染循环主动读）⟹ 节奏恒定；
@@ -1913,7 +1913,7 @@ function renderAudioFrame(frame) {
       ? `<br>动态范围 <b>${frame.dynRange}</b> 倍（真 WE 预览图约 4.4 倍）`
         + `${frame.dynRange >= 3.5
           ? ' ✅ 有层次'
-          : ' ⚠️ 太平 —— 底被抬起来了，柱子会显得又长又齐'}`
+          : ' ⚠️ 太平：底被抬起来了，柱子会显得又长又齐'}`
         // ⚠️⚠️ **「柱子突兀的长」和「整体太长」是同一个根因** —— 算术如下：
         //
         // 相邻段隔 stride 2 = **94Hz**，而音乐里相邻 94Hz 的能量差 2 倍是常态
@@ -1988,11 +1988,24 @@ function renderMineSide(item) {
   const side = document.getElementById('mine-side');
   if (!side) return;
 
+  // ⚠️⚠️ **AI 工坊开着时，右栅归它**（0.9.127）。用户点壁纸仍然会装载
+  //   （那是他要的动作），但**参数面板不抢这一栅** —— 否则会出现
+  //   "AI 对话和壁纸参数上下叠在同一栏"，而那正是我要避免的拥挤。
+  // ⚠️ 参数还是照常渲染（下面那些 DOM 写入都在跑）⟹ 关掉 AI 之后
+  //   直接就是最新那张壁纸的参数，不需要重新点一次。
+  const aiBody = document.getElementById('ai-body');
+  const aiOpen = aiBody && !aiBody.hidden;
+
   if (!item) {
-    side.hidden = true;
+    // ⚠️ 没选中壁纸时**只有 AI 也没开**才收起整栅
+    if (!aiOpen) side.hidden = true;
+    const body = document.getElementById('mine-side-body');
+    if (body) body.hidden = true;
     return;
   }
   side.hidden = false;
+  const body = document.getElementById('mine-side-body');
+  if (body) body.hidden = aiOpen;
 
   const img = document.getElementById('side-preview');
   if (item.preview) {
@@ -2553,7 +2566,7 @@ async function runBrowse() {
       return;
     }
     if (!one.items.length) {
-      state.textContent = '没查到这个 ID —— 它可能已经被作者删了';
+      state.textContent = '没查到这个 ID：它可能已经被作者删了';
       return;
     }
     // ⚠️ 也画到网格里（一张卡片）而不是只填右侧 —— 否则网格是空的，
@@ -2676,7 +2689,7 @@ window.gw.workshopBrowseMeta().then((meta) => {
   if (!meta.hasKey) {
     document.getElementById('br-state').innerHTML =
       '<span class="hint">配了 API key 才能浏览（下面那块）。'
-      + '不配也能用 —— 贴工坊链接到下面「按 ID 装载」。</span>';
+      + '不配也能用：贴工坊链接到下面「按 ID 装载」。</span>';
   } else {
     runBrowse();
   }
@@ -2868,7 +2881,7 @@ async function renderMine() {
             //
             // ⚠️ 说清三件事：删什么、去哪（废纸篓 ⟹ 能反悔）、正在用的会先卸载。
             const name = it.title || it.id || it.dir;
-            const extra = it.active ? '\n\n它正在使用中 —— 会先卸载再删。' : '';
+            const extra = it.active ? '\n\n它正在使用中：会先卸载再删。' : '';
             // eslint-disable-next-line no-alert, no-restricted-globals
             if (!confirm(`把「${name}」移到废纸篓？${extra}\n\n${it.dir}`)) return;
             const out = await window.gw.deleteWallpaper(it.dir);
@@ -3008,7 +3021,7 @@ function renderRotate() {
   } else if (list.length >= 2) {
     nowState.textContent = `轮播关着 · 列表 ${list.length} 个 · 点这里设置`;
   } else if (list.length === 1) {
-    nowState.textContent = '播放列表只有 1 个 —— 至少要 2 个才会轮播';
+    nowState.textContent = '播放列表只有 1 个：至少要 2 个才会轮播';
   } else {
     nowState.textContent = '还没有播放列表 · 点这里设置';
   }
@@ -3033,7 +3046,7 @@ function renderRotate() {
   } else if (list.length === 1) {
     // ⚠️ 一个壁纸"轮播"没有意义，而且主进程那边也不会起定时器
     // ⟹ 要说清，否则用户开了开关发现不动会以为坏了。
-    hint.innerHTML = '⚠️ 只有 1 个 —— 至少要 2 个才会轮播'
+    hint.innerHTML = '⚠️ 只有 1 个：至少要 2 个才会轮播'
       + '（一个壁纸"轮播"就是每隔 N 分钟重载它，画面会白闪一下）。';
   } else {
     hint.textContent = r.on
@@ -3289,6 +3302,11 @@ document.getElementById('settings-modal-mask').onclick = closeSettingsModal;
 // ⚠️ Esc 挂在 window 上而不是弹窗上 —— 焦点可能在弹窗里任何一个控件上，
 // 而 keydown 冒泡到弹窗要求焦点在它内部，输入框里按 Esc 就不灵了。
 // ⚠️ 判 hidden 而不是无条件关 —— 否则和别处的 Esc（右键菜单）抢。
+// ⚠️⚠️ AI 工坊的关闭入口（0.9.127）。
+//   它的实现在文件后面那个 `try` 块里（`aiSetOpen`），而**那是块级作用域**
+//   ⟹ 这里必须用一个模块级变量接住它，否则 Esc 那条永远拿不到。
+let aiCloseWorkshop = null;
+
 // ⚠️⚠️ 两个弹窗**一个 handler 管**，而且 return 一次只关一个 ——
 // 各写一个 handler 的话两个都开着时按 Esc 会同时关掉两个
 // （虽然眼下不会两个同开，但那是"以后加第三个弹窗就出问题"的形状）。
@@ -3301,7 +3319,17 @@ window.addEventListener('keydown', (e) => {
     //   上面那段注释早就说了另写会出什么问题（两个都开着时 Esc 同时关掉两个），
     //   而"以后加第三个弹窗"就是现在。
     // ⚠️ 它排在最后：生成中按 Esc 更可能是想关掉前面那两个（如果同时开着）。
-    ['ai-modal', () => { const m = document.getElementById('ai-modal'); if (m) m.hidden = true; }],
+    // ⚠️ AI 工坊（0.9.127 起是右栅的一个 body，不再是弹窗）——
+    //   ⚠️ 它排在最后：另外两个是**真弹窗**（有遮罩、盖住整屏），
+    //     同时开着时 Esc 该先关那个盖住东西的。
+    //
+    // ⚠️⚠️ 走 `aiCloseWorkshop`（一个模块级变量）**而不是直接调 aiSetOpen** ——
+    //   后者是**声明在下面那个 try 块里的函数**，而 `function` 声明是
+    //   块级作用域 ⟹ 这里看不到它。
+    //   ⚠️ 我第一版写的是 `typeof aiSetOpen === 'function' && aiSetOpen(false)`，
+    //     那**永远是 false** ⟹ Esc 静默失效（不报错、只是没反应）。
+    //     核对方式：比较两处的字符偏移 + 确认 try 块范围（不是靠猜）。
+    ['ai-body', () => { if (aiCloseWorkshop) aiCloseWorkshop(); }],
   ]) {
     const modal = document.getElementById(id);
     if (modal && !modal.hidden) { e.stopPropagation(); close(); return; }
@@ -3405,7 +3433,7 @@ function renderMineDirs() {
     change.textContent = '更换目录';
     // ⚠️ title 里说清"不搬文件" —— 用户选的就是这个行为，
     // 而不说的话他会以为壁纸跟着走了（然后发现列表空了以为坏了）。
-    change.title = '换成别的目录。⚠️ 只改指向，**不会搬文件** ——'
+    change.title = '换成别的目录。⚠️ 只改指向，**不会搬文件**：'
       + '旧目录里的壁纸留在原地';
     change.onclick = async () => {
       const out = await window.gw.workshopAddDir();
@@ -3514,7 +3542,7 @@ function renderMineDirs() {
       // 看起来像数字不对。
       // ⚠️ 走到这里的只有"有残留"一种情况（上面已经过滤了）
       // ⟹ 不用再分支。原来那三个分支里两个是"正常"，而正常状态压根不该显示。
-      const mark = `${item.found} 个 —— 点右边搬过去`;
+      const mark = `${item.found} 个：点右边搬过去`;
       text.textContent = `${item.path}  ${mark}`;
       // 走到这里都是异常状态 ⟹ 一律标黄
       text.style.color = 'var(--warn, #c98)';
@@ -3715,7 +3743,7 @@ window.gw.onVideoStatus((status) => {
     const up = status.upscale;
     node.innerHTML = `🖼 图片已显示 ${status.width}×${status.height}`
       + (up && up > 1.8
-        ? `\n⚠️ 被放大了 ${up} 倍（屏幕 ${status.screenWidth}px）—— 糊是因为源图小，`
+        ? `\n⚠️ 被放大了 ${up} 倍（屏幕 ${status.screenWidth}px）：糊是因为源图小，`
           + `不是渲染问题。已改用 contain 保清晰度。`
         : '');
     return;
@@ -3773,7 +3801,7 @@ if (window.gw.onWeAudioDrop) {
     extra.className = 'warn';
     extra.style.marginTop = '4px';
     extra.textContent = `⚠️ 闸门丢掉了 ${d.count} 帧：owner=${d.owner}，`
-      + `而当前音源=${d.current} —— 旧音源的 helper 还在吐数据`;
+      + `而当前音源=${d.current}：旧音源的 helper 还在吐数据`;
     // 只留最后一条
     const old = node.querySelector('.warn');
     if (old) old.remove();
@@ -3812,8 +3840,37 @@ try {
 // ⚠️ 每个 getElementById 都可能是 null（HTML 改了而这里没跟上）
 //   ⟹ 统一用一个取值器，拿不到就整块不启用，而不是在某一行抛。
 const aiEl = (id) => document.getElementById(id);
-const aiModal = aiEl('ai-modal');
 const aiLog = aiEl('ai-log');
+
+// ⚠️⚠️⚠️ **AI 工坊和壁纸参数共用右栅，互斥**（0.9.127）。用户 2026-08-02：
+//   「你现在这种弹窗好难看，我想的是和壁纸参数一样右边显示，
+//     但是这个壁纸参数的位置冲突了，我也没太想好」
+//
+// ⚠️ 不冲突 —— 判据是**时间上互斥**：「壁纸参数」是点了某张壁纸才出现，
+//   「AI 工坊」是点按钮才出现，而不会同时想看这两个。
+// ⟹ 同一个 `.pane-side`、两个平级 body，谁被打开谁占用。
+// ⚠️ 关掉 AI 时要**回到之前那张壁纸的参数**（不是回到空白）——
+//   参数那个 body 一直在被 renderMineSide 更新，只是藏着 ⟹ 露出来就是最新的。
+function aiSetOpen(open) {
+  const side = document.getElementById('mine-side');
+  const body = document.getElementById('ai-body');
+  const params = document.getElementById('mine-side-body');
+  if (!side || !body) return;
+  body.hidden = !open;
+  if (open) {
+    side.hidden = false;
+    if (params) params.hidden = true;
+  } else {
+    // ⚠️⚠️ 关掉 AI 之后**整栅收不收，取决于有没有选中壁纸** ——
+    //   而"有没有选中"的唯一真相是参数 body 里有没有内容（标题非空）。
+    //   ⚠️ 不能无条件 `side.hidden = false`：那样关掉 AI 会留下一个空面板，
+    //     而用户 0.9.62 点名要求"没选中就整块不占位"。
+    const title = document.getElementById('side-title');
+    const hasPick = !!(title && title.textContent.trim());
+    if (params) params.hidden = !hasPick;
+    side.hidden = !hasPick;
+  }
+}
 
 // 往对话流里加一条。⚠️ 用 textContent 不是 innerHTML ——
 //   这些文本里有模型返回的报错原文，而那可能包含 HTML 标签。
@@ -3843,16 +3900,18 @@ function aiSetBusy(busy) {
 async function aiRefreshMeta() {
   const meta = await window.gw.genMeta();
   if (!meta) return;
-  // ⚠️⚠️ 这一处**故意用 `document.getElementById` 而不是 `aiEl`**。
-  //   gating 里那条「多行容器要保留换行」的守卫是按 `getElementById('id')`
-  //   切窗口来归属的 —— 用包装器的话这里的多行写入不产生站点边界，
-  //   会被算到**上一个** getElementById 的头上（实测：它报的是 we-audio-frame）。
-  //   ⟹ 那种误报比没有守卫糟（它指着一个没问题的元素）。
-  //   ⟹ 判据：**别让自己的写法把别人的守卫弄瞎。**
   const dirNode = document.getElementById('ai-dir');
-  // ⚠️ 目录要**带一句说明**，不是只有一条路径 —— 那条路径本身不解释
-  //   "生成的东西会去这儿"。⚠️ 这里有 \n ⟹ CSS 必须有 white-space: pre-line。
-  if (dirNode) dirNode.textContent = `生成的壁纸放在这里：\n${meta.dir}`;
+  // ⚠️⚠️ **340px 的栅装不下完整路径**（0.9.127）。原来这里写两行
+  //   （"生成的壁纸放在这里：\n<完整路径>"），那在 620px 的弹窗里还行，
+  //   在右栅里会折成四行、或者被 ellipsis 砍掉尾巴（而尾巴才是有用的部分）。
+  //   ⟹ 只显示**尾部两段**（`GestureWall/Wallpapers`）—— 那足够认出是哪儿，
+  //     完整路径进 `title`（悬停可见）。
+  // ⚠️ 而"这是干什么的"由那个文件夹图形 + 悬停提示承担，不再占一行正文。
+  if (dirNode && meta.dir) {
+    const segs = String(meta.dir).split('/').filter(Boolean);
+    dirNode.textContent = segs.slice(-2).join('/') || meta.dir;
+    dirNode.title = `生成的壁纸放在这里，点开在 Finder 里看：\n${meta.dir}`;
+  }
   const keyInput = aiEl('ai-key');
   // ⚠️ **回填已存的 key** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122，
   //   根因是 mergeConfig 撞 null 默认值抛异常，整份 config 被静默重置）。
@@ -3865,14 +3924,14 @@ async function aiRefreshMeta() {
   if (hint) {
     hint.textContent = meta.hasKey
       ? `已存在本机（不会上传、诊断报告里打码）。当前模型：${meta.model}`
-      : '还没填。填一次就行 —— 它存在本机的配置文件里，不进代码仓、不上传。';
+      : '还没填。填一次就行：它存在本机的配置文件里，不进代码仓、不上传。';
   }
   return meta;
 }
 
 if (aiEl('ai-open')) {
   aiEl('ai-open').onclick = async () => {
-    if (aiModal) aiModal.hidden = false;
+    aiSetOpen(true);
     try {
       const meta = await aiRefreshMeta();
       // ⚠️ 首次打开给一句引导 —— 空白的对话框不告诉用户该说什么。
@@ -3880,8 +3939,8 @@ if (aiEl('ai-open')) {
       if (aiLog && !aiLog.children.length) {
         aiSay('bot', meta && meta.hasKey
           ? '说一句你想要什么效果，我写一张壁纸放进上面那个目录。\n'
-            + '我会自己检查代码、发现问题自己修，最多三轮。'
-          : '先填一下模型凭证（上面那个折叠区），然后说一句你想要什么效果。');
+            + '会自己检查代码、发现问题自己修，最多三轮。'
+          : '先填模型凭证（上面那个折叠区），然后说一句你想要什么效果。');
       }
     } catch (error) {
       aiSay('bad', `读配置失败：${error.message}`);
@@ -3891,12 +3950,17 @@ if (aiEl('ai-open')) {
   };
 }
 
-const aiHide = () => { if (aiModal) aiModal.hidden = true; };
-if (aiEl('ai-close')) aiEl('ai-close').onclick = aiHide;
-if (aiEl('ai-modal-mask')) aiEl('ai-modal-mask').onclick = aiHide;
+// ⚠️ 把关闭入口交给模块级变量 —— Esc 那条 handler 在这个 try 块**外面**，
+//   而 `function aiSetOpen` 是块级作用域，它看不到。见上面那段注释。
+aiCloseWorkshop = () => aiSetOpen(false);
 
-if (aiEl('ai-reveal')) {
-  aiEl('ai-reveal').onclick = async () => {
+if (aiEl('ai-close')) aiEl('ai-close').onclick = () => aiSetOpen(false);
+
+// ⚠️⚠️ 工作目录那一行**本身就是按钮**（0.9.127）——
+//   原来是"一行说明文字 + 一个「打开」按钮"，而那两个是同一件事
+//   （显示目录的唯一用途就是点开看看）⟹ 合成一个控件，省掉一个按钮。
+if (aiEl('ai-dir')) {
+  aiEl('ai-dir').onclick = async () => {
     // ⚠️ 不传参数 = 打开我们自己的壁纸目录（见 main.js 的 reveal-wallpaper-dir）
     await window.gw.revealWallpaperDir();
   };
@@ -3911,7 +3975,7 @@ if (aiEl('ai-key-save')) {
     //   这个项目刚为"以为存了其实没存"栽过一轮。
     await aiRefreshMeta();
     aiSay(r && r.hasKey ? 'ok' : 'bad',
-      r && r.hasKey ? '存好了（在本机配置文件里）' : '清空了 —— 现在没有凭证');
+      r && r.hasKey ? '存好了（在本机配置文件里）' : '清空了：现在没有凭证');
   };
 }
 
@@ -3930,15 +3994,15 @@ if (aiEl('ai-ping')) {
     //     有的话**当场提醒换模型** —— 那比让用户先等几分钟再失败好得多。
     if (r.thinks) {
       aiSay('bad', `连通没问题（模型回了「${r.reply || '（空）'}」），`
-        + `\n⚠️ 但 ${r.model} 是**推理模型** —— 它写了 ${r.reasoningChars} 字的思考过程。`
+        + `\n⚠️ 但 ${r.model} 是**推理模型**：它写了 ${r.reasoningChars} 字的思考过程。`
         + '\n\n生成一整张壁纸要上千行代码，而推理模型会把输出预算先花在思考上，'
         + '常常思考到上限就结束了、一行代码都没写（症状是"没返回内容"）。'
         + '\n\n⟹ 建议换一个**非推理**模型。改法：设置 → 开发者选项里改配置，'
         + '或者告诉我你想用哪个，我改默认值。'
-        + '\n（也可以直接试 —— 预算已经提到 32000，也许够它写完。）');
+        + '\n（也可以直接试：预算已经提到 32000，也许够它写完。）');
       return;
     }
-    aiSay('ok', `通了 —— ${r.model} 回了「${r.reply}」`
+    aiSay('ok', `通了：${r.model} 回了「${r.reply}」`
       + (r.outputTokens ? `（输出 ${r.outputTokens} token，没有思考过程 ⟹ 适合写代码）` : ''));
   };
 }
@@ -3978,7 +4042,7 @@ async function aiGo() {
     } else {
       aiSay('ok', `做好了：${r.dirName}\n`
         + `（${r.rounds} 轮通过全部检查）\n`
-        + '下面的壁纸网格已经刷新 —— 点那张卡片就能装载看效果。');
+        + '下面的壁纸网格已经刷新：点那张卡片就能装载看效果。');
     }
     // ⚠️⚠️ **刷新网格** —— 这是这个功能的全部反馈来源。
     //   用户原话：「我左边这个预览直接就是指定位置，那我可以看到这个预览图的

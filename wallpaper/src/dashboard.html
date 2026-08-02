@@ -59,6 +59,40 @@
     /* 日志区（等宽字体那几块） */
     --log-bg: #0d0d0f;
     --log-fg: #b9c0cc;
+
+    /* ═══════════════════════════════════════════════════════════════
+       ⚠️⚠️ **形状尺度**（0.9.127）。用户 2026-08-02：
+         「你好好把我们的产品设计美观一些」+ 给了 taste-skill
+
+       ⚠️ 而这不是"感觉不好看" —— 是**数出来的**：改之前这个文件里
+         `border-radius` 用了 **11 种**值（2/3/5/6/7/8/9/12px/50%/999px/
+         6px 6px 0 0），而它们之间没有任何规则，就是我每次写的时候随手定的。
+         taste-skill 的 SHAPE CONSISTENCY LOCK 说得对：
+         **混着用的圆角就是坏设计**（方卡片配药丸按钮、圆按钮在方布局里）。
+
+       ⟹ 收成三档，每一档有明确职责：
+         --r-sm  小控件（chip、tag、小色块）
+         --r-md  按钮、输入框（**同一档** —— 它们在同一行里并排，
+                 差 1px 就会看出"没对齐"，而这个文件原来是按钮 7px、输入 6px）
+         --r-lg  卡片、面板、弹窗（比控件明显大一档，那才分得出层级）
+       ⚠️ 例外只有两个，都是几何必然：`50%`（圆点）和 `999px`（胶囊）。
+       ═══════════════════════════════════════════════════════════════ */
+    --r-sm: 4px;
+    --r-md: 8px;
+    --r-lg: 12px;
+
+    /* ⚠️⚠️ **状态色的"文字版"**（0.9.127）。
+       `--warn` / `--ok` / `--accent` 那三个是**块填充**用的饱和色，
+       而它们直接当文字色的话在深色底上偏刺眼（尤其小字号）。
+       ⟹ 各配一个提亮、降饱和的文字版。审计前这三个值是散在四处的硬编码
+         （#ffd9a8 / #b6ffd8 / #ffb4b4 / #ffc9c9 / #ff8b8b）——
+         同一个语义五个近似值，那正是"一个调色板"这条规则要防的。 */
+    --warn-fg: #ffd9a8;
+    --ok-fg: #b6ffd8;
+    --bad-fg: #ff9d9d;
+    /* primary 按钮的文字：在亮青色上要用**深墨**而不是纯黑
+       （taste-skill：NO pure black #000000 ⟹ 用 off-black）。 */
+    --on-accent: #06121a;
   }
   /* ⚠️⚠️ 这里原来有一整套 `html[data-theme="light"]` 的浅色变量 ——
      0.9.60 **删了**。用户 2026-08-01：「不是浅色模式太难看了，我们只保留深色吧，
@@ -289,7 +323,7 @@
   nav button {
     appearance: none; background: none; border: 0; color: var(--dim);
     padding: 9px 14px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
-    border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
+    border-bottom: 2px solid transparent; border-radius: var(--r-md) var(--r-md) 0 0;
     /* ⚠️ 下移 1px 补掉 border-bottom 造成的视觉偏移，否则未选中的 tab
        看起来比选中的高一点。 */
     margin-bottom: -1px;
@@ -300,15 +334,11 @@
     background: rgba(108,199,255,.07);
   }
   nav .spacer { flex: 1; }
-  /* 齿轮：tab 条最右。⚠️ 0.9.51 起它是设置的唯一入口。 */
+  /* 设置：tab 条最右。⚠️ 0.9.51 起它是设置的唯一入口。
+     ⚠️ 那个 `.gear` 的样式随 emoji 一起删了（0.9.127）—— 见 nav 里那段注释。 */
   #settings-open { padding: 9px 12px 10px; }
-  #settings-open .gear {
-    display: inline-block; font-size: 13px; margin-right: 3px;
-    transition: transform .3s ease;   /* 悬停转一下 —— 说明它可点 */
-  }
-  #settings-open:hover .gear { transform: rotate(60deg); }
   kbd {
-    background: rgba(255,255,255,.1); padding: 1px 4px; border-radius: 3px;
+    background: rgba(255,255,255,.1); padding: 1px 4px; border-radius: var(--r-sm);
     font: inherit;
   }
 
@@ -380,7 +410,7 @@
      长得一样是**有意的**：用户在两个 tab 之间切换时不该有"换了个软件"的感觉。 */
   #side-preview, #wside-preview {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
-    border-radius: 9px; background: var(--img-bg); display: block;
+    border-radius: var(--r-lg); background: var(--img-bg); display: block;
     border: 1px solid var(--line);
   }
   #side-title, #wside-title {
@@ -474,7 +504,7 @@
     border: 1px solid transparent;
     border-top-color: rgba(255,255,255,.10);
     border-bottom-color: rgba(0,0,0,.22);
-    border-radius: 12px; padding: 15px 16px 16px; margin-bottom: 12px;
+    border-radius: var(--r-lg); padding: 15px 16px 16px; margin-bottom: 12px;
     backdrop-filter: blur(14px) saturate(120%);
     box-shadow: 0 8px 24px -12px rgba(4,7,16,.7);
   }
@@ -484,7 +514,7 @@
 
   button.act {
     appearance: none; border: 1px solid var(--line); background: var(--btn-bg-a);
-    color: var(--text); border-radius: 7px; padding: 5px 12px;
+    color: var(--text); border-radius: var(--r-md); padding: 5px 12px;
     font: inherit; font-size: 12px; cursor: pointer;
   }
   button.act:hover { background: var(--btn-hover-a); }
@@ -500,11 +530,23 @@
      ⚠️ 用 `:focus-visible` 而不是 `:focus` —— 后者会让**鼠标点击**也画出焦点圈，
        那在按钮上是视觉噪声（Chromium 的默认行为已经是这样，我们只是把它做好看）。 */
   button:focus-visible, input:focus-visible, select:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-md);
   }
-  button.act.primary { background: var(--accent); color: #06121a; border-color: transparent; font-weight: 600; }
-  button.act.danger { color: #ff8b8b; }
+  button.act.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
+  button.act.danger { color: var(--bad-fg); }
   button.act:disabled { opacity: .4; cursor: default; }
+  /* ⚠️⚠️ **ghost = 次要操作**（0.9.127）。原来只有"普通"和"primary"两档，
+     ⟹ 一行里两个普通按钮时分不出哪个是主操作（「存」和「测一下连通」、
+       「返回参数」和别的）。ghost 把边框和底色都去掉，只留文字
+       ⟹ 三档层级：primary（实心）> act（描边）> ghost（纯文字）。 */
+  button.act.ghost {
+    background: none; border-color: transparent; color: var(--dim);
+  }
+  button.act.ghost:hover { background: var(--btn-bg-a); color: var(--text); }
+  /* ⚠️ `.full` = 有意通栏。**只在"这一栏唯一的主操作"上用**
+     （AI 那栅的「生成壁纸」）。⚠️ 和"被网格拉满"要分清：后者是 bug，
+       见下面 `.bar-row` 那段。 */
+  button.act.full { width: 100%; }
 
   /* ---- 槽位 / 模块 ---- */
   .slot { margin-bottom: 18px; }
@@ -513,7 +555,7 @@
   .slot-head span { color: var(--dim); font-size: 11px; }
   .modules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .module {
-    border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px;
     cursor: pointer; background: var(--card-bg-a);
   }
   .module:hover { border-color: rgba(255,255,255,.2); }
@@ -524,7 +566,7 @@
   /* ---- 图库 ---- */
   .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; }
   .asset {
-    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden;
     background: var(--card-bg-a);
   }
   .asset .pic {
@@ -552,7 +594,7 @@
   }
   .layer-row:last-child { border-bottom: 0; }
   .layer-row .thumb {
-    width: 60px; height: 44px; border-radius: 6px; background: var(--btn-bg-a);
+    width: 60px; height: 44px; border-radius: var(--r-md); background: var(--btn-bg-a);
     background-size: cover; background-position: center;
   }
   .layer-row .nm { font-weight: 600; font-size: 12px; }
@@ -573,7 +615,7 @@
      是一个状态，而不是布局里少了个东西。 */
   .preview { display: flex; gap: 6px; align-items: center; }
   .preview canvas {
-    width: 60px; height: 76px; border-radius: 6px;
+    width: 60px; height: 76px; border-radius: var(--r-md);
     background: rgba(255,255,255,.03); border: 1px solid var(--line);
   }
   .preview canvas.is-wide { width: 96px; }
@@ -584,7 +626,7 @@
   .rec .nm { font-weight: 600; font-size: 12px; }
   .rec .hint2 { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
   .log { max-height: 120px; overflow: auto; margin: 6px 0 0; padding: 6px 8px;
-    background: var(--log-bg-a); border-radius: 6px; font: 11px/1.5 ui-monospace, monospace;
+    background: var(--log-bg-a); border-radius: var(--r-md); font: 11px/1.5 ui-monospace, monospace;
     color: var(--log-fg); white-space: pre-wrap; }
   .rec .state { font-family: ui-monospace, monospace; font-size: 10px; margin-top: 4px; }
   /* ⚠️ 诊断区那几块（#match-probe / #overlay-geom）用的也是 `state` 类，但它们**不在
@@ -596,16 +638,16 @@
     font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5;
     white-space: pre-wrap;              /* 换行必须保留，这是这条规则存在的理由 */
     margin-top: 6px; padding: 7px 9px;
-    background: rgba(255,255,255,.04); border-radius: 6px;
+    background: rgba(255,255,255,.04); border-radius: var(--r-md);
     color: var(--dim);
     max-height: 160px; overflow-y: auto;   /* 手势多了要能滚，不能截断 */
   }
   #heartbeat.ok, #match-probe.ok, #overlay-geom.ok { color: var(--accent); }
   #heartbeat.warn, #match-probe.warn, #overlay-geom.warn { color: var(--warn); }
-  .bar { height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 6px; }
-  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; width: 0; transition: width .1s; }
+  .bar { height: 3px; background: rgba(255,255,255,.1); border-radius: var(--r-sm); margin-top: 6px; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: var(--r-sm); width: 0; transition: width .1s; }
   .tier {
-    display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: var(--r-sm);
     background: rgba(255,255,255,.1); color: var(--dim); margin-left: 6px;
     vertical-align: 1px;
   }
@@ -644,7 +686,7 @@
      只为长得像 Windows 版 WE）。理由：那些是"几十万张壁纸"才需要的
      dashboard 结构，而我们的「我的壁纸」是用户自己下的几十张，一屏看完。 */
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-  .ws-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  .ws-item { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden;
              /* ⚠️ 壁纸卡片：预览图本身是不透明的，只有它下面那一小条
                 （名字/类型那两行）会露底 ⟹ 半透明就够，不用 blur
                 （N 张卡片各一个 backdrop-filter 会明显拖慢滚动）。 */
@@ -699,7 +741,7 @@
   /* 摘要行：整行可点。左缩略图 + 中文字 + 右箭头。 */
   #rotate-summary {
     display: flex; align-items: center; gap: 11px;
-    cursor: pointer; border-radius: 7px; margin: -4px;
+    cursor: pointer; border-radius: var(--r-md); margin: -4px;
     padding: 4px; transition: background .14s ease;
   }
   #rotate-summary:hover { background: rgba(255,255,255,.045); }
@@ -707,7 +749,7 @@
   /* ⚠️ 缩略图挂了要**留住位置** —— 用 background 而不是靠 img 本身撑开，
      否则"图没加载"和"没有正在放的壁纸"两种状态看起来一样。 */
   #rotate-now-img {
-    width: 52px; height: 32px; flex: none; border-radius: 5px;
+    width: 52px; height: 32px; flex: none; border-radius: var(--r-sm);
     object-fit: cover; background: var(--img-bg);
     border: 1px solid var(--line); display: block;
   }
@@ -731,20 +773,20 @@
      长得一样是**有意的**：用户学一次就会用第二个。
      ⚠️ 共用选择器而不是各写一遍：各写一遍的话改一个忘一个，
      而"两个弹窗长得不一样"是那种看得见但没人报的缺陷。 */
-  #rotate-modal, #settings-modal, #ai-modal { position: fixed; inset: 0; z-index: 150; }
-  #rotate-modal-mask, #settings-modal-mask, #ai-modal-mask {
+  #rotate-modal, #settings-modal { position: fixed; inset: 0; z-index: 150; }
+  #rotate-modal-mask, #settings-modal-mask {
     position: absolute; inset: 0;
     background: rgba(4,5,9,.62);
     /* 毛玻璃：底下的面板还能看见轮廓 ⟹ "这是个浮层"而不是"换了一页" */
     backdrop-filter: blur(3px);
   }
-  #rotate-modal-box, #settings-modal-box, #ai-modal-box {
+  #rotate-modal-box, #settings-modal-box {
     position: absolute; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
     max-width: calc(100vw - 48px);
     max-height: calc(100vh - 64px); overflow-y: auto;
     background: var(--panel); border: 1px solid rgba(255,255,255,.14);
-    border-radius: 12px; padding: 16px 18px 18px;
+    border-radius: var(--r-lg); padding: 16px 18px 18px;
     box-shadow: 0 18px 50px rgba(0,0,0,.6);
   }
   /* 宽度是两者唯一的区别：轮播那个装一排缩略图，设置那个要装目录路径和诊断读数。 */
@@ -752,69 +794,136 @@
   #settings-modal-box { width: 560px; }
 
   /* ═══════════════════════════════════════════════════════════════
-     ⚠️⚠️ **AI 壁纸工坊**（0.9.123）。用户 2026-08-02：
-       「就像和 ChatGPT 对话一样，有个对话框，然后他上面会显示一下我的工作目录
-         在哪儿，就是我的壁纸存储目录，他生成壁纸就要放在这儿」
+     ⚠️⚠️ **AI 壁纸工坊**（0.9.127 从弹窗改成右栅）。用户 2026-08-02：
+       「你现在这种弹窗好难看，我想的是和壁纸参数一样右边显示」
 
-     ⚠️ 复用 #rotate-modal / #settings-modal 那套定位和遮罩（同一条 CSS 规则里
-        加上 #ai-modal）—— 三个弹窗的外壳完全一样，只有宽度和内容不同。
-        另写一套的话下次改遮罩要改三处。
-     ⚠️ 而它**比那两个宽**（620px）：对话记录要能读，而 560px 装不下代码行数
-        和检查结果那种两三行的条目。
+     ⚠️ 它现在是 `.pane-side` 里的第二种 body（和 `#mine-side-body` 平级）
+        ⟹ 面板外壳（内边距、滚动、左边框、背景）**全部继承**，
+        这里只写它自己的内部结构。原来那套 620px 弹窗 + 遮罩全删了。
+     ⚠️⚠️ 而右栅只有 **340px** 宽 —— 那是这一版设计的全部约束来源：
+        气泡不能有 88% 的 max-width（太窄了会挤成一条），
+        目录不能显示完整路径，按钮不能横着排三个。
      ═══════════════════════════════════════════════════════════════ */
-  #ai-modal-box { width: 620px; }
-  /* 对话流。⚠️ 固定高度 + 自己滚 —— 内容会越来越长，
-     而让整个弹窗长高会顶到屏幕边缘然后整体滚动（那时输入框会滚出视野）。 */
+
+  /* 右栅内部的小标题行（AI 工坊用；以后别的 body 也能用）。 */
+  .side-head {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .side-head b { flex: 1; font-size: 13px; }
+
+  /* ⚠️⚠️ **工作目录做成一个按钮**，不是一行说明文字 + 一个「打开」按钮。
+     用户点名要看到目录（「他上面会显示一下我的工作目录在哪儿」），
+     而它的唯一用途就是"点开看看" ⟹ 那两件事是**同一个控件**。
+     ⚠️ 340px 装不下 `/Users/moon/Documents/GestureWall/Wallpapers`
+        ⟹ 只显示尾部两段，完整路径进 title（悬停可见）。 */
+  .ai-dir {
+    appearance: none; display: block; width: 100%; text-align: left;
+    padding: 7px 9px; margin-bottom: 10px;
+    background: var(--log-bg-a); border: 1px solid var(--line);
+    border-radius: var(--r-md); cursor: pointer;
+    font: 400 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--dim);
+    /* ⚠️ 一行，超出打点 —— 折行会让这个控件高度不定，而它上面还有标题行。 */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ai-dir:hover { background: var(--btn-hover-a); color: var(--text); }
+  .ai-dir::before {
+    /* ⚠️ 一个 CSS 画的文件夹提示，不是 emoji（taste-skill：默认不用 emoji）。
+       ⚠️ 而这里也不该塞图标库 —— 这个项目零 UI 依赖，为一个装饰引一个包不值。 */
+    content: ''; display: inline-block; vertical-align: -1px;
+    width: 9px; height: 7px; margin-right: 6px;
+    border: 1px solid currentColor;
+    /* ⚠️ 这个 1px/2px 不走 --r-sm（4px）：这个形状只有 9x7px，
+       4px 圆角会把它变成一个圆点，认不出是文件夹。
+       ⟹ **小于 token 尺度的图形按几何需要走** —— 那不算破坏 shape lock。 */
+    border-radius: 1px 2px 2px 2px;
+    border-top-width: 2px;
+  }
+
+  /* 凭证折叠区。⚠️ 填过就收起来 —— 它不是每天要看的东西。 */
+  #ai-key-wrap { margin-bottom: 12px; }
+  #ai-key-wrap > summary {
+    cursor: pointer; font-size: 11px; color: var(--dim);
+    padding: 3px 0; list-style: none;
+  }
+  #ai-key-wrap > summary::-webkit-details-marker { display: none; }
+  /* ⚠️ 自己画三角 —— 默认的 marker 在不同平台长得不一样，
+     而 `list-style: none` 之后要有东西表示"这里能展开"。 */
+  #ai-key-wrap > summary::before {
+    content: '\25B8'; display: inline-block; margin-right: 5px;
+    transition: transform .18s ease;
+  }
+  #ai-key-wrap[open] > summary::before { transform: rotate(90deg); }
+  .ai-key-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin: 8px 0 6px; }
+
+  /* ⚠️⚠️ **对话流用 `flex: 1` 吃掉剩余高度**，不是固定 300px。
+     弹窗那版是固定高度（因为弹窗自己会长高），而右栅是**满高的一列**
+     ⟹ 固定高度会让下面留一大片空白，或者在小窗口上把输入框挤出视野。
+     ⟹ AI body 本身是 flex 列，对话流占剩下的全部。 */
+  #ai-body { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   #ai-log {
-    height: 300px; overflow-y: auto;
-    margin: 10px 0; padding: 10px;
-    background: var(--log-bg-a); border: 1px solid var(--line); border-radius: 8px;
-    display: flex; flex-direction: column; gap: 8px;
+    flex: 1; min-height: 120px; overflow-y: auto;
+    padding: 9px; margin-bottom: 10px;
+    background: var(--log-bg-a); border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    display: flex; flex-direction: column; gap: 7px;
   }
   .ai-msg {
-    max-width: 88%; padding: 7px 10px; border-radius: 9px;
-    font-size: 12px; line-height: 1.65;
+    /* ⚠️ 94% 而不是 88%：340px 的栅里 88% 只有 299px，
+       再减去内边距和气泡内边距，一行中文放不下 20 个字。 */
+    max-width: 94%; padding: 6px 9px; border-radius: var(--r-md);
+    font-size: 11.5px; line-height: 1.7;
     /* ⚠️ 要能选中复制 —— 报错原文是用户唯一能发给我的东西。 */
     user-select: text;
-    /* ⚠️ `pre-line` 而不是默认：这些文本里的 \n 是有意义的（分点说明），
+    /* ⚠️ `pre-line`：这些文本里的 \n 是有意义的（分点说明），
        而 textContent 不解析 markdown（这个项目为它栽过一次：
        面板上出现了字面的 `**音轨**` 而且换行全被吃掉）。 */
     white-space: pre-line;
-    /* ⚠️ 长路径/长报错要能折行，否则会把弹窗撑宽 */
     overflow-wrap: anywhere;
   }
-  .ai-msg.me { align-self: flex-end; background: rgba(108,199,255,.14); }
+  .ai-msg.me { align-self: flex-end; background: rgba(108,199,255,.13); }
   .ai-msg.bot { align-self: flex-start; background: var(--btn-bg-a); }
-  /* 进度那种"正在做什么"的行 —— 比正文淡，居中，不占气泡 */
+  /* 进度那种"正在做什么"的行 —— 比正文淡，不占气泡。 */
   .ai-msg.step {
-    align-self: center; max-width: 100%;
-    background: none; color: var(--dim); font-size: 11px; padding: 2px 0;
+    align-self: stretch; max-width: 100%;
+    background: none; color: var(--dim); font-size: 10.5px;
+    padding: 1px 0 1px 2px;
   }
-  .ai-msg.bad { align-self: flex-start; background: rgba(255,180,84,.13); color: #ffd9a8; }
-  .ai-msg.ok { align-self: flex-start; background: rgba(138,255,193,.12); color: #b6ffd8; }
-  /* 工作目录那一行。⚠️ 用户点名要显示它 —— 那是"生成的东西去哪了"的答案。 */
-  #ai-dir {
-    font: 400 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--dim); user-select: text; overflow-wrap: anywhere;
-    /* ⚠️⚠️ 它写的是两行（"生成的壁纸放在这里：\n<路径>"）⟹ 必须保留换行。
-       不保留的话挤成一行，而一条长路径挤在说明后面就是读不了。
-       ⚠️ 这条是 gating 里那个守卫逮到的 —— 我忘了写，而它当场报了。 */
-    white-space: pre-line;
-    padding: 7px 9px; background: var(--log-bg-a); border-radius: 7px;
-  }
-  #ai-input-row { display: flex; gap: 8px; align-items: flex-end; }
-  /* ⚠️ textarea 而不是 input：用户要描述一个效果，那常常是两三句话，
-     而 input 里只能看到最后十几个字。 */
+  .ai-msg.bad { align-self: stretch; background: rgba(255,180,84,.12); color: var(--warn-fg); }
+  .ai-msg.ok { align-self: stretch; background: rgba(138,255,193,.11); color: var(--ok-fg); }
+
+  /* ⚠️⚠️ 输入区**竖排**（输入框在上、按钮通栏在下），不是横排。
+     340px 里横排的话：输入框剩 250px、按钮被压到只能放两个字。
+     ⟹ 竖排之后输入框拿到全宽，而按钮通栏在这里是**对的** ——
+       它是这一栅唯一的主操作（对比：那个被我放进 `.bar-row` 的入口按钮
+       是被网格拉满的，那才是 bug）。 */
+  #ai-input-row { display: flex; flex-direction: column; gap: 7px; }
   #ai-want {
-    flex: 1; min-height: 58px; max-height: 140px; resize: vertical;
-    padding: 8px 10px; font: 400 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    resize: none; padding: 7px 9px;
+    font: 400 11.5px/1.65 -apple-system, "PingFang SC", sans-serif;
     background: var(--btn-bg-a); color: var(--text);
-    border: 1px solid var(--line); border-radius: 8px;
+    border: 1px solid var(--line); border-radius: var(--r-md);
   }
+  #ai-want:focus { border-color: rgba(108,199,255,.45); }
+
   /* .sm-* = 设置弹窗自己的东西。.rm-head 那套沿用（下面 .rm-head 那条已经带上了）。 */
   .sm-head { display: flex; align-items: center; margin-bottom: 12px; }
   .sm-head b { flex: 1; font-size: 14px; }
   #settings-modal-close { padding: 2px 8px; font-size: 13px; line-height: 1.3; }
+  /* ⚠️⚠️ **关闭按钮的 ✕ 用 CSS 画**（0.9.127，taste-skill：界面不用 emoji/符号字形）。
+     `✕`（U+2715）在不同字体里粗细和大小差别很大 —— 有的细得几乎看不见。
+     ⟹ 两条 1.5px 的线交叉，粗细和颜色由我们定，任何字体环境下都一样。
+     ⚠️ 而**不引图标库**：这个项目零 UI 依赖，为一个叉引一个包不值。 */
+  .x-close { position: relative; width: 26px; height: 22px; padding: 0; }
+  .x-close::before, .x-close::after {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    /* ⚠️ 同上：1.5px 高的一条线，圆角只能是 1px（让端头不那么方）。 */
+    width: 11px; height: 1.5px; background: currentColor; border-radius: 1px;
+  }
+  .x-close::before { transform: translate(-50%, -50%) rotate(45deg); }
+  .x-close::after { transform: translate(-50%, -50%) rotate(-45deg); }
   /* ⚠️ 这里原来是权限面板的样式（.perm-*）—— 0.9.105 随面板一起删。 */
 
   /* 快捷键：从 nav 底部搬来的。横排（弹窗宽），行距松一点。 */
@@ -846,12 +955,12 @@
   /* 细滚动条 —— 默认的在深色面板上是一条粗白条 */
   #rotate-strip::-webkit-scrollbar { height: 6px; }
   #rotate-strip::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,.16); border-radius: 3px;
+    background: rgba(255,255,255,.16); border-radius: var(--r-sm);
   }
   #rotate-strip::-webkit-scrollbar-track { background: transparent; }
   .rs-item {
     flex: none; width: 92px; scroll-snap-align: start;
-    border-radius: 7px; overflow: hidden; position: relative;
+    border-radius: var(--r-md); overflow: hidden; position: relative;
     /* ⚠️ 用**不透明**的 —— 这几个缩略图在轮播弹窗里，而弹窗本身不透明
        （内容密集）⟹ 里面的东西透了也看不到极光，只是白搭一层混色。 */
     border: 1px solid var(--line); background: var(--card-bg); cursor: pointer;
@@ -870,13 +979,13 @@
   .rs-item.now { border-color: var(--accent); }
   .rs-item.now::before {
     content: '▶'; position: absolute; left: 4px; top: 3px;
-    font-size: 9px; color: var(--accent); text-shadow: 0 0 3px #000;
+    font-size: 9px; color: var(--accent); text-shadow: 0 0 3px rgba(6,6,10,.9);
   }
   /* 移出按钮：hover 才出现（常驻会让每张卡片多一个控件） */
   .rs-item .rs-del {
     position: absolute; right: 3px; top: 2px;
     width: 16px; height: 16px; border-radius: 50%;
-    background: rgba(0,0,0,.62); color: #ffb4b4;
+    background: rgba(0,0,0,.62); color: var(--bad-fg);
     font-size: 11px; line-height: 16px; text-align: center;
     opacity: 0; transition: opacity .14s ease;
   }
@@ -884,9 +993,9 @@
   .rs-item .rs-del:hover { background: rgba(255,120,120,.3); color: #fff; }
 
   .card-menu { background: var(--panel); border: 1px solid var(--line);
-               border-radius: 8px; padding: 4px; min-width: 168px;
+               border-radius: var(--r-md); padding: 4px; min-width: 168px;
                box-shadow: 0 8px 24px rgba(0,0,0,.5); }
-  .card-menu-item { font-size: 12px; padding: 7px 10px; border-radius: 5px;
+  .card-menu-item { font-size: 12px; padding: 7px 10px; border-radius: var(--r-sm);
                     cursor: pointer; white-space: nowrap; }
   .card-menu-item:hover { background: rgba(255,255,255,.08); }
   /* 危险操作单独标色 —— 「卸载」和「装载」长得一样的话容易点错 */
@@ -898,9 +1007,9 @@
      "这个壁纸在 macOS 上放不了"是**用户点下去之前就该知道**的事 ——
      藏起来的后果是他点了、被拒、再去猜为什么。
      ⟹ opacity 拉回 1，并且给一层底色让它在亮图上也读得出来。 */
-  .ws-item .tp.no { color: #ffc9c9; opacity: 1;
+  .ws-item .tp.no { color: var(--bad-fg); opacity: 1;
                     background: linear-gradient(to top, rgba(0,0,0,.7), rgba(0,0,0,.35)); }
-  .ws-item:hover .tp.no { color: #ffb4b4; }
+  .ws-item:hover .tp.no { color: var(--bad-fg); }
 
   /* ---- WE 壁纸的自动生成控件 ----
      和 .row2 分开：那个是 1fr/64px 两列，而这里要 标签/控件/读数 三列，
@@ -937,20 +1046,36 @@
   .row2 output { font-family: ui-monospace, monospace; font-size: 10px; color: var(--dim); text-align: right; }
   input[type=range] { width: 100%; }
   input[type=text] { background: var(--btn-bg-a); border: 1px solid var(--line); color: var(--text);
-                     border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12px; }
+                     border-radius: var(--r-md); padding: 5px 8px; font: inherit; font-size: 12px; }
   /* ⚠️ select 用**不透明**（0.9.61）—— 它展开时是原生下拉面板，
      而那个面板的配色由系统按 color-scheme 决定、我们控制不了。
      按钮部分透、展开的面板不透 ⟹ 两截。⟹ 这一个保持不透明。 */
   select { background: var(--btn-bg); border: 1px solid var(--line); color: var(--text);
-           border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
+           border-radius: var(--r-md); padding: 4px 6px; font: inherit; font-size: 12px; }
   .toggle { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
   .mono { font-family: ui-monospace, monospace; font-size: 11px; }
   #live, #track {
-    background: rgba(255,255,255,.04); border-radius: 7px; padding: 9px 11px;
+    background: rgba(255,255,255,.04); border-radius: var(--r-md); padding: 9px 11px;
     font-family: ui-monospace, monospace; font-size: 11px; min-height: 2.6em;
     white-space: pre-wrap;
   }
+  /* ⚠️⚠️⚠️ **`1fr auto` 会把第一个子元素拉满整行**（0.9.127 记下这件事）。
+     用户 2026-08-02：「还有那个巨长的按钮」
+
+     ⚠️ 那个 AI 入口按钮变成通栏**不是我把它做大了** —— 是我把一个按钮
+       放进了这个网格的第一格，而第一格是 `1fr`（吃掉所有剩余宽度）。
+       这个网格本来是给「输入框 + 按钮」设计的（输入框该拉满，按钮不该）。
+     ⟹ 判据：**`.bar-row` 的第一格只放"该被拉满的东西"**（输入框、select、
+       状态文字）。要放按钮就用 `.bar-row.tight`，或者别用这个网格。 */
   .bar-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 10px; }
+  /* ⚠️ 按钮排一行：靠左、各自自然宽度、右边留空。 */
+  .bar-row.tight { grid-template-columns: auto auto; justify-content: start; align-items: center; }
+  /* 分页：两侧按钮自然宽度，页码居中吃掉中间。 */
+  .pager {
+    display: grid; grid-template-columns: auto 1fr auto;
+    gap: 8px; align-items: center; margin-bottom: 10px;
+  }
+  .pager .hint { margin: 0; text-align: center; }
   .preset { display: grid; grid-template-columns: 1fr auto auto; gap: 6px;
             align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
 </style>
@@ -1005,9 +1130,11 @@
        而 0.9.54 布局改成顶部 tab 条之后左下角不存在了 ⟹ 挪到 tab 条最右。
        位置变了，**它承载的东西没变**：目录行 / 快捷键 / 开发者选项（含全部诊断）。
        判据也没变：那些不是"每天要看"的东西。 -->
-  <button id="settings-open" type="button" title="设置">
-    <span class="gear">⚙</span> 设置
-  </button>
+  <!-- ⚠️ 齿轮 emoji（⚙）撤了（0.9.127，taste-skill：界面不用 emoji）——
+       它在不同 macOS 版本上渲染差别很大（有的是彩色 emoji、有的是黑白字形），
+       而「设置」两个字本身就够清楚。
+       ⚠️ 而这里**不引图标库**：这个项目零 UI 依赖，为一个齿轮引一个包不值。 -->
+  <button id="settings-open" type="button" title="设置">设置</button>
 </nav>
 
 <main>
@@ -1029,7 +1156,7 @@
                title="点开设置轮播（间隔、顺序、播放列表）">
             <img id="rotate-now-img" alt="">
             <div id="rotate-now-text">
-              <b id="rotate-now-title">—</b>
+              <b id="rotate-now-title">-</b>
               <span id="rotate-now-state" class="hint"></span>
             </div>
             <span id="rotate-chevron">›</span>
@@ -1046,12 +1173,19 @@
                 预览图就是"做出来什么样"的直接答案，不需要跳到别处看。
              ⚠️ 叫「AI 壁纸工坊」而不是「AI 助手」：它不聊天、只产出壁纸，
                 而"助手"会让人期待它能回答别的问题。 -->
-        <div class="bar-row" style="margin-bottom:10px">
+        <!-- ⚠️⚠️⚠️ **原来这里的两格是反的**（0.9.127 修）。用户：「那个巨长的按钮」
+             我把按钮放进 `.bar-row` 的第一格（`1fr`，吃掉所有剩余宽度）、
+             把说明文字放进第二格（`auto`，被压到最窄）
+             ⟹ 按钮拉成通栏、文字挤成一条。**正好相反。**
+             ⟹ 现在按钮和它的说明都靠左自然排（`.tight`）。
+           ⚠️ 而 emoji「✨」也去掉了（taste-skill：默认不用 emoji，
+              换图标或纯文字）—— 这里连图标库都不引，一个「+」形状够了。 -->
+        <div class="bar-row tight">
           <button class="act primary" id="ai-open" type="button"
                   title="说一句你想要什么效果，它生成一张壁纸放进壁纸目录">
-            ✨ AI 壁纸工坊
+            AI 生成壁纸
           </button>
-          <span class="hint" style="flex:1">说一句想要什么效果，它写好放进下面</span>
+          <span class="hint" style="margin:0">说一句想要什么效果，它写好放进下面</span>
         </div>
         <div id="mine-state" class="hint" style="margin-bottom:10px"></div>
         <div id="mine-grid" class="ws-grid"></div>
@@ -1071,6 +1205,20 @@
            ⚠️ 那句空态提示也跟着删了 —— 面板不出现的时候没有地方放它，
               而"点壁纸会有反应"这件事不需要一句话来说明。
            ⚠️ 创意工坊那边**不改**（用户点名「创意工坊那个先不用」）。 -->
+      <!-- ⚠️⚠️⚠️ **右栅装两种内容，互斥**（0.9.127）。用户 2026-08-02：
+             「你现在这种弹窗好难看，我想的是和壁纸参数一样右边显示，
+               但是这个壁纸参数的位置冲突了，我也没太想好」
+
+           ⚠️ **不冲突** —— 而这不是我的判断，是结构给的：
+             `.split` 是 `1fr 340px`，右栅靠 `[hidden]` 开合（`:has()` 让它
+             收起时网格变单列）。而「壁纸参数」是**点了某张壁纸**才出现，
+             「AI 工坊」是**点按钮**才出现 ⟹ 两件事在时间上互斥
+             （不会同时想看某张壁纸的参数和跟 AI 对话）。
+           ⟹ 同一个槽位、两种 body，谁被打开谁占用；关掉 AI 自动回到
+             之前那张壁纸的参数。**不需要新空间，也不需要在两者之间取舍。**
+
+           ⚠️ 而这比弹窗好的地方不只是"不难看"：弹窗会盖住壁纸网格，
+             而生成完的反馈**就在网格里**（多一张卡片）⟹ 弹窗挡住的正是结果。 -->
       <div class="pane-side" id="mine-side" hidden>
         <div id="mine-side-body">
           <img id="side-preview" alt="">
@@ -1082,6 +1230,44 @@
                   ⟹ 一边翻壁纸、一边调当前那张的参数，不用来回滚。 -->
           <div id="side-props-head" hidden>参数</div>
           <div id="we-controls"></div>
+        </div>
+
+        <!-- ── AI 壁纸工坊（同一个右栅的第二种 body）──────────────
+             ⚠️ 结构上和上面那个 body 平级 —— 两个都在 `.pane-side` 里，
+                各自 `hidden` 控制。⟹ 样式（内边距、滚动、边框）自动共用，
+                不需要为 AI 再写一套面板外壳。 -->
+        <div id="ai-body" hidden>
+          <div class="side-head">
+            <b>AI 壁纸工坊</b>
+            <button class="act ghost" id="ai-close" type="button"
+                    title="关闭（Esc）">返回参数</button>
+          </div>
+
+          <!-- ⚠️ 工作目录：用户点名要显示（「他上面会显示一下我的工作目录在哪儿」）。
+               ⟹ 那是"生成的东西去哪了"的答案，不显示的话整个功能是黑盒。
+               ⚠️ 340px 宽装不下一条长路径 ⟹ 只显示最后两段 + 完整路径进 title。 -->
+          <button class="ai-dir" id="ai-dir" type="button"
+                  title="在 Finder 里打开壁纸目录">…</button>
+
+          <!-- 凭证：填过一次就收起来 -->
+          <details id="ai-key-wrap">
+            <summary>模型凭证</summary>
+            <div class="ai-key-row">
+              <input id="ai-key" type="password" placeholder="API key">
+              <button class="act" id="ai-key-save" type="button">存</button>
+            </div>
+            <button class="act ghost full" id="ai-ping" type="button">测一下连通</button>
+            <p class="hint" id="ai-key-hint"></p>
+          </details>
+
+          <!-- 对话流 -->
+          <div id="ai-log"></div>
+
+          <div id="ai-input-row">
+            <textarea id="ai-want" rows="3"
+                      placeholder="想要什么效果？&#10;例：音乐驱动的极光，低频涨落、高频撒光点"></textarea>
+            <button class="act primary full" id="ai-go" type="button">生成壁纸</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1116,9 +1302,15 @@
                 见 workshop.js 的 browseParams。
              ⚠️ 默认只勾「全年龄」。 -->
         <div id="br-filters"></div>
-        <div id="br-state" class="hint">—</div>
+        <div id="br-state" class="hint">-</div>
         <div id="br-grid" class="ws-grid"></div>
-        <div class="bar-row" id="br-pager" style="display:none">
+        <!-- ⚠️⚠️ **这里原来用的是 `.bar-row`（`1fr auto`）**，而它有三个子元素
+             ⟹ 「上一页」被拉满整行、页码挤在中间、「下一页」溢出到第三列
+             （grid 会自动加隐式列）⟹ 三个东西的宽度全是错的。
+             ⟹ 换成 `.pager`：两侧按钮自然宽度、页码居中吃掉中间。
+             ⚠️ 这是 0.9.127 那条守卫（.bar-row 第一格不放按钮）逮到的存量问题 ——
+                我原以为只有 AI 那个入口按钮有事。 -->
+        <div class="pager" id="br-pager" style="display:none">
           <button class="act" id="br-prev" type="button">上一页</button>
           <span id="br-page" class="hint"></span>
           <button class="act" id="br-next" type="button">下一页</button>
@@ -1131,7 +1323,7 @@
               ⟹ 两边点击行为不同**是有意的**，判据是"这一下有多贵"。 -->
       <div class="pane-side" id="we-side">
         <div id="we-side-empty" class="hint">
-          点左边任意一个壁纸 —— 详情和「下载」出现在这里。
+          点左边任意一个壁纸：详情和「下载」出现在这里。
         </div>
         <div id="we-side-body" hidden>
           <img id="wside-preview" alt="">
@@ -1187,7 +1379,7 @@
             <input id="ws-guard" type="text" placeholder="要的时候才填，会过期">
             <span></span>
           </div>
-          <div id="ws-state" class="hint">—</div>
+          <div id="ws-state" class="hint">-</div>
         </details>
 
         <!-- API key。⚠️ 浏览要它，贴 ID 装载不要 ⟹ 收起来，别让人以为不配不能用。 -->
@@ -1233,7 +1425,7 @@
              元素没了而 `document.getElementById(...).onclick =` 留着会 TypeError，
              把 apply() 整个打断 ⟹ 后面所有开关都绑不上（这个项目栽过）。 -->
       <div id="live">手势未开启</div>
-      <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透 —— 所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
+      <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透：所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
       <!-- 投递层健康。这一行观测的是"缺权限时 CGEvent.post 静默丢弃"——不报错、不抛异常，
            而症状和 CV 层问题长得一模一样。为这件事烧掉过四轮，所以它必须有地方看。
            trusted 单独拎出来：没授权时 sent 照常增长，只看 sent 会以为一切正常。 -->
@@ -1243,7 +1435,7 @@
       <div id="grant-row" hidden>
         <button class="act primary" id="grantAccessibility">去授权辅助功能</button>
         <button class="act" id="grantCamera">摄像头权限</button>
-        <p class="hint">授权后要<b>完全退出再打开</b> —— macOS 只在进程启动时读这个授权。</p>
+        <p class="hint">授权后要<b>完全退出再打开</b>：macOS 只在进程启动时读这个授权。</p>
       </div>
     </div>
 
@@ -1297,7 +1489,7 @@
          aria-labelledby="rotate-modal-title">
       <div class="rm-head">
         <b id="rotate-modal-title">轮播设置</b>
-        <button class="act" id="rotate-modal-close" type="button" title="关闭（Esc）">✕</button>
+        <button class="act x-close" id="rotate-modal-close" type="button" title="关闭（Esc）"></button>
       </div>
 
       <!-- ① 开关 -->
@@ -1352,7 +1544,7 @@
        aria-labelledby="settings-modal-title">
     <div class="sm-head">
       <b id="settings-modal-title">设置</b>
-      <button class="act" id="settings-modal-close" type="button" title="关闭（Esc）">✕</button>
+      <button class="act x-close" id="settings-modal-close" type="button" title="关闭（Esc）"></button>
     </div>
 
     <!-- ⚠️ 这里原来有「主题：深色 / 浅色」两个按钮（0.9.59）—— 0.9.60 撤了。
@@ -1372,7 +1564,7 @@
          ⟹ 「存储目录」那个标题也删了 —— 一行东西不需要一个章节标题。 -->
     <div class="card">
       <div id="mine-dirs"></div>
-      <div id="mine-state" class="hint">—</div>
+      <div id="mine-state" class="hint">-</div>
       <!-- ⚠️⚠️ 这里原来有「装载别处的目录…」和「卸载（回到内置壁纸）」两个按钮，
            删了（0.9.37）。用户 2026-08-01：
              「这两个不需要，我们已经有换目录的按钮了，这是冗余的操作」
@@ -1489,8 +1681,7 @@
        以及**中心点最上层是哪个元素**（那就是"盖住它的东西"）。 -->
   <div id="bg-geom" class="state" style="margin-top:4px">等测量…</div>
   <p class="hint">
-    手势卡 / 摄像头启动慢的时候关掉它，看是不是它的锅 ——
-    那能一次分清"背景在抢 CPU"和"另有原因"。
+    手势卡 / 摄像头启动慢的时候关掉它，看是不是它的锅：那能一次分清"背景在抢 CPU"和"另有原因"。
     <br>强度拉到最大还是看不到 ⟹ 那是 bug（不是"不明显"），告诉我。
   </p>
 </div>
@@ -1502,24 +1693,22 @@
            「这都需要辅助功能吗？辅助功能起什么作用啊？」—— 而他问得对：
            面板上从来没有任何地方说过"那个框是这个开关换来的"。
            ⟹ 开关自己就得写明：它要辅助功能授权，换来的是点击特效。 -->
-      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸 —— 默认关（开了会要一次「辅助功能」授权）</label></div>
-      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关 —— 开了会挡掉大部分点击）</label></div>
-      <div id="mouse-state" class="hint">—</div>
+      <div class="toggle"><input type="checkbox" id="mouseForward"><label for="mouseForward">转发鼠标给壁纸：默认关（开了会要一次「辅助功能」授权）</label></div>
+      <div class="toggle"><input type="checkbox" id="mouseGateFinder"><label for="mouseGateFinder">只在桌面被聚焦时转发（默认关：开了会挡掉大部分点击）</label></div>
+      <div id="mouse-state" class="hint">-</div>
       <p class="hint">
         <b>真壁纸层</b>是默认，因为它能覆盖顶部菜单栏那 25px（和 mac 原生壁纸一样）。
-        <br>而那一层本来收不到鼠标 —— 所以我们抓全局鼠标事件再注入进去，
+        <br>而那一层本来收不到鼠标：所以我们抓全局鼠标事件再注入进去，
         <b>点击、拖拽、滚轮都能用</b>。
-        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b> ——
-        授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
+        <br>⚠️ <b>需要辅助功能授权</b>，而<b>开发模式（npm start）拿不到</b>：授权列表里只有 Electron/终端，没有本应用。这一项要<b>打包成 .app</b> 才能用
         （<code>npm run dist:mac</code>）。
         <br>（我一开始以为监听鼠标不需要授权，实测证伪了：helper 会报"已启动"
         然后静默收不到任何事件。）
-        <br>⚠️⚠️ <b>那个授权框是 macOS 自己弹的</b>，不是本应用弹的 ——
-        未授权的进程一调用全局监听，系统就弹。所以<b>没授权的话每次开应用、
+        <br>⚠️⚠️ <b>那个授权框是 macOS 自己弹的</b>，不是本应用弹的：未授权的进程一调用全局监听，系统就弹。所以<b>没授权的话每次开应用、
         装载第一个壁纸时都会弹一次</b>（进程每次都是新的）。
         <br>⟹ 这就是<b>默认关</b>的原因：不开这个开关，一个框都不会出现。
         要点击特效就开它、授权一次（授权后要重开本应用），从此不再弹。
-        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发 —— 那种窗口自己能收鼠标，
+        <br>⚠️ <b>普通窗口压最底</b>时要<b>关掉</b>转发：那种窗口自己能收鼠标，
         再转发一次会变成双份事件（点一下算两下）。
       </p>
     </div>
@@ -1539,30 +1728,31 @@
            ⟹ 音频的东西要在音频旁边。 -->
       <pre id="audio-log" class="log" style="margin-top:8px;max-height:120px"></pre>
       <p class="hint">
-        <b>「全系统」音源走 CoreAudio 进程 tap（macOS 14.2+）——
-        不需要屏幕录制权限，菜单栏也不会显示"正在共享屏幕"。</b>
+        <b>「全系统」音源走 CoreAudio 进程 tap（macOS 14.2+）：不需要屏幕录制权限，菜单栏也不会显示"正在共享屏幕"。</b>
         <br>⚠️ 而这两种情况会退回 ScreenCaptureKit（<b>那时才要屏幕录制</b>，
         菜单栏会显示"正在共享屏幕"）：
-        <br>　① <b>「只抓网易云」</b> —— tap 抓不了单个 App
+        <br>　① <b>「只抓网易云」</b>：tap 抓不了单个 App
         （能做，但要多走三步链，每步都可能静默失败 ⟹ 暂时不做）
         <br>　② macOS 低于 14.2，或者 tap 起不来（那时上面那行状态会说原因）
         <br>　⟹ <b>上面那行状态会写清当前用的是哪条</b>。
-        <br>⚠️ <b>而这只影响音频</b> —— 手势走<b>摄像头</b>权限（菜单栏绿点）、
+        <br>⚠️ <b>而这只影响音频</b>：手势走<b>摄像头</b>权限（菜单栏绿点）、
         鼠标转发走<b>辅助功能</b>权限（<b>不亮任何指示</b>）。三条链是分开的。
         <br>　（我原来在这里写"CoreAudio 进程 tap 同样要屏幕录制权限"，
-        <b>那句话是我凭印象说的、没验过</b> —— 用户反问后写了两个探针去量，
+        <b>那句话是我凭印象说的、没验过</b>：用户反问后写了两个探针去量，
         结论是<b>不需要</b>：<code>tapErr 0</code> + <code>screenRecordingGranted
         false</code> + 98% 非零采样。⟹ 一句没验的话挡住了一条真出路。）
         <br>　不想看到它：把音源切成<b>关</b>（或「合成测试音」，那条不碰
-        ScreenCaptureKit）—— 指示会立刻消失，代价是壁纸不跟着音乐动。
+        ScreenCaptureKit）：指示会立刻消失，代价是壁纸不跟着音乐动。
         <br>⚠️ 「只抓网易云」需要 <b>macOS 14.4+</b>；更早的系统会自动退回全系统混音，
-        那时候视频和提示音也会让画面跳动 —— 上面那行状态会说清楚当前是哪种。
+        那时候视频和提示音也会让画面跳动：上面那行状态会说清楚当前是哪种。
       </p>
     </div>
 
     <h3>诊断</h3>
     <div class="card">
-      <div class="bar-row">
+      <!-- ⚠️ `.tight`：两个按钮各自自然宽度、靠左。
+           原来用 `.bar-row` ⟹ 「导出诊断报告」被 `1fr` 拉满整行。 -->
+      <div class="bar-row tight">
         <button class="act" id="diag-export" type="button">导出诊断报告</button>
         <button class="act" id="diag-reveal" type="button">打开报告目录</button>
       </div>
@@ -1570,7 +1760,7 @@
       <p class="hint">
         报告里有：是否打包、装载了什么类型、各窗口活没活、实际窗口尺寸 vs 屏幕尺寸、
         视频播放位置、音频状态、最近 200 条带时间戳的事件。
-        <br>⚠️ 比文字描述准得多 —— 尤其"黑屏"这种，它能分出是没加载、还是在放但看不见。
+        <br>⚠️ 比文字描述准得多：尤其"黑屏"这种，它能分出是没加载、还是在放但看不见。
       </p>
     </div>
 
@@ -1578,8 +1768,7 @@
     <div class="card">
       <p class="hint">
         录一段原始关键点，用来标定阈值。所有测试用的都是合成手，而合成手缺的不是噪声的
-        <b>大小</b>而是它的<b>时间相关结构</b>（相邻帧一起漂、丢跟踪后重新检出会跳）——
-        独立噪声会自己平均掉，相关噪声不会，而那个差异决定判定在真手上成不成立。
+        <b>大小</b>而是它的<b>时间相关结构</b>（相邻帧一起漂、丢跟踪后重新检出会跳）：独立噪声会自己平均掉，相关噪声不会，而那个差异决定判定在真手上成不成立。
       </p>
       <!-- 骨架几何自检。这一格存在的理由:骨架位置错了两轮都没定位到,因为手上只有
            "手在数据里的位置"、没有"骨架落在屏幕哪个像素"。三层尺寸(缓冲/CSS/逻辑)
@@ -1611,59 +1800,6 @@
   </div>
 </div>
 
-
-<!-- ═══════════════════════════════════════════════════════════════════════
-     ⚠️⚠️ **AI 壁纸工坊**（0.9.123）。用户 2026-08-02：
-       「就像和 ChatGPT 对话一样，有个对话框，然后他上面会显示一下我的工作目录
-         在哪儿，就是我的壁纸存储目录，他生成壁纸就要放在这儿」
-       「不能给用户提供让他自主选择模型，我们就把调用大模型这个打通就行」
-
-     ⟹ 所以这里**没有模型选择器**。只有：工作目录 + 一个 key 输入 + 对话框。
-       ⚠️ 判据：用户对"选哪个模型"没有认知，给选项是纯副作用
-         （而 llm.js 那边两个提供方都实现了、都有测试 —— 以后要换很容易）。
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div id="ai-modal" hidden>
-  <div id="ai-modal-mask"></div>
-  <div id="ai-modal-box" role="dialog" aria-modal="true" aria-labelledby="ai-modal-title">
-    <div class="rm-head">
-      <b id="ai-modal-title">✨ AI 壁纸工坊</b>
-      <button class="act" id="ai-close" type="button" title="关闭（Esc）">✕</button>
-    </div>
-
-    <!-- ⚠️⚠️ 工作目录 —— **用户点名要显示它**（「他上面会显示一下我的工作目录
-         在哪儿」）。判据：那是"生成的东西去哪了"这个问题的答案，
-         而不显示的话整个功能是个黑盒。
-         ⚠️ 可选中复制 + 一个「打开」按钮（壁纸是文件，而用户对文件的直觉
-            操作是"在 Finder 里看看"）。 -->
-    <div class="bar-row" style="gap:8px;align-items:center">
-      <div id="ai-dir" style="flex:1">—</div>
-      <button class="act" id="ai-reveal" type="button" title="在 Finder 里打开">打开</button>
-    </div>
-
-    <!-- ⚠️ key 那一行**折叠**：填过一次就不用再看到它。
-         ⚠️ 而它默认展开当且仅当"还没填" —— 那时它是唯一的门槛。 -->
-    <details id="ai-key-wrap" style="margin-top:10px">
-      <summary class="hint" style="cursor:pointer">模型凭证（填一次就行，存在本机）</summary>
-      <div class="bar-row" style="margin-top:8px">
-        <input id="ai-key" type="password" placeholder="粘贴 API key" style="flex:1">
-        <button class="act" id="ai-key-save" type="button">保存</button>
-        <button class="act" id="ai-ping" type="button" title="发一个最小请求看通不通">测一下</button>
-      </div>
-      <p class="hint" id="ai-key-hint" style="margin-top:6px"></p>
-    </details>
-
-    <!-- 对话流 -->
-    <div id="ai-log"></div>
-
-    <div id="ai-input-row">
-      <textarea id="ai-want" placeholder="说一句你想要什么效果。&#10;例如：音乐驱动的极光帷幕，低频让它涨起来、高频撒光点，没音乐时缓慢呼吸"></textarea>
-      <button class="act primary" id="ai-go" type="button">生成</button>
-    </div>
-    <p class="hint" style="margin-top:8px">
-      ⚠️ 一次要几十秒到几分钟 —— 它会生成、自动检查、发现问题自己修，最多三轮。
-    </p>
-  </div>
-</div>
 
 <script src="system.js"></script>
 <script src="templates.js"></script>
