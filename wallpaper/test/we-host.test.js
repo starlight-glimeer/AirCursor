@@ -805,4 +805,72 @@ check('（真样本 884307090）过滤后重名控件降到 2 组以内', () => 
     + 'condition 大概没生效（真样本应该从 165 降到 67 左右）');
 });
 
+// ⚠️⚠️⚠️ **`elapsedTime` 是快照，不是当前位置**（0.9.117）。
+//
+// 用户 2026-08-02 的诊断报告（网易云正在放《无情画》）是决定性证据：
+//     elapsedTime: 0.046439909297052155   ← 47 毫秒
+//     duration:    230.69025              ← 230 秒（对的）
+//     timestamp:   2026-08-02T13:50:33Z
+// 而报告导出时刻 13:52:17.893 —— 比 timestamp **晚 104.9 秒**
+//     0.046 + 104.9 = **104.9 / 230.7** ⟹ 那才是真实位置。
+//
+// ⟹ 播放器只在**状态变化时**（换歌/暂停/拖动）publish 一次，`elapsedTime` 冻结在
+//   那一刻 ⟹ 直接用它，进度条永远停在开头附近，而壁纸自己的计时器从那儿往前跑、
+//   到总长就重置 —— 那正是用户看到的现象。
+//
+// ⚠️⚠️ 而我为这个 bug 猜了四轮（字段名 → 单位 → 频率 → 采集方式），
+//   **每轮都在推断，而真实数据一次就给出答案**。
+//   ⟹ 判据：**"值不对"和"字段名不对"是两类问题，先看到真实值再决定改哪个。**
+//     前三次都栽在字段名上，让我形成了"又是名字错了"的惯性 —— 而这次名字是对的。
+check('进度按 timestamp 外推（elapsedTime 是快照）', () => {
+  const now = Date.now();
+  const ago = (ms) => new Date(now - ms).toISOString();
+
+  // ①⭐ 用户那条真实数据：104.9 秒前的快照
+  const real = WE.mediaTimeline({
+    elapsedTime: 0.0464, duration: 230.69, timestamp: ago(104900), playing: true });
+  assert.ok(Math.abs(real.position - 104.9) < 1,
+    `真实数据外推错了：${real.position}（该 ≈ 104.9）`
+    + ' —— elapsedTime 是 timestamp 那一刻的快照，要加上漂移');
+
+  // ②⚠️ 暂停时**不许外推** —— 时间不走，外推会让进度条在暂停时继续爬
+  //   （那比停在开头更像坏了）
+  assert.strictEqual(WE.mediaTimeline({
+    elapsedTime: 42, duration: 230, timestamp: ago(60000), playing: false }).position, 42,
+  '暂停时还在外推 ⟹ 进度条会自己往前爬');
+
+  // ③⚠️ timestamp 解析不出来就退回裸值（别外推一个错的量）
+  // 4b ⚠️⚠️ timestamp 无效时**不许污染 position**。
+  //   `Date.parse('不是日期')` 给 NaN，而 `NaN > 0` 是 false ⟹ 后面那个
+  //   `if (drift > 0)` 恰好兜住了它 ⟹ "删掉 isFinite 检查"这个改法**结果不变**
+  //   （反向验证显示永久绿逮到的）。
+  //   ⟹ 所以断言不能只比值，要直接验 position 是**有限数** ——
+  //     那是"NaN 有没有一路传到壁纸"的唯一判据。
+  const badTs = WE.mediaTimeline({
+    elapsedTime: 42, duration: 230, timestamp: '不是日期', playing: true });
+  assert.ok(Number.isFinite(badTs.position),
+    `timestamp 坏了让 position 变成 ${badTs.position}（NaN 会一路传到壁纸）`);
+  assert.strictEqual(badTs.position, 42, 'timestamp 坏了没退回裸值');
+  assert.strictEqual(WE.mediaTimeline({
+    elapsedTime: 42, duration: 230, playing: true }).position, 42,
+  '没有 timestamp 时不该外推');
+
+  // ④⚠️ 夹在 [0, duration] —— 暂停很久没 publish 时外推会超过总长
+  //   ⟹ 进度条冲出轨道
+  assert.strictEqual(WE.mediaTimeline({
+    elapsedTime: 200, duration: 230, timestamp: ago(600000), playing: true }).position, 230,
+  '外推超过总长没夹住 ⟹ 进度条会冲出轨道');
+
+  // ⑤⚠️ 未来的 timestamp（时钟不对）不外推 —— 负漂移会把进度往回拉
+  assert.strictEqual(WE.mediaTimeline({
+    elapsedTime: 42, duration: 230,
+    timestamp: new Date(now + 60000).toISOString(), playing: true }).position, 42,
+  '未来的 timestamp 产生负漂移 ⟹ 进度会被往回拉');
+
+  // ⑥ duration 拿不到时不夹上限（否则一律变 0）
+  const noDur = WE.mediaTimeline({
+    elapsedTime: 10, duration: 0, timestamp: ago(30000), playing: true });
+  assert.ok(noDur.position > 30, `duration 为 0 时被错夹成 ${noDur.position}`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

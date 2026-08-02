@@ -6412,6 +6412,29 @@ check('进度用 media-control 的真字段名（elapsedTime）', () => {
   const t = fs.readFileSync(path.join(__dirname, 'we-host.test.js'), 'utf8');
   assert.match(t, /elapsedTime: 42/,
     'we-host.test.js 的 fixture 又用假字段名了 ⟹ 那让 bug 活着还让修的人报红');
+
+  // ⚠️⚠️⚠️ **而字段名对了还不够 —— `elapsedTime` 是快照**（0.9.117）。
+  //   用户的诊断报告（真实数据）：`elapsedTime: 0.046` 而歌已经放了 **104.9 秒**，
+  //   `timestamp` 是 104.9 秒前 ⟹ 播放器只在状态变化时 publish 一次，
+  //   那个值冻结在那一刻。直接用它 ⟹ 进度条永远停在开头附近。
+  //   ⟹ 必须外推：`position = elapsedTime + (now - timestamp)`
+  assert.match(fn, /Date\.parse\(track\.timestamp\)/,
+    'mediaTimeline 不按 timestamp 外推 ⟹ elapsedTime 是快照（真实数据：'
+    + '0.046 而实际已放 104.9 秒），直接用它进度条永远停在开头');
+  // ⚠️ 只在 playing 时外推 —— 暂停了时间不走，外推会让进度条自己往前爬
+  assert.match(fn, /track\.playing && track\.timestamp/,
+    '暂停时也在外推 ⟹ 进度条会在暂停时继续爬（比停在开头更像坏了）');
+  // ⚠️ 要夹在 [0, duration] —— 暂停很久没 publish 时外推会超过总长
+  assert.match(fn, /position > duration\) position = duration/,
+    '外推没夹上限 ⟹ 进度条会冲出轨道');
+  // ⚠️ 负漂移（时钟不对/未来的 timestamp）不外推。
+  //   ⚠️⚠️ 而这一条**同时兜住了 timestamp 解析失败** —— Date.parse 给 NaN，
+  //     \ 是 false ⟹ 那个 isFinite 检查在结果上是冗余的
+  //     （反向验证里删掉它显示永久绿，我去实测确认了）。留着是为了表达意图，
+  //     而这条断言守的是**真正承重的那个判断**。
+  assert.match(fn, /if \(drift > 0\)/,
+    '没挡住负漂移 ⟹ 未来的 timestamp 会把进度往回拉；'
+    + '而它同时兜住 timestamp 解析失败（NaN > 0 为 false）');
 });
 
 // ⚠️⚠️ **面板的三处交互缺失**（0.9.113，用 redesign-skill 审计出来的）。

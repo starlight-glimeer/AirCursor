@@ -492,6 +492,31 @@ function mediaStatePayload(track) {
   };
 }
 
+// ⚠️⚠️⚠️ **`elapsedTime` 是快照，不是当前位置**（0.9.117，真实数据坐实）。
+//
+// 用户 2026-08-02 的诊断报告（网易云正在放《无情画》）：
+//     "elapsedTime": 0.046439909297052155      ← 47 毫秒
+//     "duration":    230.69025                 ← 230 秒（对的）
+//     "timestamp":   "2026-08-02T13:50:33Z"
+//     "playing":     true
+// 而报告导出时刻是 `13:52:17.893` —— 比 timestamp **晚 104.9 秒**。
+//     0.046 + 104.9 = **104.9 秒 / 230.7** ⟹ 那才是真实位置。
+//
+// ⟹ **MediaRemote 给的是"在 `timestamp` 那一刻的播放位置"**。
+//   播放器只在**状态变化时**（换歌/暂停/拖动进度）才 publish 一次，
+//   而 `elapsedTime` 冻结在那一刻 ⟹ 直接用它，进度条永远停在开头附近。
+//
+// ⚠️⚠️ 而我为这个 bug 猜了四轮（字段名 → 单位 → 频率 → 采集方式），
+//   **每一轮都在推断，而真实数据一次就给出了答案**。
+//   ⟹ 判据：**"值不对"和"字段名不对"是两类问题，先看到真实值再决定改哪个。**
+//     前三次栽在字段名上，让我形成了"又是名字错了"的惯性，而这次名字是对的。
+//
+// ⚠️ 三个前提，缺一个就不能外推：
+//   ① `playing` 为 false 时**不许外推** —— 暂停了时间就不走，
+//     外推会让进度条在暂停时继续爬（那比停在开头更像坏了）
+//   ② `timestamp` 解析不出来就退回裸值（比外推一个错的量好）
+//   ③ 外推结果要**夹在 [0, duration]** —— 播放器暂停很久没 publish 时，
+//     外推会超过总长，而那会让进度条冲出轨道
 function mediaTimeline(track) {
   // ⚠️⚠️⚠️ **字段名又错了一处**（0.9.113）。用户 2026-08-02：
   //   「粒子壁纸会显示音乐的进度条，但是到达一定时间会自动重置，
@@ -513,12 +538,32 @@ function mediaTimeline(track) {
   //     we-host 这边全靠"我记得它叫什么" —— 那必然会漂。
   //   ⟹ 下面把两个名字都读，而且**测试 fixture 必须用真实字段名**
   //     （0.9.110 那次就是 fixture 用了假名字，让 bug 活着还让修的人报红）。
-  const elapsed = track && (track.elapsedTime !== undefined
+  const base = track && (track.elapsedTime !== undefined
     ? track.elapsedTime : track.position);
-  return {
-    position: Number.isFinite(elapsed) ? elapsed : 0,
-    duration: Number.isFinite(track && track.duration) ? track.duration : 0,
-  };
+  const duration = Number.isFinite(track && track.duration) ? track.duration : 0;
+  let position = Number.isFinite(base) ? base : 0;
+
+  // ⚠️ 只在**正在播放**时外推（见上面那段的前提①）
+  if (track && track.playing && track.timestamp) {
+    const snap = Date.parse(track.timestamp);
+    // ⚠️ Date.parse 失败给 NaN ⟹ 不外推（前提②）。
+    // ⚠️⚠️ 实测过：这个 `isFinite` **在结果上是冗余的** —— `NaN > 0` 已经是 false，
+    //   所以下面那个 `drift > 0` 自己就兜住了。反向验证里"删掉它"显示永久绿，
+    //   而那不是守卫弱，是**这个判断真的改不动结果**。
+    //   ⟹ 但**留着**：它表达的是意图（"解析失败就别算"），而靠 NaN 比较的假值行为
+    //     是那种"能工作但下一个人看不懂为什么"的代码。宁可多一行显式的。
+    if (Number.isFinite(snap)) {
+      const drift = (Date.now() - snap) / 1000;
+      // ⚠️ drift 为负说明时钟对不上（或者 timestamp 是未来的）⟹ 不外推
+      if (drift > 0) position += drift;
+    }
+  }
+  // ⚠️ 夹在 [0, duration]（前提③）——暂停很久没 publish 时外推会超过总长，
+  //   而那会让进度条冲出轨道。duration 为 0（拿不到总长）时不夹上限。
+  if (position < 0) position = 0;
+  if (duration > 0 && position > duration) position = duration;
+
+  return { position, duration };
 }
 
 // 把 wall:// 的 URL 路径解析成壁纸目录下的真实文件路径。
