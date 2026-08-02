@@ -6390,6 +6390,15 @@ check('自带壁纸是标准 Web 类型（不是特例路径）', () => {
 //   ③ 这一处
 //   ⟹ 而两次都是**测试 fixture 用了假字段名**，让 bug 活着还让修的人报红。
 //     判据：**fixture 的字段名必须来自真实数据，不是来自被测代码。**
+// ⚠️⚠️⚠️ **字段名的单一来源是 `aicursor-helper/netease-mac-integration.md`**。
+//   那份文档第 95 行列着 media-control 的全部常用字段：
+//       artist、album、duration、**elapsedTime**、timestamp、
+//       **artworkData**(base64) + **artworkMimeType**、shuffleMode、repeatMode
+//
+// ⚠️⚠️ **而我修封面（0.9.110）和修进度（0.9.113）时都没去看它** ——
+//   两个字段都写错、都是用户发现的，而**答案一直在仓库里**。
+//   ⟹ 判据：**跨进程/跨模块的字段名，动手前先查那份文档，不靠记忆。**
+//     那份文档就是这条链的契约，而"我记得它叫 position"值 0。
 check('进度用 media-control 的真字段名（elapsedTime）', () => {
   const host = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8'));
