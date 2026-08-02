@@ -2304,12 +2304,29 @@ const W_FORMAT = (bytes) => {
 // 隐藏它们会让人以为工坊里没东西；标出来才是诚实的。
 // ⚠️ tags 初值由 meta.defaultTags 填（只勾「全年龄」）—— 不在这里写死，
 // 因为默认值的依据在 workshop.js（唯一来源）。
-const browse = { sort: 'trending', tags: [], page: 1, total: 0, perPage: 30 };
+// ⚠️⚠️ **默认排序必须和 SORT_ORDERS 的第一项一致**（0.9.118）。
+//   用户 2026-08-02：「默认是订阅最多」。
+//   ⚠️ 不写死 `'subscribed'` —— 从那张表读第一项，这样改顺序时这里自动跟上。
+//     写死的话两处会错开，而症状是"UI 高亮着 A、结果是 B"
+//     （用户 2026-08-01 报过一次同形状的：「近期热门一直显示选中状态」）。
+// ⚠️ 初值写 'subscribed' 只是"第一帧之前"的占位 —— 真正的默认在下面
+//   `renderBrowseMeta` 里从 `meta.sorts[0]` 取（那是主进程给的唯一来源）。
+//   ⚠️ workshop.js 跑在**主进程**，面板拿不到它的常量 ⟹ 只能等 meta 到了再对齐。
+const browse = { sort: 'subscribed', tags: [], page: 1, total: 0, perPage: 30 };
 
 function renderBrowseControls(meta) {
   const sortHost = document.getElementById('br-sorts');
   sortHost.className = 'we-src';
   sortHost.innerHTML = '';
+  // ⚠️⚠️ **把默认排序对齐到主进程那张表的第一项**（0.9.118）。
+  //   用户 2026-08-02 要"默认订阅最多"，而顺序和默认值该是同一件事
+  //   ⟹ 主进程改 `SORT_ORDERS` 的顺序，面板自动跟上，不用改两处。
+  //   ⚠️ 只在"当前的 sort 不在表里"时对齐 —— 否则用户点过别的之后，
+  //     每次重渲染都会把他的选择弹回默认（那种"选了自己变回去"很恼人）。
+  if (Array.isArray(meta.sorts) && meta.sorts.length
+      && !meta.sorts.some((s) => s.id === browse.sort)) {
+    browse.sort = meta.sorts[0].id;
+  }
   for (const s of meta.sorts) {
     const b = document.createElement('button');
     b.type = 'button';

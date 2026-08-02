@@ -499,9 +499,64 @@ check('有搜索词时强制用文本搜索的 query_type', () => {
   assert.strictEqual(S.queryTypeFor('recent', false), 1);
 });
 
-check('未知排序回落到热门，不产生非法 query_type', () => {
-  assert.strictEqual(S.queryTypeFor('不存在的排序', false), 3);
-  assert.strictEqual(S.queryTypeFor(null, false), 3);
+// ⚠️ 这条原来写死"回落到 3（热门）"—— 0.9.118 默认排序换成「订阅最多」之后
+//   那个数字就过时了。⟹ 断言改成**跟着表的第一项**，这样以后改默认不用改测试。
+check('未知排序回落到列表第一项，不产生非法 query_type', () => {
+  const first = S.SORT_ORDERS[0].queryType;
+  assert.strictEqual(S.queryTypeFor('不存在的排序', false), first);
+  assert.strictEqual(S.queryTypeFor(null, false), first);
+});
+
+// ⚠️⚠️⚠️ **每个排序的 queryType 必须互不相同**（0.9.118）。
+//
+// 改排序顺序时顺手核对逮到的：`popular`（总下载量）原来写的是 **9**，
+// 而 `subscribed`（订阅最多）也是 9 ⟹ **那两个选项一直返回完全一样的结果**，
+// 用户点了只会觉得"没变化"。
+// 真值是 **0（RankedByVote）**，出处：Open Wallpaper Engine 的
+// `WorkshopAPIService.swift:39`。
+//
+// ⚠️ 这是"两个枚举值填成同一个"那类错 —— **不报错、不空结果，只是静默重复**，
+//   而那正是最难自己发现的（没有任何症状能指向它）。
+check('四个排序的 queryType 互不相同（否则选项静默重复）', () => {
+  const types = S.SORT_ORDERS.map((s) => s.queryType);
+  const uniq = new Set(types);
+  assert.strictEqual(uniq.size, types.length,
+    `有排序的 queryType 重复了：${S.SORT_ORDERS.map((s) => `${s.label}=${s.queryType}`).join(', ')}`
+    + ' ⟹ 那两个选项会返回一样的结果，而用户只会觉得"点了没变化"');
+  // ⚠️ 而这四个值是 Steam 定的枚举，不能随便改 —— 钉住每一个
+  const want = { subscribed: 9, trending: 3, popular: 0, recent: 1 };
+  for (const s of S.SORT_ORDERS) {
+    assert.strictEqual(s.queryType, want[s.id],
+      `${s.label}(${s.id}) 的 queryType 是 ${s.queryType}，该是 ${want[s.id]}`
+      + '（Steam 的 EPublishedFileQueryType 枚举）');
+  }
+});
+
+// ⚠️⚠️ **默认排序 = 列表第一项**（用户 2026-08-02：「默认是订阅最多」）。
+//   ⚠️ 顺序和默认值是同一件事 ⟹ 面板从 `meta.sorts[0]` 取默认，
+//     所以这里只需钉住"第一项是谁"。
+check('默认排序是「订阅最多」', () => {
+  assert.strictEqual(S.SORT_ORDERS[0].id, 'subscribed',
+    `第一项是 ${S.SORT_ORDERS[0].label} ⟹ 那就是面板的默认排序，而用户要的是「订阅最多」`);
+});
+
+// ⚠️⚠️⚠️ **「程序」那个类型不许回来**（0.9.118）。用户 2026-08-02：
+//   「类型那里把程序这种类型直接删除不显示了」
+//
+// ⚠️ 而它和「场景」不是一类东西，所以只删这一个：
+//   · 场景（Scene）—— 暂不支持，但**将来可能支持**（评估过：
+//     linux-wallpaperengine 真实现了，只是移植成本太高）⟹ 留着标"暂不支持"
+//   · 程序（Application）—— 别人编译的 **Windows .exe**，在 macOS 上
+//     **永远跑不了**，用户也明确说过不做 ⟹ 一个永远不会支持的筛选项 = 纯噪声
+//   ⟹ 判据：**「暂不支持」和「永远不支持」要分开** ——
+//     前者值得显示（是个待办），后者不值得（是个死胡同）。
+check('类型筛选里没有「程序」，但保留「场景」', () => {
+  const ids = S.TYPE_TAGS_QUERY.map((t) => t.id);
+  assert.ok(!ids.includes('Application'),
+    '「程序」那个类型又回来了 ⟹ 它是 Windows .exe，在 macOS 上永远跑不了');
+  assert.ok(ids.includes('Scene'),
+    '「场景」被一起删了 ⟹ 那个是"暂不支持"（将来可能做），和"永远不支持"不同');
+  assert.ok(ids.includes('Video') && ids.includes('Web'), '支持的两个类型不能少');
 });
 
 // ⚠️ return_previews / return_tags 少了的话，返回的项**没有预览图和类型** ——

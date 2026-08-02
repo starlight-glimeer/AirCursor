@@ -6562,4 +6562,28 @@ check('__mediaState：建一次 / 保住订阅 / 字段名照壁纸的契约', (
     '没缓存最近一次 track ⟹ 补发时手里没数据');
 });
 
+// ⚠️⚠️ **面板的默认排序要跟主进程那张表对齐**（0.9.118）。
+//   用户 2026-08-02 要"默认订阅最多"，而**顺序和默认值该是同一件事** ——
+//   主进程改 `SORT_ORDERS` 的顺序，面板自动跟上，不用改两处。
+//
+// ⚠️ 而"两处写死同一个值"这个形状用户 2026-08-01 已经报过一次：
+//   「几个标签…只有近期热门一直显示选中的状态，点其他的也能生效，
+//     但 UI 还是近期热门有个蓝框选中」⟹ **UI 高亮一个、实际用另一个**。
+//   ⟹ 判据：**默认值只能有一个来源**，另一边从它推导。
+check('浏览的默认排序从主进程那张表取，不写死', () => {
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const fn = dash.slice(dash.indexOf('function renderBrowseControls'),
+    dash.indexOf('function renderBrowseControls') + 1200);
+  assert.ok(fn.length > 200, '切不出 renderBrowseControls ⟹ 断言失效');
+  assert.match(fn, /browse\.sort = meta\.sorts\[0\]\.id/,
+    '面板没把默认排序对齐到 meta.sorts[0] ⟹ 主进程改了顺序而面板还用旧默认，'
+    + '症状是"UI 高亮一个、结果是另一个"（用户 2026-08-01 报过同形状的）');
+  // ⚠️⚠️ 而**只在当前 sort 不在表里时**才对齐 —— 无条件覆盖会让用户
+  //   点过别的之后每次重渲染都被弹回默认（"我选了它自己变回去"）。
+  assert.match(fn, /!meta\.sorts\.some\(\(s\) => s\.id === browse\.sort\)/,
+    '无条件把 sort 覆盖成第一项 ⟹ 用户点了别的排序会被弹回默认'
+    + '（每次重渲染都弹一次）');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -524,11 +524,23 @@ function findWallpaperDirs(roots, { listDir, isDir, exists }) {
 // Steam 的排序类型。⚠️ 这些数字是 Steam 定的枚举，不是我编的。
 // 而 `search_text` 非空时**必须**用 12（RankedByTextSearch）——
 // 否则搜索词被忽略、返回的是热门榜，而那看起来像"搜索没用"。
+// ⚠️⚠️ **顺序 = 默认值**（0.9.118）。用户 2026-08-02：
+//   「我希望顺序换一下，然后默认是订阅最多」
+//   ⟹ 「订阅最多」放第一个。而**面板的默认值就是这个列表的第一项**
+//     （dashboard.js 的 `browse.sort`）—— 两处必须一致，不然"默认选中的那个"
+//     和"实际用的排序"会错开（那种不一致用户看到的是"UI 选中 A 而结果是 B"）。
+//
+// ⚠️⚠️⚠️ 而 `popular` 的 queryType **原来写的是 9 —— 和 subscribed 重复**
+//   ⟹ 那两个选项一直返回**完全一样的结果**，用户点了只会觉得"没变化"。
+//   真值是 **0（RankedByVote）**，出处：Open Wallpaper Engine 的
+//   `WorkshopAPIService.swift:39`（`case .mostPopular: return 0 // RankedByVote`）。
+//   ⚠️ 这是"两个枚举值填成同一个"那类错 —— **不报错、不空结果，只是静默重复**，
+//     而那正是最难自己发现的（我是改顺序时顺手核对才逮到）。
 const SORT_ORDERS = [
-  { id: 'trending', label: '近期热门', queryType: 3 },
-  { id: 'recent', label: '最新发布', queryType: 1 },
-  { id: 'popular', label: '总下载量', queryType: 9 },
-  { id: 'subscribed', label: '订阅最多', queryType: 9 },
+  { id: 'subscribed', label: '订阅最多', queryType: 9 },   // RankedByTotalUniqueSubscriptions
+  { id: 'trending', label: '近期热门', queryType: 3 },     // RankedByTrend
+  { id: 'popular', label: '总下载量', queryType: 0 },      // RankedByVote ← 原来错写成 9
+  { id: 'recent', label: '最新发布', queryType: 1 },       // RankedByPublicationDate
 ];
 
 const TEXT_SEARCH_QUERY_TYPE = 12;
@@ -536,7 +548,9 @@ const TEXT_SEARCH_QUERY_TYPE = 12;
 function queryTypeFor(sortId, hasText) {
   if (hasText) return TEXT_SEARCH_QUERY_TYPE;
   const hit = SORT_ORDERS.find((s) => s.id === sortId);
-  return hit ? hit.queryType : 3;
+  // ⚠️ 兜底用**列表第一项**，不写死数字 —— 写死的话改默认排序时会漏掉这里，
+  //   而症状是"传了个不认识的 sortId 时排序悄悄变回原来那个"。
+  return hit ? hit.queryType : SORT_ORDERS[0].queryType;
 }
 
 // ⚠️ 工坊的筛选**全部走 requiredtags**，没有独立的参数 —— 类型、年龄分级、
@@ -551,7 +565,18 @@ const TYPE_TAGS_QUERY = [
   { id: 'Scene', label: '场景', supported: false },
   { id: 'Video', label: '视频', supported: true },
   { id: 'Web', label: '网页', supported: true },
-  { id: 'Application', label: '程序', supported: false },
+  // ⚠️⚠️ 这里原来有 `{ id: 'Application', label: '程序', supported: false }`
+  //   —— **0.9.118 删了**。用户 2026-08-02：「类型那里把程序这种类型直接删除不显示了」
+  //
+  // ⚠️ 而它和「场景」不是一类东西，所以只删这一个：
+  //   · **场景**（Scene）—— 我们暂不支持，但**将来可能支持**
+  //     （评估过：linux-wallpaperengine 真实现了，只是移植成本太高）
+  //     ⟹ 留着，标「暂不支持」，用户至少知道那类壁纸存在
+  //   · **程序**（Application）—— 别人编译的 **Windows .exe**，
+  //     在 macOS 上**永远跑不了**，而且用户明确说过不做
+  //     ⟹ 一个永远不会支持的筛选项 = 纯噪声，删掉
+  //   ⟹ 判据：**「暂不支持」和「永远不支持」要分开** ——
+  //     前者值得显示（是个待办），后者不值得（是个死胡同）。
 ];
 
 // 年龄分级。
