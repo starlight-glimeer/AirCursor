@@ -3487,6 +3487,28 @@ ipcMain.handle('export-diagnostics', () => {
   const report = {
     v: 1,
     at: new Date().toISOString(),
+    // ⚠️⚠️⚠️ **最近一次 track 的原始字段**（0.9.116）。
+    //
+    // 用户 2026-08-02：封面和歌手对了，**而进度还是不同步**。而那三个来自
+    // **同一个对象**（`__mediaState`）⟹ 问题只在 `position` 那一个值上。
+    //
+    // ⚠️⚠️ 而我为字段名连栽四次（artwork / 语音的「点」/ position / 这一次），
+    //   每次都在**推断 media-control 给什么**，而**从来没有一个地方能看到它
+    //   真的给了什么**。这就是那个缺口。
+    //   ⟹ 把原始字段名和值直接放进诊断报告：一眼看出
+    //     `elapsedTime` 在不在、单位是秒还是毫秒、值有没有在动。
+    // ⚠️ 封面那个 base64 要剥掉（几百 KB，而且报告是要发给别人看的）——
+    //   只留"有没有"和长度。
+    lastTrack: lastTrack ? (() => {
+      const out = {};
+      for (const [k, v] of Object.entries(lastTrack)) {
+        if (k === 'artworkData') { out[k] = `<${String(v || '').length} 字节 base64>`; continue; }
+        out[k] = v;
+      }
+      // ⚠️ 同时给出**我们翻译后**的值 —— 两边并排才看得出是哪一步错的
+      out['→ 我们发给壁纸的'] = WE.mediaStatePayload(lastTrack);
+      return out;
+    })() : '（没在放歌，或者 media-control 不可用）',
     // **音频原始帧**：最近 60 帧的 128 段序列 + 孤峰统计。
     //
     // 为什么在报告里而不是面板上：孤峰要看**连续的段**（"比左右邻居高 30%"），
