@@ -133,9 +133,15 @@ check('每个加载 templates.js 的窗口都先加载 system.js', () => {
   const dir = path.join(__dirname, '..', 'src');
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.html'))) {
     const html = fs.readFileSync(path.join(dir, file), 'utf8');
-    if (!html.includes('templates.js')) continue;
-    assert.ok(html.includes('system.js'), `${file} 加载了 templates.js 但没加载 system.js`);
-    assert.ok(html.indexOf('system.js') < html.indexOf('templates.js'),
+    // ⚠️⚠️ 只看 **<script> 标签**，不看"文件里提到过这个名字"。
+    //   原来用 `html.indexOf('templates.js')` ⟹ 它会匹配到**注释里**提到的文件名
+    //   （0.9.106 我在 dashboard.html 加了段注释解释"templates.js 里 basic 是
+    //    空数组"）⟹ 那个位置在真正的 <script> 之前 ⟹ **断言在正确代码上报红**。
+    //   第 16 次栽在"注释和守卫互相干扰"。
+    const tag = (name) => html.indexOf(`<script src="${name}"`);
+    if (tag('templates.js') < 0) continue;
+    assert.ok(tag('system.js') >= 0, `${file} 加载了 templates.js 但没加载 system.js`);
+    assert.ok(tag('system.js') < tag('templates.js'),
       `${file} 里 system.js 在 templates.js 之后 —— 那时系统动作还不存在`);
   }
 });

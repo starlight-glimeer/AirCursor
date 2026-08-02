@@ -540,86 +540,11 @@ check('骨架层可聚焦，否则摄像头授权弹窗没人能回答', () => {
   assert.match(block, /setIgnoreMouseEvents/, '穿透要靠 setIgnoreMouseEvents,不是靠不可聚焦');
 });
 
-// ⚠️ 这条守的是一个**能把用户锁在电脑外面**的失败。
-//
-// 上一版为了让摄像头授权弹窗可点,把穿透做成"拿到授权后才开"。后果:这一层盖在全屏
-// 最上层且不穿透 ⟹ 整个屏幕点不动 ⟹ 用户连关掉这个 App 都做不到。实测撞到过
-// ("鼠标直接废掉了,屏幕上所有的东西都点不动了")。
-//
-// 授权不需要**整层**可点,只需要请求发生在一个可交互的窗口里。所以穿透无条件开,
-// 而且有三重保险 + 一个不依赖鼠标的逃生开关。
-check('骨架层的穿透是无条件的（否则整个屏幕点不动）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const block = main.slice(main.indexOf('function ensureOverlay'), main.indexOf('function destroyOverlay'));
-  const code = block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-  // 不能有任何条件包着它 —— 条件为假的那一刻鼠标就废了。
-  assert.doesNotMatch(code, /if\s*\([^)]*\)\s*\{?\s*\n?\s*overlayWindow\.setIgnoreMouseEvents/,
-    '穿透被条件包住了 —— 条件不成立时整个屏幕会点不动');
-  assert.match(code, /setIgnoreMouseEvents\(true, \{ forward: true \}\)/, '没有开穿透');
-  // ready-to-show 后重设:窗口重建时 Electron 可能丢掉之前那次设置。
-  assert.match(code, /ready-to-show[\s\S]{0,200}setIgnoreMouseEvents/,
-    '没有在 ready-to-show 后重设穿透 —— 那次设置可能被窗口重建丢掉');
-});
-
-check('有一个不依赖鼠标的逃生开关，而且告诉了用户', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
-  // 一个能把自己锁在外面的程序必须有不依赖鼠标的出口,而且不能和"退出"绑在一起 ——
-  // 用户可能只想拿回鼠标,不是想关掉壁纸。
-  assert.match(main, /Control\+Shift\+X[\s\S]{0,200}destroyOverlay\(\)/,
-    '没有"拆掉骨架层"的全局快捷键');
-  // 写在代码里但用户不知道,等于没有 —— 出事时他没法查文档。
-  //
-  // ⚠️ 这条原来查 `wall.html`(壁纸层那个引导浮层里写着它)。而用户要求删掉整个引导页
-  // ——「不,这个引导就不该存在」—— 于是这个说明差点跟着消失,**而它是"鼠标全屏点不动"时
-  // 唯一的出路**(我曾经真的把用户锁在电脑外面)。这条守卫当场逮住了那个损失。
-  //
-  // 现在它必须出现在两个地方:启动时的终端输出(那是唯一必然可见的地方,而且出事时
-  // 用户手上就有),以及面板。
-  // ⚠️ 只看**启动时打印的那几行**,不是整个文件。
-  //
-  // 第一版用 `/⌃⇧X[^\n]*(拆掉|骨架)/` 匹配整个 main.js —— 而那也命中了拆掉骨架层时
-  // 广播的那条日志(它同样含 ⌃⇧X 和"骨架")。于是删掉启动信息里那半句,守卫**依然通过**。
-  // 我是靠反向验证发现的:两个方向都验才知道它锚在了别的东西上。
-  // ⚠️ 锚点不能用 `=== GestureWall ===` 这个**字面串** —— 那行现在带 build 标识
-  // (`=== GestureWall ${buildStamp()} ===`) ⟹ indexOf 返回 -1，slice(-1) 只剩一个字符，
-  // 断言就会在正确代码上报红。实测踩到过。用 'GestureWall ' 定位。
-  const bannerAt = main.indexOf("=== GestureWall");
-  assert.ok(bannerAt > 0, '找不到启动横幅 —— 那几行是出事时唯一必然可见的地方');
-  const banner = main.slice(bannerAt);
-  assert.match(banner.slice(0, 400), /⌃⇧X/,
-    '终端启动信息里没有 ⌃⇧X —— 出事时用户无处可查(那几行是唯一必然可见的地方)');
-  assert.match(dash, /⌃⇧X/, '面板没列出这个快捷键');
-});
-
-check('语音默认关，且不在启动时抢麦克风', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8');
-  assert.match(main, /voice: false/, '语音必须默认关');
-  // 用户报："每次打开我们的产品，正在听的音乐音道就变了" —— helper 一启动就占麦克风，
-  // 而 macOS 上抢占音频输入会切换输入设备。可选功能不该有这种副作用。
-  const start = bridge.slice(bridge.indexOf('    start() {'), bridge.indexOf('    startVoice()'));
-  assert.doesNotMatch(start, /startVoiceHelper\(\)/,
-    'start() 里还在启动语音 helper —— 那会在打开产品时抢走麦克风');
-  assert.match(bridge, /startVoice\(\)/, '语音要能按需启动');
-  assert.match(bridge, /stopVoice\(\)/, '关掉时要真的杀掉 helper，否则麦克风一直被占');
-});
-
-check('三种权限都有授权入口（麦克风/语音识别单列）', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
-  for (const [name, handler, button] of [
-    ['辅助功能', 'open-accessibility', 'grantAccessibility'],
-    ['摄像头', 'open-camera-settings', 'grantCamera'],
-    ['麦克风', 'open-microphone-settings', 'grantMic'],
-    ['语音识别', 'open-speech-settings', 'grantSpeech'],
-  ]) {
-    assert.ok(main.includes(handler), `${name} 没有打开设置的处理`);
-    assert.ok(html.includes(button), `${name} 没有按钮`);
-  }
-  // 语音识别授给的是 helper 不是主 App，这条在 AirCursor 上花过时间。
-  assert.match(html, /AirCursorVoice/, '没告诉用户语音识别那项要找 helper 的名字');
-});
+// ⚠️⚠️ 这里原来是「三种权限都有授权入口（麦克风/语音识别单列）」—— **0.9.106 删了**。
+//   麦克风和语音识别那两个授权**只有语音功能在用**，而语音整条撤掉了
+//   （用户："我觉得语音控制这个我们把它删掉吧，不需要"）。
+//   ⚠️ 系统声音**不需要**麦克风（走 CoreAudio 进程 tap，2026-08-01 真机验过）
+//   ⟹ 现在只剩两个授权入口：摄像头、辅助功能。而它们各自的入口断言还在。
 
 
 check('canvas 有 CSS 尺寸 —— 缺了整张画布会被压到屏幕左上角', () => {
@@ -1985,7 +1910,9 @@ check('renderToggles 里 bind 的每个 id 都在 HTML 中存在（删 UI 留调
   const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
   const ids = [...codeOnly(dash).matchAll(/bind\('([a-zA-Z]+)'/g)].map((m) => m[1]);
-  assert.ok(ids.length >= 4, `只找到 ${ids.length} 个 bind，正则大概失效了`);
+  // ⚠️ 阈值从 4 降到 3：0.9.106 删了 proTier（那道"锁"）和 voice
+  //   ⟹ 现在只剩 gestures / showHands / controlCursor 三个。
+  assert.ok(ids.length >= 3, `只找到 ${ids.length} 个 bind，正则大概失效了`);
   for (const id of ids) {
     assert.ok(html.includes(`id="${id}"`),
       `bind('${id}') 指向的元素不在 dashboard.html 里 —— 会抛 TypeError 并打断 apply()，`
@@ -6185,56 +6112,76 @@ check('权限面板已删（别再加回来）', () => {
     '面板不再解释"没有辅助功能授权" ⟹ 手势控光标不工作时用户没有任何线索');
 });
 
-// ⚠️⚠️⚠️ **语音：能说什么必须列出来**（0.9.105）。用户 2026-08-02：
-//   「我在手势录制之类点击语音命令，结果出来这个『语音：听到：点点点点点』
-//     没有反应」
+// ⚠️⚠️⚠️ **语音命令整条删了**（0.9.106）。用户 2026-08-02：
+//   「我觉得语音控制这个我们把它删掉吧，不需要」
 //
-// **他说得对，而根因是面板从来没说过能说什么** —— 只有一个开关和一行"听到：xxx"。
-// 他对着麦克风说话、看到识别成功了、然后什么都没发生 ⟹ 以为功能坏了。
-// 而实际是他说的词不在能匹配的那六条里。
-// ⚠️ **一个只认六个词的功能，不列出那六个词 = 不可用。**
+// ⚠️ 而它删之前是坏的，坏在一个我该早看出来的地方：用户说「点」，期望"在指针位置
+//   点一下"（**他的理解完全对** —— 骨架那个指针就是鼠标位置）。而 `VOICE_PATTERNS`
+//   里**根本没有「点」这一条**。voice helper 那边倒是有个
+//   `__AIRCURSOR_VOICE_TAP__` 分支会发 `onVoiceText('点')`，可它送进主进程必然
+//   "没匹配上" ⟹ **一条接了一半的链，而两边都不报错。**
 //
-// ⚠️ 而「点点点点点」本身是另一件事：macOS 给的是**累积转写**
-//   （partial results，一直说就一路长下去）⟹ 状态行滚成一串重复字，
-//   看着像卡了，而识别是正常的。
-check('语音：面板列出能说的词 / 累积转写要截尾 / 没匹配上要给出路', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+// ⚠️⚠️ 而 0.9.105 我做的是"把能说的六个词列在面板上" —— 那是在**给一个坏功能
+//   补文档**，而不是修它（用户想要的「点」压根不在那六个里）。
+//   ⟹ 教训：**用户报"这个功能没反应"时，先确认他要的那件事代码里有没有**，
+//     而不是先去改提示文案。
+check('语音功能已删干净（元素/绑定/IPC 一个都不许留）', () => {
   const src = codeOnly(mainSrc);
-
-  // ① 面板要列出命令，而且**每一条都要和代码里的 VOICE_PATTERNS 对得上** ——
-  //    列了一个代码不认的词比不列更糟（用户会一直试那个词）。
-  assert.match(html, /id="voice-cmds"/, '面板没有语音命令清单 ⟹ 用户不知道能说什么');
-  const patterns = src.slice(src.indexOf('const VOICE_PATTERNS = ['),
-    src.indexOf('function handleVoiceText'));
-  assert.ok(patterns.length > 100, '切不出 VOICE_PATTERNS ⟹ 断言失效');
-  for (const word of ['网易云', '浏览器', '访达', '暂停', '下一首']) {
-    assert.ok(patterns.includes(word),
-      `代码里的 VOICE_PATTERNS 不认「${word}」，而面板列了它 ⟹ 用户会一直试一个没用的词`);
-    assert.ok(html.includes(word),
-      `面板没列「${word}」，而代码认它 ⟹ 一个能用的命令用户不知道`);
+  for (const gone of ['VOICE_PATTERNS', 'handleVoiceText', "ipcMain.handle('set-voice'",
+    'onVoiceText:', "ipcMain.handle('open-microphone-settings'",
+    "ipcMain.handle('open-speech-settings'"]) {
+    assert.ok(!src.includes(gone), `main.js 里 ${gone} 又回来了 ⟹ 语音整条已撤`);
   }
-  // ⚠️ 清单要跟着开关显隐 —— 常驻的话它就是又一块噪声
-  const dash2 = codeOnly(fs.readFileSync(
+  const dash = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
-  // ⚠️ 不能只查 `voice-cmds` 出现过 —— 删掉赋值那行，getElementById 里那个
-  //   字符串还在 ⟹ 断言照样绿（反向验证第 ⑨ 条逮到）。第 15 次栽在锚点太弱。
-  //   ⟹ 锚**真正让它显示出来**的那一句。
-  assert.match(dash2, /if \(cmds\) cmds\.hidden = !v;/,
-    '命令清单没跟着开关显隐 ⟹ 它永远 hidden，等于没加');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const pre = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'preload.js'), 'utf8'));
+  // ⚠️⚠️ **元素和绑定必须同时没有** —— 这个项目栽过：HTML 删了而
+  //   `document.getElementById('x').onclick =` 留着 ⟹ null 上取 .onclick 直接
+  //   TypeError，把 apply() 整个打断 ⟹ **后面所有开关都绑不上**（症状是
+  //   "点什么都没反应"，而且完全看不出和删 UI 有关）。
+  for (const id of ['voice', 'voice-state', 'voice-cmds', 'voice-grants',
+    'grantMic', 'grantSpeech']) {
+    assert.ok(!html.includes(`id="${id}"`), `HTML 里还有 #${id}`);
+    assert.ok(!dash.includes(`'${id}'`), `dashboard.js 还在引用 #${id} ⟹ 元素没了，`
+      + '取 .onclick/.checked 会抛，把 apply() 整个打断');
+  }
+  assert.ok(!/setVoice|onVoiceStatus|openMicrophoneSettings|openSpeechSettings/.test(pre),
+    'preload 还暴露着语音那几个接口 ⟹ 主进程已经没有对应的 handler 了');
 
-  // ②⚠️ 累积转写要截尾，否则状态行滚成"点点点点点…"
-  const sb = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
-  assert.match(sb, /heard\.length > 20 \? `…\$\{heard\.slice\(-20\)\}`/,
-    '"听到：xxx"没截尾 ⟹ macOS 给的是累积转写，一直说就滚成一串重复字'
-    + '（用户看到的"点点点点点"）');
+  // ⚠️ 而 `config.voice` **要留在 defaultConfig 里** —— 用户 config 里已经有它，
+  //   删了会被 mergeConfig 静默剥掉（0.9.93 刚为这个形状栽过一次）。
+  const defs = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
+    mainSrc.indexOf('let config = null'));
+  assert.match(defs, /voice: false/,
+    'config.voice 从 defaultConfig 里删了 ⟹ 用户 config 里已有这个字段，'
+    + '不声明就会被 mergeConfig 静默剥掉');
+});
 
-  // ③⚠️ "没匹配上"必须给出路 —— 只说"你说错了"不说什么是对的等于没说
-  assert.match(src, /没匹配上「/, '"没匹配上"的提示没改 ⟹ 该带上能说什么');
-  const noMatch = src.slice(src.indexOf('const hit = VOICE_PATTERNS.find'),
-    src.indexOf('const result = runSystemAction'));
-  assert.match(noMatch, /网易云 \/ 浏览器/,
-    '"没匹配上"时没列出能说的词 ⟹ 用户只知道自己错了，不知道什么是对的');
+// ⚠️⚠️⚠️ **「进阶模式」那道锁删了**（0.9.106）。用户 2026-08-02：
+//   「手势这里面有一个进阶模式（手势 + 录制），是一把锁了它以后这些功能才能使用吗？
+//     把它删掉吧，我们就无条件可以使用就好了」
+//
+// **他说得对，而这道门比他以为的更糟**：`templates.js` 里 `basic` 是**空数组**
+// ⟹ 关掉"进阶模式"手势页**一个动作都没有**（不是"少几个高级功能"，是整页空白）。
+// 而 `proTier` 默认就是 true ⟹ 一个默认打开、关掉就废掉整页的开关 = 纯负担。
+check('进阶模式那道锁删了：所有手势动作无条件可用', () => {
+  const tpl = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'templates.js'), 'utf8'));
+  // ⚠️ 动作全部在 basic 里，pro 空 —— 那才是"无条件可用"
+  assert.match(tpl, /pro: \[\]/, 'templates.js 的 pro 档又有东西了 ⟹ 那是一道锁');
+  const basic = tpl.slice(tpl.indexOf('basic: ['), tpl.indexOf('pro: []'));
+  for (const act of ['zoom', 'parallax', 'spin', 'open_netease', 'media_next']) {
+    assert.ok(basic.includes(`'${act}'`), `动作 ${act} 不在 basic 里 ⟹ 它被锁住了`);
+  }
+  // ⚠️ 开关本身和它的绑定都不许留（元素+绑定必须同时没有，理由见语音那条）
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.ok(!html.includes('id="proTier"'), 'HTML 里还有「进阶模式」那个开关');
+  assert.ok(!dash.includes("'proTier'"), 'dashboard.js 还在 bind proTier ⟹ 元素没了会抛');
+  assert.ok(!/config\.proTier/.test(dash), 'dashboard.js 还在读 config.proTier');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

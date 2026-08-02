@@ -37,16 +37,12 @@ contextBridge.exposeInMainWorld('gw', {
   pointerHealth: () => ipcRenderer.invoke('pointer-health'),
   openAccessibility: () => ipcRenderer.invoke('open-accessibility'),
   openCameraSettings: () => ipcRenderer.invoke('open-camera-settings'),
-  openMicrophoneSettings: () => ipcRenderer.invoke('open-microphone-settings'),
-  openSpeechSettings: () => ipcRenderer.invoke('open-speech-settings'),
-  setVoice: (enabled) => ipcRenderer.invoke('set-voice', enabled),
   startCapture: () => ipcRenderer.invoke('start-capture'),
   revealCaptures: () => ipcRenderer.invoke('reveal-captures'),
   saveCapture: (payload) => ipcRenderer.send('save-capture', payload),
   onStartCapture: (handler) => ipcRenderer.on('start-capture', () => handler()),
   onCaptureSaved: (handler) => ipcRenderer.on('capture-saved', (_e, p) => handler(p)),
   onPointerHealth: (handler) => ipcRenderer.on('pointer-health', (_e, p) => handler(p)),
-  onVoiceStatus: (handler) => ipcRenderer.on('voice-status', (_e, p) => handler(p)),
 
   // 预设
 

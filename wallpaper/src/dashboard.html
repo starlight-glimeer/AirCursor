@@ -1107,35 +1107,23 @@
 
     <div class="card">
       <div class="toggle"><input type="checkbox" id="gestures"><label for="gestures">开启摄像头手势</label></div>
-      <div class="toggle"><input type="checkbox" id="proTier"><label for="proTier">进阶模式（手势 + 录制）</label></div>
+      <!-- ⚠️⚠️ 这里原来是「进阶模式（手势 + 录制）」—— **0.9.106 删了**。
+           用户："是一把锁了它以后这些功能才能使用吗？把它删掉吧，
+           我们就无条件可以使用就好了"
+           ⚠️ 而它比他以为的更糟：关掉之后手势页**一个动作都没有**
+           （templates.js 里 basic 是空数组）⟹ 不是"少几个高级功能"，是整页空白。
+           而它默认就是 true ⟹ 一个默认打开、关掉就废掉整页的开关 = 纯负担。 -->
       <div class="toggle"><input type="checkbox" id="showHands"><label for="showHands">显示手骨架和指针（盖在所有窗口之上）</label></div>
       <div class="toggle"><input type="checkbox" id="controlCursor"><label for="controlCursor">手控制真鼠标（需要辅助功能授权）</label></div>
-      <!-- 默认关。开着会占麦克风，而 macOS 上抢占音频输入会切换输入设备 —— 用户报过
-           "每次打开这个产品，正在听的音乐音道就变了"。可选功能不该有这种副作用。 -->
-      <div class="toggle"><input type="checkbox" id="voice"><label for="voice">语音命令（会占用麦克风）</label></div>
-      <div id="voice-state" class="state" hidden></div>
-      <!-- ⚠️⚠️⚠️ **能说什么必须列出来**（0.9.105）。用户 2026-08-02：
-             「我在手势录制之类点击语音命令，结果出来这个『语音：听到：点点点点点』
-               没有反应」
-           **他说得对，而根因是面板从来没说过能说什么** —— 只有一个开关和一行
-           "听到：xxx"。他对着麦克风说话、看到识别成功了、然后什么都没发生
-           ⟹ 以为功能坏了。而实际是他说的词不在能匹配的那六条里。
-           ⚠️ 一个"只认六个词"的功能，不列出那六个词 = 不可用。 -->
-      <p class="hint" id="voice-cmds" hidden>
-        <b>能说这些</b>（认不出会显示「没匹配上」）：
-        <br>· 「<b>网易云</b>」/「音乐」 → 打开网易云音乐
-        <br>· 「<b>浏览器</b>」/「Chrome」 → 打开浏览器
-        <br>· 「<b>访达</b>」/「Finder」 → 打开访达
-        <br>· 「<b>暂停</b>」/「播放」/「停一下」 → 媒体播放/暂停
-        <br>· 「<b>下一首</b>」/「上一首」 → 切歌
-        <br>⚠️ 「听到：<i>xxx</i>」只是说识别到了声音 —— 要看下一行有没有变成
-        「已执行」才算真的触发。
-      </p>
-      <div id="voice-grants" hidden>
-        <button class="act" id="grantMic">麦克风权限</button>
-        <button class="act" id="grantSpeech">语音识别权限</button>
-        <p class="hint">语音识别那一项授给的是 <b>AirCursorVoice</b> 这个 helper，不是主 App —— 在列表里找它。</p>
-      </div>
+      <!-- ⚠️⚠️ 这里原来是**语音命令**那一块（开关 + 状态行 + 命令清单 +
+           两个授权按钮）—— **0.9.106 整块删了**。用户 2026-08-02：
+             「我觉得语音控制这个我们把它删掉吧，不需要」
+           ⚠️ 而它删之前是坏的：他说「点」期望在指针位置点一下（**他的理解对** ——
+             骨架那个指针就是鼠标位置），而 VOICE_PATTERNS 里根本没有「点」这条。
+             voice helper 认得那个词、主进程不认 ⟹ 一条接了一半的链，两边都不报错。
+           ⚠️⚠️ 删 HTML 必须**同时**删 dashboard.js 里的 bind/onclick ——
+             元素没了而 `document.getElementById(...).onclick =` 留着会 TypeError，
+             把 apply() 整个打断 ⟹ 后面所有开关都绑不上（这个项目栽过）。 -->
       <div id="live">手势未开启</div>
       <p class="hint">骨架是独立一层，盖在所有窗口之上、鼠标穿透 —— 所以在任何应用前面都看得到手在哪。<b>录制时会强制显示</b>，不管这个开关。</p>
       <!-- 投递层健康。这一行观测的是"缺权限时 CGEvent.post 静默丢弃"——不报错、不抛异常，

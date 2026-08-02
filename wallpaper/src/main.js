@@ -367,6 +367,9 @@ const defaultConfig = {
   // 而"手势没反应"和"手没被检测到"是两件需要分开的事。
   showHands: true,
   // 语音命令。默认关:开着会占麦克风,而那会切换音频输入设备、影响正在播放的音乐。
+  // ⚠️ 语音功能 0.9.106 整条删了，这个字段**留着不驱动任何逻辑** ——
+  //   用户 config 里已经有它，而 mergeConfig 只遍历 defaultConfig 的键
+  //   ⟹ 删了会被静默剥掉（0.9.93 刚为这个形状栽过一次）。
   voice: false,
   // 摄像头授权拿到过没有。决定骨架层一开始要不要鼠标穿透 —— 授权弹窗在穿透窗口上
   // 点不动,所以第一次必须留着可交互。
@@ -681,38 +684,22 @@ const systemBridge = createSystemBridge({
   root: path.join(__dirname, '..', '..'),
   broadcast,
   // 语音和手势走同一个动作分发:说"打开网易云"和做那个手势应该等价。
-  onVoiceText: (phrase) => handleVoiceText(phrase),
+  // ⚠️ onVoiceText 那个回调 0.9.106 删了（语音整条撤掉）。
 });
 
-// 语音文本 → 动作。只认能明确对上的,认不出的报出来而不是静默丢弃 —— 否则"我说了它没反应"
-// 和"它没听见"分不开。
-const VOICE_PATTERNS = [
-  { match: /网易云|音乐/, action: 'open_netease' },
-  { match: /浏览器|chrome|谷歌/i, action: 'open_browser' },
-  { match: /访达|finder/i, action: 'open_finder' },
-  { match: /暂停|播放|停一下/, action: 'media_playpause' },
-  { match: /下一首|下一曲/, action: 'media_next' },
-  { match: /上一首|上一曲/, action: 'media_prev' },
-];
-
-function handleVoiceText(phrase) {
-  const text = String(phrase || '').trim();
-  if (!text) return;
-  const hit = VOICE_PATTERNS.find((p) => p.match.test(text));
-  if (!hit) {
-    // ⚠️⚠️ **说清能说什么**（0.9.105）。用户 2026-08-02 对着麦克风说话、
-    //   看到听到：点点点点点、然后什么都没发生 ⟹ 以为功能坏了。
-    //   而原来这里只说没匹配上:xxx—— 那等于告诉他你说错了却不说什么是对的。
-    //   ⚠️ 一个只认六个词的功能，不告诉用户是哪六个 = 不可用。
-    const tail = text.length > 12 ? `…${text.slice(-12)}` : text;
-    broadcast('voice-status', {
-      text: `没匹配上「${tail}」—— 能说：网易云 / 浏览器 / 访达 / 暂停 / 下一首`,
-    });
-    return;
-  }
-  const result = runSystemAction(hit.action, '语音');
-  broadcast('voice-status', { text: `${result.ok ? '已执行' : '执行失败'}:${text}` });
-}
+// ⚠️⚠️⚠️ **语音命令整条删了**（0.9.106）。用户 2026-08-02：
+//   「我觉得语音控制这个我们把它删掉吧，不需要」
+//
+// ⚠️ 而删之前它是坏的，坏在一个我该早看出来的地方：用户说「点」，期望"在指针位置
+//   点一下"（**他的理解完全对** —— 骨架那个指针就是鼠标位置）。而
+//   `VOICE_PATTERNS` 里**根本没有「点」这一条**，只有网易云/浏览器/访达/暂停/
+//   下一首/上一首六个。voice helper 那边倒是有个 `__AIRCURSOR_VOICE_TAP__` 分支
+//   会发 `onVoiceText('点')`，可它送进来必然"没匹配上"。
+//   ⟹ **一条接了一半的链**：helper 认得那个词，主进程不认，而两边都不报错。
+//
+// ⟹ 与其补那一条，用户选择整个删掉 —— 而那是对的取舍：语音要占麦克风、要一个
+//   额外授权、还有"抢占音频输入会切换正在放的音乐音轨"那个副作用（他 0.9.7x 报过），
+//   而它换来的是六个用鼠标一秒能做完的动作。
 
 function createWallWindow(strategyId) {
   const strategy = WALL_STRATEGIES[strategyIndexById(strategyId)];
@@ -1508,28 +1495,9 @@ ipcMain.handle('open-accessibility', () => {
 });
 
 // 打开摄像头授权页。同理:摄像头被拒之后光说"启动失败"没用。
-// 语音按需开关。默认关,而且这不是保守 —— helper 一启动就占麦克风,而 macOS 上抢占音频
-// 输入会切换输入设备、连带影响正在播放的音轨(用户报过:"每次打开我们的产品音道就变了")。
-// 一个可选功能不该有这种副作用。
-ipcMain.handle('set-voice', (_event, enabled) => {
-  config.voice = !!enabled;
-  writeConfig();
-  const result = enabled ? systemBridge.startVoice() : systemBridge.stopVoice();
-  broadcast('config', config);
-  return result;
-});
-
-// 麦克风授权页。和辅助功能/摄像头同一个原则:说了缺什么就得给路径。
-ipcMain.handle('open-microphone-settings', () => {
-  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
-  return { ok: true };
-});
-// 语音识别单独一项授权,而且授给的是 AirCursorVoice 那个 helper 不是主 App ——
-// 这一条在 AirCursor 上花过时间,写下来免得再查。
-ipcMain.handle('open-speech-settings', () => {
-  shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition');
-  return { ok: true };
-});
+// ⚠️ `set-voice`、`open-microphone-settings`、`open-speech-settings` 三条 IPC
+//   0.9.106 随语音功能一起删了 —— 麦克风和语音识别那两个授权只有语音在用
+//   （系统声音走 CoreAudio 进程 tap，不要麦克风）。
 
 ipcMain.handle('open-camera-settings', () => {
   shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Camera');

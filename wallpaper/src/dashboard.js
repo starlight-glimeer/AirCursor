@@ -732,15 +732,10 @@ function wireDiagnostics() {
 
   document.getElementById('grantAccessibility').onclick = () => window.gw.openAccessibility();
   document.getElementById('grantCamera').onclick = () => window.gw.openCameraSettings();
-  document.getElementById('grantMic').onclick = () => window.gw.openMicrophoneSettings();
-  document.getElementById('grantSpeech').onclick = () => window.gw.openSpeechSettings();
-
-  window.gw.onVoiceStatus((s) => {
-    const state = document.getElementById('voice-state');
-    if (!state || !s) return;
-    state.textContent = `语音：${s.text || '—'}`;
-    state.className = /失败|不可用/.test(s.text || '') ? 'state warn' : 'state';
-  });
+  // ⚠️ grantMic / grantSpeech / onVoiceStatus 0.9.106 随语音功能一起删了。
+  //   ⚠️⚠️ 而这里有个这个项目栽过的坑：**元素删了 bind/onclick 留着会抛**
+  //     （`document.getElementById(...)` 返回 null，`.onclick =` 直接 TypeError，
+  //      把 apply() 整个打断 ⟹ 后面所有开关都绑不上）。所以 HTML 和这里必须同时删。
 
   // 骨架几何:三层尺寸 + 端到端映射。不一致时直接说"画布在被缩放",而不是让人去猜。
   window.gw.onOverlayGeometry((g) => {
@@ -800,7 +795,9 @@ function renderPointerHealth(health) {
 
 function renderRecordables() {
   stopAllPreviews();
-  const grouped = T.groupedActions(config.template, config.proTier);
+  // ⚠️ 第二个参数（includePro）恒传 true —— 0.9.106 起没有"档"这个概念了，
+  //   所有动作都在 basic 里。留着这个参数是因为 actionsOf 还有别的调用方。
+  const grouped = T.groupedActions(config.template, true);
   renderActionGroup('recordables', grouped.wall.filter((a) => a.recordable));
   renderActionGroup('systemActions', grouped.system.filter((a) => a.recordable));
 }
@@ -811,12 +808,9 @@ function renderActionGroup(hostId, actions) {
   host.innerHTML = '';
   const t = T.template(config.template);
   if (!actions.length) {
-    // 分清两种空：真的没有可录制动作，还是进阶模式没开。第一版只写了前一句，于是
-    // "勾一下就有了"这个出路完全看不出来。
-    const withPro = T.recordableActionsOf(config.template, true);
-    host.append(el('p', 'hint', withPro.length && !config.proTier
-      ? '这些动作要开「进阶模式」才能录 —— 勾上上面那个'
-      : '这套模板没有需要录制的动作'));
+    // ⚠️ 这里原来要分辨"真的没有可录制动作"和"进阶模式没开"两种空 ——
+    //   0.9.106 那个开关删了（所有动作无条件开放）⟹ 只剩前一种。
+    host.append(el('p', 'hint', '这套模板没有需要录制的动作'));
     return;
   }
   for (const action of actions) {
@@ -1165,28 +1159,14 @@ function renderToggles() {
     node.onchange = () => set_(node.checked);
   };
   bind('gestures', () => config.gestures.enabled, (v) => window.gw.setGestures(v));
-  bind('proTier', () => config.proTier, (v) => window.gw.setConfig({ proTier: v }));
+  // ⚠️ proTier 那个绑定 0.9.106 删了（开关本身也删了 —— 见 dashboard.html）。
   bind('showHands', () => config.showHands, (v) => window.gw.setConfig({ showHands: v }));
   // 手控制真鼠标。默认关,而且这不是保守:一开摄像头就抢走鼠标,用户会没法用鼠标去把它
   // 关掉 —— 那是个能把自己锁在外面的开关。
   bind('controlCursor', () => !!config.controlCursor,
     (v) => window.gw.setConfig({ controlCursor: v }));
   // 语音走专用通道而不是 setConfig:开关要同时启停 helper,而 setConfig 只写配置。
-  bind('voice', () => !!config.voice, async (v) => {
-    const grants = document.getElementById('voice-grants');
-    const state = document.getElementById('voice-state');
-    // ⚠️ 命令清单也跟着开关显隐（0.9.105）——「能说什么」是这个功能可用的前提，
-    //   而用户之前只看到一个开关和听到：xxx，说了话没反应就以为坏了。
-    const cmds = document.getElementById('voice-cmds');
-    if (grants) grants.hidden = !v;
-    if (state) state.hidden = !v;
-    if (cmds) cmds.hidden = !v;
-    const result = await window.gw.setVoice(v);
-    if (state && result && result.ok === false) {
-      state.textContent = `语音启动失败：${result.reason}`;
-      state.className = 'state warn';
-    }
-  });
+  // ⚠️ bind('voice', …) 0.9.106 删了（语音整条撤掉）。
   // ⚠️ 这里曾经还有三个 bind:music / moodFromCover / showHud。
   //
   // 收缩成两个页签时那三个开关的 HTML 元素被删了,而 bind 调用留着 ⟹

@@ -39,13 +39,19 @@ check('未知模板 id 落回默认，不返回 undefined', () => {
 
 // 分档不是"手势分两组"，是"有没有手势"：普通版鼠标交互不开摄像头，进阶版全部动作
 // 开放且都能录制。我第一版按动作分组做错了，这条守着新语义。
-check('进阶档开放全部动作，两档不重叠', () => {
+// ⚠️⚠️⚠️ **不再有"两档"**（0.9.106）。用户 2026-08-02：
+//   「手势这里面有一个进阶模式（手势 + 录制），是一把锁了它以后这些功能才能使用吗？
+//     把它删掉吧，我们就无条件可以使用就好了」
+//
+// **他说得对，而这道门比他以为的更糟**：`basic` 原来是**空数组** ⟹ 关掉"进阶模式"
+// 手势页**一个动作都没有**（不是"少几个高级功能"，是整页空白）。
+// 而 `proTier` 默认就是 true ⟹ 一个默认打开、关掉就废掉整页的开关 = 纯负担。
+check('全部动作无条件开放（basic 收全部，pro 空）', () => {
   const t = T.template('depthStage');
-  assert.ok(t.actions.pro.length > 0, '进阶档没有动作');
-  assert.strictEqual(t.actions.pro.length, Object.keys(T.ACTIONS).length,
-    '进阶档没有开放全部动作（新增动作要记得加进模板，否则它存在但没人能用）');
-  const overlap = t.actions.basic.filter((id) => t.actions.pro.includes(id));
-  assert.strictEqual(overlap.length, 0, `两档重叠：${overlap.join(',')}`);
+  assert.strictEqual(t.actions.pro.length, 0,
+    'pro 档又有动作了 ⟹ 那就是一道锁（0.9.106 删掉的正是它）');
+  assert.strictEqual(t.actions.basic.length, Object.keys(T.ACTIONS).length,
+    'basic 没有开放全部动作（新增动作要记得加进模板，否则它存在但没人能用）');
 });
 
 check('TIERS 说明了两档的含义（普通=无手势）', () => {
@@ -76,11 +82,15 @@ check('所有可录制动作都能选静态/动态（不因为有律或连续就
   }
 });
 
-check('pro 档默认不列出（普通用户不该一上来看到八个动作）', () => {
-  const basic = T.actionsOf('depthStage', false);
-  const all = T.actionsOf('depthStage', true);
-  assert.ok(all.length > basic.length, 'pro 档没有被包含进去');
-  assert.strictEqual(basic.length, T.template('depthStage').actions.basic.length);
+// ⚠️ 这条原来断言"pro 档默认不列出" —— 0.9.106 反过来了：**没有档了**，
+//   `includePro` 传什么都一样（那个参数留着只为不动 actionsOf 的签名）。
+check('动作列表和 includePro 无关（没有档这个概念了）', () => {
+  const off = T.actionsOf('depthStage', false);
+  const on = T.actionsOf('depthStage', true);
+  assert.strictEqual(off.length, on.length,
+    'includePro 还在影响动作数量 ⟹ 说明 pro 档又有东西了（那是一道锁）');
+  assert.strictEqual(off.length, Object.keys(T.ACTIONS).length,
+    '默认拿不到全部动作 ⟹ 有动作被锁住了');
 });
 
 check('每个动作 id 都在 ACTIONS 里有定义', () => {
@@ -107,10 +117,13 @@ check('连续动作可录制，而且没录时照旧可用（不能改成必须�
   // 源码匹配只能证明"那行字还在"，证不了默认值真的放行。
 });
 
-check('可录制列表随 pro 档变化', () => {
-  const basic = T.recordableActionsOf('depthStage', false);
-  const all = T.recordableActionsOf('depthStage', true);
-  assert.ok(all.length > basic.length, 'pro 档的可录制动作没被算进来');
+// ⚠️ 同上：0.9.106 之后可录制列表也和 includePro 无关了。
+check('可录制列表和 includePro 无关，而且非空（录制栏不能是空的）', () => {
+  const off = T.recordableActionsOf('depthStage', false);
+  const on = T.recordableActionsOf('depthStage', true);
+  assert.strictEqual(off.length, on.length, 'includePro 还在影响可录制列表');
+  assert.ok(off.length > 0,
+    '默认一个可录制动作都没有 ⟹ 录制栏打开就是空的（那正是那道锁的症状）');
 });
 
 // 动作 id 进配置和手势绑定，改名等于让用户已录的手势静默失效。
