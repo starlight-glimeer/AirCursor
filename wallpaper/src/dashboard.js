@@ -3814,48 +3814,15 @@ async function renderPermissions() {
     wt.textContent = row.what;
     left.append(nm, wt);
 
-    // 开关。⚠️ 三种情况：
-    //   · `subToggles` 有值 —— 一个授权底下挂多个功能开关（辅助功能就是这样：
-    //     鼠标转发 + 手势控光标**共用同一个系统授权**）⟹ 这一行不放开关，
-    //     开关放到详情行里分别列。用户 2026-08-02：「为什么辅助功能有两个？
-    //     我理解辅助功能不是有一个就行了」—— 他说得对，授权是一个。
-    //   · `on === null` —— 这一项没有开关（自动化，它是装载壁纸流程的一部分）
-    //   · 其余 —— 一个普通开关
-    const toggle = document.createElement('button');
-    toggle.className = 'act perm-toggle';
-    if (row.subToggles && row.subToggles.length) {
-      const openCount = row.subToggles.filter((t) => t.on).length;
-      toggle.textContent = openCount ? `${openCount} 项开着` : '都关着';
-      if (openCount) toggle.classList.add('on');
-      toggle.disabled = true;
-      toggle.title = '这一个授权管下面几个功能 —— 分别开关';
-    } else if (row.on === null) {
-      // ⚠️ 系统授权没有"我们这边的开关" —— 它给了就是给了。
-      //   ⚠️ 这里原来写"总是需要"，而用户点名那种既没开关又没状态的行是噪声
-      //     （自动化那条已经整条删了）⟹ 这一栏干脆留空。
-      //   ⚠️ 不能 `toggle.remove()` —— 它还没被 append，remove 是空操作
-      //     （我第一版就这么写的，那会留下一个"总是需要"的按钮）。
-      toggle.textContent = '';
-      toggle.disabled = true;
-      toggle.className = '';        // 去掉按钮外观，就是个占位的空格子
-    } else {
-      toggle.textContent = row.on ? '已开启' : '已关闭';
-      if (row.on) toggle.classList.add('on');
-      toggle.onclick = async () => {
-        toggle.disabled = true;
-        try {
-          const res = await window.gw.permissionsSet(row.id, !row.on);
-          if (!res || !res.ok) {
-            // ⚠️ 失败要说出来 —— 静默无效是这个项目栽过最多次的东西。
-            logLine('wall', `权限开关失败（${row.name}）：${(res && res.error) || '没返回'}`);
-          }
-        } catch (error) {
-          logLine('wall', `权限开关抛了（${row.name}）：${error.message}`);
-        }
-        // ⚠️ 无论成败都重查 —— 显示的必须是**真实状态**，不是我们以为的状态。
-        renderPermissions();
-      };
-    }
+    // ⚠️⚠️⚠️ 这里原来渲染"开关"按钮 —— **0.9.95 删了**。用户 2026-08-02：
+    //   「我的期望是权限很清晰展示，有啥权限，没啥权限（mac 的那种，
+    //     不是我们自己设置的开关，比如显示骨架这种，这是我们应用内部的）」
+    //
+    // **他说得对，而这是我第三次在同一件事上跑偏**：把"我们的功能开关"和
+    // "macOS 的授权"混在一栏。前两次是 subToggles、自动化那行，这次是最后两个
+    // （摄像头 / 麦克风）。⟹ 这一栏**只读**：每行只回答"给了没有"。
+    //   功能开关各回各家：手势 tab 的「启用手势」、壁纸层的「转发鼠标给壁纸」、
+    //   音源那几个按钮。
 
     // 授权徽章。点它跳到系统设置对应那页。
     const badge = document.createElement('button');
@@ -3864,7 +3831,7 @@ async function renderPermissions() {
     badge.title = `在系统设置里打开这一项（列表里找 ${row.listedAs}）`;
     badge.onclick = () => window.gw.permissionsOpenPane(row.pane);
 
-    el.append(left, toggle, badge);
+    el.append(left, badge);
 
     // 详情行：只在有话要说的时候出现。
     const bits = [];
@@ -3957,30 +3924,9 @@ async function renderPermissions() {
       wrap.append(go, open, recheck);
       el.append(wrap, hint);
     }
-    // ⚠️ 子开关：一个授权底下的多个功能，各自一个开关。
-    if (row.subToggles && row.subToggles.length) {
-      const wrap = document.createElement('div');
-      wrap.className = 'perm-subs';
-      for (const sub of row.subToggles) {
-        const b = document.createElement('button');
-        b.className = `act perm-toggle${sub.on ? ' on' : ''}`;
-        b.textContent = `${sub.on ? '✓' : '　'} ${sub.label}`;
-        b.onclick = async () => {
-          b.disabled = true;
-          try {
-            const res = await window.gw.permissionsSet(sub.id, !sub.on);
-            if (!res || !res.ok) {
-              logLine('wall', `权限开关失败（${sub.label}）：${(res && res.error) || '没返回'}`);
-            }
-          } catch (error) {
-            logLine('wall', `权限开关抛了（${sub.label}）：${error.message}`);
-          }
-          renderPermissions();
-        };
-        wrap.append(b);
-      }
-      el.append(wrap);
-    }
+    // ⚠️ 这里原来渲染 subToggles（一个授权底下挂多个功能开关）——
+    //   0.9.94 权限表里就撤掉了那个字段，这里的渲染代码 0.9.95 一起删。
+
     host.append(el);
   }
 

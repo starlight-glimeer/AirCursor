@@ -3559,8 +3559,12 @@ const PERMISSIONS = [
     id: 'gestures',
     name: '摄像头',
     what: '手势识别 —— 看你的手，判断挥手/捏合那些动作',
-    // 开关：config.gestures.enabled
-    get on() { return !!(config && config.gestures && config.gestures.enabled); },
+    // ⚠️⚠️ **不放开关**（0.9.95）。用户 2026-08-02：
+    //   「我的期望是权限很清晰展示，有啥权限，没啥权限（mac 的那种，
+    //     不是我们自己设置的开关，比如显示骨架这种，这是我们应用内部的）」
+    //   ⟹ 这一栏只回答"macOS 给了什么权限"。功能开关在各自的 tab 里
+    //     （摄像头 = 手势 tab 的「启用手势」）。
+    on: null,
     // ⚠️ 摄像头的授权状态**能查真值**：Electron 的 getMediaAccessStatus。
     //   'granted' / 'denied' / 'restricted' / 'not-determined'
     authQueryable: true,
@@ -3615,8 +3619,8 @@ const PERMISSIONS = [
     id: 'audio',
     name: '麦克风（系统声音）',
     what: '采集正在播放的声音，驱动音频响应的壁纸',
-    // ⚠️ 这条的"开"不是一个布尔开关：音源不是 off 就算开。
-    get on() { return !!(config && config.we && config.we.audioSource !== 'off'); },
+    // ⚠️ 同上：不放开关（音源选择在「壁纸与音乐 → 音源」那儿）。
+    on: null,
     // ⚠️ 采集走的是 CoreAudio 进程 tap（0.9.36 从 ScreenCaptureKit 换过来的，
     //   为了不显示"正在共享屏幕"）⟹ 它要的是**麦克风**权限。
     authQueryable: true,
@@ -3624,20 +3628,11 @@ const PERMISSIONS = [
     listedAs: 'GestureWallAudio',
     pane: 'Privacy_Microphone',
   },
-  {
-    id: 'voice',
-    name: '语音识别',
-    what: '听语音指令（可选）',
-    get on() { return !!(config && config.voice); },
-    // ⚠️⚠️ **查不到真值。** macOS 的语音识别（SFSpeechRecognizer）授权状态
-    //   Electron 不暴露，而 `getMediaAccessStatus` 只支持 camera/microphone。
-    //   ⟹ 老老实实说"查不到"，别猜。
-    authQueryable: false,
-    unknownWhy: 'macOS 没给这一项的查询接口（Electron 只能查摄像头和麦克风）'
-      + ' —— 开了语音之后看它有没有反应就知道',
-    listedAs: 'AirCursorVoice',
-    pane: 'Privacy_SpeechRecognition',
-  },
+  // ⚠️⚠️ 这里原来有一条「语音识别」—— **0.9.95 删了**。用户 2026-08-02：
+  //   「语音识别这个能力呢给他撤掉吧，我们暂时先不做」
+  //   ⟹ 功能本身还在（`config.voice`，手势 tab 里那个开关），
+  //     但它不再占权限面板一行 —— 那一行的授权状态本来就查不到
+  //     （macOS 没给 SFSpeechRecognizer 的查询接口），显示"查不到"没有价值。
   // ⚠️⚠️ 这里原来有一条「自动化（系统事件）」—— **0.9.94 删了**。
   //   用户 2026-08-02：「你最下面那个什么自动化系统事件也是这样的，
   //     你来个总是需要、查不到，那你显示啥呢？删掉这块」
@@ -3805,56 +3800,18 @@ ipcMain.handle('permissions-open-pane', (_event, pane) => {
   return { ok: true };
 });
 
-// 从面板直接开/关某一项。
-// ⚠️⚠️ **这里只改我们自己的开关，不碰 macOS 的授权** —— 那是用户的话：
-//   「那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常生效了吧」
-//   ⟹ 我们负责的是"开了就真的生效、关了就真的不跑"，授权归系统。
-ipcMain.handle('permissions-set', (_event, id, enabled) => {
-  const on = !!enabled;
-  switch (id) {
-    case 'gestures':
-      config.gestures = { ...config.gestures, enabled: on };
-      writeConfig();
-      syncOverlayVisibility();
-      break;
-    case 'mouseForward':
-      config.we = { ...config.we, mouseForward: on };
-      writeConfig();
-      // ⚠️ 关掉要真的把 helper 杀掉（不然"关了却还在跑"）——
-      //   syncMouseForward 里 !need 那支会 stop，但它只在 mouseTap 存在时管用，
-      //   所以先清掉再同步，和 we-set-mouse-forward 那条路一致。
-      if (mouseTap) { mouseTap.stop(); mouseTap = null; }
-      syncMouseForward();
-      break;
-    case 'controlCursor':
-      config.controlCursor = on;
-      writeConfig();
-      // ⚠️ 关掉不需要杀 helper：它是按需拉起的（startPointer），
-      //   而 config.controlCursor 是每帧都读的门 ⟹ 关了就不再有事件进去。
-      break;
-    case 'audio':
-      // ⚠️ 这条是三态（system / synth / off），面板的开关映射到 system ↔ off。
-      config.we = { ...config.we, audioSource: on ? 'system' : 'off' };
-      writeConfig();
-      syncAudioSource();
-      break;
-    case 'voice':
-      config.voice = on;
-      writeConfig();
-      if (!on) systemBridge.stopVoice();
-      break;
-    case 'accessibility':
-      // ⚠️ 这一条是**两个开关的合并行**（0.9.91）—— 它自己没有"开/关"，
-      //   面板该点的是它底下的 subToggles（mouseForward / controlCursor）。
-      return { ok: false,
-        error: '辅助功能这一条管两个功能，请点下面那两个小开关（鼠标转发 / 手势控光标）' };
-    default:
-      return { ok: false, error: `这一项不能从面板开关：${id}` };
-  }
-  broadcast('config', config);
-  broadcast('permissions', permissionSnapshot());
-  return { ok: true, rows: permissionSnapshot() };
-});
+// ⚠️⚠️⚠️ 这里原来有 `permissions-set`（从面板直接开/关某一项）—— **0.9.95 删了**。
+//
+// 用户 2026-08-02：「我的期望是权限很清晰展示，有啥权限，没啥权限（mac 的那种，
+//   不是我们自己设置的开关，比如显示骨架这种，这是我们应用内部的）」
+//
+// **他说得对，而这是我第三次在同一件事上跑偏**：我把"我们的功能开关"和
+// "macOS 的授权"混在一栏里。前两次是 subToggles（0.9.94 撤）和自动化那行
+// （0.9.94 删），这次是最后两个：摄像头和麦克风那两行的开关。
+//
+// ⟹ 权限面板现在**只读**：三行，每行只回答"这个系统授权给了没有"。
+//   功能开关各回各家：手势 tab 的「启用手势」、壁纸层的「转发鼠标给壁纸」、
+//   音源那几个按钮。⟹ 没有调用方了，所以整块删掉而不是留着。
 
 // ---------------------------------------------------------------------------
 // 清掉 0.9.88 之前那些带 hash 名的 helper 二进制

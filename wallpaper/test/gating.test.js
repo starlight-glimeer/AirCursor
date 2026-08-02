@@ -6162,16 +6162,38 @@ check('授权框里说的是 GestureWall，不是 AirCursor', () => {
 //   · 开关 —— 我们的 config（关了就真的不跑）
 //   · 授权 —— macOS 的 TCC（只能查，改不了）
 // 混在一起就是"面板显示开着但其实没权限"，那正是他信不过面板的原因。
-check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜', () => {
+check('权限面板：只读三行 macOS 授权 / 查不到的不许猜 / 有去授权的路', () => {
   const src = codeOnly(mainSrc);
 
   // ① 六条授权链都要在面板上 —— 漏一条就是"集中在一个面板"这件事没做到
   const perms = src.slice(src.indexOf('const PERMISSIONS = ['),
     src.indexOf('function permissionSnapshot'));
   assert.ok(perms.length > 500, '切不出 PERMISSIONS ⟹ 断言失效');
-  for (const id of ['gestures', 'accessibility', 'audio', 'voice']) {
+  for (const id of ['gestures', 'accessibility', 'audio']) {
     assert.ok(perms.includes(`id: '${id}'`), `权限面板漏了 ${id} ⟹ "都集中在一个面板"没做到`);
   }
+  // ⚠️ 语音那条 0.9.95 撤了（用户："语音识别这个能力呢给他撤掉吧，我们暂时先不做"）
+  assert.ok(!perms.includes("id: 'voice'"),
+    '语音那条又回来了 ⟹ 用户点名暂时不做，而它的授权状态本来就查不到');
+
+  // ⚠️⚠️⚠️ **这一栏只读：只显示 macOS 的授权，不放我们自己的开关**（0.9.95）。
+  //   用户 2026-08-02：「我的期望是权限很清晰展示，有啥权限，没啥权限
+  //     （mac 的那种，不是我们自己设置的开关，比如显示骨架这种，
+  //      这是我们应用内部的）」
+  //
+  // **他说得对，而这是我第三次在同一件事上跑偏**：把"我们的功能开关"和
+  // "macOS 的授权"混在一栏。三次分别是 subToggles（0.9.94 撤）、
+  // 自动化那行（0.9.94 删）、摄像头/麦克风那两个开关（0.9.95 撤）。
+  // ⟹ 判据：**每一行的 `on` 都必须是 null**（没有开关），
+  //   而 `permissions-set` 那条 IPC 整个不该存在。
+  assert.ok(!/get on\(\)/.test(perms),
+    '权限表里又出现 `get on()` ⟹ 那是在读我们自己的配置开关');
+  assert.ok(!/ipcMain\.handle\('permissions-set'/.test(src),
+    'permissions-set 又回来了 ⟹ 权限面板是只读的，改开关请走各自的 tab');
+  const dashRO = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.ok(!/permissionsSet/.test(dashRO),
+    '面板又在调 permissionsSet ⟹ 那条 IPC 已经删了（会静默失败）');
   // ⚠️⚠️⚠️ **「自动化（系统事件）」那条删了**（0.9.94）。用户 2026-08-02：
   //   「你最下面那个什么自动化系统事件也是这样的，你来个总是需要、查不到，
   //     那你显示啥呢？删掉这块」
@@ -6212,7 +6234,12 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   const idCount = (perms.match(/^ {4}id: '/gm) || []).length;
   const paneCount = (perms.match(/pane: '/g) || []).length;
   const listedCount = (perms.match(/listedAs: '/g) || []).length;
-  assert.ok(idCount >= 4, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
+  assert.ok(idCount >= 3, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
+  // ⚠️⚠️ **每一行的 `on` 都必须是 null** —— 这一栏只读（见上面那段）。
+  const onCount = (perms.match(/^ {4}on: null,$/gm) || []).length;
+  assert.strictEqual(onCount, idCount,
+    `${idCount} 行里只有 ${onCount} 行是 on: null ⟹ 有的还带着我们自己的开关，`
+    + '而这一栏只该回答"macOS 给了什么权限"（功能开关归各自的 tab）');
   assert.strictEqual(paneCount, idCount, `${idCount} 条权限只有 ${paneCount} 个 pane ⟹ 有的跳不到系统设置`);
   assert.strictEqual(listedCount, idCount,
     `${idCount} 条权限只有 ${listedCount} 个 listedAs ⟹ 用户在授权列表里找不到那一项`);
@@ -6261,10 +6288,7 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   //   （查它的唯一办法是真发一个 AppleEvent，而那本身会弹框）——
   //   这两条必须标 authQueryable: false 并给出"为什么查不到"。
   //   ⚠️ 假装知道比说不知道糟得多：用户按面板做决定，而面板在骗他。
-  const voiceRow = perms.slice(perms.indexOf("id: 'voice'"), perms.indexOf("id: 'appleEvents'"));
-  assert.match(voiceRow, /authQueryable: false/,
-    '语音识别标成"能查" ⟹ 那是猜的（macOS 没给这个查询接口）');
-  assert.match(voiceRow, /unknownWhy:/, '语音识别没说清为什么查不到');
+  // ⚠️ 语音那两条断言删了 —— 那一行 0.9.95 整条撤掉（用户："暂时先不做"）。
   // ⚠️ 这里原来有两条断言"自动化那行必须标 authQueryable: false" ——
   //   **0.9.94 整条行都删了**（见上面那段：它是"总是需要 + 查不到"的纯噪声）。
   //   ⟹ 断言的对象不存在了，删掉。而"不许加回来"那条已经在上面。
@@ -6273,33 +6297,12 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   assert.ok(!/authQueryable: false,\s*\n\s*auth:/.test(perms),
     '标了 authQueryable: false 却还留着 auth 查询函数 ⟹ 迟早被接上变成猜');
 
-  // ④⚠️⚠️ **关了要真的关掉** —— 用户点名「关闭了呢那就是应该关掉了」。
-  //   光改 config 不够：鼠标转发那条要**真的把 helper 杀掉**，
-  //   否则"面板显示已关闭、进程还在跑"。
-  // ⚠️⚠️ 结束锚点必须是**代码**里的东西。原来我写的是注释 `// 清掉 0.9.88 之前`，
-  //   而 `src` 是 codeOnly（注释已剥）⟹ indexOf 返回 -1 ⟹ 切片是负区间、空串
-  //   ⟹ 这一段所有断言**静默失效**。反向验证第 ⑦ 条（"关了要真的关掉"，
-  //   这一节最重要的一条）显示永久绿才逮到。第 8 次栽在 slice 锚点上。
-  const setter = src.slice(src.indexOf("ipcMain.handle('permissions-set'"),
-    src.indexOf('const LEGACY_HELPER_RE'));
-  assert.ok(setter.length > 400,
-    `切不出 permissions-set（长度 ${setter.length}）⟹ 下面的断言全部静默失效`);
-  assert.match(setter, /if \(mouseTap\) \{ mouseTap\.stop\(\); mouseTap = null; \}/,
-    '从面板关掉鼠标转发时没杀 helper ⟹ 面板说"已关闭"而进程还在跑'
-    + '（用户："关闭了呢那就是应该关掉了"）');
-  // ⚠️ 合并行本身不该被当开关 —— 点它要给一句人话，而不是静默失败
-  assert.match(setter, /case 'accessibility':/,
-    "permissions-set 没处理 'accessibility' ⟹ 面板万一传了它就是静默失败");
-  assert.match(setter, /syncOverlayVisibility\(\)/,
-    '关摄像头没同步骨架层 ⟹ 关了摄像头还开着');
-  assert.match(setter, /syncAudioSource\(\)/, '改音源没同步 ⟹ 关了采集还在跑');
-  assert.match(setter, /systemBridge\.stopVoice\(\)/, '关语音没停 helper');
-  // ⚠️ 每一支都要 writeConfig —— 不落盘的话重开应用又回去了
-  const writes = (setter.match(/writeConfig\(\)/g) || []).length;
-  assert.ok(writes >= 5, `permissions-set 里只有 ${writes} 处 writeConfig（该有 5 个可开关的）`
-    + ' ⟹ 漏掉的那个重开应用就回去了');
-  // ⚠️ 改完要推给面板，否则显示的还是旧状态
-  assert.match(setter, /broadcast\('permissions'/, '开关改完没推给面板 ⟹ 显示的是旧状态');
+  // ⚠️⚠️ 这里原来有一整段针对 `permissions-set` 的断言（"关了要真的关掉"、
+  //   每支都要 writeConfig、要 broadcast…）—— **0.9.95 整块删了**，
+  //   因为那条 IPC 本身撤掉了（权限面板改成只读，见上面那段）。
+  //   ⚠️ 而"关了要真的关掉"这个判据**没丢** —— 它现在归各自的入口：
+  //     `we-set-mouse-forward`（壁纸层那个开关）和 `set-gestures` 那些，
+  //     而它们本来就有自己的守卫。
 
   // ⑤⚠️ 跳系统设置的那个 pane **必须白名单校验** ——
   //   不校验的话这就是个"任意 URL scheme 打开器"（渲染进程能传任何字符串）。
@@ -6426,11 +6429,10 @@ check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜'
   //   而"面板说有权限、实际没有"正是用户信不过它的原因。
   assert.match(dash, /function openSettingsModal\(\)[\s\S]{0,600}?renderPermissions\(\)/,
     '打开设置时没重查权限 ⟹ 显示的是上次的状态（用户刚在系统设置里改过就不对了）');
-  // ⚠️ 开关点完**无论成败**都要重查 —— 显示的必须是真实状态
-  assert.match(dash, /renderPermissions\(\);\s*\n\s*\};/,
-    '点开关之后没重查 ⟹ 显示的是"我们以为的"状态');
-  // ⚠️ 失败不许静默 —— 这个项目栽在"静默无效"上最多次
-  assert.match(dash, /权限开关失败/, '开关失败时没提示 ⟹ 静默无效');
+  // ⚠️⚠️ 这里原来两条针对"点开关"的断言（点完要重查 / 失败要提示）——
+  //   **0.9.95 删了**，因为权限面板改成只读，那些开关不在这儿了。
+  //   ⚠️ 而"失败不许静默"这个判据**没丢**：它现在盯的是 ③ 那个按钮
+  //     （上面 `③ 没能重启 helper：` 那条）。
   // ⚠️⚠️ helper 和主应用授权不一致时要**明确说出来** ——
   //   TCC 按可执行文件记，主应用授权了、helper 没有 ⟹ 功能是死的，
   //   而那正是用户这几轮一直撞到的状态。
