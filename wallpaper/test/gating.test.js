@@ -6153,9 +6153,28 @@ check('权限面板：只读三行 macOS 授权 / 查不到的不许猜 / 有去
   const perms = src.slice(src.indexOf('const PERMISSIONS = ['),
     src.indexOf('function permissionSnapshot'));
   assert.ok(perms.length > 500, '切不出 PERMISSIONS ⟹ 断言失效');
-  for (const id of ['gestures', 'accessibility', 'audio']) {
+  for (const id of ['gestures', 'accessibility']) {
     assert.ok(perms.includes(`id: '${id}'`), `权限面板漏了 ${id} ⟹ "都集中在一个面板"没做到`);
   }
+  // ⚠️⚠️⚠️ **「麦克风（系统声音）」那条删了**（0.9.103）。用户 2026-08-02：
+  //   「我看到下面有个什么麦克风监听说是监听系统音频，那这个我现在也是监听音频啊，
+  //     他给我显示一个未查到怎么的就很奇怪」
+  //
+  // **他说得对。** 我给那行写的 auth 是 `getMediaAccessStatus('microphone')`，
+  // 而系统声音走的是 **CoreAudio 进程 tap**（`CATapDescription`）——
+  // 那条路**既不要麦克风、也不要屏幕录制**。
+  //
+  // ⚠️⚠️ 而这是 2026-08-01 我自己写探针在真机量过的，结论就记在
+  //   `native/GestureWallAudio.swift` 里（`tapErr: 0` +
+  //   `screenRecordingGranted: false` + 258 次回调 98% 非零）——
+  //   **自己量的、自己记的，然后在权限面板里又编了一个"要麦克风"。**
+  // ⟹ 判据：**权限面板里的每一行都必须是某条链真的会被 TCC 拦住的**，
+  //   不是"这个功能听起来像要什么权限"。
+  assert.ok(!perms.includes("id: 'audio'"),
+    '「麦克风（系统声音）」那行又回来了 ⟹ CoreAudio 进程 tap 不要麦克风也不要'
+    + '屏幕录制（2026-08-01 真机探针：tapErr 0 + screenRecordingGranted false）');
+  assert.ok(!/getMediaAccessStatus\('microphone'\)/.test(perms),
+    '权限面板又在查麦克风授权 ⟹ 没有任何一条链需要它');
   // ⚠️ 语音那条 0.9.95 撤了（用户："语音识别这个能力呢给他撤掉吧，我们暂时先不做"）
   assert.ok(!perms.includes("id: 'voice'"),
     '语音那条又回来了 ⟹ 用户点名暂时不做，而它的授权状态本来就查不到');
@@ -6218,7 +6237,7 @@ check('权限面板：只读三行 macOS 授权 / 查不到的不许猜 / 有去
   const idCount = (perms.match(/^ {4}id: '/gm) || []).length;
   const paneCount = (perms.match(/pane: '/g) || []).length;
   const listedCount = (perms.match(/listedAs: '/g) || []).length;
-  assert.ok(idCount >= 3, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
+  assert.ok(idCount >= 2, `顶层权限只数出 ${idCount} 条 ⟹ 缩进变了，断言失效`);
   // ⚠️⚠️ **每一行的 `on` 都必须是 null** —— 这一栏只读（见上面那段）。
   const onCount = (perms.match(/^ {4}on: null,$/gm) || []).length;
   assert.strictEqual(onCount, idCount,

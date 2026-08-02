@@ -3643,19 +3643,24 @@ const PERMISSIONS = [
     revealHelper: 'pointer',
     pane: 'Privacy_Accessibility',
   },
-  {
-    id: 'audio',
-    name: '麦克风（系统声音）',
-    what: '采集正在播放的声音，驱动音频响应的壁纸',
-    // ⚠️ 同上：不放开关（音源选择在「壁纸与音乐 → 音源」那儿）。
-    on: null,
-    // ⚠️ 采集走的是 CoreAudio 进程 tap（0.9.36 从 ScreenCaptureKit 换过来的，
-    //   为了不显示"正在共享屏幕"）⟹ 它要的是**麦克风**权限。
-    authQueryable: true,
-    auth: () => systemPreferences.getMediaAccessStatus('microphone'),
-    listedAs: 'GestureWallAudio',
-    pane: 'Privacy_Microphone',
-  },
+  // ⚠️⚠️⚠️ 这里原来有一条「麦克风（系统声音）」—— **0.9.103 删了，因为它是错的。**
+  //
+  // 用户 2026-08-02：「我看到下面有个什么麦克风监听说是监听系统音频，那这个我现在
+  //   也是监听音频啊，他给我显示一个未查到怎么的就很奇怪」
+  //
+  // **他说得对。** 我给它写的 auth 是 `getMediaAccessStatus('microphone')`，
+  // 而系统声音采集走的是 **CoreAudio 进程 tap**（`CATapDescription`）——
+  // 那条路**既不要麦克风、也不要屏幕录制**。
+  //
+  // ⚠️⚠️ 而这件事 2026-08-01 就用探针在真机量过了，结论就写在
+  //   `native/GestureWallAudio.swift` 那段注释里：
+  //       ① 不需要屏幕录制：`tapErr: 0` + `screenRecordingGranted: **false**`
+  //       ② 能拿到音频：258 次回调、98% 非零、RMS 0.2013
+  //   **我自己写的探针、自己记的结论，然后在权限面板里又编了一个"要麦克风"。**
+  //
+  // ⟹ 它不需要任何 TCC 授权 ⟹ 不该占权限面板一行。
+  //   （真正会要屏幕录制的是 SCStream 那条**兜底**路 —— 只在 CATap 失败时才走，
+  //    而那时 helper 会自己报 message，面板的音频诊断段里看得到。）
   // ⚠️⚠️ 这里原来有一条「语音识别」—— **0.9.95 删了**。用户 2026-08-02：
   //   「语音识别这个能力呢给他撤掉吧，我们暂时先不做」
   //   ⟹ 功能本身还在（`config.voice`，手势 tab 里那个开关），
