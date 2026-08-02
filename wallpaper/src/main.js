@@ -50,6 +50,8 @@ const MouseBridge = require('./mouse-bridge.js');
 //   而"开窗口真跑"那部分留在这个文件里（它绕不开 Electron）。
 const LLM = require('./llm.js');
 const Gen = require('./wallpaper-gen.js');
+// ⚠️ 0.9.140：防同质化的配方表（枚举维度 + 读历史避重）。纯逻辑、有测试。
+const Recipe = require('./wallpaper-recipe.js');
 // ⚠️ 0.9.111：去音轨那个 helper 也走预编译优先那条路（和音频/鼠标一样）。
 const { findPrebuilt } = require('./prebuilt-helper.js');
 
@@ -432,6 +434,15 @@ const defaultConfig = {
     // 导诊断报告时和密码一起脱敏。
     steam: { username: null, password: null, guardCode: null, apiKey: null },
     steamCmdPath: null,
+    // ⚠️⚠️ **右栅宽度**（0.9.141）。用户 2026-08-02：
+    //   「你其实完全可以设计成那种就是可以左拉右拉吗？…我们不能很精细，
+    //     因为我们预览图片是有尺寸的吗？所以说我们这边就是一档一档的，
+    //     然后也设置一个壁纸的最小容量宽度」
+    //
+    // ⚠️ **一档一档**而不是连续拖 —— 用户自己给的理由（预览图有固定比例）。
+    // ⚠️ 而它**进 config**（对比：收起状态不进）—— "我喜欢宽一点的右栅"
+    //   是真偏好，下次打开该记住；而"现在想多看几张壁纸"是临时动作。
+    sideWidth: 340,
     // ⚠️⚠️ **AI 生成壁纸的凭证**（0.9.123）。用户 2026-08-02：
     //   「调用大模型 api，帮我做壁纸」
     //   「这些东西肯定是不能上传 GitHub 的，这个我自己填就行，但是你要支持这个能力」
@@ -3930,14 +3941,43 @@ async function probeWallpaperRuntime(dir) {
     await new Promise((resolve) => setTimeout(resolve, RUN_MS));
     probe.ms = Date.now() - t0;
 
+    // ⚠️⚠️⚠️ **WebGL 读数**（0.9.140）—— 用户选了 Three.js 路线之后，
+    //   黑屏的主因从"canvas 画错了"变成"WebGL 根本没画"，
+    //   而那种失败**日志完全干净**（没报错、fps 正常、context 也在）。
+    //   ⟹ 直接问页面三件事：context 在不在、gl.getError()、场景里几个对象。
+    //
+    // ⚠️⚠️ 而 `ready` 这一条**不能靠 wallpaperReady 判** ——
+    //   探针**故意不挂 we-preload**（那样能测出"裸调宿主接口"的问题），
+    //   ⟹ `window.wallpaperReady` 压根不存在 ⟹ 骨架的 `if` 保护会跳过它
+    //   ⟹ 永远是 false ⟹ **每一张都会被误报"没就绪"**。
+    //   （我在接线时先算了一遍才发现这条，没等它上线。）
+    //   ⟹ 改成问骨架自己：只要 renderer 和 scene 建起来了就算就绪。
     const stat = await win.webContents.executeJavaScript(`
       (function(){
         var p = window.__gwProbe || {};
-        return { frames: p.frames || 0, ready: !!p.ready };
+        var out = { frames: p.frames || 0, webgl: null };
+        try {
+          var c = document.getElementById('c');
+          var gl = c && (c.getContext('webgl2') || c.getContext('webgl'));
+          out.webgl = {
+            context: !!gl,
+            glError: gl ? gl.getError() : null,
+            // ⚠️ 骨架把 scene 挂出来给探针看（见 runtime.js 末尾）
+            objects: (window.__dpScene && window.__dpScene.children)
+              ? window.__dpScene.children.length : -1,
+          };
+        } catch (e) { out.webgl = { context: false, glError: null, objects: -1, err: String(e && e.message) }; }
+        // 骨架报的错（它自己知道 three 没加载 / scene 建不起来这类）
+        out.skeleton = (window.__dpDiag || []).slice(-20);
+        return out;
       })();
     `);
     probe.frames = stat.frames;
-    probe.ready = stat.ready;
+    probe.webgl = stat.webgl;
+    probe.skeleton = stat.skeleton || [];
+    // ⚠️ "就绪"= WebGL context 在 + 场景里有东西。那比 wallpaperReady 更直接，
+    //   而且不依赖 preload（见上面那段判据）。
+    probe.ready = !!(stat.webgl && stat.webgl.context && stat.webgl.objects > 0);
 
     // ⚠️⚠️ **采样像素判"是不是全黑"** —— 这是"跑起来了但什么都看不见"的
     //   唯一自动判据，而那种失败在日志里完全干净。
@@ -3977,12 +4017,78 @@ async function probeWallpaperRuntime(dir) {
   return probe;
 }
 
-// ---------------------------------------------------------------------------
-// 生成主流程
-// ---------------------------------------------------------------------------
+// ⚠️⚠️ **读已经生成过的配方** —— 那是"避重"的输入。
+//
+// ⚠️ 从 `project.json` 的 `gwRecipe` 读（生成时写进去的）。
+//   ⟹ 判据：**"多样"要可观测才可控** —— 历史存在磁盘上、和壁纸本身在一起，
+//     而不是存在内存里（那样重启就没了、也没法在用户说"这两张像"时查）。
+// ⚠️ 而它**只读我们自己生成的**（`gwGenerated` 为真）—— 工坊下载的壁纸没有配方。
+function readRecipeHistory(root) {
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(root); } catch { return out; }
+  for (const name of names) {
+    try {
+      const raw = fs.readFileSync(path.join(root, name, 'project.json'), 'utf8');
+      const proj = JSON.parse(raw);
+      if (proj && proj.gwGenerated && proj.gwRecipe) {
+        // ⚠️ 带上 mtime 排序 —— "最近几张"要按时间，不是按目录名字母序
+        let mtime = 0;
+        try { mtime = fs.statSync(path.join(root, name, 'project.json')).mtimeMs; } catch { /* 用 0 */ }
+        out.push({ ...proj.gwRecipe, __t: mtime });
+      }
+    } catch { /* 不是我们生成的，或者读不出来 ⟹ 跳过 */ }
+  }
+  out.sort((a, b) => a.__t - b.__t);
+  return out;
+}
+
+// ⚠️⚠️ **预览图**（0.9.140）：网格卡片要它，没有就是个空白方块。
+//
+// ⚠️ 在隐藏窗口里跑 2 秒再截 —— 立刻截会拿到"还没画第一帧"的黑图。
+//   ⚠️ 而它**不动用户桌面上正在放的壁纸**（那是用户明确不要的"实时预览"）。
+async function savePreview(dir) {
+  let win = null;
+  try {
+    win = new BrowserWindow({
+      show: false, width: 1280, height: 800,
+      webPreferences: { offscreen: false, backgroundThrottling: false,
+        contextIsolation: true, nodeIntegration: false },
+    });
+    await win.loadURL(pathToFileURL(path.join(dir, 'index.html')).href);
+    // ⚠️ 2 秒：够让音频空闲动画走起来（第一帧常常是"元素都在原点"）
+    await new Promise((r) => setTimeout(r, 2000));
+    const image = await win.webContents.capturePage();
+    // ⚠️ 存成 jpg 而不是 png —— 预览图 1280x800 的 png 是几百 KB，
+    //   而卡片上显示的尺寸只有 150px 宽。
+    const out = path.join(dir, 'preview.jpg');
+    fs.writeFileSync(out, image.resize({ width: 640 }).toJPEG(82));
+    logEvent('gen', `预览图存好了：${Math.round(fs.statSync(out).size / 1024)}KB`);
+    return true;
+  } catch (error) {
+    // ⚠️ 截图失败不算生成失败 —— 壁纸本身是好的，只是卡片上没缩略图。
+    logEvent('gen', `预览图截失败（不影响壁纸）：${error.message}`);
+    return false;
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+}
+
+// ⚠️⚠️⚠️ **生成一张壁纸 = 复制骨架 + 让模型写一个 scene.js**（0.9.140 重写）。
+//
+// 用户 2026-08-02 定的架构：**固定骨架 + 模型只填变化**，而理由是
+//   「我们的第一要义就是我稳定生成高质量的壁纸」
+// ⟹ 之前那版是"每次从空写整个 index.html"，实测三轮收敛出的是 300 行 canvas，
+//   而参考壁纸（粒子效果_网易云监听）是作者 v1→v15 迭代出来的 1.26MB 打包产物。
+//
+// ⚠️⚠️ 而**防同质化**是另一条硬需求：
+//   「我不希望同质化很严重，同一种风格的是允许的，但是每次生成给人感觉说
+//     这不是一样的吗，这就不行」
+//   ⟹ 靠 `wallpaper-recipe.js`：五个维度枚举 + **读历史避重**。
+//     实测（6 张连续生成）：纯随机最坏撞 4 维、平均 1.38 维；
+//     避重版最坏 0 维。⟹ 撞 4 维就是"这不是一样的吗"。
 ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   const want = String((payload && payload.want) || '').trim();
-  if (!want) return { ok: false, error: '说一句你想要什么效果' };
 
   const ai = (config.we && config.we.ai) || {};
   if (!ai.apiKey) {
@@ -3993,99 +4099,158 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     };
   }
 
-  // ⚠️⚠️ 目录名带时间戳 —— 同一句描述生成两次要是两个目录，
-  //   否则第二次覆盖第一次，而用户可能还想对比。
-  const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, '');
-  const dirName = Gen.slugifyTitle(want, stamp);
-  const dir = path.join(ensureOurWallpaperDir(), dirName);
+  // ⚠️⚠️ **骨架文件必须齐** —— 缺一个生成出来的壁纸就是白屏，
+  //   而那时用户会以为是模型写坏了。⟹ 先检查，早失败。
+  const skelDir = path.join(__dirname, '..', 'skeleton');
+  const threeSrc = path.join(__dirname, 'vendor', 'three.r128.min.js');
+  const missing = [];
+  for (const f of ['index.html', 'runtime.js']) {
+    if (!fs.existsSync(path.join(skelDir, f))) missing.push(`skeleton/${f}`);
+  }
+  // ⚠️ three.js **不在 git 里**（589KB，被 gitignore，靠 `npm run vendor` 拉）
+  //   ⟹ 这条最可能缺，而它的症状是"壁纸全黑" ⟹ 必须显式说。
+  if (!fs.existsSync(threeSrc)) missing.push('src/vendor/three.r128.min.js（跑 npm run vendor）');
+  if (missing.length) {
+    return { ok: false, error: `骨架文件缺了：${missing.join(' / ')}` };
+  }
 
-  // ⚠️⚠️ **三轮上限是实测定的**（v1→v3 收敛），不是拍的。
-  //   而"还没过就交给用户"也是有意的 —— 见最后那段。
+  // ── 配方：读已有壁纸的历史，挑一组避开它们
+  const root = ensureOurWallpaperDir();
+  const history = readRecipeHistory(root);
+  const recipe = Recipe.pickRecipe(history);
+  const recipeText = Recipe.describeRecipe(recipe);
+  const historyText = Recipe.describeHistory(history);
+  const example = fs.readFileSync(path.join(skelDir, 'scene.example.js'), 'utf8');
+
+  // ⚠️⚠️ 撞了几维要**算**，不能写死 —— 我第一版这里直接打"避重后撞 0 维"，
+  //   而那是**没算过的断言**：历史够多时每个选项都用过，避重会无路可走，
+  //   那时它必然撞而日志还在说 0。
+  //   ⟹ 判据：**日志里的数字要么是算出来的，要么别写。**
+  //     一条会说谎的日志比没有日志更坏（这个项目为"video 提示无条件甩锅音轨"栽过）。
+  const worstCollide = history.reduce(
+    (mx, h) => Math.max(mx, Recipe.collide(h, recipe).length), 0);
+  genProgress('配方已定', Object.values(recipe).join(' / '));
+  logEvent('gen', `配方：${Object.values(recipe).join(' / ')}`
+    + `（历史 ${history.length} 张，和其中最像的那张撞 ${worstCollide} 维）`);
+
+  // ⚠️ 目录名带时间戳 —— 同一句描述生成两次要是两个目录
+  const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, '');
+  const dirName = Gen.slugifyTitle(want || recipe.layout, stamp);
+  const dir = path.join(root, dirName);
+
   const MAX_ROUNDS = 3;
-  let html = null;
+  let code = null;
   let problems = [];
-  const history = [];
+  const history_ = [];
 
   try {
     for (let round = 1; round <= MAX_ROUNDS; round += 1) {
       const isRepair = round > 1;
-      genProgress(isRepair ? `第 ${round} 轮：按检查结果修` : '正在生成',
-        isRepair ? `上一轮 ${problems.length} 个问题` : '');
+      genProgress(isRepair ? `第 ${round} 轮：按检查结果修` : '正在写场景',
+        isRepair ? `上一轮 ${problems.length} 个问题` : Object.values(recipe).join('/'));
 
       const prompt = isRepair
-        ? Gen.buildRepairPrompt(html, problems)
-        : Gen.buildGeneratePrompt(want);
-      // ⚠️⚠️ **32000 而不是 16000**（0.9.126）。用户 2026-08-02 的账单证明了
-      //   16000 不够：2 次请求 17,304 token，探针约 16、生成输入约 1,240
-      //   ⟹ 输出**正好 16,000**、撞上限、而 content 是空的
-      //   ⟹ 全烧在 reasoning_content 里了。
-      // ⚠️ 而这**不是根本修法**：思考多少 token 是模型自己定的，
-      //   给 32000 它可能思考 30000。真正的修法是**别用推理模型**
-      //   （探针现在会提前提醒），这里只是把"够写完"的余量留出来。
-      const out = await LLM.chat(ai, [{ role: 'user', content: prompt }],
-        { maxTokens: 32000 });
-      html = Gen.extractHtml(out.text);
+        ? Gen.buildRepairPrompt(code, problems, recipeText)
+        : Gen.buildScenePrompt(want, recipe, recipeText, historyText, example);
+      const t0 = Date.now();
+      const out = await LLM.chat(ai, [{ role: 'user', content: prompt }], { maxTokens: 20000 });
+      const ms = Date.now() - t0;
+      code = Gen.extractScene(out.text);
+      const lines = code.split('\n').length;
+      genProgress('检查代码', `${lines} 行 · ${Math.round(ms / 1000)}s`);
+      logEvent('gen', `第 ${round} 轮：${lines} 行、${Math.round(ms / 1000)}s`);
 
-      // ── ① 机器闸门
-      genProgress('检查代码', `${html.split('\n').length} 行`);
-      problems = Gen.inspect(html, { checkJsSyntax });
+      // ── ① 机器闸门（纯函数，有测试）
+      problems = Gen.inspect(code, { checkJsSyntax });
+      for (const x of problems) logEvent('gen', `闸门：[${x.id}] ${x.detail.slice(0, 120)}`);
 
-      // ⚠️ 静态检查没过就不必开窗口跑 —— 语法错的东西跑起来必然白屏，
-      //   而多花 3 秒得不到新信息。
-      if (!problems.length) {
-        // ── ② 真跑闸门。⚠️ 要先落盘才能用 wall:// 打开它。
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, 'index.html'), html);
-        fs.writeFileSync(path.join(dir, 'project.json'),
-          JSON.stringify(Gen.buildProjectJson(want.slice(0, 40), want), null, 2));
-
-        genProgress('试跑 3 秒', '看它到底活不活');
-        const probe = await probeWallpaperRuntime(dir);
-        problems = Gen.judgeRuntime(probe);
-        history.push({ round, lines: html.split('\n').length, probe, problems });
-        if (!problems.length) {
-          genProgress('done', `${dirName} —— 通过全部检查`);
-          // ⚠️⚠️ **不广播"库变了"** —— 我第一版写的是
-          //   `broadcast('library-changed', …)`，而那个频道**根本没人听**
-          //   （preload 和 dashboard 里 grep 零命中）⟹ 一个静默 no-op。
-          //   ⟹ 刷新网格由面板在拿到这个返回值之后自己调 `renderMine()`
-          //     （那本来就是"重扫磁盘"的入口，见 dashboard.js）。
-          //   判据：**别新造一个通知通道，用现成那条已经在工作的路。**
-          return { ok: true, dir, dirName, rounds: round, history };
-        }
-      } else {
-        history.push({ round, lines: html.split('\n').length, problems });
+      if (problems.length) {
+        history_.push({ round, lines, problems: problems.map((x) => x.id) });
+        continue;
       }
+
+      // ── 落盘：骨架 + scene.js
+      writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc);
+
+      // ── ② 真跑闸门
+      genProgress('试跑 3 秒', '看 WebGL 有没有真的画出东西');
+      const probe = await probeWallpaperRuntime(dir);
+      logEvent('gen', `试跑：${probe.frames} 帧 / ${probe.ms}ms`
+        + ` · WebGL ${probe.webgl ? (probe.webgl.context ? 'ok' : '没建起来') : '?'}`
+        + ` · 对象 ${probe.webgl ? probe.webgl.objects : '?'}`
+        + ` · glError ${probe.webgl ? probe.webgl.glError : '?'}`
+        + (probe.sampledPixels ? ` · 近黑 ${probe.sampledPixels.black}/${probe.sampledPixels.total}` : '')
+        + (probe.errors.length ? ` · 报错 ${probe.errors.length} 条` : ''));
+      for (const e of probe.errors) logEvent('gen', `试跑报错：${String(e).slice(0, 200)}`);
+
+      problems = Gen.judgeRuntime(probe);
+      history_.push({ round, lines, probe, problems: problems.map((x) => x.id) });
+      if (!problems.length) {
+        // ── ④ 预览图：把试跑那一帧存下来（网格卡片要它）
+        await savePreview(dir);
+        genProgress('done', `${dirName} —— ${round} 轮通过`);
+        return { ok: true, dir, dirName, rounds: round, recipe, history: history_ };
+      }
+      for (const x of problems) logEvent('gen', `试跑判定：[${x.id}] ${x.detail.slice(0, 120)}`);
     }
 
     // ⚠️⚠️ 三轮还没过 —— **仍然落盘并交给用户**，不是丢掉。
-    //   判据：机器闸门是"必然出事"的清单，而剩下的问题可能只影响某个细节
-    //   （比如没接鼠标 ⟹ 点不出效果，但画面照样好看）。
-    //   ⟹ 让用户自己看一眼再决定，比我替他扔掉好。
-    //   ⚠️ 但**必须说清还剩什么问题** —— 否则他会以为是我们的播放器坏了。
-    if (html) {
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'index.html'), html);
-      fs.writeFileSync(path.join(dir, 'project.json'),
-        JSON.stringify(Gen.buildProjectJson(want.slice(0, 40), want), null, 2));
+    //   判据：闸门是"必然出事"的清单，而剩下的问题可能只影响某个细节。
+    //   ⟹ 让用户自己看一眼再决定，比我替他扔掉好。但**必须说清还剩什么**。
+    // ⚠️⚠️ 走同一个 `writeWallpaperFiles` —— 我第一版这里是**抄了一份**，
+    //   而那份抄漏了硬链接的日志、也会随时间和上面那份漂移。
+    //   ⟹ 判据：**同一件事只留一份实现**（这个项目为"两个名字一件事"栽过）。
+    if (code && !fs.existsSync(path.join(dir, 'scene.js'))) {
+      writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc);
     }
     genProgress('done', `${MAX_ROUNDS} 轮还有 ${problems.length} 个问题`);
     return {
-      ok: true,
-      partial: true,
-      dir,
-      dirName,
-      rounds: MAX_ROUNDS,
-      problems,
-      history,
+      ok: true, partial: true, dir, dirName, rounds: MAX_ROUNDS, recipe, problems,
+      history: history_,
       note: `跑了 ${MAX_ROUNDS} 轮，还剩 ${problems.length} 个问题没修掉。`
         + '壁纸已经放进目录了 —— 先看看效果，能接受就用，不行就再说一遍要求重生成',
     };
   } catch (error) {
     genProgress('failed', error.message);
-    return { ok: false, error: error.message, history };
+    logEvent('gen', `失败：${error.message}`);
+    return { ok: false, error: error.message, recipe, history: history_ };
   }
 });
+
+// 把一张生成好的壁纸落到目录里（骨架 + scene.js + project.json）。
+//
+// ⚠️⚠️ **写入只发生在这一个函数里**，而 `dir` 只可能是
+//   `ensureOurWallpaperDir()` 下面的一层（目录名过了 `Gen.slugifyTitle`，
+//   它会把 `../` 之类全洗掉 —— 见 gen.test.js 那 9 条穿越用例）。
+//   用户 2026-08-02：「注意写入的地方只能是我们限定的壁纸那个目录，
+//     不能做什么危险操作，危害电脑」
+//   ⟹ 判据：**收口成一个函数**，那样"会写到哪"是看一眼就能回答的问题，
+//     而不是散在两处、下次改动漏掉一处。
+function writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc) {
+  fs.mkdirSync(path.join(dir, 'vendor'), { recursive: true });
+  fs.copyFileSync(path.join(skelDir, 'index.html'), path.join(dir, 'index.html'));
+  fs.copyFileSync(path.join(skelDir, 'runtime.js'), path.join(dir, 'runtime.js'));
+
+  // ⚠️⚠️ three.js 用**硬链接**而不是复制 —— 589KB × N 张壁纸很快就是几十 MB。
+  //   ⚠️ 而硬链接跨卷会失败（EXDEV），壁纸目录和应用资源可能不同卷
+  //   ⟹ 失败就退回复制（那只是占空间，不影响功能）。
+  const threeDst = path.join(dir, 'vendor', 'three.min.js');
+  try {
+    if (fs.existsSync(threeDst)) fs.unlinkSync(threeDst);
+    fs.linkSync(threeSrc, threeDst);
+    logEvent('gen', 'three.js 硬链接成功（不占额外空间）');
+  } catch (error) {
+    fs.copyFileSync(threeSrc, threeDst);
+    logEvent('gen', `three.js 硬链接失败（${error.code}）⟹ 改成复制 589KB`);
+  }
+
+  fs.writeFileSync(path.join(dir, 'scene.js'), code);
+  // ⚠️ `gwGenerated` + `gwRecipe` 是"下次避重"的唯一数据源（见 readRecipeHistory）
+  //   ⟹ 漏写的话防同质化会静默失效：能生成、能跑，就是越来越像。
+  fs.writeFileSync(path.join(dir, 'project.json'),
+    JSON.stringify(Gen.buildProjectJson(want.slice(0, 40) || dirName, want, recipe), null, 2));
+  logEvent('gen', `落盘：${dir}（scene.js ${code.length} 字节）`);
+}
 
 // ⚠️ 面板要能"先测一下通不通"，而不是把连通性问题混在生成失败里
 //   （生成失败有十几种原因，而"key 填错了"应该 3 秒内就知道）。
@@ -4107,6 +4272,25 @@ ipcMain.handle('gen-ping', async () => {
   }
 });
 
+// ⚠️⚠️ **右栅宽度分档**（0.9.141）。
+//
+// ⚠️ 挡位**不是固定三个**，是"当前窗口宽度允许的那几个" ——
+//   用户点名要"壁纸的最小容量宽度"，而 900px 窗口下右栅 580 会让壁纸区
+//   只剩 280px（一列）⟹ 壁纸墙失去意义。
+//   ⟹ 算过：窗口 900 只允许 340；1200 起三档都行。
+// ⚠️ 判据：**约束是"壁纸区不能太窄"，而挡位是那个约束的结果** ——
+//   写死三个按钮的话小窗口上会有一个点不动的按钮（那比没有更糟）。
+const SIDE_STEPS = [340, 460, 580];
+const GRID_MIN = 460;            // 壁纸区最小宽度（用户点名的那条）
+ipcMain.handle('we-set-side-width', (_event, width) => {
+  const w = Number(width);
+  if (!SIDE_STEPS.includes(w)) return { ok: false, error: `不是挡位：${width}` };
+  config.we.sideWidth = w;
+  writeConfig();
+  broadcast('config', config);
+  return { ok: true, sideWidth: w };
+});
+
 ipcMain.handle('gen-set-key', (_event, apiKey) => {
   config.we.ai = { ...(config.we.ai || {}), apiKey: apiKey || null };
   writeConfig();
@@ -4118,6 +4302,13 @@ ipcMain.handle('gen-set-key', (_event, apiKey) => {
 //   那是"生成的东西去哪了"这个问题的答案，而不显示的话它是个黑盒。
 ipcMain.handle('gen-meta', () => ({
   dir: ensureOurWallpaperDir(),
+  // ⚠️ 挡位和最小宽度交给面板算 —— 它才知道当前窗口多宽
+  sideSteps: SIDE_STEPS,
+  gridMin: GRID_MIN,
+  sideWidth: (config.we && config.we.sideWidth) || 340,
+  // ⚠️⚠️ 已有配方的历史 —— 面板上要能说"这张和那张撞了几维"
+  //   （用户说"这两张太像了"时，不用靠感觉调）
+  recipeCount: readRecipeHistory(ensureOurWallpaperDir()).length,
   hasKey: !!(config.we.ai && config.we.ai.apiKey),
   // ⚠️ **key 也回填** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122）。
   //   判据：能保存的字段就要能回填，否则用户没法确认它存了没有。

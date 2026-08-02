@@ -34,7 +34,67 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// 契约：喂给模型的接口说明
+// ⚠️⚠️⚠️ **骨架契约**（0.9.140 起，模型面对的是这个，不是宿主接口）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02 定的架构：**固定骨架 + 模型只填变化**。
+// ⟹ 模型现在只写一个 `scene.js`（`window.SCENE` 那两三个函数），
+//   而 WebGL/相机/渲染循环/限帧/音频算法/宿主接线**全部由骨架管**。
+//
+// ⚠️ 判据：把"会坏的部分"写死、验过（实测：一次性写整个 index.html 三轮
+//   收敛出的是 300 行 canvas，而参考壁纸是作者 v1→v15 迭代出来的）。
+//
+// ⚠️⚠️ 而这段**必须和 `wallpaper/skeleton/runtime.js` 里真的给出去的 ctx 对得上** ——
+//   错一个字段名，模型写的代码就是 `undefined.xxx`（而那是运行时才炸）。
+//   ⟹ 有守卫盯着（见 gen.test.js）。
+const SKELETON_API = `# 你要写的是 \`scene.js\`，只挂一个 \`window.SCENE\`
+
+\`\`\`js
+window.SCENE = {
+  build(ctx)     { /* 建元素，加进 ctx.scene */ },
+  frame(ctx)     { /* 每帧更新 */ },
+  reconfig(ctx)  { /* 可选：参数变了要重建元素个数时 */ },
+  layout(ctx)    { /* 可选：窗口尺寸变了要重排时 */ },
+};
+\`\`\`
+
+## ctx 里有什么（骨架给的，全部可直接用）
+
+| 字段 | 是什么 |
+|---|---|
+| \`ctx.THREE\` | three.js r128 的全部命名空间（**别自己 import**，它已经在了） |
+| \`ctx.scene\` | THREE.Scene（已建好，把你的 Object3D \`add\` 进去） |
+| \`ctx.camera\` | THREE.PerspectiveCamera（fov 52，aspect 自动跟着窗口）**你可以改它的位置/fov/lookAt** |
+| \`ctx.renderer\` | THREE.WebGLRenderer（已建好、已 setSize，**别自己 render**，骨架每帧会调） |
+| \`ctx.defaultLights\` | 装着默认灯光的 Group ⟹ 想换整套打光：\`ctx.scene.remove(ctx.defaultLights)\` 再加自己的 |
+| \`ctx.audio\` | \`{ bass, mid, treble }\` 都是 0..1；\`bins[64]\` 是逐段值（低频→高频）；\`everGot\` 有没有收到过音频 |
+| \`ctx.track\` | \`{ title, artist, thumbnail, primaryColor, playing }\`；primaryColor 是 \`[r,g,b]\`（0..1）或 null |
+| \`ctx.pointer\` | \`{ x, y, down, dragX, dragY }\`；x/y 是 0..1；dragX/dragY 是累计拖拽像素 |
+| \`ctx.opts\` | project.json 里那些参数（颜色已转成 \`[r,g,b]\` 数组）**每个都要有默认值** |
+| \`ctx.t\` / \`ctx.dt\` | 秒（dt 已经夹了上限 0.1 并乘过 speed） |
+| \`ctx.W\` / \`ctx.H\` | 画布 CSS 尺寸 |
+| \`ctx.warn(msg)\` | 报一句进诊断报告（出问题时用户能看到） |
+
+## 骨架已经做完的（**你别重做**）
+限帧 40fps / dpr 上限 2 / resize / 音频 128 段的解析和峰值累积 / 宿主的
+5 个 register 接线 / 未捕获异常上报 / 3 秒自检 / \`wallpaperReady()\`
+
+## ⚠️ 硬要求
+1. **只输出 scene.js 的内容**，一个 IIFE 包起来，挂 \`window.SCENE\`。
+2. **不许**出现 \`new THREE.WebGLRenderer\` / \`requestAnimationFrame\` /
+   \`renderer.render\` / \`addEventListener('resize'\` —— 那些骨架在做，重做会打架。
+3. **不许**任何 import / require / fetch / CDN —— three 已经在 \`ctx.THREE\`。
+4. 元素数量多时用 \`InstancedMesh\`（N 个 Mesh = N 次 draw call ⟹ 帧率崩）。
+   ⚠️ 改了 instance 的 matrix/color 之后**必须**置
+   \`needsUpdate = true\`，否则画面完全静止而不报错。
+5. **每帧的位置不许用 Math.random()** —— 那看起来是雪花噪点。
+   位置要么由索引+时间决定，要么存进数组各自积分运动（诞生时随机是对的）。
+6. **没音乐时也要好看**（\`ctx.audio.everGot\` 可能一直是 false）——
+   加一个自走的运动（呼吸/漂移/自转），音频只是叠加在上面。
+7. 不许 alert / confirm / prompt / debugger。`;
+
+// ---------------------------------------------------------------------------
+// 契约：喂给模型的接口说明（宿主层 —— 骨架在用，模型一般不直接碰）
 // ---------------------------------------------------------------------------
 //
 // ⚠️⚠️ 这段**不是我凭记忆写的 prompt** —— 它逐条对应 `we-preload.js` 里
@@ -114,45 +174,68 @@ const CONSTRAINTS = `# 硬约束（每条都不能破）
 // ---------------------------------------------------------------------------
 // 提示词
 // ---------------------------------------------------------------------------
-function buildGeneratePrompt(userWant, style) {
-  const extra = style ? `\n\n# 额外偏好\n${style}` : '';
-  return `你在为一个 macOS 动态壁纸播放器生成壁纸。产物是一个自包含的 index.html。
+function buildScenePrompt(userWant, recipe, recipeText, historyText, example) {
+  return `你在为一个 macOS 动态壁纸播放器写一个 3D 场景。
 
-${CONSTRAINTS}
+${SKELETON_API}
 
-${CONTRACT}
+# ⚠️⚠️ 这一张要用的"配方"（**必须照它做**）
 
-# 用户想要的效果
-${userWant}${extra}
+${recipeText}
 
-# 输出格式
-⚠️ **直接开始写代码，不要先长篇分析。** 你的输出预算要留给代码本身 ——
-把预算花在"思考怎么写"上会导致代码写不完（那等于什么都没产出）。
-只输出 index.html 的完整内容，从 <!DOCTYPE html> 开始、到 </html> 结束。
-不要任何解释、不要 markdown 代码块围栏。`;
+⚠️ 这五个维度是**指定的**，不是建议 —— 照着做。
+   而在每个维度内部你有充分自由（比如 layout=ring 时，几个环、疏密、
+   环之间怎么错开、元素是方块还是细杆，都你定）。
+
+# ⚠️⚠️⚠️ 已经生成过的组合（**避开它们**）
+
+${historyText}
+
+⚠️ 用户的原话：「我不希望同质化很严重，同一种风格的是允许的，但是每次生成
+   给人感觉说这不是一样的吗，这就不行」
+⟹ 上面那些是已经有的。而**底色、雾、打光**是"第一眼"看到的东西 ——
+   照配方里的 palette 和 environment 做，别落回"深蓝黑底 + 一个顶光"那个默认。
+
+# 用户这次想要的
+${userWant || '（没特别要求，按配方做一个好看的）'}
+
+# 参考实现（**风格参考，不是照抄** —— 它的配方和你的不一样）
+\`\`\`js
+${example}
+\`\`\`
+
+# 输出
+只输出 scene.js 的完整内容（一个 IIFE，挂 window.SCENE）。
+⚠️ 在文件开头用注释写一行：\`// 配方：layout=… audioMap=… palette=… motion=… environment=…\`
+   那是给人看的（出问题时能对上配方）。
+⚠️ 直接开始写代码，不要先长篇分析 —— 预算要留给代码本身。
+不要 markdown 围栏、不要解释。`;
 }
 
 // ⚠️⚠️ 回喂：把**机器闸门的原文**给模型，不是我转述的结论。
 //   ⚠️ 判据：转述会丢信息（"缺鼠标处理"和"全文只有一个 addEventListener 且是
 //     resize"对模型是两种信息量），而丢的那部分正是它需要用来定位的。
-function buildRepairPrompt(previousHtml, problems) {
-  return `你上一版生成的壁纸没通过自动检查。下面是检查器的原始输出。
+function buildRepairPrompt(previousCode, problems, recipeText) {
+  return `你上一版写的 scene.js 没通过自动检查。下面是检查器的原始输出。
 
 # 检查器报告
-${problems.map((p, i) => `${i + 1}. [${p.id}] ${p.detail}`).join('\n')}
+${problems.map((x, i) => `${i + 1}. [${x.id}] ${x.detail}`).join('\n')}
 
-${CONSTRAINTS}
+${SKELETON_API}
 
-${CONTRACT}
+# 这一张的配方（保持不变）
+${recipeText}
 
 # 上一版代码
-${previousHtml}
+\`\`\`js
+${previousCode}
+\`\`\`
 
 # 要做的事
-修掉上面每一条。保留原来的视觉效果和整体结构 —— 这是修复，不是重写。
-⚠️ **直接开始写代码，不要先长篇分析** —— 预算要留给代码本身。
-只输出修好的 index.html 完整内容，从 <!DOCTYPE html> 开始。
-不要解释、不要 markdown 围栏。`;
+修掉上面每一条。**保留原来的视觉设计和配方** —— 这是修复，不是重写。
+只输出修好的 scene.js 完整内容。
+⚠️ 直接开始写代码，不要先长篇分析 —— 预算要留给代码本身。
+不要 markdown 围栏、不要解释。`;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,27 +247,27 @@ ${previousHtml}
 //   ⚠️ 而且要兜"围栏 + 前后废话"两种：有时它会写一句"这是生成的壁纸："再给代码。
 //   ⟹ 判据：**从 `<!DOCTYPE` 或 `<html` 切到最后一个 `</html>`** ——
 //     那是唯一不依赖模型听话的定位方式。
-function extractHtml(text) {
+function extractScene(text) {
   const raw = String(text || '');
-  // 先剥 markdown 围栏（```html ... ``` 或裸 ```）
   let body = raw;
-  const fence = body.match(/```(?:html?)?\s*\n([\s\S]*?)```/i);
+  // ⚠️ 模型经常不听"不要 markdown 围栏"（实测过）⟹ 这里必须兜。
+  const fence = body.match(/```(?:js|javascript)?\s*\n([\s\S]*?)```/i);
   if (fence) body = fence[1];
-  // 再按 HTML 的真实边界切
-  const startDoctype = body.search(/<!DOCTYPE\s+html/i);
-  const startHtml = body.search(/<html[\s>]/i);
-  let start = startDoctype >= 0 ? startDoctype : startHtml;
-  if (start < 0) {
-    // ⚠️ 连 <html 都没有 ⟹ 模型给的不是网页。这要当错误报，
-    //   不能返回一个空串让它一路走到"写进文件然后白屏"。
-    throw new Error('模型没有输出 HTML（找不到 <!DOCTYPE html> 或 <html>）。'
-      + `它说的是：${raw.slice(0, 200)}`);
+  body = body.trim();
+
+  // ⚠️⚠️ 判据：**必须能看到 `window.SCENE`** —— 那是这个文件唯一的作用。
+  //   看不到就说明模型输出的不是我们要的东西（比如它写了整个 HTML，
+  //   或者它在解释而不是写代码）。
+  if (!/window\.SCENE\s*=/.test(body)) {
+    throw new Error('模型没有输出 scene.js（找不到 `window.SCENE =`）。'
+      + `它给的开头是：${raw.slice(0, 200)}`);
   }
-  const endIdx = body.toLowerCase().lastIndexOf('</html>');
-  if (endIdx < 0) {
-    throw new Error('模型输出的 HTML 不完整（没有 </html>）—— 大概是被长度上限截断了');
+  // ⚠️ 而如果它写了整个 HTML，那是**理解错了任务** —— 明确报出来，
+  //   而不是让一份 HTML 被当成 JS 写进 scene.js（那会白屏）。
+  if (/<!DOCTYPE|<html[\s>]|<script[\s>]/i.test(body)) {
+    throw new Error('模型输出了 HTML —— 这一版只要 scene.js（骨架那些文件我们自己给）');
   }
-  return body.slice(start, endIdx + '</html>'.length).trim();
+  return body;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,127 +281,99 @@ function extractHtml(text) {
 //
 // ⚠️ `checkJsSyntax` 由调用方注入 —— 语法检查要 `new Function` 或 vm，
 //   而这个模块要能在测试里被纯粹地跑（不带副作用）。
-function inspect(html, hooks) {
+function inspect(code, hooks) {
   const h = hooks || {};
   const problems = [];
   const add = (id, detail) => problems.push({ id, detail });
-  const src = String(html || '');
+  const src = String(code || '');
 
-  // ── A. 外部依赖（最致命：没网直接白屏）
-  // ⚠️ 只看**属性里的 URL**，不看正文出现的 http —— 注释里写个网址不算依赖。
-  const externalSrc = src.match(/<(?:script|link|img|video|audio|source)[^>]*\s(?:src|href)\s*=\s*["']([^"']+)["']/gi) || [];
-  for (const tag of externalSrc) {
-    const url = (tag.match(/["']([^"']+)["']/) || [])[1] || '';
-    // data URL 和纯锚点不算外部
-    if (/^(data:|#|javascript:)/i.test(url)) continue;
-    add('A-外部依赖', `有外部资源引用 \`${url}\` —— 壁纸跑在无网环境下会白屏。`
-      + '所有东西必须内联在这一个文件里');
-  }
-  if (/\bimport\s+[\w{*]/.test(src) || /\bfrom\s+["'][^"']+["']/.test(src)) {
-    add('A-外部依赖', 'ES module import —— 单文件壁纸不能有模块依赖');
-  }
-  if (/\b(fetch|XMLHttpRequest)\s*\(/.test(src)) {
-    add('A-网络请求', '有 fetch/XHR —— 壁纸不许发网络请求（用户机器可能没网）');
-  }
-
-  // ── B. 语法（白屏最常见的原因，而它 100% 能机器判）
+  // ── A. 语法（白屏最常见的原因，而它 100% 能机器判）
   if (typeof h.checkJsSyntax === 'function') {
-    const blocks = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
-      .map((m) => m[1]).filter((s) => s.trim());
-    if (!blocks.length) {
-      add('B-没有脚本', '整个文件里没有 <script> 块 —— 那是一张静态页面，不是动态壁纸');
-    }
-    blocks.forEach((code, i) => {
-      const err = h.checkJsSyntax(code);
-      if (err) add('B-语法错误', `第 ${i + 1} 个 <script> 块语法错误：${err}`);
-    });
+    const err = h.checkJsSyntax(src);
+    if (err) add('A-语法错误', `scene.js 语法错误：${err}`);
   }
 
-  // ── C. 画布
-  if (!/<canvas/i.test(src)) {
-    add('C-没有画布', '没有 <canvas> —— 这个播放器要的是 canvas 2d 或 WebGL 壁纸');
+  // ── B. 契约：必须挂 window.SCENE 且有 build/frame
+  if (!/window\.SCENE\s*=/.test(src)) {
+    add('B-没挂 SCENE', '没有 `window.SCENE = {...}` ⟹ 骨架启动时会报"scene.js 没提供 SCENE"');
   }
-  if (!/devicePixelRatio/.test(src)) {
-    add('C-dpr', '没有处理 devicePixelRatio —— Retina 屏上画面会是模糊的。'
-      + '要 dpr = Math.min(window.devicePixelRatio || 1, 2) 并按它设置 canvas.width/height');
-  } else if (!/Math\.min\s*\(\s*(?:window\.)?devicePixelRatio[^)]*,\s*2\s*\)/.test(src)
-    && !/Math\.min\s*\(\s*2\s*,/.test(src)) {
-    add('C-dpr上限', 'devicePixelRatio 没夹上限 2 —— 3 倍屏上是 2.25 倍像素量，'
-      + '对一个常驻后台的壁纸不值得');
-  }
-  if (!/addEventListener\s*\(\s*["']resize["']/.test(src)) {
-    add('C-resize', '没有监听 resize —— 换分辨率/接显示器之后画面会拉伸或者只占一角');
-  }
-
-  // ── D. 限帧（这个项目为它栽过一轮）
-  if (!/requestAnimationFrame/.test(src)) {
-    add('D-没有动画循环', '没有 requestAnimationFrame —— 画面不会动');
-  }
-  // ⚠️⚠️ 这条正则我写错过一次：原本是 `setInterval\s*\([^)]*\b(frame|draw|…)`，
-  //   而 `[^)]*` 在 `setInterval(function(){frame(...)` 里**停在 `function(` 的
-  //   那个左括号**上 ⟹ 永远到不了 `frame` ⟹ 断言永久绿（自己的测试逮到的）。
-  //   ⟹ 改成 `[\s\S]{0,80}?`：跨括号、有上限（不然会跨整个文件误报）。
-  if (/setInterval\s*\([\s\S]{0,80}?\b(draw|render|frame|tick|update|animate)\s*\(/i.test(src)) {
-    add('D-setInterval画帧', '用 setInterval 画帧 —— 窗口被系统降频时会堆积。'
-      + '改用 requestAnimationFrame');
-  }
-  // ⚠️ 限帧的写法很多（1000/40、25、MIN_DT…）⟹ 只要出现"和上一帧时间比较"
-  //   这个形状就算过。**宁可漏报也不误报** —— 误报会让模型去改一段本来对的代码。
-  const hasFrameCap = /1000\s*\/\s*(?:40|3\d|[1-4]\d)\b/.test(src)
-    || /\b(?:MIN_DT|minDt|frameInterval|FRAME_MS|targetFps|FPS)\b/.test(src)
-    || /now\s*-\s*last\w*\s*<|(?:elapsed|dt|delta)\s*<\s*\d/.test(src);
-  if (!hasFrameCap) {
-    add('D-没限帧', '没有限帧 —— 它是常驻后台进程，跑满 60fps 会明显吃电。'
-      + '加 if (now - last < 1000 / 40) return;');
-  }
-
-  // ── E. 宿主接口（接不上的症状是"画面在动但永远不跟音乐"，比白屏难查）
-  if (!/wallpaperReady/.test(src)) {
-    add('E-没报告就绪', '没调 window.wallpaperReady() —— 播放器靠它判断'
-      + '"页面里的 JS 真的活着"，那是区分"加载失败"和"渲染有问题"的唯一信号');
-  }
-  const usesAudio = /wallpaperRegisterAudioListener/.test(src);
-  if (!usesAudio) {
-    add('E-没接音频', '没注册 wallpaperRegisterAudioListener —— 音乐驱动是这个'
-      + '播放器的核心能力，不接等于放弃它');
-  }
-  // ⚠️ 接了就要**保护**。裸调（不判存在）在浏览器里直开会抛，
-  //   而那时整个脚本停在那一行 ⟹ 白屏。
-  for (const api of ['wallpaperRegisterAudioListener',
-    'wallpaperRegisterMediaPropertiesListener',
-    'wallpaperRegisterMediaThumbnailListener',
-    'wallpaperRegisterMediaPlaybackListener',
-    'wallpaperRegisterMediaTimelineListener']) {
-    if (!new RegExp(api).test(src)) continue;
-    // 保护的写法：if (window.X) / window.X && / typeof window.X
-    const guarded = new RegExp(`(?:if\\s*\\(|&&\\s*|typeof\\s+)[^\\n]*${api}`).test(src);
-    if (!guarded) {
-      add('E-裸调接口', `${api} 没有 if 保护 —— 在浏览器里直接打开时它不存在，`
-        + '会抛异常并让整个脚本停住（症状是白屏）');
+  for (const fn of ['build', 'frame']) {
+    // ⚠️ 两种写法都认：`build(ctx) {` 和 `build: (ctx) =>`
+    if (!new RegExp(`${fn}\\s*[(:]`).test(src)) {
+      add('B-缺函数', `SCENE 里没有 ${fn}() ⟹ 骨架会拒绝启动`);
     }
   }
 
-  // ── F. 鼠标（⚠️ 实测那轮模型完全没接，而它自己审的时候判 pass）
-  const mouseEvents = (src.match(/addEventListener\s*\(\s*["'](?:mousemove|mousedown|mouseup|click|wheel)["']/g) || []).length;
-  if (mouseEvents === 0) {
-    add('F-没接鼠标', '一个鼠标事件都没监听 —— 这个播放器会把桌面上的真鼠标'
-      + '注入给壁纸，那是它最有意思的能力（点一下出效果、拖一下转视角）');
-  } else if (/addEventListener\s*\(\s*["']mousemove["']/.test(src)
-    && !/\.buttons\b/.test(src)) {
-    add('F-拖拽判据', '监听了 mousemove 但没用 e.buttons —— 宿主把"拖拽中的移动"'
-      + '注入成带 button 的 mouseMove，只看 mousemove 的话拖不动');
+  // ── C.⚠️⚠️ **不许重做骨架的活** —— 重做会和骨架打架（两个渲染循环、
+  //   两次 setSize），而症状是"画面撕裂/闪烁/帧率减半"，很难查。
+  const FORBIDDEN = [
+    [/new\s+THREE\.WebGLRenderer/, '自己建了 WebGLRenderer —— 骨架已经建好在 ctx.renderer'],
+    [/requestAnimationFrame/, '自己起了渲染循环 —— 骨架每帧会调 SCENE.frame，两个循环会打架'],
+    [/renderer\.render\s*\(/, '自己调了 renderer.render —— 骨架每帧会调，重复渲染等于帧率减半'],
+    [/addEventListener\s*\(\s*['"]resize/, '自己监听了 resize —— 骨架会调 SCENE.layout'],
+    [/\bimport\s+[\w{*]/, 'ES import —— three 已经在 ctx.THREE'],
+    [/\brequire\s*\(/, 'require —— 壁纸跑在浏览器环境，而且 three 已经在 ctx.THREE'],
+    [/\b(fetch|XMLHttpRequest)\s*\(/, '网络请求 —— 壁纸不许联网（用户机器可能没网）'],
+    [/<script|<!DOCTYPE|<html[\s>]/i, 'HTML 标签 —— 这个文件是纯 JS'],
+    [/\b(alert|confirm|prompt)\s*\(/, '模态框 —— 壁纸层在桌面最底下，没人能点掉'],
+    [/\bdebugger\b/, 'debugger 语句'],
+  ];
+  for (const [re, msg] of FORBIDDEN) {
+    if (re.test(src)) add('C-重做骨架/禁用', msg);
   }
 
-  // ── G. 明确禁止的东西
-  if (/\b(?:alert|confirm|prompt)\s*\(/.test(src)) {
-    add('G-模态框', '有 alert/confirm/prompt —— 壁纸层在桌面最底下，没人能点掉那个框');
+  // ── D.⚠️ InstancedMesh 用了就必须置 needsUpdate
+  //   （不置的话画面完全静止而**不报错** —— 这个坑在骨架注释里也写着）
+  if (/InstancedMesh/.test(src)) {
+    if (/setMatrixAt/.test(src) && !/instanceMatrix\.needsUpdate\s*=\s*true/.test(src)) {
+      add('D-忘了 needsUpdate',
+        '改了 instance matrix 但没置 `instanceMatrix.needsUpdate = true`'
+        + ' ⟹ GPU 上还是上一帧的数据，画面完全静止而不报错');
+    }
+    if (/setColorAt/.test(src) && !/instanceColor[\s\S]{0,80}needsUpdate/.test(src)) {
+      add('D-忘了颜色 needsUpdate',
+        '用了 setColorAt 但没置 instanceColor.needsUpdate ⟹ 颜色不会变');
+    }
   }
-  if (/\bdebugger\b/.test(src)) add('G-debugger', '有 debugger 语句');
 
-  // ── H. 空闲状态（"没在放歌"是常态）
-  //   ⚠️ 这条只能弱判 —— "有没有空闲动画"没法可靠地静态检测。
-  //     ⟹ 只查一个必要条件：音频数据缺失时有没有兜底。**查不到就不报**，
-  //       因为误报会让模型改一段本来对的代码（这比漏报贵）。
+  // ── E.⚠️ 空闲状态：没音乐时也要动
+  //   ⚠️ 只能弱判 —— 找"和 ctx.t 有关的运动"。查不到就提醒，不算硬错误。
+  if (!/ctx\.t\b|\bt\s*\*|Math\.(sin|cos)\s*\(\s*(ctx\.)?t/.test(src)) {
+    add('E-没有空闲动画',
+      '看不到任何和时间（ctx.t）相关的运动 ⟹ 没放音乐时画面会完全静止，'
+      + '而用户会以为壁纸坏了');
+  }
+
+  // ── F.⚠️⚠️⚠️ 每帧 Math.random 决定位置 = 雪花噪点
+  //
+  // ⚠️⚠️ **这条我第一版写错了，而它连报三轮、模型改不掉**（实测 2026-08-02）：
+  //   模型写的是**粒子诞生**（`particles.push({ vx: Math.cos(a)*s, vy: 0.5+Math.random()*1.5 })`）
+  //   —— 那正是我自己那条规则说"诞生时随机是对的"的情况，
+  //   而我的正则只看"frame() 里有没有 Math.random 挨着 x/y/z"，分不出
+  //   "诞生时随机一次"和"每帧重新随机"。
+  //   ⟹ 症状：闸门 3 轮报同一条、模型每轮都改一遍别的地方，白烧 60 秒。
+  //   ⚠️ 判据：**一条闸门如果模型改不掉，先怀疑闸门错了** ——
+  //     它连报三轮而产物在变，那说明它指的不是模型能改的东西。
+  //
+  // ⟹ 收窄到真正坏的那个形状：**直接给已有对象的坐标赋随机值**
+  //   （`p.x = Math.random()` / `obj.position.x = Math.random()`），
+  //   而 `push({...Math.random()...})`（诞生）和 `vx: Math.random()`（初速度）都放过。
+  //   ⚠️ 宁可漏报也不误报：误报会让模型去改一段本来正确的代码（而实测它改不动，
+  //     只会白烧三轮）。
+  const frameAt = src.search(/\bframe\s*[(:]/);
+  if (frameAt > 0) {
+    const frameBody = src.slice(frameAt, frameAt + 6000);
+    // ⚠️ 只逮"赋值给某个已存在对象的位置分量"
+    const bad = /\.(position\.)?[xyz]\s*=\s*[^;\n]{0,30}Math\.random/.test(frameBody)
+      || /\.position\.set\s*\([^)]{0,60}Math\.random/.test(frameBody);
+    if (bad) {
+      add('F-每帧随机位置',
+        'frame() 里把已有元素的位置**赋成**随机值 ⟹ 它每帧跳到别处，'
+        + '看起来是雪花噪点而不是运动。'
+        + '\n⚠️ 位置要由索引+时间决定，或者存进数组各自积分'
+        + '（而"新粒子诞生时随机一次"是对的，那不算）');
+    }
+  }
 
   return problems;
 }
@@ -383,7 +438,7 @@ function judgeRuntime(probe) {
 //
 // ⚠️ type 必须是 `Web`（WE 的类型名，首字母大写）—— 播放器按它选渲染路径。
 // ⚠️ `audio.enabled` 不写的话音频通道不会打开（症状：接了音频回调但永远收不到数据）。
-function buildProjectJson(title, description) {
+function buildProjectJson(title, description, recipe) {
   return {
     title: title || 'AI 生成壁纸',
     // ⚠️ 这个字段名是 `file`（不是 `main` / `index`），值是相对路径。
@@ -396,6 +451,11 @@ function buildProjectJson(title, description) {
     //   而且出问题时能知道该去看生成记录。
     //   ⚠️ 这是我们自己加的字段，WE 不认识它（但它容忍未知字段）。
     gwGenerated: true,
+    // ⚠️⚠️ **配方进 project.json**（0.9.140）—— 那让"这次是什么组合"可观测。
+    //   ⟹ 下次生成时读它来避重（见 wallpaper-recipe.js 的 pickRecipe）；
+    //     而用户说"这两张太像了"时，能查出是哪几维撞了（不用靠感觉调）。
+    //   ⚠️ 判据：**"多样"要可观测才可控。**
+    gwRecipe: recipe || null,
   };
 }
 
@@ -421,9 +481,10 @@ function slugifyTitle(text, stamp) {
 module.exports = {
   CONTRACT,
   CONSTRAINTS,
-  buildGeneratePrompt,
+  SKELETON_API,
+  buildScenePrompt,
   buildRepairPrompt,
-  extractHtml,
+  extractScene,
   inspect,
   judgeRuntime,
   buildProjectJson,

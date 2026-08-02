@@ -3428,6 +3428,69 @@ function sideExpand() {
 //   ⚠️ 同样是模块级变量：实现在下面那个 try 块里，而 renderMineDirs 在它之前。
 let aiRefreshWorkdir = null;
 
+// ⚠️⚠️⚠️ **右栅宽度分档**（0.9.141）。用户 2026-08-02：
+//   「可以左拉右拉…我们不能很精细，因为我们预览图片是有尺寸的吗？
+//     所以说我们这边就是一档一档的，然后也设置一个壁纸的最小容量宽度」
+//
+// ⚠️ 挡位**不是固定三个**，是"当前窗口宽度允许的那几个" ——
+//   900px 窗口下右栅 580 会让壁纸区只剩 280px（一列）⟹ 壁纸墙失去意义。
+//   ⟹ 判据：**约束是"壁纸区不能太窄"，挡位是那个约束的结果**。
+//     写死三个按钮的话小窗口上会有一个点不动的按钮（那比没有更糟）。
+let sideSteps = [340, 460, 580];
+let gridMin = 460;
+let sideWidth = 340;
+
+// 当前窗口宽度下，哪些挡位是允许的
+function allowedSteps() {
+  // ⚠️ 40 是 .pane-grid 的左右内边距（20+20）—— 那部分不算"能放卡片的宽度"
+  const win = window.innerWidth;
+  return sideSteps.filter((w) => win - w - 40 >= gridMin);
+}
+
+function applySideWidth(w) {
+  const allowed = allowedSteps();
+  // ⚠️⚠️ **窗口变窄时自动退回** —— 存的那一档可能已经不合法了
+  //   （用户在大窗口选了 580，然后把窗口拖小）。
+  //   ⟹ 取允许里最接近的、且不超过它的那一档；一个都不允许就用最窄的。
+  const use = allowed.includes(w) ? w : (allowed[allowed.length - 1] || sideSteps[0]);
+  sideWidth = use;
+  document.documentElement.style.setProperty('--side-w', `${use}px`);
+  renderSideSteps();
+  return use;
+}
+
+// ⚠️ 按钮的可用状态要跟着窗口走 —— 而"禁用"比"隐藏"好：
+//   禁用能解释"为什么点不了"，隐藏会让人以为功能没了。
+function renderSideSteps() {
+  const allowed = allowedSteps();
+  const i = sideSteps.indexOf(sideWidth);
+  for (const suffix of ['params', 'ai']) {
+    const narrow = document.getElementById(`side-narrow-${suffix}`);
+    const wide = document.getElementById(`side-wide-${suffix}`);
+    if (narrow) narrow.disabled = i <= 0;
+    if (wide) {
+      const next = sideSteps[i + 1];
+      wide.disabled = !next || !allowed.includes(next);
+      wide.title = wide.disabled
+        ? (next ? `窗口太窄：再宽一档壁纸区就只剩不到 ${gridMin}px 了` : '已经是最宽的一档')
+        : '宽一档';
+    }
+  }
+}
+
+async function stepSideWidth(delta) {
+  const i = sideSteps.indexOf(sideWidth);
+  const next = sideSteps[i + delta];
+  if (next === undefined) return;
+  if (delta > 0 && !allowedSteps().includes(next)) return;
+  applySideWidth(next);
+  // ⚠️ 存进 config（真偏好，下次打开要记住）
+  if (window.gw.weSetSideWidth) await window.gw.weSetSideWidth(next);
+}
+
+// ⚠️ 窗口尺寸变了要重算 —— 否则拖小窗口之后右栅还是 580，壁纸区被挤成一列
+window.addEventListener('resize', () => applySideWidth(sideWidth));
+
 let aiCloseWorkshop = null;
 // ⚠️ 打开入口同理 —— 网格里那张「新建」卡片是 renderMine 建的，
 //   而 renderMine 在这个文件里比 AI 那个 try 块**靠前** ⟹ 也拿不到 aiSetOpen。
@@ -4113,6 +4176,10 @@ function aiPaintWorkdir(dir) {
 async function aiRefreshMeta() {
   const meta = await window.gw.genMeta();
   if (!meta) return;
+  // ⚠️ 挡位配置来自主进程（它管 config）—— 面板只负责"当前窗口允许哪几档"
+  if (Array.isArray(meta.sideSteps) && meta.sideSteps.length) sideSteps = meta.sideSteps;
+  if (Number.isFinite(meta.gridMin)) gridMin = meta.gridMin;
+  if (Number.isFinite(meta.sideWidth)) applySideWidth(meta.sideWidth);
   aiPaintWorkdir(meta.dir);
   const keyInput = aiEl('ai-key');
   // ⚠️ **回填已存的 key** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122，
@@ -4176,6 +4243,13 @@ if (aiEl('ai-from-params')) aiEl('ai-from-params').onclick = () => aiOpenWorksho
 // ⚠️⚠️ 收起 / 展开（0.9.129）。三个按钮都是静态 DOM ⟹ 绑一次就够。
 //   ⚠️ 两个"收起"分别在两个 body 里，但调的是**同一个函数** ——
 //     那保证了两种模式下的行为一致（而各写一份最容易走偏）。
+// ⚠️ 分档按钮：两个 body 各一对，调**同一个函数**（各写一份必然走偏）
+for (const [id, delta] of [['side-narrow-params', -1], ['side-wide-params', 1],
+  ['side-narrow-ai', -1], ['side-wide-ai', 1]]) {
+  const btn = document.getElementById(id);
+  if (btn) btn.onclick = () => stepSideWidth(delta);
+}
+
 for (const id of ['side-fold-params', 'side-fold-ai']) {
   const btn = document.getElementById(id);
   if (btn) btn.onclick = () => sideCollapse();
@@ -4245,6 +4319,65 @@ window.gw.onGenProgress((p) => {
   aiSay('step', p.detail ? `${p.stage} · ${p.detail}` : p.stage);
 });
 
+// ⚠️⚠️ **生成完的四个读数**（0.9.141）。用户 2026-08-02：
+//   界面上要能看到"能不能跑"，而"好不好看"由他判。
+// ⟹ 判据：**两者要在同一屏上** —— 否则他没法说"它好看但卡"。
+let aiLastDir = null;
+
+function aiRenderResult(r) {
+  const box = aiEl('ai-checks');
+  const img = aiEl('ai-preview');
+  const rec = aiEl('ai-recipe');
+  const use = aiEl('ai-use');
+
+  // ── 预览图（生成时截的那一帧）
+  if (img) {
+    if (r && r.dir) {
+      // ⚠️ 加时间戳绕开缓存 —— 同一个路径的图换了内容，不加的话显示旧的
+      img.src = `file://${encodeURI(r.dir)}/preview.jpg?t=${Date.now()}`;
+      img.hidden = false;
+      // ⚠️ 截图可能失败（那不算生成失败）⟹ 加载不出来就把它收起来，
+      //   而不是留一个破图标。
+      img.onerror = () => { img.hidden = true; };
+    } else {
+      img.hidden = true;
+    }
+  }
+
+  // ── 四个读数：全部来自试跑的真实观测，不是我猜的
+  if (box) {
+    const h = (r && r.history && r.history[r.history.length - 1]) || null;
+    const pr = h && h.probe;
+    if (!pr) { box.hidden = true; } else {
+      const gl = pr.webgl || {};
+      const px = pr.sampledPixels;
+      const fps = pr.ms > 0 ? (pr.frames / (pr.ms / 1000)) : 0;
+      const mark = (ok) => (ok ? '✓' : '✗');
+      box.textContent = [
+        `${mark(gl.context)} WebGL      ${gl.context ? '正常' : '建不起来'}`
+          + (gl.glError ? `（gl.getError=${gl.glError}）` : ''),
+        `${mark(fps >= 8)} 渲染       ${fps.toFixed(1)} fps（${pr.frames} 帧 / ${pr.ms}ms）`,
+        `${mark(gl.objects > 0)} 场景       ${gl.objects} 个对象`,
+        px ? `${mark(px.black / px.total <= 0.995)} 画面       ${px.total - px.black}/${px.total} 个采样点有内容`
+          : '  画面       （没截到图）',
+      ].join('\n');
+      box.hidden = false;
+    }
+  }
+
+  // ── 配方（可观测才可控）
+  if (rec) {
+    if (r && r.recipe) {
+      rec.textContent = `配方  ${Object.entries(r.recipe).map(([k, v]) => `${k}=${v}`).join('  ')}`;
+      rec.hidden = false;
+    } else { rec.hidden = true; }
+  }
+
+  // ── 「用这张」
+  aiLastDir = (r && r.dir) || null;
+  if (use) use.hidden = !aiLastDir;
+}
+
 async function aiGo() {
   if (aiBusy) return;
   const input = aiEl('ai-want');
@@ -4263,6 +4396,7 @@ async function aiGo() {
       }
       return;
     }
+    aiRenderResult(r);
     if (r.partial) {
       // ⚠️⚠️ 三轮没修完**仍然给用户**（见 main.js 那段判据）——
       //   但必须说清还剩什么，否则他会以为是播放器坏了。
@@ -4289,6 +4423,21 @@ async function aiGo() {
 }
 
 if (aiEl('ai-go')) aiEl('ai-go').onclick = aiGo;
+
+// ⚠️ 「用这张」= 装载它。⚠️ 而**不关闭 AI 工坊** —— 用户可能想接着再生成一张，
+//   而"点了就把面板收走"会打断那个节奏。
+if (aiEl('ai-use')) {
+  aiEl('ai-use').onclick = async () => {
+    if (!aiLastDir) return;
+    const out = await window.gw.workshopLoadLocal(aiLastDir);
+    if (out && out.ok) {
+      aiSay('ok', '装上了，看桌面。不满意就再说一句，会生成新的一张。');
+      if (typeof renderMine === 'function') await renderMine();
+    } else {
+      aiSay('bad', `装载失败：${(out && out.error) || '没说原因'}`);
+    }
+  };
+}
 // ⚠️ ⌘↵ / Ctrl+↵ 发送 —— textarea 里裸 Enter 要留给换行（描述常常是两三句）。
 if (aiEl('ai-want')) {
   aiEl('ai-want').addEventListener('keydown', (e) => {

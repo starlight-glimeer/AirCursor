@@ -79,6 +79,8 @@ contextBridge.exposeInMainWorld('gw', {
 
   // ⚠️⚠️ AI 生成壁纸（0.9.123）。用户 2026-08-02：「调用大模型 api，帮我做壁纸」
   //   凭证存在 userData/config.json（仓外），诊断报告里由 redactConfig 打码。
+  // ⚠️ 右栅宽度分档（0.9.141）—— 挡位在主进程（它管 config），面板只挑一档
+  weSetSideWidth: (w) => ipcRenderer.invoke('we-set-side-width', w),
   genMeta: () => ipcRenderer.invoke('gen-meta'),
   genSetKey: (key) => ipcRenderer.invoke('gen-set-key', key),
   genPing: () => ipcRenderer.invoke('gen-ping'),

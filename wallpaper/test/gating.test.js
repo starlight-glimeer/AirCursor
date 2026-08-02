@@ -7575,4 +7575,260 @@ check('Steam 凭证回填（存了就要显示出来）', () => {
   assert.match(src, /copy\.we\.steam\.guardCode = '\*\*\*'/, 'Guard 码没打码');
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  AI 生成壁纸：骨架 + 配方 + 落盘（0.9.141）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  AI 生成（骨架/配方/落盘/写入边界）');
+
+check('⚠️⚠️ 写入只发生在一个函数里，而它只往壁纸目录写', () => {
+  // 用户 2026-08-02：「注意写入的地方只能是我们限定的壁纸那个目录，
+  //   不能做什么危险操作，危害电脑」
+  // ⟹ 这条守的是那句话。
+  const src = codeOnly(mainSrc);
+
+  // ① 落盘收口 —— 我第一版抄了两份（正常路径 + 三轮没过的兜底）
+  assert.match(src, /function writeWallpaperFiles\(/,
+    '落盘没收口成一个函数 ⟹ "会写到哪"就没法一眼回答');
+  const calls = (src.match(/writeWallpaperFiles\(/g) || []).length;
+  // 1 次定义 + 2 次调用
+  assert.strictEqual(calls, 3,
+    `writeWallpaperFiles 出现 ${calls} 次（应该是 1 定义 + 2 调用）`
+    + ' ⟹ 要么又有人抄了一份落盘逻辑，要么少了一处调用');
+
+  // ②⚠️ 生成的目录名必须过 slugifyTitle（它洗掉 ../ 之类）
+  assert.match(src, /Gen\.slugifyTitle\(/,
+    '目录名没过 slugifyTitle ⟹ 模型/用户给的标题里的 ../ 会直接进路径');
+  // ⚠️ 而根必须是 ensureOurWallpaperDir()，不是别的
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  assert.match(genBody, /const root = ensureOurWallpaperDir\(\)/,
+    '生成的根目录不是 ensureOurWallpaperDir() ⟹ 可能写到别处');
+  assert.match(genBody, /path\.join\(root, dirName\)/,
+    '壁纸目录不是 root + 一层 dirName');
+
+  // ③⚠️⚠️ 危险操作：这条流程里不许有删目录 / 改目录外的东西
+  const writeBody = src.slice(src.indexOf('function writeWallpaperFiles('));
+  const body = writeBody.slice(0, writeBody.indexOf('\nipcMain') > 0
+    ? writeBody.indexOf('\nipcMain') : 2000);
+  assert.ok(!/rmSync|rmdirSync|execSync|spawnSync/.test(body),
+    '落盘函数里出现了删除或者执行外部命令 ⟹ 这个函数只该写那几个文件');
+  // ⚠️ 唯一的 unlinkSync 是删旧的 three.min.js（硬链接前必须先删）
+  const unlinks = (body.match(/unlinkSync/g) || []).length;
+  assert.ok(unlinks <= 1,
+    `落盘函数里有 ${unlinks} 处 unlinkSync ⟹ 只该有硬链接前删旧文件那一处`);
+});
+
+check('骨架文件先检查再生成（缺了就是白屏，而那时会怪模型）', () => {
+  const src = codeOnly(mainSrc);
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  for (const f of ['index.html', 'runtime.js']) {
+    assert.ok(genBody.includes(`'${f}'`), `没检查骨架的 ${f} 在不在`);
+  }
+  // ⚠️⚠️ three.js **不在 git 里**（gitignore，靠 npm run vendor 拉）⟹ 最可能缺的就是它
+  assert.match(genBody, /three\.r128\.min\.js/, '没检查 three.js 在不在');
+  assert.match(genBody, /npm run vendor/,
+    'three.js 缺了但没说"跑 npm run vendor" ⟹ 用户只会看到一句没法行动的报错');
+});
+
+check('⚠️ 每张壁纸都写 gwRecipe —— 它是下次避重的唯一数据源', () => {
+  const gen = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8'));
+  assert.match(gen, /gwGenerated: true/, 'project.json 没标 gwGenerated');
+  assert.match(gen, /gwRecipe:/,
+    'project.json 没写 gwRecipe ⟹ 下次读不到历史 ⟹ 防同质化静默失效'
+    + '（能生成、能跑，就是越来越像 —— 最难发现的那种坏）');
+
+  const src = codeOnly(mainSrc);
+  assert.match(src, /function readRecipeHistory\(/, '没有读历史的函数');
+  const rh = src.slice(src.indexOf('function readRecipeHistory('));
+  assert.match(rh.slice(0, 900), /proj\.gwGenerated && proj\.gwRecipe/,
+    '读历史时没同时要求 gwGenerated 和 gwRecipe');
+  // ⚠️⚠️ 反向验证逮住这条：我第一版是 `/mtime|__t/`，而**注释里就有 mtime**
+  //   ⟹ 把 `__t: mtime` 那句删掉守卫照样绿（codeOnly 只剥注释、不剥
+  //     整行注释之外的…这里是整行注释，被剥了，但 statSync 那行还带 mtime）。
+  //   ⟹ 判据：守**排序这个动作本身**，那是"最近几张"唯一依赖的东西。
+  assert.match(rh.slice(0, 1200), /out\.sort\(\(a, b\) => a\.__t - b\.__t\)/,
+    '读历史没按时间排序 ⟹ "避开最近几张"变成"避开目录名字母序靠前的几张"');
+  assert.match(rh.slice(0, 1200), /__t: mtime/,
+    '历史项没带时间戳 ⟹ 上面那个 sort 是拿 undefined 在排（不报错，就是不生效）');
+});
+
+check('⚠️⚠️ 生成流程里的判定全是代码，模型不参与', () => {
+  // ⚠️ 实测：让模型自审两次都错，而且是**相反方向**
+  //   （放过了漏掉鼠标处理的，又把正确的 Math.random 判成错的）
+  //   ⟹ 判据：闸门是代码。
+  const src = codeOnly(mainSrc);
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  assert.match(genBody, /Gen\.inspect\(code/, '没跑静态闸门 Gen.inspect');
+  assert.match(genBody, /Gen\.judgeRuntime\(probe\)/, '没跑真跑闸门 Gen.judgeRuntime');
+  // ⚠️ 而"真跑"必须在**落盘之后** —— 探针是加载磁盘上那个目录
+  assert.ok(genBody.indexOf('writeWallpaperFiles(') < genBody.indexOf('probeWallpaperRuntime('),
+    '试跑排在落盘之前 ⟹ 探针加载的是不存在的目录');
+  // ⚠️ 三轮没过也要落盘交给用户，不是丢掉
+  assert.match(genBody, /partial: true/,
+    '三轮没过就什么都不给 ⟹ 用户连"差在哪"都看不到');
+});
+
+check('⚠️ 日志里的数字是算出来的，不是写死的', () => {
+  // ⚠️⚠️ 我第一版这里直接打"避重后撞 0 维" —— 那是**没算过的断言**：
+  //   历史够多时避重会无路可走，那时它必然撞而日志还在说 0。
+  //   （这个项目为"video 提示无条件甩锅音轨"栽过同一个毛病。）
+  const src = codeOnly(mainSrc);
+  assert.ok(!/撞 0 维/.test(src),
+    '日志里写死了"撞 0 维" ⟹ 那是没算过的断言，历史多了它就在说谎');
+  assert.match(src, /Recipe\.collide\(h, recipe\)\.length/,
+    '没真算撞了几维');
+});
+
+check('骨架自己不许被模型改（它是"稳定"的地基）', () => {
+  const gen = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8'));
+  // ⚠️⚠️⚠️ 反向验证逮住这条：我第一版是**全文 test 关键词** ——
+  //   而 `requestAnimationFrame` 在**提示词正文里也出现三次**
+  //   （"不许出现…"、"写法：requestAnimationFrame 里 if…"）
+  //   ⟹ 把闸门表里那一条删掉，守卫照样绿。
+  //   ⟹ 判据：**守"那张表里有这一条"，不是"这个文件里有这个词"。**
+  //     （这个项目为"关键词撞到别处"栽过八次，这是第九次。）
+  const table = gen.slice(gen.indexOf('const FORBIDDEN = ['));
+  const forbidden = table.slice(0, table.indexOf('\n  ];'));
+  assert.ok(forbidden.length > 100 && forbidden.length < 3000,
+    `没定位到 FORBIDDEN 那张表（截出 ${forbidden.length} 字节）⟹ 表被改名或者移走了`);
+  // ⚠️ 表里那些是**正则字面量**（`/new\s+THREE\.WebGLRenderer/`）⟹ 源码文本里
+  //   带着反斜杠。⟹ 用**子串**判，别再套一层正则（我上一版就是在这上面
+  //   把 `THREE\.` 写成了匹配 "THREE.WebGLRenderer"，而源码里是 "THREE\.WebGL…"）。
+  //   窗口已经收到那张表里了，子串足够精确。
+  for (const [what, why] of [
+    ['WebGLRenderer', '模型自己建 renderer ⟹ 两个 renderer 抢同一个 canvas'],
+    ['requestAnimationFrame', '模型自己开循环 ⟹ 和骨架的限帧打架，白吃 CPU'],
+    ['renderer.render', '模型自己 render ⟹ 一帧画两次'],
+    ['resize', '模型自己听 resize ⟹ 和骨架的 layout 打架'],
+    ['fetch', '壁纸联网 ⟹ 用户机器可能没网，而失败是静默的'],
+  ]) {
+    assert.ok(forbidden.includes(what),
+      `FORBIDDEN 表里没有 ${what} 这一条 —— ${why}`);
+  }
+  // ⚠️ 而每一条都要**带原因**（模型要靠那句话改）
+  // ⚠️ 每条都是 `[/正则/, '原因']` ⟹ 数 `[/` 的个数
+  const rows = (forbidden.match(/\[\//g) || []).length;
+  assert.ok(rows >= 8, `FORBIDDEN 只有 ${rows} 条 ⟹ 有人删了几条`);
+  // ⚠️ 而落盘时骨架是**复制过去的**，不是让模型写的
+  const src = codeOnly(mainSrc);
+  const w = src.slice(src.indexOf('function writeWallpaperFiles('));
+  assert.match(w.slice(0, 800), /copyFileSync\([^)]*index\.html/,
+    'index.html 不是从骨架复制的');
+  assert.match(w.slice(0, 800), /copyFileSync\([^)]*runtime\.js/,
+    'runtime.js 不是从骨架复制的');
+});
+
+check('⚠️ 骨架放开"影响观感"的东西（否则每张必然像）', () => {
+  const rt = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'runtime.js'), 'utf8'));
+  // ⚠️⚠️ 0.9.138 我把底色/雾/灯光写死了 —— 那三样正是"第一眼"看到的东西
+  //   ⟹ 不放开的话每张都是"深蓝黑底 + 同一种打光"，必然像。
+  assert.match(rt, /defaultLights/,
+    '默认灯光没打包成 defaultLights ⟹ 模型想换整套打光得逐个找出来删');
+  assert.match(rt, /defaultLights = new THREE\.Group\(\)/,
+    '默认灯光不是一个 Group ⟹ 一句 remove 换不掉');
+  // ⚠️ 而它必须在 ctx 里 —— 模型拿不到就等于没放开
+  const ctxBlock = rt.slice(rt.indexOf('const ctx = {'), rt.indexOf('const ctx = {') + 500);
+  assert.match(ctxBlock, /defaultLights/,
+    'ctx 里没给 defaultLights ⟹ 模型拿不到，等于还是锁着');
+});
+
+check('骨架锁住"会坏"的东西：限帧 / dpr 上限 / 音频峰值累积', () => {
+  const rt = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'runtime.js'), 'utf8'));
+  // ⚠️ 这个项目为"壁纸吃满 CPU"栽过（用户报「手势不跟手了」）
+  assert.match(rt, /MIN_DT = 1000 \/ 40/, '没限帧到 40fps');
+  assert.match(rt, /Math\.min\(window\.devicePixelRatio \|\| 1, 2\)/,
+    'dpr 没设上限 2 ⟹ 3 倍屏上是 2.25 倍像素量');
+  // ⚠️⚠️ 音频必须 Math.max 累积 —— 直接赋值会让峰值被后一帧抹掉（症状"不跟音乐"）
+  assert.match(rt, /audio\.bass = Math\.max\(audio\.bass,/,
+    '音频没用 Math.max 累积峰值 ⟹ 回调比渲染快，峰值会被抹掉');
+  // ⚠️ 每帧都抛的话要停掉，不能每帧都报（会灌满日志、堵死 IPC）
+  assert.match(rt, /frameErrors > 30/, '场景持续报错没有停止渲染的出口');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  右栏一档一档拉宽（用户点名的两条：默认最窄、壁纸区有最小宽度）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  右栏宽度挡位');
+
+check('挡位是离散的，而且默认是最窄那一档', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /const SIDE_STEPS = \[/, '没有挡位表');
+  const steps = JSON.parse(src.match(/const SIDE_STEPS = (\[[^\]]*\])/)[1]);
+  assert.ok(steps.length >= 3, `只有 ${steps.length} 档`);
+  // ⚠️ 用户："我们现在默认的这个宽度就是最低的不能再细了"
+  assert.match(src, /sideWidth: 340/, '默认宽度不是 340');
+  assert.strictEqual(Math.min(...steps), 340,
+    `最窄的一档是 ${Math.min(...steps)}，而默认是 340 ⟹ 默认不是最窄的`);
+  // ⚠️ 递增且不重复（挡位表乱序的话 ‹ › 会跳）
+  assert.deepStrictEqual(steps, [...new Set(steps)].sort((a, b) => a - b),
+    '挡位表不是递增无重复 ⟹ ‹ › 会跳挡');
+});
+
+check('⚠️ 壁纸区有最小宽度，窗口不够宽时那些挡位要禁掉', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /const GRID_MIN = /,
+    '没有壁纸区最小宽度 ⟹ 拉到最宽时预览卡片会被挤变形（用户点名的那条）');
+  assert.match(src, /gridMin: GRID_MIN/, 'gen-meta 没把 gridMin 给面板');
+  assert.match(src, /sideSteps: SIDE_STEPS/, 'gen-meta 没把挡位表给面板');
+
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /function allowedSteps\(/, '面板没算"当前窗口允许哪些挡"');
+  // ⚠️⚠️ 不许用**隐藏**来表达"这一档现在不能选" —— 按钮数量变化会让位置跳，
+  //   而用户点的是位置。⟹ 禁用（disabled）而不是隐藏。
+  const as = dash.slice(dash.indexOf('function allowedSteps('));
+  assert.ok(!/style\.display = 'none'/.test(as.slice(0, 1400)),
+    '窗口不够宽时把挡位按钮隐藏了 ⟹ 按钮数量一变位置就跳，用户点的是位置');
+  assert.match(dash, /disabled/, '挡位按钮没有禁用态');
+});
+
+check('挡位记在配置里 + 窗口变窄时自动退档', () => {
+  const src = codeOnly(mainSrc);
+  assert.match(src, /config\.we\.sideWidth = w/, '选了挡位没存进配置');
+  // ⚠️ 只接受挡位表里的值 —— 前端传任意数字过来不能照收
+  assert.match(src, /SIDE_STEPS\.includes\(w\)/,
+    '没校验传进来的宽度是不是挡位 ⟹ 前端传任意值都会被存下来');
+
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  // ⚠️⚠️ 窗口被拖窄时当前挡可能已经不合法了 ⟹ 必须自动退到合法的最宽一档，
+  //   否则壁纸区被挤到比 GRID_MIN 还小（而那正是用户要避免的）
+  // ⚠️⚠️ 反向验证逮住这条：dashboard.js 里**另有一个无关的 resize 监听**
+  //   （canvas 那个，第 226 行）⟹ 光 test `addEventListener('resize'` 的话，
+  //   把挡位那条删掉守卫照样绿。⟹ 锚到 applySideWidth 上。
+  assert.match(dash, /addEventListener\('resize', \(\) => applySideWidth\(/,
+    '窗口变化时没重算挡位 ⟹ 拖窄窗口后当前挡位可能已经违反 GRID_MIN 了'
+    + '（壁纸区被挤到比最小宽度还小，而那正是用户点名要避免的）');
+});
+
+check('CSS 用变量吃宽度（不是每处写死 340）', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  // ⚠️ 我第一版找的是**声明**（`--side-w:`）—— 而实现里它只在 `var()` 里出现、
+  //   永远由 JS 设。那**同样是对的**（还多一层兜底）⟹ 改成守真正要守的两件事。
+  //
+  // ① 布局真的吃这个变量
+  assert.match(html, /grid-template-columns: 1fr var\(--side-w/,
+    '.split 的列宽没用 --side-w ⟹ 改宽度就得逐个改元素的 style，必然漏');
+  // ②⚠️⚠️ `var()` 必须带**兜底值** —— JS 那边万一没跑到（初始化早抛、
+  //   meta 没回来），没兜底的话那一列宽度是 0 ⟹ 整个右栏消失。
+  //   而这个项目为"初始化中途抛异常把后面全打断"栽过。
+  const m = html.match(/var\(--side-w,\s*(\d+)px\)/);
+  assert.ok(m, 'var(--side-w) 没有兜底值 ⟹ JS 没跑到时右栏宽度是 0，整栏消失');
+  // ⚠️ 兜底值要和默认挡位一致，否则"没跑到 JS"和"跑到了"两种情况宽度不同
+  assert.strictEqual(m[1], '340',
+    `var() 的兜底是 ${m[1]}px 而默认挡位是 340px ⟹ 两种情况下宽度不一样`);
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /setProperty\('--side-w'/,
+    'JS 没通过 --side-w 改宽度 ⟹ 那就得逐个改元素的 style，必然漏');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

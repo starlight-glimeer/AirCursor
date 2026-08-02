@@ -44,273 +44,256 @@ const run = (html) => G.inspect(html, { checkJsSyntax: syntax });
 const ids = (html) => run(html).map((p) => p.id);
 
 // ---------------------------------------------------------------------------
-// 一份"什么都对"的最小壁纸 —— 各条用例在它上面**破坏一处**再断言。
+// ⚠️⚠️⚠️ **闸门测的是 `scene.js`，不是整个 HTML**（0.9.140 架构变了）
 // ---------------------------------------------------------------------------
 //
-// ⚠️⚠️ 判据：**先证明它自己是零问题的**，否则后面每条用例都在一个本来就
-//   报错的基线上跑，而"多了一个问题"和"本来就有问题"分不开。
-const GOOD = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>html,body{margin:0;overflow:hidden;background:#05060a}
-canvas{display:block;width:100vw;height:100vh}</style></head>
-<body><canvas id="c"></canvas><script>
-(function(){
-  var c=document.getElementById('c'), ctx=c.getContext('2d');
-  var W=0,H=0,dpr=1, bass=0, drag=false, lx=0, yaw=0;
-  function resize(){
-    dpr=Math.min(window.devicePixelRatio||1,2);
-    W=c.clientWidth; H=c.clientHeight;
-    c.width=Math.round(W*dpr); c.height=Math.round(H*dpr);
-    ctx.setTransform(dpr,0,0,dpr,0,0);
-  }
-  window.addEventListener('resize',resize);
-  window.addEventListener('mousedown',function(e){drag=true;lx=e.clientX;});
-  window.addEventListener('mouseup',function(){drag=false;});
-  window.addEventListener('mousemove',function(e){
-    var held = drag || (e.buttons & 1)===1;
-    if(!held){lx=e.clientX;return;}
-    yaw -= (e.clientX-lx)*0.006; lx=e.clientX;
-  });
-  var last=0, MIN_DT=1000/40;
-  function frame(now){
-    requestAnimationFrame(frame);
-    if(now-last<MIN_DT) return;
-    last=now;
-    ctx.fillStyle='#05060a'; ctx.fillRect(0,0,W,H);
-    ctx.fillStyle='rgba(120,200,255,'+(0.3+bass*0.5)+')';
-    ctx.fillRect(0,H*0.6,W,H*0.4);
-    bass*=0.92;
-  }
-  if(window.wallpaperRegisterAudioListener){
-    window.wallpaperRegisterAudioListener(function(d){
-      if(!d||!d.length) return;
-      var b=0; for(var i=0;i<6;i++) b+=(d[i]+(d[i+64]||0))/2;
-      bass=Math.max(bass,Math.min(1,b/6));
-    });
-  }
-  if(window.wallpaperRegisterMediaPropertiesListener){
-    window.wallpaperRegisterMediaPropertiesListener(function(p){ void p; });
-  }
-  resize();
-  if(window.wallpaperReady) window.wallpaperReady();
-  requestAnimationFrame(frame);
-})();
-</script></body></html>`;
+// 用户 2026-08-02 定的架构：**固定骨架 + 模型只填变化**。
+// ⟹ 模型现在只写 `scene.js`（`window.SCENE` 那两三个函数），
+//   而 WebGL/相机/渲染循环/限帧/dpr/resize/音频算法/宿主接线**全部由骨架管**。
+//
+// ⚠️ 所以这一节原来那 20 条（查 CDN / canvas / dpr / resize / 限帧 /
+//   wallpaperReady / e.buttons…）**整体作废** —— 那些现在是骨架的事，
+//   而骨架有自己的测试（`skeleton.test.js`）。
+//   ⟹ 判据：**架构变了，守卫要跟着搬家，不是逐条改**。
+//     留着它们会变成"守着一个不存在的契约"。
 
-console.log('\nAI 生成壁纸');
+// 一份"什么都对"的 scene.js —— 各条用例在它上面**破坏一处**再断言。
+// ⚠️ 判据：先证明它自己零问题，否则后面每条都在坏基线上跑。
+const GOOD = `// 配方：layout=ring audioMap=height palette=ice motion=breathe environment=topLight
+(() => {
+  'use strict';
+  let mesh = null;
+  const dummy = { o: null };
+  window.SCENE = {
+    build(ctx) {
+      const { THREE } = ctx;
+      dummy.o = new THREE.Object3D();
+      const geo = new THREE.BoxGeometry(0.5, 1, 0.5);
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.4 });
+      mesh = new THREE.InstancedMesh(geo, mat, 240);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      ctx.scene.add(mesh);
+      ctx.camera.position.set(0, 12, 24);
+      ctx.camera.lookAt(0, 0, 0);
+    },
+    frame(ctx) {
+      if (!mesh) return;
+      for (let i = 0; i < 240; i += 1) {
+        const a = (i / 240) * Math.PI * 2;
+        const h = 0.4 + ctx.audio.bins[i % 64] * 8 + Math.sin(ctx.t + a * 3) * 0.3;
+        dummy.o.position.set(Math.cos(a) * 9, h / 2, Math.sin(a) * 9);
+        dummy.o.scale.set(1, h, 1);
+        dummy.o.updateMatrix();
+        mesh.setMatrixAt(i, dummy.o.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    },
+  };
+})();`;
 
-check('基线：一份"什么都对"的壁纸零问题（否则后面每条都不可信）', () => {
+console.log('\nscene.js 闸门');
+
+check('基线：一份"什么都对"的 scene.js 零问题（否则后面每条都不可信）', () => {
   const problems = run(GOOD);
   assert.deepStrictEqual(problems, [],
     `基线自己就报错了 ⟹ 后面每条用例都建在坏基线上：\n${
       problems.map((p) => `      [${p.id}] ${p.detail}`).join('\n')}`);
 });
 
-// ---------------------------------------------------------------------------
-// A. 外部依赖 —— 最致命（无网直接白屏）
-// ---------------------------------------------------------------------------
-check('A：CDN 脚本被逮到', () => {
-  const bad = GOOD.replace('<canvas id="c">',
-    '<script src="https://cdn.jsdelivr.net/npm/three@0.160/build/three.min.js"></script><canvas id="c">');
-  assert.ok(ids(bad).includes('A-外部依赖'), '外链 <script src> 没被逮到');
-});
-
-check('A：外链样式表被逮到', () => {
-  const bad = GOOD.replace('<style>', '<link rel="stylesheet" href="https://x.test/a.css"><style>');
-  assert.ok(ids(bad).includes('A-外部依赖'), '外链 <link href> 没被逮到');
-});
-
-check('A：ES import 被逮到', () => {
-  const bad = GOOD.replace('(function(){', 'import * as T from "three";\n(function(){');
-  assert.ok(ids(bad).includes('A-外部依赖'), 'import 没被逮到');
-});
-
-check('A：fetch 被逮到', () => {
-  const bad = GOOD.replace('resize();', 'fetch("/api/x");\n  resize();');
-  assert.ok(ids(bad).includes('A-网络请求'), 'fetch 没被逮到');
-});
-
-// ⚠️⚠️ **误报守卫** —— 这几条是"看起来像外部依赖但其实不是"。
-//   误报会让模型去改一段本来对的代码，而那比漏报贵。
-check('A 不误报：data URL 的 img 不算外部依赖', () => {
-  const ok = GOOD.replace('<canvas id="c">',
-    '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><canvas id="c">');
-  assert.ok(!ids(ok).includes('A-外部依赖'), 'data URL 被误判成外部依赖了');
-});
-
-check('A 不误报：注释里的网址不算依赖', () => {
-  const ok = GOOD.replace('(function(){',
-    '// 参考 https://example.com/aurora 的做法\n(function(){');
-  assert.ok(!ids(ok).includes('A-外部依赖'), '注释里的 URL 被误判成依赖了');
-  assert.ok(!ids(ok).includes('A-网络请求'), '注释里的 URL 被误判成网络请求了');
-});
-
-// ---------------------------------------------------------------------------
-// B. 语法 —— 白屏最常见的原因，而它 100% 能机器判
-// ---------------------------------------------------------------------------
-check('B：语法错误被逮到（白屏的头号原因）', () => {
-  const bad = GOOD.replace('last=now;', 'last=now;;;}}}(');
+check('A：语法错误被逮到（白屏的头号原因）', () => {
+  const bad = GOOD.replace('mesh.instanceMatrix.needsUpdate = true;', 'if (((');
   const problems = run(bad);
-  assert.ok(problems.some((p) => p.id === 'B-语法错误'), '语法错误没被逮到');
+  assert.ok(problems.some((p) => p.id === 'A-语法错误'), '语法错误没被逮到');
   // ⚠️ 报错原文要带上 —— 那是回喂给模型时它唯一能用来定位的东西
-  const err = problems.find((p) => p.id === 'B-语法错误');
-  assert.ok(err.detail.length > 30, '语法错误的描述里没带解析器的原始报错');
+  assert.ok(problems.find((p) => p.id === 'A-语法错误').detail.length > 30,
+    '语法错误的描述里没带解析器的原始报错');
 });
 
-check('B：一个 <script> 都没有 = 静态页面，不是壁纸', () => {
-  const bad = GOOD.replace(/<script>[\s\S]*?<\/script>/, '');
-  assert.ok(ids(bad).includes('B-没有脚本'), '没有脚本块没被逮到');
+check('B：没挂 window.SCENE 被逮到（骨架会拒绝启动）', () => {
+  const bad = GOOD.replace('window.SCENE =', 'const SCENE_X =');
+  assert.ok(ids(bad).includes('B-没挂 SCENE'));
 });
 
-// ---------------------------------------------------------------------------
-// C. 画布 / dpr / resize
-// ---------------------------------------------------------------------------
-check('C：没有 canvas 被逮到', () => {
-  const bad = GOOD.replace('<canvas id="c"></canvas>', '<div id="c"></div>');
-  assert.ok(ids(bad).includes('C-没有画布'));
-});
-
-check('C：完全没处理 dpr 被逮到（Retina 上是糊的）', () => {
-  const bad = GOOD.replace('dpr=Math.min(window.devicePixelRatio||1,2);', 'dpr=1;');
-  assert.ok(ids(bad).includes('C-dpr'), '没处理 dpr 没被逮到');
-});
-
-check('C：dpr 没夹上限 2 被逮到', () => {
-  const bad = GOOD.replace('dpr=Math.min(window.devicePixelRatio||1,2);',
-    'dpr=window.devicePixelRatio||1;');
-  const got = ids(bad);
-  assert.ok(got.includes('C-dpr上限'),
-    `用了 devicePixelRatio 但没夹上限，应该报 C-dpr上限，实际报了：${got.join(',')}`);
-});
-
-check('C：没监听 resize 被逮到', () => {
-  const bad = GOOD.replace("window.addEventListener('resize',resize);", '');
-  assert.ok(ids(bad).includes('C-resize'));
+check('B：缺 build 或 frame 被逮到', () => {
+  for (const fn of ['build', 'frame']) {
+    const bad = GOOD.replace(`${fn}(ctx) {`, `${fn}X(ctx) {`);
+    assert.ok(ids(bad).includes('B-缺函数'), `缺 ${fn} 没被逮到`);
+  }
 });
 
 // ---------------------------------------------------------------------------
-// D. 限帧 —— 这个项目为"壁纸吃满 CPU"栽过一轮
-// ---------------------------------------------------------------------------
-check('D：没有 requestAnimationFrame 被逮到', () => {
-  const bad = GOOD.replace(/requestAnimationFrame/g, 'setTimeout');
-  assert.ok(ids(bad).includes('D-没有动画循环'));
-});
-
-check('D：setInterval 画帧被逮到', () => {
-  const bad = GOOD.replace('requestAnimationFrame(frame);\n})();',
-    'setInterval(function(){frame(performance.now())},16);\n})();');
-  assert.ok(ids(bad).includes('D-setInterval画帧'), 'setInterval 画帧没被逮到');
-});
-
-check('D：完全没限帧被逮到', () => {
-  const bad = GOOD
-    .replace('var last=0, MIN_DT=1000/40;', 'var last=0;')
-    .replace('if(now-last<MIN_DT) return;', '');
-  assert.ok(ids(bad).includes('D-没限帧'), '没限帧没被逮到');
-});
-
-// ⚠️⚠️ **限帧的写法有很多种**，而误报会让模型去改一段对的代码。
-//   ⟹ 这几条守"换个写法也认"。判据在 inspect 里写着：宁可漏报也不误报。
-check('D 不误报：限帧写成 1000/30 也认', () => {
-  const ok = GOOD.replace('MIN_DT=1000/40', 'MIN_DT=1000/30');
-  assert.ok(!ids(ok).includes('D-没限帧'), '1000/30 的限帧被误判成没限帧');
-});
-
-check('D 不误报：限帧写成 frameInterval 也认', () => {
-  const ok = GOOD.replace('MIN_DT=1000/40', 'frameInterval=25')
-    .replace('now-last<MIN_DT', 'now-last<frameInterval');
-  assert.ok(!ids(ok).includes('D-没限帧'), 'frameInterval 这种命名被误判成没限帧');
-});
-
-// ---------------------------------------------------------------------------
-// E. 宿主接口 —— 接不上的症状是"画面在动但永远不跟音乐"，比白屏难查
-// ---------------------------------------------------------------------------
-check('E：没调 wallpaperReady 被逮到', () => {
-  const bad = GOOD.replace('if(window.wallpaperReady) window.wallpaperReady();', '');
-  assert.ok(ids(bad).includes('E-没报告就绪'));
-});
-
-check('E：没接音频被逮到（音乐驱动是这个播放器的核心）', () => {
-  const bad = GOOD.replace(/if\(window\.wallpaperRegisterAudioListener\)\{[\s\S]*?\n  \}/, '');
-  assert.ok(ids(bad).includes('E-没接音频'), '没接音频没被逮到');
-});
-
-check('E：裸调宿主接口被逮到（浏览器直开会白屏）', () => {
-  // 去掉 if 保护，直接调
-  const bad = GOOD.replace(
-    'if(window.wallpaperRegisterMediaPropertiesListener){\n    window.wallpaperRegisterMediaPropertiesListener(function(p){ void p; });\n  }',
-    'window.wallpaperRegisterMediaPropertiesListener(function(p){ void p; });');
-  assert.ok(ids(bad).includes('E-裸调接口'), '裸调宿主接口没被逮到');
-});
-
-check('E 不误报：`window.X && window.X(...)` 这种保护也认', () => {
-  const ok = GOOD.replace(
-    'if(window.wallpaperRegisterMediaPropertiesListener){\n    window.wallpaperRegisterMediaPropertiesListener(function(p){ void p; });\n  }',
-    'window.wallpaperRegisterMediaPropertiesListener && window.wallpaperRegisterMediaPropertiesListener(function(p){ void p; });');
-  assert.ok(!ids(ok).includes('E-裸调接口'), '&& 形式的保护被误判成裸调');
-});
-
-// ---------------------------------------------------------------------------
-// F. 鼠标 —— ⚠️⚠️ 这一组是**真事故**的守卫
+// ⚠️⚠️ C 组：**不许重做骨架的活**
 // ---------------------------------------------------------------------------
 //
-// 2026-08-02 实测：模型一轮生成的产物**一个鼠标事件都没接**（全文只有一个
-// addEventListener，是 resize），而我让模型审自己的产物时它判 **pass**。
-// ⟹ 这条是"模型审模型不可信"的直接证据，也是机器闸门存在的理由。
-check('F：一个鼠标事件都没接被逮到（实测漏报过的那条）', () => {
-  const bad = GOOD
-    .replace(/window\.addEventListener\('mousedown'[\s\S]*?\}\);\n/, '')
-    .replace(/window\.addEventListener\('mouseup'[\s\S]*?\}\);\n/, '')
-    .replace(/window\.addEventListener\('mousemove'[\s\S]*?\n  \}\);\n/, '');
-  const got = ids(bad);
-  assert.ok(got.includes('F-没接鼠标'),
-    `完全没接鼠标没被逮到（这正是模型自审判 pass 的那条）。实际报了：${got.join(',')}`);
+// 重做会和骨架**打架**（两个渲染循环、两次 setSize），而症状是
+// "画面撕裂/闪烁/帧率减半" —— 那比白屏难查得多（画面在动，只是不对）。
+check('C：自己建 WebGLRenderer 被逮到', () => {
+  const bad = GOOD.replace('dummy.o = new THREE.Object3D();',
+    'const r = new THREE.WebGLRenderer({});');
+  assert.ok(ids(bad).includes('C-重做骨架/禁用'));
 });
 
-check('F：接了 mousemove 但没用 e.buttons 被逮到（拖不动）', () => {
-  const bad = GOOD.replace('var held = drag || (e.buttons & 1)===1;', 'var held = drag;');
-  assert.ok(ids(bad).includes('F-拖拽判据'), '缺 e.buttons 没被逮到');
+check('C：自己起渲染循环被逮到（两个循环会打架）', () => {
+  const bad = GOOD.replace('    frame(ctx) {',
+    '    frame(ctx) {\n      requestAnimationFrame(() => {});');
+  assert.ok(ids(bad).includes('C-重做骨架/禁用'));
+});
+
+check('C：自己调 renderer.render 被逮到（等于帧率减半）', () => {
+  const bad = GOOD.replace('mesh.instanceMatrix.needsUpdate = true;',
+    'ctx.renderer.render(ctx.scene, ctx.camera);');
+  assert.ok(ids(bad).includes('C-重做骨架/禁用'));
+});
+
+check('C：自己监听 resize 被逮到', () => {
+  const bad = GOOD.replace("      dummy.o = new THREE.Object3D();",
+    "      window.addEventListener('resize', () => {});");
+  assert.ok(ids(bad).includes('C-重做骨架/禁用'));
+});
+
+check('C：import / require / fetch 都被逮到', () => {
+  for (const line of ["import * as T from 'three';", "require('three');", "fetch('/x');"]) {
+    const bad = `${line}\n${GOOD}`;
+    assert.ok(ids(bad).includes('C-重做骨架/禁用'), `${line} 没被逮到`);
+  }
+});
+
+check('C：输出了 HTML 被逮到（那是理解错任务）', () => {
+  const bad = `<!DOCTYPE html><html><body></body></html>`;
+  // ⚠️ extractScene 会先拦住它，但闸门也要能判（防止别的路径绕过）
+  assert.ok(ids(bad).includes('C-重做骨架/禁用') || ids(bad).includes('B-没挂 SCENE'));
+});
+
+check('C：alert / debugger 被逮到', () => {
+  for (const bad of [GOOD.replace('let mesh = null;', "alert('x');"),
+    GOOD.replace('let mesh = null;', 'debugger;')]) {
+    assert.ok(ids(bad).includes('C-重做骨架/禁用'));
+  }
 });
 
 // ---------------------------------------------------------------------------
-// G. 明确禁止
+// ⚠️ D 组：InstancedMesh 的 needsUpdate
 // ---------------------------------------------------------------------------
-check('G：alert 被逮到（壁纸层没人能点掉那个框）', () => {
-  const bad = GOOD.replace('resize();', 'alert("hi");\n  resize();');
-  assert.ok(ids(bad).includes('G-模态框'));
+//
+// ⚠️ 不置的话 GPU 上还是上一帧的数据 ⟹ **画面完全静止而不报错**。
+//   那是这一类里最难查的失败（看起来像"壁纸卡住了"）。
+check('D：改了 instance matrix 但忘了 needsUpdate 被逮到', () => {
+  const bad = GOOD.replace('      mesh.instanceMatrix.needsUpdate = true;\n', '');
+  assert.ok(ids(bad).includes('D-忘了 needsUpdate'),
+    '忘了 needsUpdate 没被逮到 ⟹ 画面会完全静止而不报错');
 });
 
-check('G：debugger 被逮到', () => {
-  const bad = GOOD.replace('last=now;', 'debugger;\n    last=now;');
-  assert.ok(ids(bad).includes('G-debugger'));
+check('D：用了 setColorAt 但忘了 instanceColor.needsUpdate 被逮到', () => {
+  const bad = GOOD.replace('mesh.setMatrixAt(i, dummy.o.matrix);',
+    'mesh.setMatrixAt(i, dummy.o.matrix); mesh.setColorAt(i, new ctx.THREE.Color());');
+  assert.ok(ids(bad).includes('D-忘了颜色 needsUpdate'));
+});
+
+check('D 不误报：没用 InstancedMesh 时不查 needsUpdate', () => {
+  const plain = GOOD
+    .replace('mesh = new THREE.InstancedMesh(geo, mat, 240);', 'mesh = new THREE.Mesh(geo, mat);')
+    .replace('      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);\n', '')
+    .replace('        mesh.setMatrixAt(i, dummy.o.matrix);\n', '')
+    .replace('      mesh.instanceMatrix.needsUpdate = true;\n', '');
+  assert.ok(!ids(plain).some((x) => x.startsWith('D-')),
+    '普通 Mesh 也被要求置 needsUpdate ⟹ 那会让模型去改一段本来对的代码');
 });
 
 // ---------------------------------------------------------------------------
-// extractHtml —— 模型经常不听"不要 markdown 围栏"
+// ⚠️ E 组：没音乐时也要动
 // ---------------------------------------------------------------------------
-check('extractHtml：剥掉 markdown 围栏', () => {
-  const out = G.extractHtml('```html\n<!DOCTYPE html>\n<html><body>x</body></html>\n```');
-  assert.ok(out.startsWith('<!DOCTYPE html>'), `没剥掉围栏：${out.slice(0, 40)}`);
-  assert.ok(out.endsWith('</html>'), '尾部没切干净');
+check('E：完全没有时间相关的运动被逮到', () => {
+  const bad = GOOD.replace('+ Math.sin(ctx.t + a * 3) * 0.3', '');
+  assert.ok(ids(bad).includes('E-没有空闲动画'),
+    '没有空闲动画没被逮到 ⟹ 没放音乐时画面完全静止，用户会以为壁纸坏了');
 });
 
-check('extractHtml：剥掉前后的废话', () => {
-  const out = G.extractHtml(
-    '好的，这是生成的壁纸：\n\n<!DOCTYPE html>\n<html><body>x</body></html>\n\n希望你喜欢！');
-  assert.strictEqual(out, '<!DOCTYPE html>\n<html><body>x</body></html>');
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ F 组：每帧随机位置 —— **这一条我第一版写错了，实测连报三轮**
+// ---------------------------------------------------------------------------
+//
+// 模型写的是**粒子诞生**（`particles.push({ vy: 0.5 + Math.random() * 1.5 })`）——
+// 那正是规则里说"诞生时随机是对的"的情况，而我的正则分不出
+// "诞生时随机一次"和"每帧重新随机"。
+// ⟹ 症状：闸门 3 轮报同一条、模型每轮改一遍别的地方，白烧 60 秒。
+// ⚠️ 判据：**一条闸门如果模型连改三轮都改不掉，先怀疑闸门错了。**
+check('F：每帧把已有元素的位置赋成随机值 被逮到', () => {
+  const bad = GOOD.replace('dummy.o.position.set(Math.cos(a) * 9, h / 2, Math.sin(a) * 9);',
+    'mesh.position.x = Math.random() * 10;');
+  assert.ok(ids(bad).includes('F-每帧随机位置'));
 });
 
-check('extractHtml：没有 </html> = 被截断，要报错不能静默返回', () => {
-  // ⚠️ 截断的 HTML 一定跑不起来，而症状是白屏 ——
-  //   如果这里静默返回，用户会去查"为什么壁纸是白的"
-  assert.throws(() => G.extractHtml('<!DOCTYPE html>\n<html><body>写到一半就断'),
-    /不完整|截断/, '截断的 HTML 没报错');
+check('F 不误报：粒子诞生时随机是对的（实测栽过的那条）', () => {
+  const ok = GOOD.replace('    frame(ctx) {', `    frame(ctx) {
+      if (ctx.audio.bass > 0.4) {
+        parts.push({ vx: (Math.random() - 0.5) * 2, vy: 0.5 + Math.random() * 1.5, life: 1 });
+      }`).replace("  let mesh = null;", '  let mesh = null;\n  const parts = [];');
+  assert.ok(!ids(ok).includes('F-每帧随机位置'),
+    '粒子诞生时用随机被误判成"每帧随机位置" ⟹ 那正是实测连报三轮、'
+    + '模型改不掉的那个误报');
 });
 
-check('extractHtml：模型答非所问要报错并带上它说了什么', () => {
+check('F 不误报：随机的初速度/相位不算', () => {
+  const ok = GOOD.replace('    frame(ctx) {', `    frame(ctx) {
+      const jitter = Math.random() * 0.01;
+      void jitter;`);
+  assert.ok(!ids(ok).includes('F-每帧随机位置'));
+});
+
+// ---------------------------------------------------------------------------
+// extractScene —— 模型经常不听"不要 markdown 围栏"
+// ---------------------------------------------------------------------------
+check('extractScene：剥掉 markdown 围栏', () => {
+  const out = G.extractScene('```js\nwindow.SCENE = { build(){}, frame(){} };\n```');
+  assert.ok(out.startsWith('window.SCENE'), `没剥掉围栏：${out.slice(0, 40)}`);
+});
+
+check('extractScene：模型输出 HTML 要报错（那是理解错任务）', () => {
   let msg = '';
-  try { G.extractHtml('我不能帮你做这个。'); } catch (e) { msg = e.message; }
-  assert.match(msg, /没有输出 HTML/, '没报"不是 HTML"');
-  assert.match(msg, /我不能帮你做这个/, '报错里没带上模型实际说的话 ⟹ 用户不知道发生了什么');
+  try { G.extractScene('<!DOCTYPE html><html><script>window.SCENE={}</script></html>'); }
+  catch (e) { msg = e.message; }
+  assert.match(msg, /HTML/, '输出 HTML 没被拦住 ⟹ 一份 HTML 会被当成 JS 写进 scene.js（白屏）');
+});
+
+check('extractScene：答非所问要报错并带上它说了什么', () => {
+  let msg = '';
+  try { G.extractScene('我不能帮你做这个。'); } catch (e) { msg = e.message; }
+  assert.match(msg, /没有输出 scene\.js/, '没报"不是 scene.js"');
+  assert.match(msg, /我不能帮你做这个/, '报错里没带上模型实际说的话');
+});
+
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ 骨架契约：喂给模型的 ctx 字段必须和骨架真的给出去的一致
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 错一个字段名，模型写的代码就是 `undefined.xxx` —— 而那是**运行时**才炸。
+check('SKELETON_API 里的 ctx 字段和骨架真的给的一致', () => {
+  const rt = fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'runtime.js'), 'utf8');
+  // 从 runtime.js 里抠出 ctx 对象的字段名
+  const at = rt.indexOf('const ctx = {');
+  assert.ok(at > 0, '在 runtime.js 里找不到 ctx —— 锚点变了，这条守卫要跟着改');
+  const block = rt.slice(at, rt.indexOf('\n  };', at));
+  const fields = [...block.matchAll(/^\s{4}(\w+)[,:]/gm)].map((m) => m[1]);
+  // 那些解构出来的（THREE, scene, camera…）在同一行，单独抠
+  const inline = (block.match(/^\s{4}([\w, ]+),$/m) || [])[1] || '';
+  const all = new Set([...fields, ...inline.split(',').map((x) => x.trim())].filter(Boolean));
+  assert.ok(all.size >= 8, `只抠出 ${all.size} 个 ctx 字段 —— 正则可能失效了`);
+  for (const f of all) {
+    assert.ok(G.SKELETON_API.includes(f),
+      `骨架给了 ctx.${f}，但 SKELETON_API 里没说 ⟹ 模型不知道它存在（少一个能力）`);
+  }
+});
+
+check('SKELETON_API 没说骨架其实不给的东西', () => {
+  // ⚠️ 反过来：说了模型就会用，用了就是 undefined
+  const rt = fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'runtime.js'), 'utf8');
+  const mentioned = [...G.SKELETON_API.matchAll(/ctx\.(\w+)/g)].map((m) => m[1]);
+  for (const f of new Set(mentioned)) {
+    assert.ok(rt.includes(f),
+      `SKELETON_API 说有 ctx.${f}，但 runtime.js 里找不到它 ⟹ 模型会写出 undefined.xxx`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -698,17 +681,26 @@ check('生成的预算是 32000（16000 被实测证明不够）', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   // ⚠️ 不切窗口 —— 直接用一条正则匹配「那个调用 + 它的 maxTokens」这个整体形状。
   //   ⚠️ 判据：能一条正则锚定的就别切片。切片要选长度，而任何长度都会漂。
-  assert.match(main,
-    /LLM\.chat\(ai, \[\{ role: 'user', content: prompt \}\],\s*\n?\s*\{ maxTokens: 32000 \}\)/,
-    '生成预算不是 32000 —— 用户账单实测：输出正好撞在 16000 上而正文是空的');
+  // ⚠️⚠️ 0.9.140 起是 **20000**（不是 32000）—— 架构变了：
+  //   模型现在只写 `scene.js`（一两百行），不是整个 index.html
+  //   ⟹ 需要的输出预算小得多。而 16000 那次爆掉是因为**推理模型把预算烧在
+  //     思考上**（用户账单实测），那和"写多少代码"是两件事。
+  //   ⚠️ 20000 仍然远高于实测用量（一两百行约 3k token）⟹ 留足余量。
+  assert.match(main, /\{ maxTokens: 20000 \}/,
+    '生成预算不是 20000 —— 模型只写 scene.js，一两百行，而 20000 已经留了很大余量');
 });
 
 check('提示词里要求"直接写代码、别长篇分析"（生成和回喂两条都要）', () => {
   // ⚠️ 那是我们唯一能对模型行为施加的影响 —— 换模型是用户的事，
   //   而提示词是我们的。
+  // ⚠️ 0.9.140 改名：buildGeneratePrompt → buildScenePrompt（它现在产的是
+  //   "写 scene.js"的提示词，而不是"写整个 index.html"）。
+  const recipe = { layout: 'ring', audioMap: 'height', palette: 'ice',
+    motion: 'breathe', environment: 'topLight' };
+  const rt = 'layout = ring：同心圆环';
   for (const [name, prompt] of [
-    ['生成', G.buildGeneratePrompt('极光')],
-    ['回喂', G.buildRepairPrompt('<html></html>', [{ id: 'X', detail: 'y' }])],
+    ['生成', G.buildScenePrompt('极光', recipe, rt, '（第一张）', '// example')],
+    ['回喂', G.buildRepairPrompt('window.SCENE={}', [{ id: 'X', detail: 'y' }], rt)],
   ]) {
     assert.match(prompt, /不要先长篇分析|不要先长篇/,
       `${name}提示词里没要求"直接写代码" ⟹ 推理模型会把预算烧在思考上`);

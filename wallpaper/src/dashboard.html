@@ -414,7 +414,10 @@
      flex/grid 子项的默认 min-height 是 auto ⟹ 内容再高也不会出滚动条，
      而是把父容器撑破。那是"网格滚不动、整页被撑长"的经典成因。 */
   .split {
-    display: grid; grid-template-columns: 1fr 340px;
+    /* ⚠️⚠️ 右栅宽度走变量（0.9.141）——用户点名要"一档一档"地拉。
+       ⚠️ 用变量而不是直接改 grid-template-columns：JS 只动一个数，
+         而 `:has()` 那条（收起时变单列）不用跟着改。 */
+    display: grid; grid-template-columns: 1fr var(--side-w, 340px);
     height: 100%; min-height: 0;
     /* ⚠️ 展开把手是 `position: absolute` 贴右边缘的 ⟹ 这里要给它定位上下文。
        不给的话它会相对**视口**定位，跑到整个窗口的右边（越过面板边界）。 */
@@ -944,6 +947,16 @@
   .side-head b { flex: 1; font-size: 13px; }
   /* ⚠️⚠️ 收起按钮（0.9.129）：一个 CSS 画的右向箭头（"往右边收"）。
      ⚠️ 不用 `›` 那个字符 —— 它在不同字体里粗细差别很大（和 ✕ 那次同一个理由）。 */
+  /* ⚠️⚠️ **加宽/变窄**（0.9.141）：一档一档，不是连续拖。
+     用户："我们不能很精细，因为我们预览图片是有尺寸的吗？所以说我们这边
+     就是一档一档的" ⟹ 点一下换一档。
+     ⚠️ 而**窗口太窄时那一档要禁用**（不是隐藏）—— 禁用能解释"为什么点不了"，
+       隐藏会让人以为功能没了。 */
+  .side-step {
+    position: relative; width: 22px; height: 22px; padding: 0; flex: none;
+    font: 400 15px/1 ui-monospace, monospace;
+  }
+  .side-step:disabled { opacity: .25; cursor: default; }
   .side-fold { position: relative; width: 24px; height: 22px; padding: 0; flex: none; }
   .side-fold::before {
     content: ''; position: absolute; left: 45%; top: 50%;
@@ -1069,7 +1082,27 @@
      ⟹ 竖排之后输入框拿到全宽，而按钮通栏在这里是**对的** ——
        它是这一栅唯一的主操作（对比：那个被我放进 `.bar-row` 的入口按钮
        是被网格拉满的，那才是 bug）。 */
-  #ai-input-row { display: flex; flex-direction: column; gap: 7px; }
+  #ai-input-row { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+  /* 预览图：16:10，和壁纸卡片一致 */
+  #ai-preview {
+    width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
+    border-radius: var(--r-md); background: var(--img-bg);
+    border: 1px solid var(--line); display: block; margin-bottom: 10px;
+  }
+  /* 四个读数：一行一条，等宽数位（它们是数字） */
+  #ai-checks {
+    font: 400 11px/1.9 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    padding: 8px 10px; margin-bottom: 10px;
+    background: var(--log-bg-a); border-radius: var(--r-md);
+    white-space: pre-line; user-select: text;
+  }
+  #ai-recipe {
+    margin: 0 0 10px; padding: 7px 9px;
+    background: var(--log-bg-a); border-radius: var(--r-md);
+    font: 400 10.5px/1.8 ui-monospace, monospace;
+    white-space: pre-line; user-select: text; overflow-wrap: anywhere;
+  }
   #ai-want {
     resize: none; padding: 7px 9px;
     font: 400 11.5px/1.65 -apple-system, "PingFang SC", sans-serif;
@@ -1440,6 +1473,11 @@
                    而收起来的价值很实在：网格从两列变三四列，壁纸墙一眼看到更多。
                  ⟹ 两个 body 各放一个，都调同一个 `sideCollapse()`。
                  ⚠️ 用 `‹` 那个方向：它指向"往右边收"。 -->
+            <!-- ⚠️ 分档：窄 ‹ / 宽 ›（0.9.141）。窗口不够宽时"宽"会被禁用。 -->
+            <button class="act ghost side-step" id="side-narrow-params" type="button"
+                    title="窄一档">‹</button>
+            <button class="act ghost side-step" id="side-wide-params" type="button"
+                    title="宽一档（窗口太窄时不可用）">›</button>
             <button class="act ghost side-fold" id="side-fold-params" type="button"
                     title="收起这一栏（网格铺满全宽）"></button>
           </div>
@@ -1463,6 +1501,11 @@
             <b>AI 壁纸工坊</b>
             <button class="act ghost" id="ai-close" type="button"
                     title="回到壁纸参数（Esc）">返回参数</button>
+            <!-- ⚠️ 分档：窄 ‹ / 宽 ›（0.9.141）。窗口不够宽时"宽"会被禁用。 -->
+            <button class="act ghost side-step" id="side-narrow-ai" type="button"
+                    title="窄一档">‹</button>
+            <button class="act ghost side-step" id="side-wide-ai" type="button"
+                    title="宽一档（窗口太窄时不可用）">›</button>
             <button class="act ghost side-fold" id="side-fold-ai" type="button"
                     title="收起这一栏（网格铺满全宽）"></button>
           </div>
@@ -1484,14 +1527,36 @@
             <p class="hint" id="ai-key-hint"></p>
           </details>
 
-          <!-- 对话流 -->
-          <div id="ai-log"></div>
-
+          <!-- ⚠️⚠️ **输入在最上面**（0.9.141）。用户 2026-08-02：
+               「我跟你说一句话你给过我…第一要义就是我稳定生成高质量的壁纸」
+               ⟹ 这一栅的主线就是"说一句 → 拿一张"，别的都是它的附属
+               ⟹ 输入框和按钮**在最显眼的位置**，进度和读数在下面。
+               ⚠️ 而砍掉的东西（实时预览 / 多版本回退 / 中途改）用户点名说
+                 "听着就很麻烦，容易出 bug" —— 见 MODULES.md 那段判据。 -->
           <div id="ai-input-row">
             <textarea id="ai-want" rows="3"
-                      placeholder="想要什么效果？&#10;例：音乐驱动的极光，低频涨落、高频撒光点"></textarea>
+                      placeholder="想要什么效果？&#10;例：随音乐起伏的立体结构、低频涟漪"></textarea>
             <button class="act primary full" id="ai-go" type="button">生成壁纸</button>
           </div>
+
+          <!-- ⚠️ 预览图：生成完在隐藏窗口截一帧（**不动桌面上正在放的壁纸**）。
+               ⚠️ 一直占位（不是生成完才出现）—— 否则每次生成界面会跳一下。 -->
+          <img id="ai-preview" alt="" hidden>
+
+          <!-- ⚠️⚠️ 四个读数 = "能不能跑"由机器判。
+               而"好不好看"只有用户能判 ⟹ 两者要在同一屏上，
+               否则他没法说"它好看但卡"。 -->
+          <div id="ai-checks" hidden></div>
+
+          <!-- 配方：这一张用了哪个组合。
+               ⚠️ 用户点名怕同质化 ⟹ 让"这次是什么组合"可见，
+                 那样他说"这两张太像"时能查出是哪几维撞了（不靠感觉调）。 -->
+          <div id="ai-recipe" class="hint" hidden></div>
+
+          <!-- 进度 / 对话流 -->
+          <div id="ai-log"></div>
+
+          <button class="act primary full" id="ai-use" type="button" hidden>用这张</button>
         </div>
       </div>
     </div>

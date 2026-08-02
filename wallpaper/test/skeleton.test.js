@@ -50,6 +50,8 @@ const THREE={ REVISION:'128', DynamicDrawUsage:35048,
   Fog:class{constructor(){}}, Color:class{constructor(){this.r=0;this.g=0;this.b=0}
     setRGB(r,g,b){this.r=r;this.g=g;this.b=b;return this} multiplyScalar(){return this}},
   AmbientLight:class extends Obj3D{}, DirectionalLight:class extends Obj3D{},
+  // ⚠️ Group：0.9.140 起骨架把默认灯光装进一个 Group（让模型能一句话换整套打光）
+  Group:class extends Obj3D{},
   BoxGeometry:class{dispose(){}}, MeshStandardMaterial:class{dispose(){}},
   InstancedBufferAttribute:class{constructor(a,n){this.array=a;this.itemSize=n}},
   InstancedMesh:class extends Obj3D{constructor(g,m,n){super();this.geometry=g;this.material=m;this.count=n;
@@ -138,6 +140,20 @@ check('全程零 fatal', () => {
 // ⚠️ 契约与硬约束（读源码，不跑）
 // ---------------------------------------------------------------------------
 const rt = fs.readFileSync(B + 'runtime.js', 'utf8');
+// ⚠️⚠️ **剥注释后的版本** —— 这个文件里注释很多，而它们提到的名字会让
+//   `assert.match` 命中注释而不是代码（这轮撞到过八次）。
+//   ⚠️ 连**行尾注释**一起剥（只过滤"整行以 // 开头"是不够的：
+//     `foo(); // 提到 bar` 那种会留着）。
+const rtNoComment = rt.split('\n')
+  .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+  .map((l) => {
+    const at = l.indexOf('//');
+    if (at < 0) return l;
+    const before = l.slice(0, at);
+    const odd = (q) => ((before.match(new RegExp(q, 'g')) || []).length % 2) === 1;
+    return (odd("'") || odd('"') || odd('`')) ? l : before;
+  })
+  .join('\n');
 const html = fs.readFileSync(B + 'index.html', 'utf8');
 
 check('限帧 40fps（这个项目为"壁纸吃满 CPU"栽过一轮）', () => {
@@ -196,6 +212,32 @@ check('契约只有一个重配入口（SCENE.reconfig）', () => {
     .join('\n');
   assert.ok(!rtCode.includes('SCENE_RECONFIG'),
     '又出现了第二个重配入口 ⟹ 同一件事只留一个名字');
+});
+
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ 防同质化：骨架不许锁死"影响观感"的东西（0.9.140）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02：「我主要是不希望同质化很严重，同一种风格的是允许的，
+//   但是每次生成给人感觉说这不是一样的吗，这就不行」
+//
+// ⚠️ 而 0.9.138 我把**底色 / 雾 / 灯光**写死了 —— 那三样正是"第一眼"看到的
+//   东西 ⟹ 不放开的话每张壁纸都是"深蓝黑底 + 同一种打光"，必然像。
+// ⟹ 判据：**锁"会坏的"，放"影响观感的"。**
+check('骨架把环境（底色/雾/灯光/相机）交给模型，不锁死', () => {
+  // ① 灯光装在 Group 里 ⟹ 模型一句话能换整套
+  assert.match(rtNoComment, /const defaultLights = new THREE\.Group\(\)/,
+    '默认灯光没装进 Group ⟹ 模型想换整套打光要逐个找出来删，那太麻烦'
+    + '（而"麻烦"等于"它不会做" ⟹ 每张壁纸打光都一样）');
+  // ② 而 ctx 要把它交出去 —— 不交的话模型拿不到、删不掉
+  assert.match(rtNoComment, /defaultLights,/,
+    'ctx 里没有 defaultLights ⟹ 模型拿不到那个 Group，换打光就得瞎猜名字');
+  // ③⚠️ 这几样**必须**是"默认值"而不是"最终值" —— 断言它们在 build() 之前设，
+  //   那样模型在 build() 里覆盖是有效的
+  const bgAt = rtNoComment.indexOf('scene.background =');
+  const buildAt = rtNoComment.indexOf('SCENE.build(ctx)');
+  assert.ok(bgAt > 0 && buildAt > bgAt,
+    '底色是在 SCENE.build() 之后设的 ⟹ 会把模型设的覆盖掉（那就真锁死了）');
 });
 
 OUT.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
