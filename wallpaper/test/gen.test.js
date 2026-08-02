@@ -570,19 +570,29 @@ check('HTTP 错误要说"该动哪里"，不是只给个状态码', () => {
 // ⚠️⚠️ 而**光改 defaultConfig 对存量用户无效** —— `mergeConfig` 会保留用户
 //   存过的值（那是对的），而 0.9.123 装过一次就已经把 bedrock 写进磁盘了。
 //   ⟹ 必须有显式迁移。这个项目为同一件事栽过（we.strategy 那次）。
-check('默认走 DeepSeek，且 base URL 不带 /v1（官方文档的形状）', () => {
+check('⚠️ 默认走 Bedrock 上的 Claude（0.9.143 换的）', () => {
+  // ⚠️⚠️⚠️ **这条守卫守的决定翻了两次**：
+  //   0.9.123 默认 Bedrock → 0.9.126 换 DeepSeek（"Bedrock 要申请模型访问权，
+  //     门槛太高"）→ 0.9.143 换回 Bedrock Claude。
+  //   ⚠️ 而最后这次是**实测定的**，不是偏好：deepseek-v4-flash 是推理小模型，
+  //     两步都把预算烧在思考上（6,465 / 74,299 字 reasoning_content），
+  //     218 秒出 266 行，产物"自己在那转圈"。
+  //   ⟹ 判据：**模型选型是可测的**（烧不烧思考 / 产物能不能跑 / 好不好看），
+  //     而测出来的结论比"门槛高不高"这类推断重。
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const at = main.indexOf('    ai: {');
   assert.ok(at > 0, 'defaultConfig 里找不到 ai 块 —— 锚点变了，这条守卫要跟着改');
-  // ⚠️ 切到这个对象字面量的结尾（`\n    },`），不用固定长度 —— 见 gating 里那条守卫
+  // ⚠️ 切到这个对象字面量的结尾（`\n    },`），不用固定长度
   const block = main.slice(at, main.indexOf('\n    },', at));
-  assert.match(block, /provider: 'openai'/, '默认提供方不是 openai 兼容那支');
-  // ⚠️ 锚定"不带 /v1" —— DeepSeek 官方文档写的是 https://api.deepseek.com。
-  //   加了 /v1 的症状是 404，而那看起来像"地址填错了"。
-  assert.match(block, /baseUrl: 'https:\/\/api\.deepseek\.com'/,
-    'DeepSeek 的 base URL 不对 —— 官方文档是 https://api.deepseek.com（**不带 /v1**）');
-  assert.match(block, /model: 'deepseek-v4-flash'/, '默认模型不是 deepseek-v4-flash');
+  assert.match(block, /provider: 'bedrock'/, '默认提供方不是 bedrock');
+  // ⚠️ Sonnet 而不是 Opus —— 生成一张约 1-2 万 token，Opus 会让"等 90 秒"
+  //   变成"等 4 分钟"，而代码质量上 Sonnet 对这个任务够用。
+  assert.match(block, /model: 'us\.anthropic\.claude-sonnet/,
+    '默认模型不是 Bedrock 上的 Claude Sonnet');
+  assert.match(block, /region: 'us-west-2'/, 'Bedrock 那支要 region');
   assert.match(block, /apiKey: null/, 'apiKey 的默认值必须是 null（绝不许硬编码 key）');
+  // ⚠️ baseUrl 字段留着（切回 OpenAI 兼容那支时不用改两处），但它对 bedrock 无用
+  assert.match(block, /baseUrl:/, 'baseUrl 字段删了 ⟹ 切回 OpenAI 兼容那支要改两处');
 });
 
 check('URL 拼装：DeepSeek 的 base URL 拼出正确端点', () => {
@@ -595,20 +605,39 @@ check('URL 拼装：DeepSeek 的 base URL 拼出正确端点', () => {
     'DeepSeek 的端点拼错了');
 });
 
-check('存量迁移：磁盘上存着 bedrock 的会被换成 deepseek，但 apiKey 不动', () => {
+check('⚠️⚠️ 存量迁移：磁盘上的 deepseek 换成 Claude（光改默认值没用）', () => {
+  // ⚠️⚠️⚠️ **这条是"改默认值"这件事的全部要点**：`mergeConfig` 保留磁盘上
+  //   已有的值 ⟹ 只改 `defaultConfig` 对**已经装过的人完全无效**。
+  //   ⟹ 判据：**改默认值必须配一条显式迁移。**
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const at = main.indexOf('function migrateConfig');
   assert.ok(at > 0, '找不到 migrateConfig');
   const body = main.slice(at, main.indexOf('\n}', at));
-  assert.match(body, /ai\.provider === 'bedrock'/,
-    'migrateConfig 里没有把存量的 bedrock 迁走 ⟹ 0.9.123 装过的人改了默认值也没用'
-    + '（mergeConfig 会保留他们存过的 bedrock）');
-  assert.match(body, /ai\.model = 'deepseek-v4-flash'/, '迁移没换模型名');
-  // ⚠️⚠️ **apiKey 一个字都不许动** —— 那是用户自己填的东西。
-  //   迁移的边界是"旧默认值"，不是"用户的数据"。
-  const migLines = body.slice(body.indexOf("ai.provider === 'bedrock'"));
-  assert.ok(!/ai\.apiKey\s*=/.test(migLines),
-    '迁移里动了 apiKey —— 那是用户自己填的，迁移只该改旧默认值');
+  assert.match(body, /ai\.provider === 'openai'/,
+    'migrateConfig 里没有把存量的 deepseek 迁走 ⟹ 改了默认值对已装过的人没用'
+    + '（mergeConfig 会保留他们存过的 deepseek-v4-flash）');
+  assert.match(body, /ai\.model = 'us\.anthropic\.claude-sonnet/, '迁移没换成 Claude');
+
+  // ⚠️⚠️ **迁移只认"我们自己写进去的那两个模型 ID"** ——
+  //   写成活规则（"凡是 deepseek 就换"）会把用户以后主动选的 deepseek 也换掉。
+  //   ⟹ 判据：**一次性迁移要硬编码"当时的那个值"。**
+  assert.match(body, /OURS = \['deepseek-v4-flash', 'deepseek-v4-pro'\]/,
+    '迁移没限定在"我们写进去的那两个模型 ID" ⟹ 会覆盖用户主动选的 deepseek');
+  assert.match(body, /OURS\.includes\(String\(ai\.model/,
+    '迁移的条件没用那张白名单');
+
+  // ⚠️⚠️⚠️ 而这次**apiKey 必须清掉** —— 和 0.9.126 那次相反。
+  //   理由：DeepSeek 的 key 在 Bedrock 上返回 401，留着它用户只会看到
+  //   "key 填错了或者过期了"，而不知道是换了提供方。
+  //   ⟹ 清成 null 之后面板说"还没填 key"，而那句话是**对的**。
+  //   ⚠️ 判据：**换提供方时留着旧凭证是在制造一条误导性的报错。**
+  const migLines = body.slice(body.indexOf("ai.provider === 'openai'"));
+  assert.match(migLines, /ai\.apiKey = null/,
+    '换提供方时没清掉旧 key ⟹ DeepSeek 的 key 在 Bedrock 上是 401，'
+    + '用户会看到"key 填错了"而不知道是提供方换了');
+  // ⚠️ 而日志里要说清这件事（用户会想"我的 key 呢"）
+  assert.match(body, /环境变量 AWS_BEARER_TOKEN_BEDROCK 会自动用上|AWS_BEARER_TOKEN_BEDROCK/,
+    '迁移日志没提环境变量那条路 ⟹ 用户不知道他 .bashrc 里那个能用');
 });
 
 // ---------------------------------------------------------------------------

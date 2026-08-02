@@ -474,16 +474,6 @@
   /* ⚠️ 拖拽时禁掉全局选中 —— 否则横向拖会把面板上的文字全选蓝 */
   body.col-resizing { user-select: none; cursor: col-resize; }
 
-  /* ⚠️ 拖拽时显示当前宽度和会吸附到哪一档 —— 那是"一档一档"这件事
-     唯一能被看见的地方（不显示的话吸附看起来像"我没拖准"）。 */
-  .side-grip-tip {
-    position: absolute; top: 12px; right: 14px;
-    padding: 4px 9px; border-radius: var(--r-sm);
-    background: var(--glass-panel); backdrop-filter: blur(var(--glass-blur));
-    border: 1px solid var(--line);
-    font: 500 11px/1 ui-monospace, monospace;
-    font-variant-numeric: tabular-nums;
-    color: var(--text); pointer-events: none; z-index: 7;
   }
 
   .split { transition: grid-template-columns .22s ease; }

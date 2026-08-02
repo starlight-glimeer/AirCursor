@@ -479,16 +479,27 @@ const defaultConfig = {
     // ⚠️ 模型名同样来自那份文档：`deepseek-v4-flash` / `deepseek-v4-pro`。
     //   默认用 flash —— 生成壁纸这件事一轮就一万来个 token，
     //   而 flash 便宜得多；不够好再换 pro（改 config 一行）。
+    // ⚠️⚠️⚠️ **默认是 Bedrock 上的 Claude**（0.9.143）。用户 2026-08-02：
+    //   「我就是想把我们这个默认的模型给他换成 claude」
+    //
+    // ⚠️ 换的理由是**实测**，不是偏好：deepseek-v4-flash 是**推理小模型**，
+    //   两步都把输出预算烧在思考上（6,465 字 / 74,299 字 reasoning_content，
+    //   正文一个字没写），靠自动重试才救回来 ⟹ 218 秒出 266 行，
+    //   而产物"自己在那转圈"、没跟音乐起伏。
+    //   ⟹ 判据：**写 Three.js 场景这件事对模型的要求是"代码强 + 不空转"**，
+    //     而推理小模型两条都不满足。换模型比调提示词有用得多。
     ai: {
-      // ⚠️ `provider` 留着（llm.js 两支都实现了、都有测试）——
-      //   面板上不给选，但换一家只是改这几个字段。
-      provider: 'openai',
+      provider: 'bedrock',
+      // ⚠️ Bedrock 用 region + 模型 ID，不用 baseUrl。
+      //   ⚠️ 但字段留着 —— 用户切回 OpenAI 兼容那支时不用改两处。
       baseUrl: 'https://api.deepseek.com',
       // ⚠️ 绝对不许在这里写任何 key。默认 null = "用户还没填"。
+      //   ⚠️ 而 `resolveAiConfig()` 会读环境变量 AWS_BEARER_TOKEN_BEDROCK ——
+      //     那正是用户 .bashrc 里已经有的那个。
       apiKey: null,
-      model: 'deepseek-v4-flash',
-      // ⚠️ region 只有 Bedrock 那支用得上。留着字段（不然切回去要改两处），
-      //   但它对 openai 那支没有意义。
+      // ⚠️ Sonnet 4.5 而不是 Opus：生成一张壁纸约 1-2 万 token，
+      //   Sonnet 在代码上够强而且快得多（Opus 会让"等 90 秒"变成"等 4 分钟"）。
+      model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
       region: 'us-west-2',
     },
     // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
@@ -796,15 +807,36 @@ function migrateConfig(cfg) {
   // ⚠️ 但 **apiKey 一个字都不动** —— 那是用户自己填的东西。
   //   （而 Bedrock 的 key 在 DeepSeek 上会返回 401，
   //     那条错误 llm.js 会说"API key 填错了或者过期了"—— 说得对。）
+  // ⚠️⚠️⚠️ **改回 Bedrock Claude**（0.9.143）。用户 2026-08-02：
+  //   「我就是想把我们这个默认的模型给他换成 claude」
+  //
+  // ⚠️⚠️ **光改 `defaultConfig` 对存量用户无效** —— `mergeConfig` 保留磁盘上
+  //   已有的值 ⟹ 用户的 config.json 里那个 `deepseek-v4-flash` 会一直用下去。
+  //   ⟹ 判据：**改默认值必须配一条显式迁移**，否则"我改了默认"只对新用户成立。
+  //     （这个项目为这条栽过：改了 defaultConfig 然后以为生效了。）
+  //
+  // ⚠️ 而这条迁移**只认那两个我们自己写进去的模型 ID**（0.9.126 那次迁移的产物）
+  //   ⟹ 用户自己填过别的模型就不动他的。
+  //   ⚠️ 判据：**一次性迁移要硬编码"当时的那个值"**，不能写成活规则
+  //     （"凡是 deepseek 就换掉"会把用户以后主动选的 deepseek 也换掉）。
   const ai = we.ai || {};
-  if (ai.provider === 'bedrock' && String(ai.model || '').includes('anthropic')) {
-    ai.provider = 'openai';
-    ai.baseUrl = 'https://api.deepseek.com';
-    ai.model = 'deepseek-v4-flash';
+  const OURS = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+  if (ai.provider === 'openai' && OURS.includes(String(ai.model || ''))) {
+    ai.provider = 'bedrock';
+    ai.model = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
+    ai.region = ai.region || 'us-west-2';
+    // ⚠️⚠️ **apiKey 清成 null** —— DeepSeek 的 key 在 Bedrock 上是 401，
+    //   留着它只会让用户看到一句"key 填错了"而不知道是换了提供方。
+    //   ⟹ 清掉之后面板会说"还没填 key"，而那句话是对的。
+    //   ⚠️ 而如果环境变量里有 AWS_BEARER_TOKEN_BEDROCK，`resolveAiConfig()`
+    //     会自动用上 ⟹ 用户什么都不用填。
+    ai.apiKey = null;
     we.ai = ai;
     changed = true;
-    console.log('[config] 迁移：AI 提供方 bedrock → deepseek'
-      + '（Bedrock 要申请模型访问权，门槛太高；apiKey 保持不动）');
+    console.log('[config] 迁移：AI 模型 deepseek-v4-flash → Bedrock Claude Sonnet 4.5'
+      + '（实测推理小模型把预算烧在思考上、产物质量不够；'
+      + 'DeepSeek 的 key 在 Bedrock 上无效已清掉，'
+      + '环境变量 AWS_BEARER_TOKEN_BEDROCK 会自动用上）');
   }
 
   // ⚠️⚠️⚠️ **清掉壁纸动作的存量录制**（0.9.130）。用户 2026-08-02：
@@ -3315,7 +3347,13 @@ function pruneStaging(keep) {
     return { n, t };
   }).sort((a, b) => b.t - a.t);
   let removed = 0;
-  for (const { n } of withTime.slice(keep)) {
+  // ⚠️⚠️ `keep` 个**目录** + 那些留档的 `.plan.md`（0.9.143）——
+  //   留档是几 KB 的文本，而它是"回看模型怎么想的"唯一入口
+  //   ⟹ 单独给它一个更宽的额度（20 份 md 也就几十 KB）。
+  const dirs = withTime.filter((x) => !x.n.endsWith('.plan.md'));
+  const plans = withTime.filter((x) => x.n.endsWith('.plan.md'));
+  const doomed = [...dirs.slice(keep), ...plans.slice(20)];
+  for (const { n } of doomed) {
     // ⚠️⚠️ 只删 `ai-staging/` 下面一层 —— 路径是我们自己拼的（userData + 固定名 + readdir 的名字），
     //   不接受任何外部输入 ⟹ 这个 rmSync 的作用域是封闭的。
     try { fs.rmSync(path.join(root, n), { recursive: true, force: true }); removed += 1; }
@@ -3894,8 +3932,15 @@ ipcMain.on('video-status', (_event, payload) => {
 
 // 生成过程的进度往面板推。⚠️ 一次生成要几十秒到几分钟（实测三轮约 10k token），
 // 而**没有进度的等待和卡死分不开** —— 这个项目为"静默"栽过很多次。
-function genProgress(stage, detail) {
-  console.log(`[gen] ${stage}${detail ? `：${detail}` : ''}`);
+// ⚠️⚠️ `quiet` = 只推面板、不打终端（0.9.143）。
+//   用户 2026-08-02：「首先不应该是刷屏的，应该是那种原地刷新状态」
+//   ⟹ 心跳（「已等 N 秒」）每 3 秒一条，等 198 秒就是 66 行 ——
+//     终端里那 66 行把真正的事件（配方/落盘/试跑结果）全冲掉了。
+//   ⟹ 判据：**终端日志要留"发生了什么"，不要留"还在等"。**
+//     面板那边是原地刷新的（一行），所以推过去无害；终端是追加的，会淹。
+//   ⚠️ 而**超时/失败照样打** —— 那是事件不是状态。
+function genProgress(stage, detail, quiet) {
+  if (!quiet) console.log(`[gen] ${stage}${detail ? `：${detail}` : ''}`);
   broadcast('gen-progress', { stage, detail: detail || '' });
 }
 
@@ -4153,8 +4198,12 @@ async function callModelWithHeartbeat(ai, prompt, label, opts) {
   let waited = 0;
   const tick = setInterval(() => {
     waited += 3;
-    genProgress(label, `已等 ${waited} 秒`
-      + (o.hint ? `（${o.hint}）` : ''));
+    // ⚠️ `quiet` —— 这一条每 3 秒一次，打终端会把真正的事件冲掉
+    genProgress(label, `已等 ${waited} 秒` + (o.hint ? `（${o.hint}）` : ''), true);
+    // ⚠️⚠️ 但**每 30 秒往终端打一次** —— 完全不打的话，用户从终端看
+    //   会觉得程序死了（而这个项目为"静默"栽过很多次）。
+    //   ⟹ 状态在面板原地刷新，终端每 30 秒一个"还在跑"的锚点。
+    if (waited % 30 === 0) console.log(`[gen] ${label}：已等 ${waited} 秒`);
   }, 3000);
   const t0 = Date.now();
   try {
@@ -4365,6 +4414,23 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
         //   ⚠️ 在**工作区**里生成 —— 搬进去的时候一起带过去
         await savePreview(stageDir);
         // ── ⑤⚠️⚠️ **搬进壁纸目录 —— 这一步才让它生效**
+        //
+        // ⚠️⚠️ 而**先把 plan.md 留一份在工作区**（0.9.143）。用户 2026-08-02：
+        //   「open ~/Library/…/ai-staging/ 这里面没东西」
+        //   ⟹ 成功之后整个目录被 rename 走了 ⟹ 工作区是空的。
+        //     那**行为是对的**（不留垃圾），但它把"能回看模型怎么想的"也搬走了。
+        //   ⟹ 判据：**中间产物的价值在"失败和不满意时能查"**，
+        //     而"不满意"恰恰发生在成功之后（用户 2026-08-02：
+        //     「最终出了一个壁纸，但是这个壁纸不好看」）。
+        //   ⟹ 留一份轻量的（几 KB 的 md），不留整个目录。
+        try {
+          const keep = path.join(aiStagingDir(), `${dirName}.plan.md`);
+          fs.copyFileSync(path.join(stageDir, 'plan.md'), keep);
+          logEvent('gen', `设计说明留档：${keep}`);
+        } catch (error) {
+          // ⚠️ 留档失败不该挡住"这张壁纸能用" ⟹ 只记一句
+          logEvent('gen', `设计说明留档失败（不影响壁纸）：${error.message}`);
+        }
         const moved = promoteFromStaging(stageDir, dir);
         logEvent('gen', `搬进壁纸目录（${moved.method}）：${dir}`);
         genProgress('done', `${dirName} —— ${round} 轮通过`);

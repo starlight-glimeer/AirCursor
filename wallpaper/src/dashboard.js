@@ -3494,7 +3494,6 @@ function bindSideGrips() {
   if (!grips.length) return 0;
   for (const grip of grips) {
     let dragging = false;
-    let tip = null;
     const split = grip.closest('.split');
 
     grip.addEventListener('pointerdown', (e) => {
@@ -3507,10 +3506,6 @@ function bindSideGrips() {
       //   慢慢走（像有橡皮筋，松手后还在动）。见 dashboard.html 那段注释。
       if (split) split.classList.add('dragging');
       document.body.classList.add('col-resizing');
-      // 提示气泡：当前宽度 + 会吸附到哪档
-      tip = document.createElement('div');
-      tip.className = 'side-grip-tip';
-      if (split) split.appendChild(tip);
       e.preventDefault();
     });
 
@@ -3524,8 +3519,11 @@ function bindSideGrips() {
       // ⚠️⚠️ 拖动中用**真实像素**（跟手），不是吸附值 ——
       //   拖的时候就吸附的话手感是"一格一格顿"，那正是用户说"太呆了"的那种。
       document.documentElement.style.setProperty('--side-w', `${clamped}px`);
-      const target = snapWidth(clamped);
-      if (tip) tip.textContent = `${clamped}px → 吸附 ${target}`;
+      // ⚠️⚠️ **不显示"→ 吸附 460"那个气泡**（0.9.143）。用户 2026-08-02：
+      //   「右侧怎么显示一个什么吸附的叉叉网格，这个对用户来说是不需要的」
+      //   ⟹ 我加它的理由是"让一档一档这件事可见" —— 而**松手时它自己会吸**，
+      //     那个反馈已经足够（用户看到的是结果，不需要预告）。
+      //   ⟹ 判据：**别为了解释机制而在界面上加东西。**
     });
 
     // ⚠️⚠️ `pointerup` 和 `pointercancel` **两个都要** ——
@@ -3537,7 +3535,6 @@ function bindSideGrips() {
       grip.classList.remove('dragging');
       if (split) split.classList.remove('dragging');
       document.body.classList.remove('col-resizing');
-      if (tip) { tip.remove(); tip = null; }
       try { grip.releasePointerCapture(e.pointerId); } catch { /* 已经释放了 */ }
       // ── 吸附
       const raw = Math.round(window.innerWidth - e.clientX);
@@ -4392,11 +4389,36 @@ if (aiEl('ai-ping')) {
 
 // 进度：主进程每一步都推过来。
 // ⚠️ 一次生成要几十秒到几分钟，而**没有进度的等待和卡死分不开**。
+// ⚠️⚠️⚠️ **同一步的进度要原地刷新，不能每次新增一条**（0.9.143）。
+//   用户 2026-08-02：「首先不应该是刷屏的，应该是那种原地刷新状态」
+//   ⟹ 我 0.9.142 每 3 秒 aiSay 一条 ⟹ 等 198 秒就是 66 条
+//     「已等 N 秒」把对话流冲掉了（终端里也一样）。
+//   ⟹ 判据：**"它还活着"是一个状态，不是一串事件。**
+//     状态该原地更新；只有"进了下一步"才是新事件。
+//
+// ⚠️ 做法：记住上一条 step 节点和它的 stage。stage 没变就改那个节点的文字，
+//   变了才新建一条 ⟹ 对话流里每一步只留一行，而秒数在原地走。
+let aiLastStepNode = null;
+let aiLastStepStage = null;
+
+function aiResetSteps() {
+  aiLastStepNode = null;
+  aiLastStepStage = null;
+}
+
 window.gw.onGenProgress((p) => {
   if (!p || !p.stage) return;
   // done / failed 有自己的收尾消息（在 aiGo 里），这里不重复报
-  if (p.stage === 'done' || p.stage === 'failed') return;
-  aiSay('step', p.detail ? `${p.stage} · ${p.detail}` : p.stage);
+  if (p.stage === 'done' || p.stage === 'failed') { aiResetSteps(); return; }
+  const text = p.detail ? `${p.stage} · ${p.detail}` : p.stage;
+  // ⚠️ 同一步 ⟹ 改原来那条。⚠️ 而要判 `isConnected` —— 用户可能清了对话流
+  //   （那时旧节点还在变量里但已经不在文档上，改它等于什么都没做）
+  if (aiLastStepStage === p.stage && aiLastStepNode && aiLastStepNode.isConnected) {
+    aiLastStepNode.textContent = text;
+    return;
+  }
+  aiLastStepStage = p.stage;
+  aiLastStepNode = aiSay('step', text);
 });
 
 // ⚠️⚠️ **生成完的四个读数**（0.9.141）。用户 2026-08-02：
@@ -4464,6 +4486,9 @@ async function aiGo() {
   const want = input ? input.value.trim() : '';
   if (!want) { aiSay('bad', '先说一句你想要什么效果'); return; }
   aiSay('me', want);
+  // ⚠️ 新一次生成 ⟹ 上一次的 step 节点作废（否则第二次生成的第一步会去
+  //   改上一次那条，看起来像"历史被改写了"）
+  aiResetSteps();
   aiSetBusy(true);
   try {
     const r = await window.gw.genWallpaper({ want });

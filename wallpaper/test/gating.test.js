@@ -6042,10 +6042,6 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
     //   ⟹ 同屏最多一个实例，而且它只有 15x62px。
     //   ⚠️ 它必须有 blur：它是贴在网格上的一个小条，不透的话是一块黑疙瘩。
     '#side-unfold',
-    // ⚠️ 拖宽度时的提示气泡（0.9.142）：**只在拖拽期间存在**（JS 建、松手删）
-    //   ⟹ 同屏最多 1 个，而且那期间用户在拖鼠标、不在跑摄像头推理。
-    //   ⚠️ 它必须能透出下面的内容 —— 那是"我拖到哪了"的参照。
-    '.side-grip-tip',
   ];
   const extra = users.filter((u) => !ALLOWED.includes(u));
   assert.deepStrictEqual(extra, [],
@@ -8001,6 +7997,107 @@ check('⚠️ 骨架的闸门只拦"会打架/会坏"，写明了允许什么', 
     assert.ok(!forbidden.includes(what),
       `闸门表里拦了 ${what} —— ${why}`);
   }
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  进度是状态不是事件（0.9.143）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  进度显示');
+
+check('⚠️⚠️ 同一步的进度原地刷新，不是每次新增一条', () => {
+  // 用户 2026-08-02：「首先不应该是刷屏的，应该是那种原地刷新状态」
+  // ⚠️ 0.9.142 每 3 秒 aiSay 一条 ⟹ 等 198 秒 = 66 条把对话流冲掉。
+  //   ⟹ 判据：**"它还活着"是一个状态，不是一串事件。**
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  assert.match(dash, /aiLastStepNode/, '没有"上一条 step 节点"的记忆 ⟹ 只能追加');
+  // ⚠️ stage 相同 ⟹ 改文字；不同 ⟹ 新建。两条都要有
+  assert.match(dash, /aiLastStepStage === p\.stage/,
+    '没判"是不是同一步" ⟹ 要么全追加（刷屏）要么全覆盖（丢步骤）');
+  assert.match(dash, /aiLastStepNode\.textContent = text/,
+    '同一步没有"改原来那条"的分支');
+  // ⚠️⚠️ 而必须判 `isConnected` —— 用户清了对话流之后旧节点还在变量里
+  //   但已经不在文档上，改它等于什么都没做（进度看起来卡住）
+  assert.match(dash, /aiLastStepNode\.isConnected/,
+    '没判 isConnected ⟹ 用户清了对话流后进度会更新到一个不在文档上的节点');
+  // ⚠️ 新一次生成要重置（否则第二次的第一步会去改上一次那条）
+  assert.match(dash, /function aiResetSteps\(/, '没有重置');
+  const calls = (dash.match(/aiResetSteps\(\)/g) || []).length;
+  assert.ok(calls >= 3, `aiResetSteps 只出现 ${calls} 次（1 定义 + 至少 2 调用：新生成 / done）`);
+});
+
+check('⚠️ 终端留"发生了什么"，不留"还在等"', () => {
+  const src = codeOnly(mainSrc);
+  // ⚠️ genProgress 要能"只推面板不打终端"
+  assert.match(src, /function genProgress\(stage, detail, quiet\)/,
+    'genProgress 没有 quiet 参数 ⟹ 心跳会把终端刷满（实测 198 秒 = 66 行）');
+  assert.match(src, /if \(!quiet\) console\.log/, 'quiet 没有真的抑制 console.log');
+  // ⚠️ 心跳那处要传 quiet
+  const hb = src.slice(src.indexOf('async function callModelWithHeartbeat('));
+  const body = hb.slice(0, hb.indexOf('\nipcMain') > 0 ? hb.indexOf('\nipcMain') : 2500);
+  assert.match(body, /已等 \$\{waited\} 秒.*, true\)|\), true\);/s,
+    '心跳没传 quiet ⟹ 终端会被"已等 N 秒"淹掉');
+  // ⚠️⚠️ 但**不能完全不打** —— 从终端看会觉得程序死了
+  //   （这个项目为"静默"栽过很多次）⟹ 每 30 秒一个锚点
+  assert.match(body, /waited % 30 === 0/,
+    '终端一条都不打 ⟹ 从终端看会以为程序死了（这个项目为"静默"栽过很多次）');
+});
+
+check('⚠️ 拖宽度时不显示"吸附到哪档"的气泡', () => {
+  // 用户 2026-08-02：「右侧怎么显示一个什么吸附的叉叉网格，
+  //   这个对用户来说是不需要的」
+  // ⟹ 判据：**别为了解释机制而在界面上加东西。** 松手时它自己会吸，
+  //   那个反馈已经足够（用户看到的是结果，不需要预告）。
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  for (const [name, src] of [['dashboard.js', dash], ['dashboard.html', html]]) {
+    assert.ok(!src.includes('side-grip-tip'),
+      `${name} 里还有 side-grip-tip ⟹ 那个气泡用户点名说不需要`);
+  }
+  // ⚠️ 而拖拽本身要还在
+  assert.match(codeOnly(dash), /pointermove/, '拖拽没了');
+});
+
+check('⚠️⚠️ 设计说明搬走之后还能看（不满意恰恰发生在成功之后）', () => {
+  // 用户 2026-08-02：「open …/ai-staging/ 这里面没东西」
+  //   + 「最终出了一个壁纸，但是这个壁纸不好看」
+  // ⟹ 成功后整个目录被 rename 走 ⟹ 工作区空的。那行为对（不留垃圾），
+  //   但它把"能回看模型怎么想的"也搬走了 —— 而那正是"不好看"时要查的东西。
+  const src = codeOnly(mainSrc);
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  const promoteAt = genBody.indexOf('promoteFromStaging(stageDir, dir)');
+  // ⚠️⚠️⚠️ 反向验证逮住这条：我原来找的是标记 `.plan.md\`` ——
+  //   而那个标记在 `const keep = …` 那一行上，**把真正干活的
+  //   `copyFileSync` 整个删掉，标记还在** ⟹ 守卫照样绿。
+  //   ⟹ 判据：**守"那个动作"，不是"那个名字出现过"。**
+  //     （这个项目为"关键词撞到别处/撞到自己的声明"栽过九次，这是第十次。）
+  const keepAt = genBody.indexOf("fs.copyFileSync(path.join(stageDir, 'plan.md')");
+  assert.ok(keepAt > 0,
+    '没有把设计说明真的复制出来 ⟹ 成功之后无从回看模型怎么想的'
+    + '（用户 2026-08-02 就撞到："ai-staging 这里面没东西"）');
+  // ⚠️⚠️ **留档必须在搬走之前** —— 搬完源文件就不在了
+  assert.ok(keepAt < promoteAt,
+    '留档排在 rename 之后 ⟹ 那时源文件已经被搬走了，copyFileSync 会 ENOENT');
+  // ⚠️ 留档失败不该挡住"这张壁纸能用"
+  const seg = genBody.slice(keepAt - 400, promoteAt);
+  assert.match(seg, /catch/, '留档没有 try/catch ⟹ 它失败会让一张能用的壁纸整个失败');
+
+  // ⚠️ 而清理要留着那些 md（它们是几 KB 的文本，不是几百 MB 的目录）
+  //   ⚠️⚠️ 反向验证也逮住这条：`endsWith('.plan.md')` 在那个函数里出现**两次**
+  //     （分 dirs 和 plans 各一次）⟹ 删掉一行守卫照样绿。
+  //     ⟹ 锚到"分成两拨 + 两个额度"这个完整形状。
+  const ps = src.slice(src.indexOf('function pruneStaging('));
+  const psBody = ps.slice(0, 1400);
+  assert.match(psBody, /const dirs = withTime\.filter\(\(x\) => !x\.n\.endsWith\('\.plan\.md'\)\)/,
+    'pruneStaging 没把"工作区目录"单独挑出来 ⟹ 留档会被当成旧工作区删掉');
+  assert.match(psBody, /const plans = withTime\.filter\(\(x\) => x\.n\.endsWith\('\.plan\.md'\)\)/,
+    'pruneStaging 没把留档单独挑出来');
+  // ⚠️ 两个额度不能是同一个 —— 目录几十 MB 一个，留档几 KB 一个
+  assert.match(psBody, /dirs\.slice\(keep\)/, '目录没用 keep 那个额度');
+  assert.match(psBody, /plans\.slice\(\d+\)/, '留档没有自己的额度');
 });
 
 
