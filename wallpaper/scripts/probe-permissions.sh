@@ -190,8 +190,43 @@ else
         "$HOME/Library/Application Support/"*ircursor* 2>/dev/null | sed 's/^/      /'
 fi
 
+# ── ⑧ 应用**自己**那个 helper 起来了没有 ────────────────
+# ⚠️⚠️ 这一条是 0.9.98 加的，因为⑦暴露了一件事：**⑤ 测的是探针自己启动的
+#   helper，和应用在跑的那个没关系**。用户 2026-08-02 那次输出里
+#   ⑤ 抓到 145 个事件（✅）而⑦说"没装载壁纸"⟹ 应用里那个压根没起来
+#   ⟹ 两条加起来才说明"探针通了、应用没通"，而单看⑤会以为一切正常。
+echo ""
+echo "⑧ 应用**自己**在跑的那个 helper（⑤ 测的是探针启动的，不是这个）"
+# ⚠️⚠️ 不能用 `pgrep -fl <词>` —— 它匹配**命令行里含那个词的任何进程**，
+#   包括这个探针脚本自己 ⟹ 假阳性（本地实测报"✅ 在跑"，而那是探针自己的 bash）。
+#   ⟹ `pgrep -x` 精确匹配**进程名**。
+RUNNING=$(pgrep -x GestureWallMouse 2>/dev/null || true)
+if [ -n "$RUNNING" ]; then
+  echo "   ${PASS}应用的 helper 在跑（pid $RUNNING）"
+  # ⚠️ 把它的完整路径打出来 —— 要确认是 .app 里那个，不是 userData 下的旧编译产物
+  ps -o command= -p "$RUNNING" 2>/dev/null | sed 's/^/      /'
+else
+  echo "   ${FAIL}应用**没有**在跑 GestureWallMouse"
+  echo "      ⟹ 那个 helper 只在**装载了壁纸**时才启动（syncMouseForward 的前提）"
+  echo "      ⟹ 看⑦的 dir：是 (没装载) 的话就是这个原因，去点一个壁纸"
+fi
+
+echo ""
+echo "   —— GestureWall 自己在跑吗 ——"
+# ⚠️ 同上：`-x` 精确匹配进程名（主进程就叫 GestureWall）
+GW=$(pgrep -x GestureWall 2>/dev/null || true)
+if [ -n "$GW" ]; then
+  echo "      ${PASS}GestureWall 在跑（pid $GW）"
+else
+  echo "      ${WARN}GestureWall 没在跑 ⟹ ⑦ 读到的配置是上次退出时的状态，"
+  echo "         而 ⑧ 当然也是 ❌。⟹ **先打开应用再跑这个探针**"
+fi
+
 echo ""
 echo "════════════════════════════════════════════════════════════"
-echo "  把上面**全部输出**发给我 —— 七条里哪条是 ❌ 就是断点"
+echo "  把上面**全部输出**发给我"
+echo ""
+echo "  ⚠️ 怎么读：⑤ 是"探针自己跑一个 helper"的结果，"
+echo "     ⑧ 才是"应用在跑的那个"。⑤✅ 而 ⑧❌ = 链路本身能用、但应用没启动它。"
 echo "════════════════════════════════════════════════════════════"
 echo ""
