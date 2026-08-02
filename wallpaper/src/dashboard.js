@@ -2636,6 +2636,30 @@ window.gw.workshopBrowseMeta().then((meta) => {
   if (!browse.tags.length) browse.tags = meta.defaultTags || [];
   renderBrowseControls(meta);
   document.getElementById('br-key-hint').textContent = meta.keyHint;
+  // ⚠️⚠️⚠️ **回填已存的凭证**（0.9.120）。用户 2026-08-02：
+  //   「这个能不能缓存一下啊，我每次打开软件都要填一遍」
+  //
+  // ⚠️ 它**本来就存着**（`workshop-set-key` / `workshop-set-steam` 都 writeConfig）
+  //   —— 问题是这边从来没读回来 ⟹ 输入框每次都是空的 ⟹ 看起来像没保存。
+  //   ⟹ 判据：**能保存的字段就要能回填**，否则用户没法确认它存了没有，
+  //     而"再填一遍"是他唯一能想到的办法。
+  //
+  // ⚠️ 用 `if (el && v)` 而不是无条件赋值：
+  //   · 元素可能不在（HTML 改过而这里没跟上 ⟹ 对 null 赋值会抛，
+  //     把后面的初始化全打断 —— 这个项目栽过）
+  //   · 值为空时不覆盖 —— 否则会把用户**正在输入**的内容清掉
+  //     （meta 是异步回来的，可能落在他打字之后）
+  if (meta.steam) {
+    const fill = (id, v) => {
+      const el = document.getElementById(id);
+      if (el && v) el.value = v;
+    };
+    fill('br-key', meta.steam.apiKey);
+    fill('ws-user', meta.steam.username);
+    fill('ws-pass', meta.steam.password);
+    // ⚠️ Guard 码有意不回填 —— 它几十秒就过期，填一个过期的只会让登录
+    //   失败得莫名其妙（主进程那边也没送它过来）。
+  }
   if (!meta.hasKey) {
     document.getElementById('br-state').innerHTML =
       '<span class="hint">配了 API key 才能浏览（下面那块）。'

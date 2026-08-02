@@ -6586,4 +6586,52 @@ check('浏览的默认排序从主进程那张表取，不写死', () => {
     + '（每次重渲染都弹一次）');
 });
 
+// ⚠️⚠️⚠️ **能保存的字段就要能回填**（0.9.120）。用户 2026-08-02：
+//   「这个能不能缓存一下啊，我每次打开软件都要填一遍」
+//
+// ⚠️ 而那几个值**本来就存着**（`workshop-set-key` / `workshop-set-steam` 都在
+//   writeConfig）—— 问题是面板只拿到 `hasKey`（一个布尔），**从来没拿到值本身**
+//   ⟹ 输入框每次打开都是空的 ⟹ 看起来像"没保存"，而用户唯一能想到的办法
+//   就是再填一遍。
+//   ⟹ 这不是"加缓存"，是**把已经存下来的东西显示出来**。
+//     判据：**能保存的字段就要能回填**，否则用户没法确认它到底存了没有。
+check('Steam 凭证回填（存了就要显示出来）', () => {
+  const src = codeOnly(mainSrc);
+  const meta = src.slice(src.indexOf("ipcMain.handle('workshop-browse-meta'"),
+    src.indexOf("ipcMain.handle('workshop-browse-meta'") + 1400);
+  assert.ok(meta.length > 200, '切不出 workshop-browse-meta ⟹ 断言失效');
+  // ① 三个字段要送回面板
+  for (const k of ['apiKey', 'username', 'password']) {
+    assert.ok(new RegExp(`${k}: \\(config\\.we\\.steam`).test(meta),
+      `browse-meta 没送回 ${k} ⟹ 面板那个输入框永远是空的，用户以为没保存`);
+  }
+  // ②⚠️ Guard 码**有意不回填** —— 它几十秒就过期，回填一个过期的码
+  //   只会让登录失败得莫名其妙。
+  assert.ok(!/guardCode: \(config\.we\.steam/.test(meta),
+    'browse-meta 把 guardCode 也送回去了 ⟹ 那是一次性的、几十秒过期，'
+    + '回填一个过期的码会让登录失败得莫名其妙');
+
+  // ③ 面板要真的填进输入框
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  for (const id of ['br-key', 'ws-user', 'ws-pass']) {
+    assert.ok(dash.includes(`fill('${id}'`), `面板没回填 #${id}`);
+  }
+  // ⚠️⚠️ `if (el && v)` 两个判断都要在：
+  //   · el 可能不在（HTML 改过而这里没跟上 ⟹ 对 null 赋值会抛，
+  //     把后面的初始化全打断 —— 这个项目栽过）
+  //   · v 为空时不许覆盖 —— meta 是异步回来的，可能落在用户打字之后，
+  //     无条件赋值会把他正在输入的内容清掉
+  assert.match(dash, /if \(el && v\) el\.value = v;/,
+    '回填没判 `el && v` ⟹ 元素不在时会抛（打断后面的初始化）、'
+    + '值为空时会清掉用户正在输入的内容');
+
+  // ④⚠️⚠️ **而诊断报告里必须照旧打码** —— 报告是要发给别人看的。
+  //   回填和打码是两个方向：给自己的面板可以给明文，给别人的报告不行。
+  assert.match(src, /copy\.we\.steam\.apiKey = '\*\*\*'/,
+    '诊断报告不再给 apiKey 打码 ⟹ 那份报告是要发出去的');
+  assert.match(src, /copy\.we\.steam\.password = '\*\*\*'/, '密码没打码');
+  assert.match(src, /copy\.we\.steam\.guardCode = '\*\*\*'/, 'Guard 码没打码');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

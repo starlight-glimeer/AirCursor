@@ -2934,6 +2934,28 @@ ipcMain.handle('workshop-browse-meta', () => ({
   typeTags: Workshop.TYPE_TAGS_QUERY,
   hasKey: !!(config.we.steam && config.we.steam.apiKey),
   keyHint: Workshop.apiKeyHint(),
+  // ⚠️⚠️⚠️ **把已存的值送回面板**（0.9.120）。用户 2026-08-02：
+  //   「这个能不能缓存一下啊，我每次打开软件都要填一遍」
+  //
+  // ⚠️ 而它**本来就存着**（`workshop-set-key` 那条一直在 writeConfig）——
+  //   问题是面板只拿到 `hasKey`（一个布尔），**从来没拿到值本身**
+  //   ⟹ 输入框每次打开都是空的 ⟹ 看起来像"没保存"。
+  //   ⟹ 这不是"加缓存"，是**把已经存下来的东西显示出来**。
+  //     判据：**能保存的字段就要能回填**，否则用户没法确认它到底存了没有。
+  //
+  // ⚠️⚠️ 这三个都是凭证，而它们**只在本机的 config.json 里**、只发给我们自己的
+  //   面板窗口（contextIsolation + 我们自己的 preload）。而**诊断报告里是打码的**
+  //   （`redactConfig` 把 password/guardCode/apiKey 都换成 `***`）——
+  //   那条必须保持，因为报告是要发给别人看的。
+  steam: {
+    apiKey: (config.we.steam && config.we.steam.apiKey) || '',
+    username: (config.we.steam && config.we.steam.username) || '',
+    // ⚠️ 密码也回填 —— 不回填的话用户每次下载都要重输，而它已经存在磁盘上了
+    //   （不回填并不会更安全，只是让人以为没存）。
+    password: (config.we.steam && config.we.steam.password) || '',
+    // ⚠️ Guard 码**不回填** —— 它是一次性的、几十秒就过期，
+    //   回填一个过期的码只会让登录失败得莫名其妙。
+  },
 }));
 
 // 「我的壁纸」：扫所有存储目录，不管壁纸是怎么来的。
