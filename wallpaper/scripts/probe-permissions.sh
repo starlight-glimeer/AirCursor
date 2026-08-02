@@ -165,6 +165,31 @@ echo "⑦ 配置里那两个开关"
 #   而它读打包后 package.json 的 `productName`（GestureWall）—— 但源码里顶层
 #   `name` 是 `aircursor`。两者不一致 ⟹ 我**不确定**实际落在哪个目录，
 #   而猜错的话这一条会报"没有配置文件"，把一个好的前提说成坏的。
+# ⚠️⚠️ **把所有可能的 config.json 全列出来**（0.9.100）。
+#   用户那次输出里 ⑦ 说"最后写入 Jul 30"而 ⑧ 说 helper 正在跑 —— 矛盾。
+#   而最可能的解释是**存在多个 config.json，应用写的不是我读的那个**
+#   （`app.getPath('userData')` 用 `app.getName()`，而源码 name 是 aircursor、
+#    productName 是 GestureWall ⟹ 打包版和开发模式可能落在不同目录）。
+#   ⟹ 不"挑一个"就完事：全列出来，带时间戳和 dir 值。**刚写的那个才是真的。**
+echo "   —— 所有找到的 config.json（时间戳 + dir）——"
+FOUND_CFG=0
+for d in GestureWall aircursor Electron; do
+  C="$HOME/Library/Application Support/$d/config.json"
+  if [ -f "$C" ]; then
+    FOUND_CFG=1
+    TS=$(stat -f '%Sm' "$C" 2>/dev/null || stat -c '%y' "$C" 2>/dev/null)
+    DIRV=$(node -e "try{const c=require('$C');console.log((c.we&&c.we.dir)||'null')}catch(e){console.log('读不了')}" 2>/dev/null)
+    echo "      $C"
+    echo "         写入 $TS   dir=$DIRV"
+  fi
+done
+[ "$FOUND_CFG" = "0" ] && echo "      （一个都没找到）"
+# ⚠️ 再兜一层：直接扫整个 Application Support，别赌目录名
+echo "   —— 兜底：全盘扫一下（可能有我没想到的目录名）——"
+find "$HOME/Library/Application Support" -maxdepth 2 -name config.json \
+  -newermt '2026-08-01' 2>/dev/null | head -5 | sed 's/^/      /' \
+  || echo "      （扫不到 / find 不支持 -newermt）"
+
 CFG=""
 for d in GestureWall aircursor; do
   C="$HOME/Library/Application Support/$d/config.json"
