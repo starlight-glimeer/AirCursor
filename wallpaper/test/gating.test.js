@@ -6266,4 +6266,61 @@ check('video 壁纸：音轨解码失败的提示和重试', () => {
     '<video> 没有 muted ⟹ 壁纸会出声（而且 autoplay 会被浏览器挡）');
 });
 
+// ⚠️⚠️⚠️ **封面那条链的字段名一直是错的**（0.9.110）。用户 2026-08-02 的截图里
+//   左下角歌曲卡：歌名「Come Around Me」、歌手「Justin Bieber · Changes」都对，
+//   而**封面框是空的**。
+//
+// `we-host.js` 的 `mediaThumbnail()` 读 `track.artwork` —— 而 `nowplaying.js`
+// 给出的字段叫 **`artworkData`（base64）+ `artworkMimeType`**，压根没有 `artwork`
+// ⟹ `thumbnail` 恒为 `''` ⟹ **所有向我们要封面的壁纸都拿不到封面**
+//（不止我们自己那个，工坊里那些 Media Integration 壁纸也一样）。
+//
+// ⚠️ 而它**不报任何错**：壁纸收到空字符串通常就是不画封面 ⟹ 症状是"有歌名没封面"，
+//   而那看起来像"这首歌本来就没有封面图"。
+//   ⟹ 又一条"接了一半的链"，和语音那个「点」是同一个形状。
+check('壁纸拿到的封面是能直接用的 data URL', () => {
+  const host = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8'));
+  const fn = host.slice(host.indexOf('function mediaThumbnail'),
+    host.indexOf('function mediaPlayback') > 0
+      ? host.indexOf('function mediaPlayback') : host.indexOf('function mediaTimeline'));
+  assert.ok(fn.length > 100, `切不出 mediaThumbnail（长度 ${fn.length}）⟹ 断言失效`);
+  // ⚠️ 不许再读那个不存在的字段
+  assert.ok(!/track\.artwork\b/.test(fn),
+    'mediaThumbnail 又在读 track.artwork ⟹ **那个字段不存在**'
+    + '（nowplaying.js 给的是 artworkData + artworkMimeType）⟹ 封面恒为空');
+  assert.match(fn, /artworkData/, 'mediaThumbnail 没读 artworkData ⟹ 拿不到封面');
+  // ⚠️⚠️ WE 的契约里 thumbnail 是**能直接塞进 img.src 的字符串**
+  //   ⟹ base64 必须拼成 data URL，光给 base64 壁纸那边用不了。
+  assert.match(fn, /data:\$\{mime\};base64,/,
+    'thumbnail 没拼成 data URL ⟹ 壁纸拿到一串裸 base64，塞进 img.src 是无效 URL');
+  // ⚠️ 而 mime 要有兜底 —— 播放器不报类型时 undefined 会让 data URL 失效
+  assert.match(fn, /\|\| 'image\/jpeg'/, 'mime 没兜底 ⟹ 拿不到类型时整个 data URL 失效');
+});
+
+// ⚠️⚠️ **我们自己写的壁纸走 `web` 那条路径**（0.9.110）。用户 2026-08-02：
+//   「优化器的开发原则不应该是针对某一张壁纸，而是一个类型」
+//
+// **这个原则对，而它正是 TYPES 那张表存在的理由。** 所以 `wallpapers/album-orbit`
+// 不是"给某张壁纸开的特例"—— 它是 `web` 这个类型的**验收用例**：
+//   拖拽 → 0.9.108 那个修复；音频 → wantsAudio；封面 → mediaThumbnail（这次修的）。
+check('自带壁纸是标准 Web 类型（不是特例路径）', () => {
+  const dir = path.join(__dirname, '..', '..', 'wallpapers', 'album-orbit');
+  assert.ok(fs.existsSync(dir), 'wallpapers/album-orbit 不在了');
+  const proj = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+  // ⚠️ type 必须是 Web —— 我们支持的是**类型**，自带壁纸不该有自己的路径
+  assert.match(String(proj.type), /^web$/i,
+    `自带壁纸的 type 是 ${proj.type} ⟹ 它该走标准 web 路径，不是一条特例`);
+  assert.ok(fs.existsSync(path.join(dir, proj.file)), `入口文件 ${proj.file} 不在`);
+  // ⚠️ 要音频就必须声明 —— 不声明的话 wantsAudio 是 false，宿主根本不送数据
+  //   （we-host.js 那行：supportsaudioprocessing || audio.enabled）
+  assert.ok(proj.audio && proj.audio.enabled === true,
+    '自带壁纸没声明 audio.enabled ⟹ wantsAudio 为 false ⟹ 宿主不送音频数据，'
+    + '而症状是"壁纸不跟音乐"（看起来像壁纸的 bug）');
+  // ⚠️ preview 不能是 SVG —— 它同时被当成桌面占位图，而 macOS 不认 SVG
+  assert.ok(!/\.svg$/i.test(String(proj.preview)),
+    'preview 指向 SVG ⟹ 它还被 setSystemWallpaper 当桌面占位图用，macOS 不认');
+  assert.ok(fs.existsSync(path.join(dir, proj.preview)), `preview ${proj.preview} 不在`);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

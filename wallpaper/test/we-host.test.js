@@ -303,7 +303,14 @@ console.log('\n  media 四通道');
 
 const track = {
   title: '歌名', artist: '歌手', album: '专辑',
-  artwork: 'data:image/png;base64,AAA', playing: true,
+  // ⚠️⚠️⚠️ **这里原来写的是 `artwork: 'data:image/png;base64,AAA'`** ——
+  //   而**真实的 track 里没有 `artwork` 这个字段**（`nowplaying.js` 给的是
+  //   `artworkData`（裸 base64）+ `artworkMimeType`）。
+  //   ⟹ 这条测试一直是绿的，而真机上**封面一直是空的**
+  //     （用户 2026-08-02 的截图坐实：歌名歌手都对、封面框空白）。
+  //   ⟹ 教训：**fixture 必须长得像真实数据**，否则它测的是一个不存在的世界。
+  //     而这个错还骗过了两层：既让 bug 活着，又让修 bug 的人看到"测试红了"。
+  artworkData: 'AAA', artworkMimeType: 'image/png', playing: true,
   position: 42, duration: 210,
 };
 

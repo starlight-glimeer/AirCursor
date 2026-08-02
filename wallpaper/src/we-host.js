@@ -46,6 +46,30 @@ const TYPES = {
   scene: { support: 'none', label: '场景（WE 编辑器格式）' },
   // 别人编译的 Windows .exe。跑不了也不该跑（用户已明确不做）。
   application: { support: 'none', label: 'Windows 程序' },
+  // ⚠️⚠️⚠️ **用户 2026-08-02 的提法值得记下来**：
+  //   「优化器的开发原则不应该是针对某一张壁纸，而是一个类型。你看我们已经支持
+  //     web 和 video 了，那 scene 其实就相当于支持一种这样的类型」
+  //
+  // **这个原则完全对，而它正是这张表存在的理由** —— 我们支持的是**类型**
+  // （每种一条渲染路径），不是"某个壁纸"。
+  //
+  // ⚠️⚠️ 但 scene 那一行的 `support: 'none'` **不是没做，是评估过之后的决定**
+  //   （`aicursor-helper/scene-wallpaper-feasibility.md`，2026-07-30，
+  //    读了 30470 行 C++）。结论是"技术上可行，但不是现在该做的"，因为：
+  //     · Scene 是 WE 编辑器的私有格式：PKGV 归档 + TEXV/DXT 纹理 +
+  //       它自己方言的 GLSL + 粒子系统
+  //     · 唯一真实现了它的是 linux-wallpaperengine（C++/OpenGL，粒子 2587 行、
+  //       shader 1488 行），而它**从没在 macOS 上构建过**（CI 只有 ubuntu）
+  //     · ⟹ 性质是"移植一个没人在 mac 上构建过的 30k 行 C++ 项目"，
+  //       会把技术栈从 Electron 一路拉到 C++/CMake/OpenGL
+  //
+  // ⚠️ 而**我们自己写的壁纸（`wallpapers/album-orbit`）走的是 `web` 那条**——
+  //   它就是 HTML+JS，和工坊里那些交互式壁纸同一条路径。
+  //   ⟹ 那不是"给某张壁纸开的特例"，它验的正是 web 这个类型的能力
+  //     （拖拽 → 0.9.108 那个修复、音频 → wantsAudio、封面 → mediaThumbnail）。
+  //   ⟹ 所以"拿它当实验开刀"的收益是**修 web 这条通路上的洞**，
+  //     而这一轮已经修出两个：drag 不带按键状态、mediaThumbnail 字段名写错。
+
   // ⚠️ image **不是 WE 的类型** —— WE 只有上面四种。
   //
   // 这一项是**我们自己造的**：legacy 时代的工坊物品是单文件上传（Steam 存成
@@ -376,8 +400,25 @@ function mediaProperties(track) {
 }
 
 function mediaThumbnail(track) {
+  // ⚠️⚠️⚠️ **字段名一直是错的**（0.9.110 修）。用户 2026-08-02 的截图里
+  //   左下角歌曲卡的封面框是**空的**（歌名/歌手都对）。
+  //
+  // 这里原来读 `track.artwork` —— 而 `nowplaying.js` 给出的字段叫
+  // **`artworkData`（base64）+ `artworkMimeType`**，压根没有 `artwork`
+  // ⟹ `track.artwork` 恒为 undefined ⟹ thumbnail 恒为 `''`
+  // ⟹ **所有向我们要封面的壁纸都拿不到封面**（不止我们自己那个，
+  //   工坊里那些 Media Integration 壁纸也一样）。
+  //
+  // ⚠️ 而它**不报任何错**：壁纸收到空字符串，通常就是不画封面
+  //   ⟹ 症状是"有歌名没封面"，而那看起来像"这首歌没有封面图"。
+  //   ⟹ 这就是那种"接了一半的链"，和语音那个「点」是同一个形状。
+  //
+  // ⚠️⚠️ WE 的契约里 thumbnail 是**可以直接塞进 `img.src` 的字符串**
+  //   ⟹ 必须拼成 data URL（`wall.js` 里那处就是这么用的）。
+  const data = track && track.artworkData;
+  const mime = (track && track.artworkMimeType) || 'image/jpeg';
   return {
-    thumbnail: (track && track.artwork) || '',
+    thumbnail: data ? `data:${mime};base64,${data}` : '',
     primaryColor: (track && track.primaryColor) || '',
     textColor: (track && track.textColor) || '',
   };
