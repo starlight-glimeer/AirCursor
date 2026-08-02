@@ -591,7 +591,8 @@ check('默认走 DeepSeek，且 base URL 不带 /v1（官方文档的形状）',
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const at = main.indexOf('    ai: {');
   assert.ok(at > 0, 'defaultConfig 里找不到 ai 块 —— 锚点变了，这条守卫要跟着改');
-  const block = main.slice(at, at + 700);
+  // ⚠️ 切到这个对象字面量的结尾（`\n    },`），不用固定长度 —— 见 gating 里那条守卫
+  const block = main.slice(at, main.indexOf('\n    },', at));
   assert.match(block, /provider: 'openai'/, '默认提供方不是 openai 兼容那支');
   // ⚠️ 锚定"不带 /v1" —— DeepSeek 官方文档写的是 https://api.deepseek.com。
   //   加了 /v1 的症状是 404，而那看起来像"地址填错了"。
@@ -674,7 +675,8 @@ check('面板：探针发现是推理模型要当场提醒（"通了"不等于"�
   assert.ok(at > 0, '找不到探针按钮的处理');
   // ⚠️ 切到下一个 `aiEl('…')` 的绑定处（那是这一段的天然结尾），不用固定长度
   const end = dash.indexOf('\nwindow.gw.onGenProgress', at);
-  const body = dash.slice(at, end > 0 ? end : at + 2500);
+  assert.ok(end > at, '找不到这一段的结尾锚点（onGenProgress）—— 这条守卫要跟着改');
+  const body = dash.slice(at, end);
   assert.match(body, /r\.thinks/,
     '面板没检查 thinks ⟹ 用户会看到"通了"然后等几分钟再失败');
   // ⚠️ 不能只 match /推理模型/ —— 这段里它出现**两次**（提醒的标题句 + 解释句）

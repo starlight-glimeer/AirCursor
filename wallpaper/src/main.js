@@ -796,6 +796,36 @@ function migrateConfig(cfg) {
       + '（Bedrock 要申请模型访问权，门槛太高；apiKey 保持不动）');
   }
 
+  // ⚠️⚠️⚠️ **清掉壁纸动作的存量录制**（0.9.130）。用户 2026-08-02：
+  //   「壁纸动作那些都删掉，只保留系统动作」
+  //
+  // ⚠️ 光删面板上那一段**会留一个静默的坑**：`input.js` 的 `updateRecorded()`
+  //   遍历的是 `config.recorded` 里**所有**条目（不是"面板上显示的那些"）
+  //   ⟹ 用户以前录过的壁纸手势会继续匹配、继续触发，
+  //     而面板上已经没有任何地方能看到或关掉它们。
+  //   ⟹ 症状是"我做某个手势画面就动一下，而设置里找不到这一项" ——
+  //     那种"看不见的东西在生效"是这个项目最贵的一类 bug。
+  //
+  // ⚠️ 判据：**删入口之前先问"这个功能的状态存在哪、谁还在读它"。**
+  //   （反过来那次也栽过：三层接好了而面板零入口，功能静默不可用。）
+  //
+  // ⚠️ 写死这 8 个 id 而不是"凡是 !system 的都清"：
+  //   前者在动作表变了之后**行为不变**（多一个壁纸动作不会被这条误清），
+  //   后者会把以后任何新加的非系统动作也一起清掉。
+  //   ⟹ 一次性迁移要锚定**当时那批具体的东西**，不是一条会继续生效的规则。
+  const WALL_ACTIONS = ['zoom', 'parallax', 'yawLeft', 'yawRight',
+    'pitchUp', 'pitchDown', 'spin', 'resetView'];
+  if (cfg.recorded && typeof cfg.recorded === 'object') {
+    const dropped = WALL_ACTIONS.filter((id) => cfg.recorded[id]);
+    if (dropped.length) {
+      for (const id of dropped) delete cfg.recorded[id];
+      changed = true;
+      console.log(`[config] 迁移：清掉 ${dropped.length} 个壁纸动作的录制`
+        + `（${dropped.join(', ')}）—— 面板上已经没有这一段了，`
+        + '留着会继续触发而用户看不到、也关不掉');
+    }
+  }
+
   cfg.we = we;
   return changed;
 }

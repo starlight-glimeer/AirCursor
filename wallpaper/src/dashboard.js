@@ -653,11 +653,12 @@ const SLOT_OPTIONS = [
 // ---------------------------------------------------------------------------
 // 手势分区
 // ---------------------------------------------------------------------------
-function renderGestureLead() {
-  const t = T.template(config.template);
-  document.getElementById('ges-lead').textContent =
-    `「${t.label}」这套模板的手势。换模板会换一整套动作：手势和模板是绑定的。`;
-}
+// ⚠️⚠️ 这里原来是 `renderGestureLead()` —— **0.9.130 随那句 lead 一起删了**
+//   （用户点名）。而它必须**连函数一起删**，不能只删 HTML：
+//   `document.getElementById('ges-lead').textContent = …` 对 null 赋值会抛，
+//   而它在 `apply()` 里被调 ⟹ 后面所有开关都绑不上，症状是"点什么都没反应"。
+//   ⚠️ 这个项目为这件事栽过一轮（见文件末尾 apply() 那段注释）。
+//   ⟹ 判据：**删 DOM 元素时同步 grep 它的 id**，光删 HTML 是留一个定时炸弹。
 
 // 录制选项：静态还是动态、几只手。
 //
@@ -798,7 +799,15 @@ function renderRecordables() {
   // ⚠️ 第二个参数（includePro）恒传 true —— 0.9.106 起没有"档"这个概念了，
   //   所有动作都在 basic 里。留着这个参数是因为 actionsOf 还有别的调用方。
   const grouped = T.groupedActions(config.template, true);
-  renderActionGroup('recordables', grouped.wall.filter((a) => a.recordable));
+  // ⚠️⚠️ **只渲染系统动作**（0.9.130）。用户 2026-08-02：
+  //   「壁纸动作那些都删掉，只保留系统动作」
+  //
+  // ⚠️ 这里原来还有一行 `renderActionGroup('recordables', grouped.wall…)` ——
+  //   那 8 个动作驱动的是我们自己的三层景深壁纸，而产品重心早就是
+  //   "放 Wallpaper Engine 的壁纸"了 ⟹ 它们服务一个用户基本不用的形态。
+  // ⚠️ `grouped.wall` 那半边现在没人用了，但 `groupedActions` **保持不动** ——
+  //   它是 templates.js 的公开函数、有测试，而"没人用某个返回字段"
+  //   不是删它的理由（删了以后想加回壁纸动作要重写）。
   renderActionGroup('systemActions', grouped.system.filter((a) => a.recordable));
 }
 
@@ -1204,7 +1213,7 @@ function apply(next) {
   // renderLayers / renderSlots / renderPresets / renderGallery / renderStrategy 一起走了。
   // 三层景深的**渲染**还在(它是 WE 壁纸未装载时的底),只是不再暴露参数。
   renderBuildStamp();
-  renderGestureLead();
+  // ⚠️ renderGestureLead() 0.9.130 删了（那句 lead 撤了）—— 见它原来的位置。
   renderRecordables();
   renderToggles();
   cursorToggle.checked = !!config.controlCursor;
@@ -3393,6 +3402,10 @@ function sideExpand() {
   sideSyncCollapse();
 }
 
+// ⚠️ 重读 AI 工坊那一栏的工作目录 —— 换壁纸目录之后要调它（见 renderMineDirs）。
+//   ⚠️ 同样是模块级变量：实现在下面那个 try 块里，而 renderMineDirs 在它之前。
+let aiRefreshWorkdir = null;
+
 let aiCloseWorkshop = null;
 // ⚠️ 打开入口同理 —— 网格里那张「新建」卡片是 renderMine 建的，
 //   而 renderMine 在这个文件里比 AI 那个 try 块**靠前** ⟹ 也拿不到 aiSetOpen。
@@ -3483,14 +3496,34 @@ function renderMineDirs() {
   // ⟹ "我的壁纸放哪"这个问题必须一眼看到答案，而不是等到"一个都没找到"时才出现。
   window.gw.ourWallpaperDir().then((res) => {
     if (!res || !res.ok) return;
+    // ⚠️⚠️⚠️ **一行，而且改用 flex**（0.9.130）。用户 2026-08-02：
+    //   「那个巨长的更换目录不好看」
+    //
+    // ⚠️ 根因和 AI 那个入口按钮同一个：这一行原来用 `.bar-row`
+    //   （`grid-template-columns: 1fr auto`，**只有两列**），
+    //   而它 append 了 **4~5 个**子元素（路径 / 打开 / 更换目录 / 恢复默认 / 计数）
+    //   ⟹ 超出的那些落进 grid 的**隐式列**，宽度由剩余空间瓜分
+    //   ⟹ 「更换目录」那一格被拉开，看起来就是"一个巨长的按钮"。
+    //
+    // ⚠️⚠️ 我第一版把它拆成了两行（信息一行 + 操作一行），而**那和用户
+    //   0.9.50 明确要求过的"这个应该一行，现在是两行"相冲** ⟹ 问了他，
+    //   他要一行。⟹ 回到一行，改的是**布局工具**：
+    //     grid（列数固定）→ flex（各自自然宽度、路径吃剩余）
+    //   ⚠️ 判据：**子元素个数不固定的时候别用固定列数的 grid。**
+    //     而"巨长按钮"这个症状在这个项目里出现三次了，三次都是同一个原因。
+    // ⚠️ 代价说清楚：窗口窄时路径会被挤短（`min-width: 0` + ellipsis）——
+    //   而完整路径在 `title` 里（悬停可见），且它本来就可以选中复制。
     const box = document.createElement('div');
-    box.className = 'bar-row';
-    box.style.cssText = 'align-items:baseline;margin-bottom:8px';
+    box.style.cssText = 'display:flex;align-items:baseline;gap:8px;margin-bottom:8px';
     const label = document.createElement('span');
     label.className = 'hint';
     label.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11px;'
-      + 'user-select:text;flex:1';
+      + 'user-select:text;flex:1;min-width:0;margin:0;'
+      // ⚠️ 一行 + 超出打点：不这么做的话长路径会把按钮挤出容器
+      //   （flex 项默认 min-width:auto，内容撑得下就不肯缩）。
+      + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
     label.textContent = `我的壁纸目录：${res.dir}`;
+    label.title = res.dir;
 
     // 计数：和路径同一行，跟在按钮后面。⚠️ 还没扫完时不显示（而不是显示 0）——
     // "0 个壁纸"和"还没扫"是两件事，而写 0 会让人以为目录是空的。
@@ -3532,6 +3565,18 @@ function renderMineDirs() {
       // ⚠️ 换完立刻刷新，而且要提示"旧目录没动" ——
       // 新目录空的话列表会空，用户需要知道那是预期的。
       await renderMine();
+      // ⚠️⚠️ **AI 工坊那一栏显示的工作目录也要跟着变**（0.9.130）。
+      //   用户 2026-08-02：「AI 的默认工作区是壁纸的存放位置，那我更改了
+      //   存放的位置，这里应该同步的吧」
+      //
+      // ⚠️ 主进程那边**本来就是对的**：`gen-meta` 和生成落盘都走
+      //   `ensureOurWallpaperDir()`，而它读 `config.we.wallpaperDir`
+      //   ⟹ 生成的壁纸真的会去新目录。
+      //   问题只在**面板上那行字是打开 AI 时读一次的** ⟹ 换了目录之后
+      //   它还显示旧路径 ⟹ 用户会以为生成的东西去了旧地方。
+      //   ⟹ 判据：**一个"显示某个配置"的地方，那个配置变了就要重读** ——
+      //     否则界面在说谎，而那比不显示更糟。
+      if (aiRefreshWorkdir) await aiRefreshWorkdir();
       if (out.before && out.before !== out.dir) {
         // ⚠️ 我第一版写 `mineState.innerHTML` —— **那个变量不存在**。
         // `renderMine` 里的叫 `state`（局部的），而这里是 `renderMineDirs`。
@@ -3569,9 +3614,13 @@ function renderMineDirs() {
     //
     // ⚠️ 而它不做轮询是故意的：扫描要遍历磁盘（Steam 那个目录 639MB），
     // 每隔几秒扫一次会一直占着 IO。
-    box.append(label, open, change);
+    // ⚠️ 计数和按钮都 `flex:none`（各自自然宽度）—— 只有路径那一格伸缩。
+    //   ⚠️ 这正是"巨长按钮"的解法：grid 里没法说"只有这一格伸缩"，
+    //     而 flex 里那就是默认（其余项不 grow）。
+    countEl.style.cssText += ';margin:0;flex:none';
+    for (const b of [open, change, reset]) b.style.flex = 'none';
+    box.append(label, countEl, open, change);
     if (!isDefault) box.append(reset);
-    box.append(countEl);
     // ⚠️ 插到最前面而不是 append —— 这个函数是异步回调，
     // 直接 append 会让它落在已经渲染好的目录列表后面（顺序随机）。
     host.insertBefore(box, host.firstChild);
@@ -3993,21 +4042,32 @@ function aiSetBusy(busy) {
   }
 }
 
-async function aiRefreshMeta() {
-  const meta = await window.gw.genMeta();
-  if (!meta) return;
+// ⚠️⚠️ **只画工作目录那一行**（0.9.130 抽出来的）。
+//   换壁纸目录之后要重读它（用户点名："AI 的默认工作区是壁纸的存放位置，
+//   那我更改了存放的位置，这里应该同步的吧"），而**不能顺手动别的** ——
+//   `aiRefreshMeta()` 还会 `wrap.open = !meta.hasKey`（折叠凭证区）
+//   和回填 key 输入框 ⟹ 用户正在里面打字时会被收起来 / 被覆盖。
+//   ⚠️ 我第一版就是直接 `aiRefreshWorkdir = () => aiRefreshMeta()`，
+//     而注释里写着"只重读目录那一行，不动 key 输入框" —— **那句话是假的**。
+//   ⟹ 判据：**注释说了什么，代码就得真的是什么。** 抽出来。
+function aiPaintWorkdir(dir) {
   const dirNode = document.getElementById('ai-dir');
+  if (!dirNode || !dir) return;
   // ⚠️⚠️ **340px 的栅装不下完整路径**（0.9.127）。原来这里写两行
   //   （"生成的壁纸放在这里：\n<完整路径>"），那在 620px 的弹窗里还行，
   //   在右栅里会折成四行、或者被 ellipsis 砍掉尾巴（而尾巴才是有用的部分）。
   //   ⟹ 只显示**尾部两段**（`GestureWall/Wallpapers`）—— 那足够认出是哪儿，
   //     完整路径进 `title`（悬停可见）。
   // ⚠️ 而"这是干什么的"由那个文件夹图形 + 悬停提示承担，不再占一行正文。
-  if (dirNode && meta.dir) {
-    const segs = String(meta.dir).split('/').filter(Boolean);
-    dirNode.textContent = segs.slice(-2).join('/') || meta.dir;
-    dirNode.title = `生成的壁纸放在这里，点开在 Finder 里看：\n${meta.dir}`;
-  }
+  const segs = String(dir).split('/').filter(Boolean);
+  dirNode.textContent = segs.slice(-2).join('/') || dir;
+  dirNode.title = `生成的壁纸放在这里，点开在 Finder 里看：\n${dir}`;
+}
+
+async function aiRefreshMeta() {
+  const meta = await window.gw.genMeta();
+  if (!meta) return;
+  aiPaintWorkdir(meta.dir);
   const keyInput = aiEl('ai-key');
   // ⚠️ **回填已存的 key** —— 这个项目刚为"每次打开都要重填"栽过一轮（0.9.122，
   //   根因是 mergeConfig 撞 null 默认值抛异常，整份 config 被静默重置）。
@@ -4053,6 +4113,12 @@ aiOpenWorkshop = async () => {
 // ⚠️ 把关闭入口交给模块级变量 —— Esc 那条 handler 在这个 try 块**外面**，
 //   而 `function aiSetOpen` 是块级作用域，它看不到。见上面那段注释。
 aiCloseWorkshop = () => aiSetOpen(false);
+// ⚠️ **真的只重读目录那一行** —— 不碰 key 输入框、不折叠凭证区
+//   （用户可能正在里面打字）。见 aiPaintWorkdir 上面那段。
+aiRefreshWorkdir = async () => {
+  const meta = await window.gw.genMeta();
+  if (meta) aiPaintWorkdir(meta.dir);
+};
 
 if (aiEl('ai-close')) aiEl('ai-close').onclick = () => aiSetOpen(false);
 

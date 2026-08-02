@@ -2451,6 +2451,138 @@ check('.bar-row 的第一格不放按钮（那会被 1fr 拉成通栏）', () =>
     + '⟹ 用 .bar-row.tight（两格都 auto），或者别用这个网格');
 });
 
+// ⚠️⚠️ **手势页只留系统动作**（0.9.130）。用户 2026-08-02：
+//   「手势这里的这句『「景深舞台」这套模板的手势…』删掉，
+//     然后壁纸动作那些都删掉，只保留系统动作」
+check('手势页只渲染系统动作，那句模板 lead 也撤了', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const body = html.slice(html.indexOf('<body>')).replace(/<!--[\s\S]*?-->/g, '');
+
+  assert.ok(!body.includes('id="recordables"'),
+    '「壁纸动作」那个容器还在 ⟹ 用户点名删掉那一段');
+  assert.ok(!body.includes('id="ges-lead"'),
+    '那句模板 lead 的容器还在');
+  // ⚠️ 系统动作那段**必须留着**（用户说的是"只保留系统动作"）
+  assert.match(body, /id="systemActions"/,
+    '系统动作那段也删掉了 ⟹ 那一页什么都没有了');
+
+  // ⚠️⚠️ 删 DOM 要**连读它的 JS 一起删** —— 对 null 赋值会抛，
+  //   而 renderGestureLead 在 apply() 里被调 ⟹ 后面所有开关都绑不上
+  //   （症状是"点什么都没反应、也不报错"）。这个项目为这件事栽过一轮。
+  const code = codeOnly(dash);
+  assert.ok(!/getElementById\('ges-lead'\)/.test(code),
+    "还在读 #ges-lead ⟹ 那个元素已经删了，对 null 赋值会抛并挡住 apply()");
+  assert.ok(!/renderActionGroup\('recordables'/.test(code),
+    '还在渲染 recordables ⟹ 那个容器已经删了');
+  assert.ok(!/renderGestureLead\(\)/.test(code),
+    '还在调 renderGestureLead ⟹ 那个函数已经删了');
+  // ⚠️ 而系统动作那条渲染必须在
+  assert.match(code, /renderActionGroup\('systemActions'/,
+    '不渲染系统动作了 ⟹ 手势页会是空的');
+});
+
+// ⚠️⚠️⚠️ **删入口之前要问"这个功能的状态存在哪、谁还在读它"**（0.9.130）。
+//
+// `input.js` 的 `updateRecorded()` 遍历的是 `config.recorded` 里**所有**条目
+// （不是"面板上显示的那些"）⟹ 光删 UI 的话，用户以前录过的壁纸手势会继续
+// 匹配、继续触发，而面板上已经没有地方能看到或关掉它们。
+// ⟹ 症状是"我做某个手势画面就动一下，而设置里找不到这一项" ——
+//   那种"看不见的东西在生效"是这个项目最贵的一类 bug。
+check('壁纸动作的存量录制被清掉（否则它们会静默继续触发）', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const at = main.indexOf('function migrateConfig');
+  assert.ok(at > 0, '找不到 migrateConfig');
+  const body = main.slice(at, main.indexOf('\n}', at));
+  assert.match(body, /WALL_ACTIONS/,
+    'migrateConfig 里没清壁纸动作的存量录制 ⟹ 它们会继续触发，'
+    + '而面板上已经没有任何地方能看到或关掉（input.js 的 updateRecorded '
+    + '遍历的是 config.recorded 里所有条目）');
+  assert.match(body, /delete cfg\.recorded\[id\]/, '没有真的删掉那些条目');
+  // ⚠️ 8 个 id 要全 —— 漏一个就是那一个会静默继续触发
+  for (const id of ['zoom', 'parallax', 'yawLeft', 'yawRight',
+    'pitchUp', 'pitchDown', 'spin', 'resetView']) {
+    assert.ok(body.includes(`'${id}'`),
+      `迁移里漏了 ${id} ⟹ 用户录过它的话会继续静默触发`);
+  }
+  // ⚠️⚠️ 而它必须是**写死那批 id**，不能写成"凡是 !system 的都清" ——
+  //   后者是一条会继续生效的规则，以后新加任何非系统动作都会被误清。
+  //   一次性迁移要锚定"当时那批具体的东西"。
+  assert.ok(!/!a\.system/.test(body) && !/grouped\.wall/.test(body),
+    '迁移用"凡是非系统动作都清"这类规则 ⟹ 以后新加的非系统动作会被误清。'
+    + '一次性迁移要写死当时那批 id');
+});
+
+// ⚠️⚠️ **AI 工作区跟着壁纸目录变**（0.9.130）。用户 2026-08-02：
+//   「AI 的默认工作区是壁纸的存放位置，那我更改了存放的位置，
+//     这里应该同步的吧」
+//
+// ⚠️ 主进程那边**本来就是对的**（gen-meta 和生成落盘都走 ensureOurWallpaperDir，
+//   它读 config.we.wallpaperDir）⟹ 生成的壁纸真的会去新目录。
+//   问题只在**面板上那行字是打开 AI 时读一次的** ⟹ 换目录之后它还显示旧路径
+//   ⟹ 用户会以为生成的东西去了旧地方。
+//   ⟹ 判据：**一个"显示某个配置"的地方，那个配置变了就要重读** ——
+//     否则界面在说谎，而那比不显示更糟。
+check('换壁纸目录后 AI 工坊显示的工作区跟着变', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+
+  // ① 主进程：两处都要走 ensureOurWallpaperDir（那是唯一读 config 的地方）
+  // ⚠️ 切到**结构边界**（下一个 ipcMain），不用固定长度 ——
+  //   gating 里那条守卫盯着这件事，而它是对的：固定长度的锚点会漂。
+  const metaAt = main.indexOf("ipcMain.handle('gen-meta'");
+  assert.ok(metaAt > 0, '找不到 gen-meta');
+  assert.match(main.slice(metaAt, main.indexOf('\nipcMain', metaAt + 10)),
+    /ensureOurWallpaperDir\(\)/,
+    'gen-meta 没走 ensureOurWallpaperDir ⟹ 它读不到用户换过的目录');
+  const genAt = main.indexOf("ipcMain.handle('gen-wallpaper'");
+  assert.ok(genAt > 0, '找不到 gen-wallpaper');
+  assert.match(main.slice(genAt, main.indexOf('\nipcMain', genAt + 10)),
+    /ensureOurWallpaperDir\(\)/,
+    '生成落盘没走 ensureOurWallpaperDir ⟹ 壁纸会写进旧目录');
+
+  // ② 面板：换目录之后要重读
+  // ⚠️ 切到下一个函数声明（结构边界），不用固定长度
+  const dirAt = dash.indexOf('function renderMineDirs');
+  const dirFn = dash.slice(dirAt, dash.indexOf('\nfunction ', dirAt + 10));
+  assert.match(dirFn, /aiRefreshWorkdir/,
+    '换目录之后没重读 AI 那一栏 ⟹ 它还显示旧路径，而生成的东西其实去了新目录'
+    + '（界面在说谎）');
+
+  // ③⚠️⚠️ 而它**只能重画目录那一行** —— 不许顺手调 aiRefreshMeta()：
+  //   那个函数还会折叠凭证区（`wrap.open = !meta.hasKey`）和回填 key 输入框
+  //   ⟹ 用户正在里面打字时会被收起来 / 被覆盖。
+  //   ⚠️ 我第一版就是直接调它，而注释里写着"只重读目录那一行，不动 key 输入框"
+  //     —— 那句话是假的。判据：**注释说了什么，代码就得真的是什么。**
+  assert.match(dash, /function aiPaintWorkdir\(/,
+    '没有独立的 aiPaintWorkdir ⟹ 重读目录会连带折叠凭证区、覆盖正在输入的 key');
+  const wdAt = dash.indexOf('aiRefreshWorkdir = async () =>');
+  assert.ok(wdAt > 0, 'aiRefreshWorkdir 的写法变了，这条守卫要跟着改');
+  const wdBody = dash.slice(wdAt, dash.indexOf('};', wdAt));
+  assert.ok(!/aiRefreshMeta/.test(wdBody),
+    'aiRefreshWorkdir 里调了 aiRefreshMeta ⟹ 会折叠凭证区、覆盖正在输入的 key');
+  assert.match(wdBody, /aiPaintWorkdir/, 'aiRefreshWorkdir 没有重画目录');
+});
+
+check('一个 id 在文档里只能有一个（重复的那个是静默死区）', () => {
+  // ⚠️⚠️ 真事故：`mine-state` 有**两个**（「我的壁纸」页 + 设置弹窗），
+  //   而 `getElementById` 永远只找到前面那个 ⟹ 弹窗里那个从头到尾没人写过，
+  //   它那个占位的 `-` 就一直挂在界面上。
+  //   用户 2026-08-02：「下面那个 - 也不知道是个什么东西」
+  //   ⟹ 判据：**重复的 id 不是"备用显示位"，是一个静默死区。**
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const body = html.slice(html.indexOf('<body>')).replace(/<!--[\s\S]*?-->/g, '');
+  const seen = new Map();
+  for (const m of body.matchAll(/id="([\w-]+)"/g)) {
+    seen.set(m[1], (seen.get(m[1]) || 0) + 1);
+  }
+  const dups = [...seen].filter(([, n]) => n > 1).map(([k, n]) => `${k}×${n}`);
+  assert.deepStrictEqual(dups, [],
+    `重复的 id：${dups.join(', ')}\n`
+    + '⟹ getElementById 只找到第一个，后面那些是写不进去的死区'
+    + '（它们的占位内容会一直挂在界面上）');
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。
@@ -4872,11 +5004,23 @@ check('目录行：一行装完 / 计数不写死 0 / 状态行只报异常', ()
   // ⟹ 计数不画了但守卫照样绿（反向验证第 2 条：报红 0）。
   // 这是"锚点太弱"的第 6 次 ⟹ 判据：断言要锚到**产生效果的那一句**。
   const dirFn = dash.slice(dash.indexOf('function renderMineDirs'));
-  assert.match(dirFn.slice(0, 3000),
+  assert.match(dirFn,
     /if \(lastMineCount\) \{[\s\S]{0,200}?countEl\.textContent = `\$\{lastMineCount\.total\}/,
     '计数没画进目录行 ⟹ 它还在 mine-state 里，那就是第二行（用户点名要一行）');
-  assert.match(dirFn.slice(0, 3000), /box\.append\(countEl\)/,
+  // ⚠️⚠️ 原来锚的是 `box.append(countEl)` —— 而 0.9.130 把这一行从
+  //   grid 改成 flex 之后写法变成了 `box.append(label, countEl, open, change)`
+  //   ⟹ 在正确代码上报红。
+  //   ⚠️ 判据：**锚"它有没有被挂进容器"，别锚"append 的参数排列"** ——
+  //     后者是写法，而写法会变。
+  assert.match(dirFn, /box\.append\([^)]*countEl/,
     '计数那一截没 append 进目录行的容器 ⟹ 建了但不显示（本项目第七次"做了但看不到"）');
+  // ⚠️⚠️ 而**一行**这件事要守住（用户 0.9.50 点名："这个应该一行，现在是两行"）。
+  //   ⚠️ 0.9.130 我为了修"巨长的更换目录"曾把它拆成两行，被这条守卫连带逮到 ——
+  //     然后问了用户，他要一行。⟹ 那个"巨长"的真因是 grid 列数固定，
+  //     改用 flex 之后一行也不会被拉长。
+  assert.match(dirFn, /box\.style\.cssText = 'display:flex/,
+    '目录行不是 flex 了 ⟹ 如果换回 .bar-row（grid 两列），'
+    + '第 3 个之后的子元素会落进隐式列被拉宽，那就是"巨长的更换目录"');
   assert.ok(!/state\.textContent = `\$\{result\.items\.length\} 个壁纸/.test(dash),
     '计数又写回 mine-state ⟹ 目录行和计数会变成两行');
 
