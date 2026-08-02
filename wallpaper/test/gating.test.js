@@ -1316,85 +1316,69 @@ check('WE 壁纸默认真壁纸层（能覆盖菜单栏），鼠标靠转发补�
   const defaults = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
     mainSrc.indexOf('let config = null'));
   assert.match(defaults, /strategy:\s*'desktop'/, 'we.strategy 的默认值不对');
-  // ⚠️⚠️⚠️ **鼠标转发默认关**（0.9.88 翻过来了）。用户 2026-08-02，第五轮：
-  //   「点一下壁纸，它会给我弹要辅助功能…关闭程序之后再打开再点一个壁纸，又会弹。
-  //     这都需要辅助功能吗？辅助功能起什么作用啊？」
+  // ⚠️⚠️⚠️ **鼠标转发默认开**（0.9.97 又翻回来了 —— 而这次有真机证据）。
   //
-  // ⚠️⚠️ 而这条守卫原来钉的是 `mouseForward: true`，理由是"不然 desktop 层的
-  //   壁纸点不动，等于回到旧的残废状态"。**那个理由把代价算漏了**：
-  //   它换来的是少数壁纸的点击特效，而代价是**每次开应用点第一个壁纸都被要权限**。
+  // 0.9.88 我把它改成默认关，理由是"它要辅助功能授权，而那让每次开应用点第一个
+  // 壁纸都被要权限"。**那个理由是错的**，2026-08-02 的探针
+  //（`scripts/probe-permissions.sh`，用户真机跑的）把它推翻了：
+  //     ❌ 辅助功能：未授权（helper 自己报 trusted: false）
+  //     ✅ 鼠标事件数：99
+  // **没授权，却抓到 99 个事件** ⟹ `addGlobalMonitorForEvents` 监听鼠标
+  // **不需要**辅助功能授权。（需要它的是键盘事件和 `CGEvent.post` 那类注入 ——
+  // 那是 AirCursorPointer 那条链，不是这条。）
   //
-  // ⚠️⚠️⚠️ **前四版修不掉"反复弹"的真正原因就在这里**：
-  //   那个框**不是我们的代码弹的**。0.9.87 我把所有
-  //   `AXIsProcessTrustedWithOptions` 删干净、全仓库零个弹框调用点 ——
-  //   而它照样弹，因为 macOS 在未授权进程调用 `addGlobalMonitorForEvents`
-  //   时**自己弹**。⟹ 删弹框调用没用，唯一的办法是**不启动那个 helper**。
-  //   而"启动它"的唯一开关就是 mouseForward。
+  // ⚠️⚠️ **而错的来源在 git 记录里写得很清楚**：
+  //   `009995a`「证伪：监听鼠标不需要辅助功能授权」（07-30）
+  //   `bd292a4`「初始化 NSApplication —— 全局鼠标监听静默收不到事件的根因」
+  //   那次"证伪"实验跑的 Swift 里**零处 `NSApplication.shared`**（查过了）
+  //   ⟹ 它的零事件是**那个**造成的。三天后我修了 NSApplication，
+  //   **却没回头重跑那个实验** ⟹ 错前提一路传到 0.9.88，
+  //   成了"默认关"的理由，还害用户连问六轮"为什么要辅助功能"。
   //
-  // ⚠️ 而它一直开着，是因为我在 defaultConfig 里写了句错注释：
-  //   「监听鼠标不需要辅助功能权限（键盘才需要）」—— 不对，
-  //   `addGlobalMonitorForEvents` 监听其他应用的事件，macOS 算它辅助功能。
-  //   ⟹ **整个 bug 建在一句我没验的注释上。**
-  assert.match(defaults, /mouseForward: false/,
-    '鼠标转发又默认开了 ⟹ 每次开应用装载第一个壁纸时 macOS 都会弹辅助功能框'
-    + '（那个框不是我们弹的，删不掉，只能不启动 helper）——'
-    + '用户连问五轮"这都需要辅助功能吗"');
-  // ⚠️⚠️ 这里原来还有一条 `!/监听鼠标不需要辅助功能权限/` —— **删了**。
-  //   它查的是注释文本，而新注释为了记录教训**引用了那句错话**
-  //   ⟹ 断言在正确代码上报红（第 6 次栽在"注释和守卫互相干扰"，这次是反方向：
-  //     以前是注释让守卫假绿，这次是注释让守卫假红）。
-  //   ⟹ 真正要钉的是**默认值**（上面那条），而"注释别写错"钉不住也不该钉。
-  //   改成正面断言：defaultConfig 那段必须写明它要授权。
-  // ⚠️ 锚**那个框是 macOS 自己弹的**这句 —— 那是这次真正学到的东西，
-  //   也是"为什么删弹框调用没用"的唯一解释。查"要辅助功能授权"不行：
-  //   那几个字在同一段注释里出现多次，改掉一处照样绿（反向验证逮到的）。
-  const mfBlock = defaults.slice(Math.max(0, defaults.indexOf('mouseForward') - 2200),
-    defaults.indexOf('mouseForward: false') + 20);
-  assert.ok(mfBlock.includes('mouseForward: false'), '切不出 mouseForward 那段 ⟹ 断言失效');
-  assert.match(mfBlock, /不是我们的代码弹的/,
-    'mouseForward 旁边没记"那个框是 macOS 自己弹的" ⟹ '
-    + '下一个人会像我一样去删弹框调用（我删干净了，它照样弹，白折腾四版）');
+  // ⟹ **教训：一个"证伪"结论的有效期，只到它依赖的前提被改动为止。**
+  //
+  // ⚠️ 而"每次开应用都弹框"那个**真实症状**的根因是 helper 名字带 hash
+  //   （0.9.89 修的）—— 两件事我当时混成了一件，于是修错了地方。
+  assert.match(defaults, /mouseForward: true/,
+    '鼠标转发又默认关了 ⟹ desktop 层的壁纸点不动（点击特效全失效），'
+    + '而"它要辅助功能授权"那个理由已被真机探针推翻'
+    + '（trusted: false 同时抓到 99 个事件）');
+  // ⚠️⚠️ 这里原来是 `!/它要辅助功能授权…/` —— **一条死断言**：它查的字符串
+  //   在重写注释时已经不存在于任何地方 ⟹ 永远为真（反向验证逮到"永久绿"）。
+  //   第 14 次栽在"断言查一个不存在的锚点"。
+  //   ⟹ 换成正面断言：那个**真机证据**必须留在注释里，否则下一个人只看到
+  //     "默认 true"而不知道为什么，很可能又按错前提改回去。
+  const mfNote = defaults.slice(Math.max(0, defaults.indexOf('mouseForward: true') - 2600),
+    defaults.indexOf('mouseForward: true'));
+  assert.match(mfNote, /trusted: false/,
+    'mouseForward 默认值旁边没留那条真机证据（trusted: false + 99 个事件）'
+    + ' ⟹ 下一个人不知道"它不需要辅助功能授权"是实测来的，很可能又改回默认关');
+  // ⚠️ 只锚 commit hash —— `NSApplication` 在 main.js 里出现 4 次，
+  //   用 `|` 连起来的话删掉注释里那处照样匹配到别处（反向验证逮到）。
+  assert.match(mfNote, /009995a/,
+    'mouseForward 旁边没记"那个错前提是怎么来的"（NSApplication 没初始化）'
+    + ' ⟹ 那正是这条判据最容易被重新推翻的地方');
 
-  // ⚠️⚠️ **光改默认值救不了任何现有用户** —— 他们 config 里已经存着 true，
-  //   而 mergeConfig 只补缺失的键 ⟹ 不迁移的话问题原样存在，而我会以为修好了。
-  // ⚠️ 结束锚点用 writeConfig 而不是 readConfig —— **readConfig 在
-  //   migrateConfig 之前**，那样切出来是负区间（空串），断言静默失效。
-  //   （守卫自己的 '切不出' 兜底断言逮到的）
-  const mig = mainSrc.slice(mainSrc.indexOf('function migrateConfig'),
+  // ⚠️⚠️ **那条"把存量关掉"的迁移必须是删掉的状态** ——
+  //   它建立在同一个错前提上，而它还有个附带伤害：那个"只跑一次"的标记
+  //   0.9.88~0.9.92 期间没在 defaultConfig 里声明 ⟹ 被 mergeConfig 静默剥掉
+  //   ⟹ 迁移每次启动都跑 ⟹ 用户开了开关、重开应用又被关掉（他实测撞到）。
+  const mig0 = mainSrc.slice(mainSrc.indexOf('function migrateConfig'),
     mainSrc.indexOf('function writeConfig'));
-  assert.ok(mig.length > 200, '切不出 migrateConfig ⟹ 断言失效');
-  // ⚠️⚠️⚠️ **写进 config 的字段必须在 defaultConfig 里声明**（0.9.93）。
-  //
-  // 用户 2026-08-02：「我按照你这个流程退出这个软件，然后再重新打开，我发现他那个
-  //   辅助功能那块儿又变成…上面显示是都关闭」
-  //
-  // **他每次开应用，开关都被自动关掉一次，而这是我的 bug**：
-  // `mergeConfig` **只遍历 defaultConfig 的键** ⟹ `mouseForwardMigrated`
-  // 没在里面 ⟹ 每次 readConfig 都把它**静默剥掉** ⟹ 迁移看到"true 且没标记"，
-  // 于是又关一次。用户开了开关、退出、重开 ⟹ 又变回关着，且没有任何报错。
-  //
-  // ⚠️⚠️ 而这个坑 `OPAQUE_DICTS` 上面那段注释里就写着（presets 被静默丢掉），
-  //   而我加迁移标记时正好踩了同一个。
-  const defBlock = mainSrc.slice(mainSrc.indexOf('const defaultConfig'),
-    mainSrc.indexOf('let config = null'));
-  assert.ok(defBlock.length > 500, '切不出 defaultConfig ⟹ 断言失效');
-  assert.match(defBlock, /mouseForwardMigrated: false/,
-    'mouseForwardMigrated 不在 defaultConfig 里 ⟹ mergeConfig 只遍历默认的键，'
-    + '这个标记每次启动都被静默剥掉 ⟹ 迁移每次都跑一遍 ⟹ '
-    + '**用户每次开应用开关都被自动关掉**（他实测撞到了）');
-  assert.match(mig, /we\.mouseForward === true && !we\.mouseForwardMigrated/,
-    '没有把存量的 mouseForward: true 关掉 ⟹ 现有用户（包括我的测试机）'
-    + '照旧每次被要权限，而默认值的改动对他们完全不生效');
-  // ⚠️ 要连**赋的值**一起钉 —— 只查条件的话，迁移里写
-  //   `we.mouseForward = true` 照样绿（等于没迁移）。反向验证逮到的。
-  assert.match(mig, /we\.mouseForward = false;\s*\n\s*we\.mouseForwardMigrated = true/,
-    '迁移没把 mouseForward 真的置 false（或没记标记）⟹ 要么等于没迁移，'
-    + '要么用户自己开了下次启动又被关掉（"我明明开了"比原问题更难查）');
-  // ⚠️ 而 undefined 的兜底也必须是 false —— 它是**新用户**走的那条路，
-  //   设成 true 的话默认值那条断言绿着、新装的人照样被弹框。
-  assert.match(mig, /we\.mouseForward === undefined\) \{ we\.mouseForward = false;/,
-    'mouseForward 缺失时的兜底又设成 true ⟹ 新用户照旧被要权限'
-    + '（defaultConfig 那条断言拦不住这里）');
+  assert.ok(mig0.length > 200, '切不出 migrateConfig ⟹ 断言失效');
+  assert.ok(!/we\.mouseForward = false/.test(codeOnly(mig0)),
+    '迁移又在把 mouseForward 关掉 ⟹ 那条的前提是错的（探针证伪），'
+    + '而它会把用户主动开的开关关掉');
+  assert.match(codeOnly(mig0), /we\.mouseForward === undefined\) \{ we\.mouseForward = true;/,
+    '老配置缺这个键时补的默认不是 true ⟹ 和 defaultConfig 不一致');
+  // ⚠️ 而那个字段**要留在 defaultConfig 里**（用户 config 里已经有它，
+  //   删了会被 mergeConfig 静默剥掉 —— 无害，但它是那个 bug 的活教材）
+  assert.match(defaults, /mouseForwardMigrated: false/,
+    'mouseForwardMigrated 从 defaultConfig 里删了 ⟹ 用户 config 里已有这个字段，'
+    + '不声明就会被 mergeConfig 静默剥掉（那正是 0.9.93 修的那个 bug 的形状）');
+
+  // ⚠️ 这里原来有一段断言"必须有把存量 true 关掉的迁移"（0.9.88）——
+  //   **0.9.97 反过来了**（那条迁移删了，见上面）。
 });
 
 // ⚠️ 双份事件是这条链最容易出的错：普通窗口自己就能收鼠标，
