@@ -2787,6 +2787,41 @@ async function renderMine() {
   state.textContent = '';
 
   grid.innerHTML = '';
+
+  // ⚠️⚠️ **「新建」卡片是网格的第一格**（0.9.128）。用户 2026-08-02：
+  //   「这个按钮本身的设计以及位置还是怪怪的」
+  //
+  // ⚠️ 前两版都把它当成一个"操作"（通栏按钮 / 实心按钮 + 一句灰字说明，
+  //   横在网格上方）⟹ 读起来像广告横幅。
+  //   而它其实是**"再来一张壁纸"** —— 和网格里那些是同一类东西，
+  //   只是这一张还不存在 ⟹ 它就该在网格里，长得像一张待填的卡片。
+  // ⚠️ 每次 renderMine 重建 ⟹ 事件也要每次挂（不能只在启动时挂一次）。
+  //   ⚠️ 而它调的是 `aiCloseWorkshop` 的兄弟 —— `aiOpenWorkshop`，
+  //     同样是模块级变量：`aiSetOpen` 声明在下面那个 try 块里（块级作用域），
+  //     这里看不到它。这个坑 0.9.127 在 Esc 那条上栽过一次。
+  const newCard = document.createElement('button');
+  newCard.type = 'button';
+  newCard.className = 'ws-new';
+  newCard.title = '说一句你想要什么效果，AI 写一张壁纸放进壁纸目录';
+  const plus = document.createElement('span');
+  plus.className = 'plus';
+  newCard.appendChild(plus);
+  const newLabel = document.createElement('span');
+  newLabel.textContent = 'AI 生成一张';
+  newCard.appendChild(newLabel);
+  // ⚠️⚠️ `aiOpenWorkshop` 的 `let` 声明在这个函数**下面**（约 500 行之后），
+  //   而 `let` 没有提升 ⟹ 看起来像 TDZ 隐患。**核过了，不是**：
+  //     renderMine 的执行入口是 renderTab（用户点 tab）和 apply()，
+  //     而 apply 走 `getConfig().then(apply)` —— 那是 Promise 回调（微任务），
+  //     一定在所有同步的顶层语句（包括那个 let）跑完之后才执行。
+  //   ⚠️ 判据：**"声明在使用之下"要看的是执行时机，不是文本顺序** ——
+  //     函数体内的引用只在调用时求值。而这里我确认了没有任何顶层同步调用
+  //     `renderMine()`（grep 过）。
+  //   ⚠️ 但 `if (aiOpenWorkshop)` 那个判空**留着**：AI 那个 try 块要是抛了，
+  //     这个变量会停在 null ⟹ 点卡片什么都不发生，而不是抛一个红叉。
+  newCard.onclick = () => { if (aiOpenWorkshop) aiOpenWorkshop(); };
+  grid.appendChild(newCard);
+
   for (const item of result.items) {
     const card = workshopCard({
       ...item,
@@ -3306,6 +3341,9 @@ document.getElementById('settings-modal-mask').onclick = closeSettingsModal;
 //   它的实现在文件后面那个 `try` 块里（`aiSetOpen`），而**那是块级作用域**
 //   ⟹ 这里必须用一个模块级变量接住它，否则 Esc 那条永远拿不到。
 let aiCloseWorkshop = null;
+// ⚠️ 打开入口同理 —— 网格里那张「新建」卡片是 renderMine 建的，
+//   而 renderMine 在这个文件里比 AI 那个 try 块**靠前** ⟹ 也拿不到 aiSetOpen。
+let aiOpenWorkshop = null;
 
 // ⚠️⚠️ 两个弹窗**一个 handler 管**，而且 return 一次只关一个 ——
 // 各写一个 handler 的话两个都开着时按 Esc 会同时关掉两个
@@ -3929,8 +3967,12 @@ async function aiRefreshMeta() {
   return meta;
 }
 
-if (aiEl('ai-open')) {
-  aiEl('ai-open').onclick = async () => {
+// ⚠️ 打开工坊：网格里那张「新建」卡片调它（见 renderMine）。
+//   ⚠️ 原来这里是 `aiEl('ai-open').onclick` —— 那个按钮 0.9.128 删了
+//     （改成网格里的卡片），而卡片是每次 renderMine 重建的
+//     ⟹ 不能在这里绑一次，要暴露一个函数让它每次挂。
+aiOpenWorkshop = async () => {
+  {
     aiSetOpen(true);
     try {
       const meta = await aiRefreshMeta();
@@ -3947,8 +3989,8 @@ if (aiEl('ai-open')) {
     }
     const want = aiEl('ai-want');
     if (want) want.focus();
-  };
-}
+  }
+};
 
 // ⚠️ 把关闭入口交给模块级变量 —— Esc 那条 handler 在这个 try 块**外面**，
 //   而 `function aiSetOpen` 是块级作用域，它看不到。见上面那段注释。

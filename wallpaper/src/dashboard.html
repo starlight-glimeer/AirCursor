@@ -93,6 +93,37 @@
     /* primary 按钮的文字：在亮青色上要用**深墨**而不是纯黑
        （taste-skill：NO pure black #000000 ⟹ 用 off-black）。 */
     --on-accent: #06121a;
+
+    /* ═══════════════════════════════════════════════════════════════
+       ⚠️⚠️ **毛玻璃：一套参数，不是每处各写**（0.9.128）。用户 2026-08-02：
+         「我们有背景，但是比如轮播这些地方都是纯黑一块一块的板子一样的…
+           我现在追求设计感，漂亮，我能想到的有限，可能就是设计成毛玻璃」
+
+       ⚠️ 而审计发现**根因不是"没做毛玻璃"** —— `.card` 早就有
+         `backdrop-filter: blur(14px)`。真正把极光挡死的是**两个最大的面**：
+           · `nav`（顶栏，通栏）        用的是不透明的 --nav-bg
+           · `.pane-side`（右栅 340px） 用的是不透明的 --side-bg
+         ⟹ 极光只能从"卡片之间的缝"里露出来，而那看起来正是
+           "一块一块的黑板子浮在黑底上"。
+         ⟹ 判据：**毛玻璃是否成立取决于最大的那个面透不透**，
+           不是取决于有几处写了 blur。
+
+       ⚠️⚠️ 而毛玻璃有真实代价，所以要一套参数集中控制：
+         `backdrop-filter` 每一层都要合成器重新采样它下面的内容
+         ⟹ **层数**比模糊半径贵得多。这个项目为"壁纸吃满 CPU"栽过一轮
+           （ctx.filter 每秒 1.3G 像素把手势推理挤死）。
+         ⟹ 只给**结构面**（顶栏、右栅、卡片、弹窗）用，
+           **不给列表里的 N 个条目用**（那是 N 个采样层）。
+       ═══════════════════════════════════════════════════════════════ */
+    /* 结构面的玻璃：顶栏 / 右栅 / 弹窗 */
+    --glass-blur: blur(22px) saturate(135%);
+    /* 卡片那一档更薄（它上面还压着文字，太透会读不清） */
+    --glass-blur-thin: blur(14px) saturate(120%);
+    /* ⚠️ 三档不同深浅的玻璃底色 —— 越靠"前面"的面越实。
+       判据：透明度是**层级信号**，不是装饰参数。 */
+    --glass-nav: rgba(13, 13, 17, .58);
+    --glass-side: rgba(19, 19, 24, .52);
+    --glass-panel: rgba(23, 23, 29, .78);
   }
   /* ⚠️⚠️ 这里原来有一整套 `html[data-theme="light"]` 的浅色变量 ——
      0.9.60 **删了**。用户 2026-08-01：「不是浅色模式太难看了，我们只保留深色吧，
@@ -311,7 +342,13 @@
        ⚠️ 历史：40px（0.9.54，我按错的参照算的）→ 30px（0.9.56，用户报空白）
           → 10px（0.9.58，红绿灯藏起来之后就不需要让位了）。 */
     padding: 10px 16px 0 96px;
-    background: var(--nav-bg); border-bottom: 1px solid var(--line);
+    /* ⚠️⚠️ **毛玻璃**（0.9.128，原来是不透明的 --nav-bg）。
+       它是通栏的最大面之一 ⟹ 不透的话极光在顶部完全看不见。
+       ⚠️ 而它必须**比右栅实一点**：tab 文字和「设置」压在上面，
+         太透会让文字和背后流动的极光打架。 */
+    background: var(--glass-nav);
+    backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--line);
     /* 标题栏透明后整个顶部都能拖窗口，但 nav 里有按钮 ⟹ 只让空白处可拖。 */
     -webkit-app-region: drag;
   }
@@ -387,7 +424,13 @@
   }
   .pane-side {
     overflow-y: auto; min-height: 0;
-    border-left: 1px solid var(--line); background: var(--side-bg);
+    /* ⚠️⚠️ **毛玻璃**（0.9.128，原来是不透明的 --side-bg）。
+       340px 宽 × 满高 = 屏幕右边 1/3 都是它 ⟹ 不透的话
+       "有背景"这件事在这一侧完全不成立。
+       ⚠️ 比 nav 更透一点：这一栏内容少、留白多，透一些能看到极光流过。 */
+    background: var(--glass-side);
+    backdrop-filter: var(--glass-blur);
+    border-left: 1px solid var(--line);
     padding: 18px 16px 40px;
   }
   /* 窄窗口下详情面板会把网格挤成一列 ⟹ 直接叠成上下两段。
@@ -499,13 +542,25 @@
      ⚠️ blur 留着 —— 极光在卡片下面流动，那是这个产品的特征，不是装饰。
      ⚠️ 阴影**带背景的色相**（偏蓝黑），不用纯黑低透明度：
        纯黑阴影压在带色的背景上会显灰。 */
+  /* ⚠️⚠️⚠️ **`.card` 不再自己 blur**（0.9.128）。
+     gating 那条性能守卫在我把 nav / 右栅 / 弹窗改成毛玻璃之后报红了，
+     而**它报的是对的**，只是我一开始想错了该改哪边：
+       我数了一遍实例 —— `.card` 在页面里有 **11 个**，其中 **10 个在手势 tab**
+       ⟹ 那正是摄像头推理在跑的那一屏，而每个 backdrop-filter 都是
+       合成器的一次"取样它下面的内容再模糊"。
+       用户报过「手势不跟手了，卡卡的」+「开摄像头也好慢」，根因就是这类
+       每帧重复的模糊运算（那次是 ctx.filter，每秒 1.3G 像素）。
+     ⟹ 判据：**毛玻璃只给"一次只有一个"的结构面**（顶栏、右栅、弹窗、右键菜单），
+       **不给会有 N 个实例的东西**（卡片、按钮、列表项）。
+     ⚠️ 而卡片**看起来不会变差**：它压在已经毛玻璃化的右栅/正文之上，
+       半透明底色 + 上亮下暗的边框已经给出玻璃质感，那层 blur 在 14px
+       半径下对一个 15px 内边距的小卡片本来就贡献很小。 */
   .card {
     background: var(--panel-a);
     border: 1px solid transparent;
     border-top-color: rgba(255,255,255,.10);
     border-bottom-color: rgba(0,0,0,.22);
     border-radius: var(--r-lg); padding: 15px 16px 16px; margin-bottom: 12px;
-    backdrop-filter: blur(14px) saturate(120%);
     box-shadow: 0 8px 24px -12px rgba(4,7,16,.7);
   }
   .hint { color: var(--dim); font-size: 11px; line-height: 1.8; margin: 8px 0 0; }
@@ -686,6 +741,48 @@
      只为长得像 Windows 版 WE）。理由：那些是"几十万张壁纸"才需要的
      dashboard 结构，而我们的「我的壁纸」是用户自己下的几十张，一屏看完。 */
   .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+
+  /* ⚠️⚠️ **「新建」卡片**（0.9.128）：网格的第一格，点开 AI 工坊。
+     ⚠️ 它必须和 `.ws-item` **同高** —— 网格是 `auto-fill minmax(150px,1fr)`，
+       宽度自动一致，但高度是内容决定的 ⟹ 用和壁纸卡片一样的
+       `aspect-ratio`（16/10 的预览图 + 两行文字 ≈ 这个比例）。
+       ⚠️ 高度不一致的话第一行卡片会参差，那比"横幅"更难看。
+     ⚠️ 虚线边框 + 加号 = "这里可以加一个"的通用语言（照片库/图库都这么做）
+       ⟹ 不需要任何说明文字，而那正是前两版最占地方的东西。 */
+  .ws-new {
+    appearance: none; padding: 0; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 9px;
+    /* ⚠️ 和壁纸卡片一样的比例：预览图 16/10 + 名字/类型两行 ≈ 1/0.78 */
+    aspect-ratio: 1 / 0.78;
+    border: 1px dashed rgba(255,255,255,.18);
+    border-radius: var(--r-md);
+    background: rgba(255,255,255,.02);
+    color: var(--dim); font: inherit; font-size: 11.5px;
+    transition: border-color .16s ease, background .16s ease, color .16s ease;
+  }
+  .ws-new:hover {
+    border-color: rgba(108,199,255,.5);
+    background: rgba(108,199,255,.06);
+    color: var(--text);
+  }
+  .ws-new:active { transform: translateY(1px); }
+  /* ⚠️ 加号用 CSS 画（两条线），不用 emoji 也不引图标库 —— 见 :root 那段判据。
+     ⚠️ 描边而不是实心：实心圆点在虚线框里太重，会变成一个"按钮里的按钮"。 */
+  .ws-new .plus {
+    position: relative; width: 26px; height: 26px;
+    border: 1px solid currentColor; border-radius: 50%;
+  }
+  .ws-new .plus::before, .ws-new .plus::after {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    background: currentColor; border-radius: 1px;
+  }
+  .ws-new .plus::before {
+    width: 11px; height: 1px; transform: translate(-50%, -50%);
+  }
+  .ws-new .plus::after {
+    width: 1px; height: 11px; transform: translate(-50%, -50%);
+  }
   .ws-item { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden;
              /* ⚠️ 壁纸卡片：预览图本身是不透明的，只有它下面那一小条
                 （名字/类型那两行）会露底 ⟹ 半透明就够，不用 blur
@@ -785,9 +882,20 @@
     transform: translate(-50%, -50%);
     max-width: calc(100vw - 48px);
     max-height: calc(100vh - 64px); overflow-y: auto;
-    background: var(--panel); border: 1px solid rgba(255,255,255,.14);
+    /* ⚠️⚠️ **毛玻璃**（0.9.128，原来是不透明的 --panel）。
+       用户点名"轮播这些地方都是纯黑一块一块的板子" —— 轮播设置就是这个弹窗。
+       ⚠️ 弹窗用**最实的那一档**（.78）：它是模态的、内容密集（表单 + 缩略图列表），
+         太透会读不清。
+       ⚠️ 边框上亮下暗（玻璃边缘折射的样子，且暗示光从上面来，
+         和极光背景的方向一致）；阴影带背景色相，不用纯黑
+         （纯黑阴影压在带色背景上会显灰）。 */
+    background: var(--glass-panel);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid transparent;
+    border-top-color: rgba(255,255,255,.13);
+    border-bottom-color: rgba(0,0,0,.3);
     border-radius: var(--r-lg); padding: 16px 18px 18px;
-    box-shadow: 0 18px 50px rgba(0,0,0,.6);
+    box-shadow: 0 20px 56px -16px rgba(4,7,16,.78);
   }
   /* 宽度是两者唯一的区别：轮播那个装一排缩略图，设置那个要装目录路径和诊断读数。 */
   #rotate-modal-box { width: 460px; }
@@ -961,9 +1069,15 @@
   .rs-item {
     flex: none; width: 92px; scroll-snap-align: start;
     border-radius: var(--r-md); overflow: hidden; position: relative;
-    /* ⚠️ 用**不透明**的 —— 这几个缩略图在轮播弹窗里，而弹窗本身不透明
-       （内容密集）⟹ 里面的东西透了也看不到极光，只是白搭一层混色。 */
-    border: 1px solid var(--line); background: var(--card-bg); cursor: pointer;
+    /* ⚠️⚠️ 这里原来的注释写着"弹窗本身不透明 ⟹ 里面透了也看不到极光" ——
+       **那条理由 0.9.128 起不成立了**（弹窗改成毛玻璃了）。
+       ⟹ 改成半透明，让它和弹窗的玻璃底融在一起。
+       ⚠️ 但**不加 backdrop-filter**：这是一个横向列表，N 个缩略图各一个
+         采样层会明显拖慢滚动（判据见 :root 里毛玻璃那段：层数比半径贵）。
+         半透明 + 弹窗那一层的 blur 已经够了。
+       ⚠️ 判据：**一条注释里的理由，在它依赖的前提变了之后要跟着改** ——
+         这个项目为"过期的证伪结论"栽过（辅助功能那次错了六个版本）。 */
+    border: 1px solid var(--line); background: var(--card-bg-a); cursor: pointer;
   }
   .rs-item:hover { border-color: rgba(255,255,255,.26); }
   .rs-item img {
@@ -992,9 +1106,13 @@
   .rs-item:hover .rs-del { opacity: 1; }
   .rs-item .rs-del:hover { background: rgba(255,120,120,.3); color: #fff; }
 
-  .card-menu { background: var(--panel); border: 1px solid var(--line);
+  /* ⚠️ 毛玻璃（0.9.128）：浮在卡片上的小面板，和弹窗同一档底色。
+     ⚠️ 用薄的那档 blur —— 它面积小，重 blur 在这个尺寸上看不出差别却要付代价。 */
+  .card-menu { background: var(--glass-panel);
+               backdrop-filter: var(--glass-blur-thin);
+               border: 1px solid var(--line);
                border-radius: var(--r-md); padding: 4px; min-width: 168px;
-               box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+               box-shadow: 0 10px 28px -10px rgba(4,7,16,.7); }
   .card-menu-item { font-size: 12px; padding: 7px 10px; border-radius: var(--r-sm);
                     cursor: pointer; white-space: nowrap; }
   .card-menu-item:hover { background: rgba(255,255,255,.08); }
@@ -1173,20 +1291,22 @@
                 预览图就是"做出来什么样"的直接答案，不需要跳到别处看。
              ⚠️ 叫「AI 壁纸工坊」而不是「AI 助手」：它不聊天、只产出壁纸，
                 而"助手"会让人期待它能回答别的问题。 -->
-        <!-- ⚠️⚠️⚠️ **原来这里的两格是反的**（0.9.127 修）。用户：「那个巨长的按钮」
-             我把按钮放进 `.bar-row` 的第一格（`1fr`，吃掉所有剩余宽度）、
-             把说明文字放进第二格（`auto`，被压到最窄）
-             ⟹ 按钮拉成通栏、文字挤成一条。**正好相反。**
-             ⟹ 现在按钮和它的说明都靠左自然排（`.tight`）。
-           ⚠️ 而 emoji「✨」也去掉了（taste-skill：默认不用 emoji，
-              换图标或纯文字）—— 这里连图标库都不引，一个「+」形状够了。 -->
-        <div class="bar-row tight">
-          <button class="act primary" id="ai-open" type="button"
-                  title="说一句你想要什么效果，它生成一张壁纸放进壁纸目录">
-            AI 生成壁纸
-          </button>
-          <span class="hint" style="margin:0">说一句想要什么效果，它写好放进下面</span>
-        </div>
+        <!-- ⚠️⚠️⚠️ **AI 入口挪进网格里，成为第一张卡片**（0.9.128）。
+             用户 2026-08-02：「这个按钮本身的设计以及位置还是怪怪的」
+
+             ⚠️ 前两版都错在**把它当成一个"操作"**：
+               0.9.123 放进 `.bar-row` 第一格 ⟹ 被 `1fr` 拉成通栏
+               0.9.127 改成 `.tight` + 一句灰字说明 ⟹ 宽度对了，
+                 但一个实心强调色按钮 + 旁边一句灰字，横在网格上方
+                 ⟹ 读起来像一条**广告横幅**，而那正是"怪"的来源。
+
+             ⚠️ 它其实不是操作，是**"再来一张壁纸"** —— 和网格里那些卡片
+               是同一类东西（都是"一张壁纸"），只是这一张还不存在。
+             ⟹ 做成网格的**第一格**：同样尺寸、同样圆角、虚线边框 + 一个加号。
+               那是"这里可以加一个"的通用语言（照片库、图库都这么做），
+               不需要任何说明文字。
+             ⚠️ 而它在网格里还有一个额外的好处：**生成完的新卡片就出现在它右边**
+               ⟹ 因果关系在空间上是连着的。 -->
         <div id="mine-state" class="hint" style="margin-bottom:10px"></div>
         <div id="mine-grid" class="ws-grid"></div>
       </div>

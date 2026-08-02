@@ -1298,6 +1298,37 @@ function syncOverlayVisibility() {
 // 启动页在的时候不建骨架（它会压在启动页上），等面板说"用户进来了"才放行。
 let overlayGate = null;
 
+// ⚠️⚠️⚠️ **壁纸的闸门**（0.9.128）。用户 2026-08-02：
+//   「我们的软件打开会出现 gesturewall 这界面，此时壁纸等不应该生效的，
+//     等我点击进入才正常改生效，这是方便后面做账号登陆那种东西」
+//
+// ⟹ 启动页是一道门：点进去之前桌面上什么都不该变。
+// ⚠️ 用**同一条信号**（`launch-dismissed`）和同一个兜底形状 ——
+//   见 whenReady 里那段判据：已经有一道闸门就挂上去，别开第二道。
+let wallpaperGate = null;
+let wallpaperStarted = false;
+
+function releaseWallpaperGate() {
+  // ⚠️ 幂等：面板每次重开都会再发一次 `launch-dismissed`，而 20 秒兜底定时器
+  //   也会调 ⟹ 必须只装一次（`wallpaperStarted`），否则第二次会把当前壁纸
+  //   窗口重建一遍（画面闪一下，而且 weProject 状态会错）。
+  if (wallpaperGate !== null) { clearTimeout(wallpaperGate); wallpaperGate = null; }
+  if (wallpaperStarted) return;
+  wallpaperStarted = true;
+
+  // 上次装的 WE 壁纸还在就恢复它，否则用我们自己的三层景深。
+  if (config.we.dir && fs.existsSync(path.join(config.we.dir, 'project.json'))) {
+    setWEWallpaper(config.we.dir);
+  } else {
+    wallWindow = createWallWindow(config.wallStrategy);
+  }
+  // ⚠️ **轮播要在恢复壁纸之后起** —— `rotateNext()` 靠 `weProject.dir` 判断
+  // "当前是列表里的第几个"，而那时 weProject 才有值。
+  // 放前面的话第一次切换会从列表开头开始（症状：重启后壁纸跳到第一个）。
+  syncRotate();
+  console.log('[launch] 用户进来了 ⟹ 壁纸生效');
+}
+
 function releaseOverlayGate() {
   // ⚠️ 幂等：两条路径都会调（面板信号 + 20 秒兜底定时器），而且面板每次
   // 重开都会再发一次信号。重复调 syncOverlayVisibility 是安全的
@@ -1308,9 +1339,11 @@ function releaseOverlayGate() {
   syncOverlayVisibility();
 }
 
-// 面板：用户点掉启动页了 ⟹ 可以建骨架层。
+// 面板：用户点掉启动页了 ⟹ 骨架层和壁纸一起放行。
+// ⚠️ 两者共用这一条信号（0.9.128 加了壁纸那条）—— 见 wallpaperGate 那段判据。
 ipcMain.handle('launch-dismissed', () => {
   releaseOverlayGate();
+  releaseWallpaperGate();
   return true;
 });
 
@@ -5247,17 +5280,21 @@ app.whenReady().then(() => {
   // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
   if (migrateConfig(config)) writeConfig();
   registerWEProtocol();
-  // 上次装的 WE 壁纸还在就恢复它，否则用我们自己的三层景深。
-  if (config.we.dir && fs.existsSync(path.join(config.we.dir, 'project.json'))) {
-    setWEWallpaper(config.we.dir);
-  } else {
-    wallWindow = createWallWindow(config.wallStrategy);
-  }
+  // ⚠️⚠️⚠️ **壁纸不在这里装了**（0.9.128）。用户 2026-08-02：
+  //   「我们的软件打开会出现 gesturewall 这界面，此时壁纸等不应该生效的，
+  //     等我点击进入才正常改生效，这是方便后面做账号登陆那种东西」
+  //
+  // ⚠️ 原来这里直接 `setWEWallpaper()` / `createWallWindow()` ⟹ 壁纸在启动页
+  //   还挂着的时候就已经铺在桌面上了。而用户要的是**启动页是一道门**：
+  //   点进去之前什么都不生效。⟹ 那是给"以后加账号登录"留的位置
+  //   （登录页背后不该已经有东西在跑）。
+  //
+  // ⟹ 搬到 `releaseWallpaperGate()`（面板发 `launch-dismissed` 时调）。
+  // ⚠️ 而**骨架层早就是这么做的**（0.9.48 的 overlayGate，理由是"骨架会压在
+  //   启动页上"）⟹ 这里不新造机制，用同一条信号、同一个兜底定时器的形状。
+  //   判据：**已经有一道闸门了就挂上去，别开第二道** ——
+  //   两道闸门各自超时、各自兜底，那是"启动顺序"这类问题最难查的形状。
   followDisplayChanges();
-  // ⚠️ **轮播要在恢复壁纸之后起** —— `rotateNext()` 靠 `weProject.dir` 判断
-  // "当前是列表里的第几个"，而那时 weProject 才有值。
-  // 放前面的话第一次切换会从列表开头开始（症状：重启后壁纸跳到第一个）。
-  syncRotate();
   openDashboard();
   // ⚠️⚠️ **骨架层要等用户离开启动页再建**。用户 2026-08-01 报：
   //   「如果我把那个摄像头默认是开启状态，我刚看到我那个登录界面啥都没点的时候，
@@ -5280,6 +5317,19 @@ app.whenReady().then(() => {
     console.warn('[overlay] ⚠️ 20 秒没收到 launch-dismissed（面板 JS 可能挂了）—— 兜底建骨架层');
     releaseOverlayGate();
   }, 20000);
+
+  // ⚠️⚠️ **壁纸也要兜底**（0.9.128）—— 而它比骨架那条更要紧：
+  //   面板 JS 挂了的话信号永远不来 ⟹ 桌面上**一张壁纸都不会出现**，
+  //   而这是一个壁纸播放器。用户看到的是"装了但完全没反应"。
+  // ⚠️ 用比骨架**短**的 8 秒：壁纸是这个产品的主功能，
+  //   而"启动页多显示几秒"和"壁纸永远不出现"完全不是一个量级的问题。
+  //   ⚠️ 而正常路径下它不会触发（用户点一下就放行了），所以这条 warn
+  //     出现在日志里就意味着**面板真的有问题** —— 那是它的价值。
+  wallpaperGate = setTimeout(() => {
+    console.warn('[launch] ⚠️ 8 秒没收到 launch-dismissed（面板 JS 可能挂了）'
+      + ' —— 兜底装载壁纸，否则桌面上什么都不会出现');
+    releaseWallpaperGate();
+  }, 8000);
 
   // A desktop-level window cannot be clicked, so every escape hatch has to be a
   // global shortcut. Without these the app could become unreachable.

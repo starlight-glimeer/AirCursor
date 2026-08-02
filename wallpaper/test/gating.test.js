@@ -1657,17 +1657,74 @@ check('存量配置里作废的 strategy 会被迁移', () => {
 
 // ⚠️ 顺序是硬约束：层策略是**创建窗口时**定的，迁移晚了这次启动仍用旧值 ——
 // 那样用户重启一次还是老样子，而他会以为修复没用。
-check('迁移在建窗口之前跑', () => {
-  // ⚠️ 只在启动块里找。`createWallWindow(config.wallStrategy)` 在 setWEWallpaper
-  // 里也出现（卸载壁纸时重建），拿全文 indexOf 会命中那个更早的位置 ——
-  // 于是断言变成永远失败而代码是对的。切片式守卫都有这个坑。
+check('迁移在装载壁纸之前跑', () => {
+  // ⚠️⚠️ **0.9.128 起装壁纸不在启动块里了** —— 用户要"点击进入才生效"
+  //   ⟹ `setWEWallpaper` / `createWallWindow` 搬进了 `releaseWallpaperGate()`
+  //   （由 `launch-dismissed` 或 8 秒兜底触发）。
+  //   ⟹ 这条守卫原来比的是**文件位置**（`migrate < createWall`），而那个量法
+  //     现在失效了：建窗口的代码在文件里跑到了 whenReady **之前**（函数定义），
+  //     但它的**执行**仍然在之后（IPC/定时器）。
+  //   ⚠️ 判据：**顺序守卫要盯"执行时机"，而文件位置只是它的一种近似** ——
+  //     近似在代码结构变了之后会失效，而失效的方式是"在正确代码上报红"。
+  //   ⟹ 改成两条都验：① 迁移在启动块里、且在 openDashboard 之前
+  //     （openDashboard 会让面板发 launch-dismissed ⟹ 那才是壁纸真正开始的时刻）
+  //     ② 装壁纸只在 releaseWallpaperGate 里，不在启动块里直接调。
   const boot = mainSrc.slice(mainSrc.indexOf('app.whenReady().then'));
   const migrate = boot.indexOf('migrateConfig(config)');
-  const createWall = boot.indexOf('createWallWindow(config.wallStrategy)');
-  const setWE = boot.indexOf('setWEWallpaper(config.we.dir)');
+  const openDash = boot.indexOf('openDashboard()');
   assert.ok(migrate > 0, '启动时没调迁移');
-  assert.ok(migrate < createWall && migrate < setWE,
-    '迁移在建窗口之后 —— 这次启动仍会用旧策略，用户重启一次还是老样子');
+  assert.ok(openDash > 0, '启动块里没有 openDashboard()');
+  assert.ok(migrate < openDash,
+    '迁移在 openDashboard 之后 —— 面板一起来就可能发 launch-dismissed，'
+    + '那时壁纸会用没迁移过的旧策略');
+
+  // ⚠️ 而闸门那个函数里**必须**能拿到迁移后的 config —— 它读 config.we.dir
+  //   和 config.wallStrategy，而那两个都可能被 migrateConfig 改过。
+  const gateAt = mainSrc.indexOf('function releaseWallpaperGate()');
+  assert.ok(gateAt > 0, '没有 releaseWallpaperGate ⟹ 壁纸闸门没了');
+  const gate = mainSrc.slice(gateAt, mainSrc.indexOf('\n}', gateAt));
+  assert.match(gate, /setWEWallpaper\(config\.we\.dir\)/, '闸门里没恢复上次的壁纸');
+  assert.match(gate, /createWallWindow\(config\.wallStrategy\)/, '闸门里没有兜底的三层景深');
+});
+
+// ⚠️⚠️ **启动页是一道门**（0.9.128）。用户 2026-08-02：
+//   「我们的软件打开会出现 gesturewall 这界面，此时壁纸等不应该生效的，
+//     等我点击进入才正常改生效，这是方便后面做账号登陆那种东西」
+check('壁纸等用户点掉启动页才生效（给账号登录留的位置）', () => {
+  const boot = mainSrc.slice(mainSrc.indexOf('app.whenReady().then'));
+  // ⚠️ 启动块里**不许**直接装壁纸
+  assert.ok(!/setWEWallpaper\(config\.we\.dir\)/.test(boot),
+    '启动块里直接装壁纸了 ⟹ 启动页还挂着，桌面上壁纸已经铺开了。'
+    + '用户点名要"点击进入才生效"');
+  // ⚠️ 而它必须挂在 launch-dismissed 上（和骨架层同一条信号）
+  const handlerAt = mainSrc.indexOf("ipcMain.handle('launch-dismissed'");
+  assert.ok(handlerAt > 0, '找不到 launch-dismissed 的 handler');
+  const handler = mainSrc.slice(handlerAt, mainSrc.indexOf('});', handlerAt));
+  assert.match(handler, /releaseWallpaperGate\(\)/,
+    'launch-dismissed 没放行壁纸 ⟹ 点了进入桌面上还是什么都没有');
+  assert.match(handler, /releaseOverlayGate\(\)/, '骨架层那条放行丢了');
+
+  // ⚠️⚠️ **必须有兜底** —— 面板 JS 挂了信号永远不来 ⟹ 一张壁纸都不出现，
+  //   而这是一个壁纸播放器（"装了但完全没反应"）。
+  assert.match(boot, /wallpaperGate = setTimeout/,
+    '壁纸闸门没有兜底定时器 ⟹ 面板 JS 一挂，桌面上永远不会出现壁纸');
+  // ⚠️ 而它要比骨架那条**短**：壁纸是主功能
+  const wallMs = boot.match(/wallpaperGate = setTimeout\([\s\S]*?\}, (\d+)\)/);
+  const overlayMs = boot.match(/overlayGate = setTimeout\([\s\S]*?\}, (\d+)\)/);
+  assert.ok(wallMs && overlayMs, '兜底定时器的写法变了，这条守卫要跟着改');
+  assert.ok(Number(wallMs[1]) < Number(overlayMs[1]),
+    `壁纸兜底(${wallMs[1]}ms) 不比骨架兜底(${overlayMs[1]}ms) 短 —— `
+    + '"壁纸永远不出现"比"骨架晚几秒"严重得多');
+
+  // ⚠️ 幂等：面板每次重开都会再发一次信号，重复装载会让画面闪 + weProject 状态错
+  const gateAt = mainSrc.indexOf('function releaseWallpaperGate()');
+  const gate = mainSrc.slice(gateAt, mainSrc.indexOf('\n}', gateAt));
+  // ⚠️ 不能只 match /wallpaperStarted/ —— 闸门里那段注释就提到了它
+  //   ⟹ 删掉那两行判断，断言照样绿（反向验证逮到的，这轮第四次撞到同一件事）。
+  //   ⟹ 锚定**早退那个语句**的形状。
+  assert.match(gate, /if \(wallpaperStarted\) return;/,
+    '闸门不幂等（缺 `if (wallpaperStarted) return;`）⟹ 面板每次重开都会再发一次'
+    + ' launch-dismissed，而重复装载会把壁纸窗口重建一遍（画面闪、weProject 状态错）');
 });
 
 // 切 Space 时我们的窗口重新合成有一帧延迟，那一帧露出下面的系统壁纸。
@@ -4172,13 +4229,22 @@ check('轮播：列表存路径 / 手动不打断 / 少于2个不起 / 失败不
   assert.match(stepFn, /轮播切换失败（跳过）/,
     '切换失败时没报出来 ⟹ 用户看到"轮播不动了"而不知道是哪个壁纸坏了');
 
-  // ⑦ 启动时要起轮播，**而且要在恢复壁纸之后**
+  // ⑦ 要起轮播，**而且要在恢复壁纸之后**
   //   （rotateNext 靠 weProject.dir 判断"当前是第几个"）
-  const readyAt = src.indexOf('app.whenReady()');
-  const restoreAt = src.indexOf('setWEWallpaper(config.we.dir)', readyAt);
-  const syncAt = src.indexOf('syncRotate()', readyAt);
-  assert.ok(restoreAt > 0 && syncAt > 0 && restoreAt < syncAt,
-    '启动时 syncRotate 在恢复壁纸之前 ⟹ 第一次切换会从列表开头开始'
+  // ⚠️⚠️ **0.9.128 起这两句都在 `releaseWallpaperGate()` 里**，不在启动块里
+  //   —— 用户要"点击进入才生效"，壁纸推迟到 launch-dismissed 之后装。
+  //   ⟹ 原来这条从 `app.whenReady()` 往后找，而那个位置**在闸门函数之后**
+  //     （函数定义在文件更前面）⟹ 找不到 ⟹ 在正确代码上报红。
+  //   ⟹ 改成在**闸门函数体内**比顺序 —— 那才是它们真正执行的地方。
+  const gateAt = src.indexOf('function releaseWallpaperGate()');
+  assert.ok(gateAt > 0, '没有 releaseWallpaperGate ⟹ 壁纸闸门没了');
+  const gate = src.slice(gateAt, src.indexOf('\n}', gateAt));
+  const restoreAt = gate.indexOf('setWEWallpaper(config.we.dir)');
+  const syncAt = gate.indexOf('syncRotate()');
+  assert.ok(restoreAt > 0, '闸门里没恢复上次的壁纸');
+  assert.ok(syncAt > 0, '闸门里没起轮播 ⟹ 轮播永远不会开始');
+  assert.ok(restoreAt < syncAt,
+    'syncRotate 在恢复壁纸之前 ⟹ 第一次切换会从列表开头开始'
     + '（症状：重启后壁纸跳到第一个）');
 
   // ⑧ 「下一张」不能改开关状态 —— 用户点它只是想现在换一张
@@ -5364,14 +5430,38 @@ check('性能：模糊类效果不许按元素重复（会挤死手势推理）'
   const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
     .replace(/\/\*[\s\S]*?\*\//g, '');
 
-  // ① backdrop-filter 的使用点要**少**，而且只在大块上
+  // ① backdrop-filter 只许给"一次只有一个"的**结构面**
+  //
+  // ⚠️⚠️ 这条原来是 `users.length <= 4`（**数选择器个数**），而它 0.9.128
+  //   报红了 —— 当时我把 nav / 右栅 / 弹窗都改成了毛玻璃（用户要"设计感"）。
+  //   ⚠️ 而**它报的是对的，只是量错了东西**：真正的成本是**同屏实例数**，
+  //     不是选择器条数。我数了一遍才发现真正贵的那个是 `.card`：
+  //     页面里 11 个、其中 **10 个在手势 tab**（摄像头推理在跑的那一屏）。
+  //     ⟹ 去掉 `.card` 的 blur 之后剩 5 个选择器，但同屏实例是
+  //       nav 1 + 右栅 1 + 遮罩/弹窗（模态，一次一个）+ 右键菜单（一次一个）
+  //       ⟹ **最多 3 层**，比原来的"4 个选择器但 10+ 实例"轻得多。
+  //   ⟹ 判据改成白名单：**列出允许的选择器**，而它们必须都是
+  //     "一次只有一个实例"的结构面。加一个新的要在这里显式写上，
+  //     那一步正好逼人回答"它会有几个实例"。
   const users = [...css.matchAll(/([^\n{}]+)\{[^}]*backdrop-filter[^}]*\}/g)]
     .map((m) => m[1].trim());
-  assert.ok(users.length <= 4,
-    `有 ${users.length} 处用 backdrop-filter（${users.join(' / ')}）⟹ 太多了。`
-    + '每一处都是合成器的一次取样-模糊，而按钮/标签那种小元素会有几十个实例');
-  // ⚠️ 反向锁住那三个"会有几十个实例"的选择器 —— 它们不许用 backdrop-filter
-  for (const sel of ['button.act', '.we-src button', '.module']) {
+  const ALLOWED = [
+    'nav',                    // 顶栏，1 个
+    '.pane-side',             // 右栅，一次只显示当前 tab 的那个
+    '.card-menu',             // 右键菜单，JS 动态建，一次一个
+    '#rotate-modal-mask, #settings-modal-mask',   // 模态遮罩
+    '#rotate-modal-box, #settings-modal-box',     // 模态面板
+  ];
+  const extra = users.filter((u) => !ALLOWED.includes(u));
+  assert.deepStrictEqual(extra, [],
+    `这些选择器用了 backdrop-filter 但不在白名单里：${extra.join(' / ')}\n`
+    + '⟹ 先回答"它同屏会有几个实例"。每个实例都是合成器的一次取样-模糊，'
+    + '而用户报过「手势不跟手了」+「开摄像头也好慢」就是这类每帧重复的模糊。'
+    + '\n⟹ 真的是"一次只有一个"的结构面，就加进 ALLOWED；'
+    + '会有 N 个实例（卡片/按钮/列表项）就别用 blur，用半透明底色 + 边框。');
+  // ⚠️ 反向锁住那几个"会有几十个实例"的选择器 —— 它们不许用 backdrop-filter
+  //   ⚠️ `.card` 加进来了（0.9.128）：它是 11 个实例，而 10 个挤在手势 tab。
+  for (const sel of ['button.act', '.we-src button', '.module', '.card', '.ws-item']) {
     const rule = css.match(new RegExp(
       `${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`));
     if (!rule) continue;
