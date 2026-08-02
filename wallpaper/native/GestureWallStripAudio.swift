@@ -45,11 +45,32 @@ func emit(_ dict: [String: Any]) {
 
 let args = CommandLine.arguments
 guard args.count >= 3 else {
-    emit(["ok": false, "error": "用法：GestureWallStripAudio <输入> <输出>"])
+    emit(["ok": false, "error": "用法：GestureWallStripAudio <输入> <输出> [strip|reencode]"])
     exit(2)
 }
 let inPath = args[1]
 let outPath = args[2]
+
+// ⚠️⚠️⚠️ **第三个参数：两种模式**（0.9.136）。
+//
+// 用户 2026-08-02 撞到的**第二种**解码失败（截图原文）：
+//   code 3: … Code=-12909 (-12909): VTDecompressionOutputCallback（已放 3.6s 后才挂）
+// ⟹ 挂的是**视频轨**（VideoToolbox 的 kVTVideoDecoderBadDataErr），
+//   而 0.9.135 只是把提示改准了 —— **壁纸还是放不了**，用户得自己去跑 ffmpeg。
+//   ⚠️ 而他的原话是"还是有问题" ⟹ 报得准不等于修好了。
+//
+//   strip     = 只去音轨，passthrough（不重新编码，几秒）—— 音轨挂掉时用
+//   reencode  = 重新编码视频轨 + 去音轨 —— 视频轨挂掉时用
+//
+// ⚠️ 两种分开而不是"总是 reencode"：
+//   passthrough 是秒级、画质零损失；重编码要按分钟算而且有损。
+//   ⟹ 能不重编码就不重编码。判据来自**错误原文说的是哪一轨**（见 video.js 的
+//     decodeHint）—— 那也是这一轮的中心教训。
+let mode = args.count >= 4 ? args[3] : "strip"
+guard mode == "strip" || mode == "reencode" else {
+    emit(["ok": false, "error": "模式只能是 strip 或 reencode，收到：\(mode)"])
+    exit(2)
+}
 
 guard FileManager.default.fileExists(atPath: inPath) else {
     emit(["ok": false, "error": "输入文件不在：\(inPath)"])
@@ -104,12 +125,23 @@ do {
 }
 
 // ⚠️ `presetPassthrough` = **不重新编码**，只重新封装 ⟹ 快，而且画质零损失。
-//   ⚠️ 而它对某些编码不可用（AVAssetExportSession 会在 export 时报）——
-//     那时**不退回重编码**：重编码可能要几分钟，而壁纸装载不该卡那么久。
-//     ⟹ 报出来，让上层显示"这个壁纸得手动转"。
+//   ⚠️ 而它对某些编码不可用（AVAssetExportSession 会在 export 时报）。
+//
+// ⚠️⚠️ **reencode 模式用 `AVAssetExportPresetHighestQuality`**（0.9.136）——
+//   它会用**软件/硬件编码器重写每一帧**，那正是"某几帧硬解器不吃"这种问题的解法
+//   （等价于 `ffmpeg -c:v libx264`，而我们不需要带 ffmpeg 进包）。
+//   ⚠️ 代价说清楚：它按分钟算（不是秒），而且有损。
+//     ⟹ 所以只在**视频轨真的挂了**的时候用，音轨那种仍然走 passthrough。
+//   ⚠️ 而它同样只导 composition（里面只有视频轨）⟹ 音轨顺带也去掉了。
+let presetName = mode == "reencode"
+    ? AVAssetExportPresetHighestQuality
+    : AVAssetExportPresetPassthrough
 guard let session = AVAssetExportSession(
-        asset: composition, presetName: AVAssetExportPresetPassthrough) else {
-    emit(["ok": false, "error": "这个视频不支持 passthrough 导出（编码太特殊）"])
+        asset: composition, presetName: presetName) else {
+    emit(["ok": false,
+          "error": mode == "reencode"
+            ? "这个视频不支持重编码导出（编码太特殊）"
+            : "这个视频不支持 passthrough 导出（编码太特殊）"])
     exit(3)
 }
 session.outputURL = URL(fileURLWithPath: outPath)

@@ -2019,7 +2019,13 @@ function registerWEProtocol() {
 //
 // ⚠️ **懒转换 + 缓存**：只在真撞到那个错时才转，不是每个视频壁纸都转一遍
 //   （绝大多数是 AAC 音轨，Chromium 放得好好的）。
-const stripCache = new Map();     // 源文件绝对路径 → 缓存文件绝对路径
+// ⚠️⚠️ **这个 Map 只被写、从来没人读**（0.9.136 查证：全文 grep 只有一处 `.set`，
+//   零处 `.get`/`.has`）—— 真正的缓存判定是 `fs.existsSync(out)`，
+//   而那比内存 Map 更对：进程重启后缓存文件还在，Map 却空了。
+//   ⟹ 留着它没有害处（一个几十字节的 Map），但**别指望它** ——
+//     以后要查"转过哪些"请看 `stripCacheDir()` 里的文件，不是这个 Map。
+//   ⚠️ 判据：**"只写不读"的状态是一个陷阱** —— 下一个人会以为它是真相来源。
+const stripCache = new Map();     // ⚠️ 只写不读，见上面那段。真相在磁盘上。
 const stripping = new Set();      // 正在转的，防止重复触发
 
 function stripCacheDir() {
@@ -2029,28 +2035,45 @@ function stripCacheDir() {
 // ⚠️ 缓存文件名带**源文件的 mtime+size** —— 用户换了同名文件要能失效。
 //   ⚠️ 不用内容 hash：几百 MB 的文件算一遍 sha256 要好几秒，而 mtime+size
 //     对"用户换了文件"这个场景够用了。
-function stripCachePath(src) {
+// ⚠️⚠️ **缓存键要带上模式**（0.9.136）。两种产物完全不同：
+//   strip    = 原视频轨 + 去音轨（passthrough，画质无损）
+//   reencode = 重编码的视频轨 + 去音轨（有损、慢）
+//   ⟹ 键里不带模式的话它们会**撞在同一个文件上** ——
+//     症状是"我明明要重编码，它却直接用了上次那个 strip 的结果"（而那个放不了）。
+function stripCachePath(src, mode) {
   try {
     const st = fs.statSync(src);
     const key = crypto.createHash('sha256')
-      .update(`${src}|${st.mtimeMs}|${st.size}`).digest('hex').slice(0, 16);
+      .update(`${src}|${st.mtimeMs}|${st.size}|${mode || 'strip'}`).digest('hex').slice(0, 16);
     return path.join(stripCacheDir(), `${key}.mp4`);
   } catch {
     return null;
   }
 }
 
-// 渲染进程报"音轨解码失败" → 这里转一份 → 转好通知它重载。
+// 渲染进程报"解码失败" → 这里转一份 → 转好通知它重载。
+//
+// ⚠️⚠️⚠️ **两种模式**（0.9.136）。用户 2026-08-02 对着 0.9.135 说"还是有问题" ——
+//   而他说得对：那一版只是把提示改准了（说清是视频轨），**壁纸还是放不了**，
+//   他仍然得自己去跑 ffmpeg。
+//   ⟹ 判据：**报得准不等于修好了。** 我们有 AVFoundation，能自己转。
+//
+//   payload.mode = 'strip'    音轨挂了 ⟹ passthrough 去音轨（秒级、无损）
+//   payload.mode = 'reencode' 视频轨挂了 ⟹ 重编码每一帧（分钟级、有损）
+//                             那正是"某几帧硬解器不吃"的解法
+// ⚠️ 而模式由**渲染进程按错误原文**判（见 video.js 的 decodeHint / audioFail）——
+//   主进程不重复那套判断：错误原文只有渲染进程手里有。
 ipcMain.on('we-video-audio-failed', (_event, payload) => {
   if (!weProject || !weProject.dir) return;
+  const mode = (payload && payload.mode) === 'reencode' ? 'reencode' : 'strip';
   // ⚠️ 只认**当前壁纸目录里**的文件 —— 渲染进程传来的路径不能直接信。
   const rel = String((payload && payload.file) || weProject.file || '');
   const src = WE.resolveAsset(`/${rel}`, weProject.dir, weProject.file);
   if (!src || !fs.existsSync(src)) {
-    console.warn(`[video] 音轨修复：找不到源文件（${rel}）`);
+    console.warn(`[video] 解码修复：找不到源文件（${rel}）`);
     return;
   }
-  const out = stripCachePath(src);
+  const out = stripCachePath(src, mode);
   if (!out) return;
 
   // 已经转好了 ⟹ 直接让它用（这条走在"壁纸重载后又报一次"的情况下）
@@ -2058,17 +2081,22 @@ ipcMain.on('we-video-audio-failed', (_event, payload) => {
     broadcast('we-video-use-cache', { url: pathToFileURL(out).href });
     return;
   }
-  if (stripping.has(src)) return;         // 正在转，别重复
-  stripping.add(src);
+  // ⚠️ 去重的键要带模式 —— 否则"正在 strip"会挡掉"要 reencode"那次请求
+  const busyKey = `${src}|${mode}`;
+  if (stripping.has(busyKey)) return;
+  stripping.add(busyKey);
 
   broadcast('helper-log', { source: 'we',
-    message: `视频音轨 Chromium 放不了 —— 正在转一份没有音轨的（不重新编码，通常几秒）` });
+    message: mode === 'reencode'
+      ? '视频轨有几帧 macOS 的硬件解码器放不了 —— 正在重新编码一份'
+        + '（每一帧都要重写，几十秒到几分钟，取决于文件大小）'
+      : '视频音轨 Chromium 放不了 —— 正在转一份没有音轨的（不重新编码，通常几秒）' });
 
   // ⚠️ helper 路径和别的一样：预编译的优先，没有就现场编译（见 prebuilt-helper.js）
   const binary = findPrebuilt('GestureWallStripAudio')
     || path.join(app.getPath('userData'), 'GestureWallStripAudio');
   if (!fs.existsSync(binary)) {
-    stripping.delete(src);
+    stripping.delete(busyKey);
     broadcast('helper-log', { source: 'we',
       message: '去音轨的 helper 不在（打包时没编进来）—— 只能手动转：'
         + 'ffmpeg -i 原文件 -c:v copy -an 新文件.mp4' });
@@ -2077,29 +2105,35 @@ ipcMain.on('we-video-audio-failed', (_event, payload) => {
 
   // ⚠️⚠️ **异步 spawn，不能 spawnSync** —— 几百 MB 的文件要几秒，
   //   同步会把主进程整个卡住（壁纸、面板、快捷键全冻）。
-  const child = spawn(binary, [src, out], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(binary, [src, out, mode], { stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
   child.stderr.on('data', (chunk) => {
     console.warn('[video strip]', chunk.toString().trim().slice(0, 300));
   });
   child.on('exit', () => {
-    stripping.delete(src);
+    stripping.delete(busyKey);
     // helper 输出一行 JSON
     let res = null;
     try { res = JSON.parse(stdout.trim().split('\n').pop() || '{}'); } catch { /* 下面兜 */ }
     if (res && res.ok && fs.existsSync(out)) {
-      stripCache.set(src, out);
+      stripCache.set(busyKey, out);
       broadcast('helper-log', { source: 'we',
-        message: `音轨去掉了（${Math.round((res.bytes || 0) / 1048576)}MB，`
+        message: `${mode === 'reencode' ? '重编码完成' : '音轨去掉了'}`
+          + `（${Math.round((res.bytes || 0) / 1048576)}MB，`
           + `${res.ms || '?'}ms）—— 壁纸重新加载` });
       broadcast('we-video-use-cache', { url: pathToFileURL(out).href });
     } else {
       // ⚠️ 失败要说清 —— 静默失败的话用户看到的还是那个原始报错，
       //   而他不知道我们试过了。
+      // ⚠️ 而**手动命令要跟模式对上** —— 给错方向的话用户白折腾一遍
+      //   （这一整轮的教训就是这个）。
       broadcast('helper-log', { source: 'we',
-        message: `去音轨失败：${(res && res.error) || 'helper 没给原因'}`
-          + ' —— 只能手动转：ffmpeg -i 原文件 -c:v copy -an 新文件.mp4' });
+        message: `${mode === 'reencode' ? '重编码' : '去音轨'}失败：`
+          + `${(res && res.error) || 'helper 没给原因'} —— 只能手动转：`
+          + (mode === 'reencode'
+            ? 'ffmpeg -i 原文件 -c:v libx264 -pix_fmt yuv420p -an 新文件.mp4'
+            : 'ffmpeg -i 原文件 -c:v copy -an 新文件.mp4') });
     }
   });
 });

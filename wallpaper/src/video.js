@@ -172,7 +172,7 @@ video.addEventListener('error', () => {
     //   （渲染进程传来的路径不能直接拿去读文件）。
     const name = decodeURIComponent(String(video.currentSrc || video.src)
       .split('/').pop() || '');
-    window.gw.videoAudioFailed({ file: name });
+    window.gw.videoAudioFailed({ file: name, mode: 'strip' });
     return;
   }
 
@@ -199,6 +199,32 @@ video.addEventListener('error', () => {
     // ⚠️ `load()` 会重置到头 —— 对壁纸没关系（它本来就在循环）。
     video.load();
     video.play().catch(() => { /* 真不行的话下一次 error 事件会走到下面 */ });
+    return;
+  }
+
+  // ⚠️⚠️⚠️ **视频轨挂了 ⟹ 请宿主重编码一份**（0.9.136）。
+  //
+  // 用户 2026-08-02 对着 0.9.135 说"还是有问题" —— 而他说得对：
+  //   那一版只是把提示改准了（说清是视频轨、给了 ffmpeg 命令），
+  //   **壁纸还是放不了**，他仍然得自己去跑那条命令。
+  // ⟹ 判据：**报得准不等于修好了。** 而我们有 AVFoundation（去音轨那个 helper
+  //   已经在用它了）⟹ 加一个"重编码"模式就能自己修，不该把活推给用户。
+  //
+  // ⚠️ 而它排在**重试之后** —— 重试是秒级的，重编码要按分钟算
+  //   ⟹ 先试便宜的那个。
+  // ⚠️ 只请求一次（`askedStrip` 和音轨那支共用一个标志：同一个文件不会既要
+  //   去音轨又要重编码 —— 错误原文只会指向一轨）。
+  const videoTrackFail = code === 3
+    && /VTDecompression|VideoToolbox|-12909|-12911|-8969/i.test(msg);
+  if (videoTrackFail && !askedStrip && window.gw && window.gw.videoAudioFailed) {
+    askedStrip = true;
+    fail(spec.title, `code ${code}${msg ? `: ${msg}` : ''}`,
+      '这个视频有几帧 macOS 的硬件解码器放不了 —— 正在自动重新编码一份。\n'
+      + '⚠️ 每一帧都要重写，所以要几十秒到几分钟（看文件大小）。\n'
+      + '⚠️ 进度看面板「?」页里 we 那段的日志。');
+    const name = decodeURIComponent(String(video.currentSrc || video.src)
+      .split('/').pop() || '');
+    window.gw.videoAudioFailed({ file: name, mode: 'reencode' });
     return;
   }
 

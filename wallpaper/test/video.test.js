@@ -171,4 +171,54 @@ check('详情里带上"放了多久才挂"（那决定用户该转码还是换�
     + '唯一线索（用户报的正是"运行着突然"）');
 });
 
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ 报得准不等于修好了（0.9.136）
+// ---------------------------------------------------------------------------
+//
+// 用户 2026-08-02 对着 0.9.135 说「还是有问题」—— 而他说得对：那一版只是把提示
+// 改准了（说清是视频轨、给了 ffmpeg 命令），**壁纸还是放不了**，他仍然得自己跑。
+// ⟹ 判据：**我们有 AVFoundation（去音轨那个 helper 已经在用），
+//   加一个"重编码"模式就能自己修，不该把活推给用户。**
+check('两种失败各自请求对应的修复模式（不是只报告）', () => {
+  const at = source.indexOf("video.addEventListener('error'");
+  const handler = source.slice(at, source.indexOf('\n});', at));
+  // ① 音轨 → strip（passthrough，秒级、无损）
+  assert.match(handler, /videoAudioFailed\(\{ file: name, mode: 'strip' \}\)/,
+    '音轨那支没请求 strip 模式');
+  // ② 视频轨 → reencode（重写每一帧，分钟级）
+  assert.match(handler, /videoAudioFailed\(\{ file: name, mode: 'reencode' \}\)/,
+    '视频轨那支没请求重编码 ⟹ 用户看到"解码失败"还得自己去跑 ffmpeg。'
+    + '\n⚠️ 判据：报得准不等于修好了');
+  // ⚠️⚠️ 而那个 if 的**条件**也要在 —— 只有请求语句的话，把条件改成 `if (false)`
+  //   照样绿（反向验证逮到的）。
+  assert.match(handler, /if \(videoTrackFail && !askedStrip &&/,
+    '视频轨那支的判断条件被改掉了 ⟹ 那段代码永远不执行，而请求语句还在'
+    + '（看起来像做了）');
+  // ③⚠️ 视频轨那支的判据要和 decodeHint 用同一套码
+  assert.match(handler, /VTDecompression\|VideoToolbox\|-12909\|-12911\|-8969/,
+    '视频轨的判据和 decodeHint 里那套不一致 ⟹ 会出现"提示说视频轨、'
+    + '而请求的是 strip"这种自相矛盾');
+  // ④⚠️⚠️ **重编码排在自己重试之后** —— 重试是秒级的，重编码要按分钟算
+  //   ⟹ 先试便宜的那个。
+  // ⚠️ 而"排在之后"要靠**那个 if 的位置**判，不是靠 `mode: 'reencode'` 字符串
+  //   （破坏 `playedFor` 不改变这两个位置 ⟹ 断言测不到真正的顺序）。
+  const retryIfAt = handler.indexOf('!retriedMidPlay && playedFor > 2');
+  const reencodeIfAt = handler.indexOf('videoTrackFail && !askedStrip');
+  assert.ok(retryIfAt > 0, '找不到"自己重试一次"那个判断');
+  assert.ok(reencodeIfAt > retryIfAt,
+    '重编码那支排在"自己重试一次"之前 ⟹ 一挂就花几分钟重编码，而重试只要几秒');
+  // ⚠️ 而重试那条的门槛（>2 秒）要真的在 —— 它决定"从没放起来"不会白等一次重试
+  assert.match(handler, /playedFor > 2/, '重试没有"已经放过一会儿"的门槛');
+});
+
+check('重编码的提示要说清"要等多久"（几分钟的等待不能没有交代）', () => {
+  const at = source.indexOf("mode: 'reencode'");
+  assert.ok(at > 0, '找不到 reencode 请求');
+  // 往前找那句 fail(...) 的提示文案
+  const block = source.slice(source.lastIndexOf('fail(', at), at);
+  assert.match(block, /几十秒到几分钟|几分钟/,
+    '没说要等多久 ⟹ 用户会以为卡死了（而重编码真的要按分钟算）');
+  assert.match(block, /日志/, '没说去哪看进度');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

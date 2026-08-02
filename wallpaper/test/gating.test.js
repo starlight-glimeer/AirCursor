@@ -2876,6 +2876,70 @@ check('壁纸装载完（含回落）要广播，面板据此重扫列表', () =
     '无条件重扫 ⟹ 在别的 tab 上也遍历磁盘，而那份列表没人看');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️ 图标是**生成物**，而生成它的路要能重跑（0.9.137）
+//
+//  用户 2026-08-02 换了图标设计（极光帷幕 → 左下角的圆角五角星）。
+//  ⚠️ 而做的时候发现 `build/README.md` 写着"要改就改脚本重跑"，
+//    **那句话当时是假的**：iconset 和 icns 是早先在终端里临时拼的，
+//    改了绘制脚本之后没有任何东西能把它变成 iconset。
+//  ⟹ 判据：**"生成物"要有一条能重跑的路，否则它就是手工产物** ——
+//    而手工产物的问题不是麻烦，是"下一个人不知道怎么复现"。
+// ═══════════════════════════════════════════════════════════════════════
+check('图标的生成链完整（源图 → iconset 十档 → icns）', () => {
+  const dir = path.join(__dirname, '..', 'build');
+  // ① 三个脚本都要在，而且 _icon-build 要真的调星星那版
+  for (const f of ['_icon-gen.py', '_icon-curtain.py', '_icon-star.py',
+    '_icon-build.py', '_icon-pack.py']) {
+    assert.ok(fs.existsSync(path.join(dir, f)), `缺 build/${f}`);
+  }
+  // ⚠️⚠️ 锚**那句 exec**，不是文件名 —— 文件名在这个脚本的注释里出现两次
+  //   （说明"绘制在哪"、说明"怎么换回极光版"）⟹ 只查名字的话把 exec 那行
+  //   改掉断言照样绿（反向验证逮到的）。
+  const build = fs.readFileSync(path.join(dir, '_icon-build.py'), 'utf8');
+  assert.match(build, /exec\(open\('_icon-star\.py'\)\.read\(\)\)/,
+    '_icon-build.py 没有 exec 星星那版 ⟹ 打出来的还是旧图标');
+
+  // ②⚠️ iconset 的十档命名是**约定死的** —— 写错一个字 iconutil 会拒绝整个目录
+  const want = ['icon_16x16.png', 'icon_16x16@2x.png', 'icon_32x32.png',
+    'icon_32x32@2x.png', 'icon_128x128.png', 'icon_128x128@2x.png',
+    'icon_256x256.png', 'icon_256x256@2x.png', 'icon_512x512.png',
+    'icon_512x512@2x.png'];
+  const have = fs.readdirSync(path.join(dir, 'icon.iconset'));
+  for (const f of want) {
+    assert.ok(have.includes(f), `icon.iconset 缺 ${f} ⟹ iconutil 会拒绝整个目录`);
+  }
+
+  // ③⚠️⚠️ icns 是**手写二进制**的（这台机器没有 iconutil）——
+  //   而"Finder 认不认"在这里验不了 ⟹ build-mac.sh 会在真机上用 iconutil
+  //   从 iconset 重生成。这条只确认那条兜底路径还在。
+  const sh = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-mac.sh'), 'utf8');
+  assert.match(sh, /iconutil -c icns wallpaper\/build\/icon\.iconset/,
+    'build-mac.sh 不再用 iconutil 从 iconset 重生成 ⟹ 会用到那个手写的 icns，'
+    + '而它"Finder 认不认"从来没在真机上验过');
+
+  // ④ icns 的容器结构自校验（手写二进制最容易错的是长度）
+  const icns = fs.readFileSync(path.join(dir, 'icon.icns'));
+  assert.strictEqual(icns.subarray(0, 4).toString(), 'icns', 'icns magic 不对');
+  assert.strictEqual(icns.readUInt32BE(4), icns.length,
+    `icns 头里的总长度（${icns.readUInt32BE(4)}）和文件实际长度（${icns.length}）不一致`
+    + ' ⟹ Finder 会把它判为损坏');
+  let pos = 8;
+  let blocks = 0;
+  while (pos < icns.length) {
+    const len = icns.readUInt32BE(pos + 4);
+    assert.ok(len >= 8 && pos + len <= icns.length,
+      `第 ${blocks + 1} 块的长度不合法（${len}）—— 块长要含那 8 字节头自己`);
+    // 载荷必须是 PNG
+    assert.strictEqual(icns.subarray(pos + 8, pos + 16).toString('hex'),
+      '89504e470d0a1a0a', `第 ${blocks + 1} 块的载荷不是 PNG`);
+    pos += len;
+    blocks += 1;
+  }
+  assert.strictEqual(pos, icns.length, '块长度加起来和文件长度不闭合');
+  assert.ok(blocks >= 10, `icns 里只有 ${blocks} 块 —— 至少要覆盖到 512@2x`);
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。
@@ -7106,8 +7170,22 @@ check('video 音轨修复：宿主侧转换 + 提示不含 markdown', () => {
     + '（0.9.109 的教训）');
   // ⚠️ 锚**调用**那一行 —— 光查名字的话它在 `window.gw &&` 那个判断里也出现
   //   （反向验证逮到）。
-  assert.match(vcode, /window\.gw\.videoAudioFailed\(\{ file: name \}\)/,
-    '渲染侧没把音轨失败报给宿主 ⟹ 只能干等，而宿主才有 AVFoundation');
+  // ⚠️⚠️ **0.9.136 起要带 mode** —— 两种修法（去音轨 / 重编码）代价差一个量级，
+  //   而选哪种取决于错误原文说的是哪一轨。
+  //   ⚠️ 原来锚的是 `{ file: name }` 这个精确形状 ⟹ 加了 mode 之后在正确代码上报红。
+  assert.match(vcode, /videoAudioFailed\(\{ file: name, mode: 'strip' \}\)/,
+    '音轨那支没请求 strip 模式 ⟹ 宿主不知道该 passthrough 还是重编码');
+  assert.match(vcode, /videoAudioFailed\(\{ file: name, mode: 'reencode' \}\)/,
+    '视频轨那支没请求 reencode ⟹ 用户看到"解码失败"还得自己去跑 ffmpeg。'
+    + '\n⚠️ 判据：报得准不等于修好了（0.9.135 就是只改准了提示）');
+  // ⚠️ 而主进程要真的按模式走（缓存键也要带模式，否则两种产物会撞）
+  // ⚠️ 锚**调用**（`const out = …`），不是函数名 —— 后者会命中 `function
+  //   stripCachePath(src, mode) {` 那行定义 ⟹ 破坏调用点断言照样绿。
+  assert.match(msrc, /const out = stripCachePath\(src, mode\)/,
+    '缓存键没带模式 ⟹ strip 和 reencode 的产物撞在同一个文件上，'
+    + '症状是"我要重编码，它却用了上次那个放不了的 strip 结果"');
+  assert.match(msrc, /spawn\(binary, \[src, out, mode\]/,
+    '没把模式传给 helper ⟹ 它永远只做 passthrough');
   // ⚠️ 同上：锚真正注册那一句。
   assert.match(vcode, /window\.gw\.onVideoUseCache\(\(payload\)/,
     '渲染侧不接受转好的缓存 URL ⟹ 转了也用不上');
@@ -7135,9 +7213,26 @@ check('video 音轨修复：宿主侧转换 + 提示不含 markdown', () => {
   assert.match(msrc, /st\.mtimeMs.*st\.size/,
     '缓存 key 不含 mtime+size ⟹ 用户换了同名文件还用旧缓存');
   // ⚠️ 防重复：转换中再收到同一个请求不能再起一个进程
-  assert.match(strip, /stripping\.has\(src\)/, '没有防重复 ⟹ 会并发起好几个转换进程');
+  // ⚠️⚠️ **0.9.136 起去重键要带模式**（`${src}|${mode}`）—— 否则"正在 strip"
+  //   会挡掉"要 reencode"那次请求（症状：视频轨挂了却什么都不发生）。
+  //   ⟹ 原来锚 `stripping.has(src)` 那个精确形状 ⟹ 在正确代码上报红。
+  assert.match(strip, /stripping\.has\(busyKey\)/,
+    '没有防重复（或者去重键没带模式）⟹ 前者会并发起好几个转换进程，'
+    + '后者会让"正在 strip"挡掉"要 reencode"那次请求');
+  assert.match(strip, /const busyKey = `\$\{src\}\|\$\{mode\}`/,
+    '去重键不是 `src|mode` ⟹ 两种模式会互相挡');
   // ⚠️ 失败必须说出来（静默失败的话用户看到的还是原始报错，不知道我们试过了）
-  assert.match(strip, /去音轨失败/, '转换失败时没告诉用户 ⟹ 静默失败');
+  // ⚠️⚠️ 0.9.136 起那句话是按模式拼的（`${mode === 'reencode' ? '重编码' : '去音轨'}失败`）
+  //   ⟹ 原来锚字面 "去音轨失败" 在正确代码上报红。
+  assert.match(strip, /'重编码' : '去音轨'\}失败/,
+    '转换失败时没告诉用户 ⟹ 静默失败（而用户看到的还是那个原始报错，'
+    + '他不知道我们试过了）');
+  // ⚠️⚠️ 而**手动命令要跟模式对上** —— 给错方向的话用户白折腾一遍转码，
+  //   而那正是这一整轮（0.9.108→0.9.136）的教训。
+  assert.match(strip, /-c:v libx264 -pix_fmt yuv420p -an/,
+    '重编码失败时给的手动命令不对 —— 要 libx264 重编码，不是 -c:v copy');
+  assert.match(strip, /-c:v copy -an/,
+    '去音轨失败时给的手动命令不对 —— 要 -c:v copy（不重新编码）');
 
   // ④ helper 要进预编译（否则用户机器上要装 Xcode）
   const sh = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'prebuild-helpers.sh'), 'utf8');
