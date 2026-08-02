@@ -3234,6 +3234,10 @@ function openSettingsModal() {
   // 而用户可能在 Finder 里加删过壁纸。不刷的话打开看到的是旧数字。
   // ⚠️ 用 renderMine() 而不是 renderMineDirs()：后者不重扫，计数不会更新。
   renderMine();
+  // ⚠️ 权限也**每次打开都重查**（0.9.90）—— 用户可能刚在系统设置里改过，
+  //   而那件事我们收不到任何通知。缓存的话面板显示的就是历史，
+  //   而"面板说有权限、实际没有"正是用户信不过它的原因。
+  renderPermissions();
   modal.hidden = false;
   const close = document.getElementById('settings-modal-close');
   if (close) close.focus();
@@ -3749,6 +3753,150 @@ window.gw.onWeAudioStatus((status) => renderAudioStatus(status));
 // 也就是我往顶层加的东西里有一处抛了，把 apply() 挡在后面。
 //
 // ⟹ 两条改动：① apply() 提到最前面 ② 我加的初始化各自 try 住，互不牵连。
+// ---------------------------------------------------------------------------
+// 权限面板（0.9.90）
+// ---------------------------------------------------------------------------
+// ⚠️⚠️⚠️ 用户 2026-08-02：
+//   「把所有需要授权的放在设置里面一个权限面板里面…那个弹窗归他的弹窗，你只要
+//     授权，那我这边就是应该正常生效了吧，关闭了呢那就是应该关掉了…都集中在
+//     一个面板上，我才方便看现在到底有权限没权限…到底是不是真的有，
+//     我关了到底是不是真的关了？」
+//
+// **这个设计对**，而关键是**两种状态分开显示**：
+//   · 开关 —— 我们的 config（关了就真的不跑）
+//   · 授权 —— macOS 的 TCC（我们只能查，改不了）
+// 混在一起就是"面板显示开着但其实没权限"，那正是他信不过面板的原因。
+//
+// ⚠️ 而有两条链的授权**在 macOS 上查不到真值**（语音识别 / 自动化）——
+//   那种显示「查不到」并说明为什么，**不猜**。假装知道比说不知道糟得多：
+//   用户按面板做决定，而面板在骗他。
+const PERM_AUTH_TEXT = {
+  granted: '已授权',
+  denied: '未授权',
+  restricted: '被系统策略限制',
+  'not-determined': '还没问过',
+  unknown: '查不到',
+};
+
+function permAuthClass(auth) {
+  if (auth === 'granted') return 'granted';
+  if (auth === 'unknown' || auth === 'not-determined') return 'unknown';
+  return 'denied';
+}
+
+async function renderPermissions() {
+  const host = document.getElementById('perm-rows');
+  if (!host) return;
+  let out;
+  try {
+    out = await window.gw.permissionsRead();
+  } catch (error) {
+    // ⚠️ 查不到就说查不到 —— 空白或者假数据都比一句实话糟。
+    host.textContent = `读不到权限状态：${error.message}`;
+    return;
+  }
+  if (!out || !out.ok || !Array.isArray(out.rows)) {
+    host.textContent = '读不到权限状态（主进程没返回）';
+    return;
+  }
+
+  host.innerHTML = '';
+  for (const row of out.rows) {
+    const el = document.createElement('div');
+    el.className = 'perm-row';
+
+    const left = document.createElement('div');
+    const nm = document.createElement('div');
+    nm.className = 'perm-name';
+    nm.textContent = row.name;
+    const wt = document.createElement('div');
+    wt.className = 'perm-what';
+    wt.textContent = row.what;
+    left.append(nm, wt);
+
+    // 开关。⚠️ `on === null` = 这一项**没有开关**（比如自动化，它是壁纸装载
+    //   流程的一部分）⟹ 显示一个不可点的说明，而不是一个假开关。
+    const toggle = document.createElement('button');
+    toggle.className = 'act perm-toggle';
+    if (row.on === null) {
+      toggle.textContent = '总是需要';
+      toggle.disabled = true;
+      toggle.title = '这一项没有开关 —— 它是装载壁纸流程的一部分';
+    } else {
+      toggle.textContent = row.on ? '已开启' : '已关闭';
+      if (row.on) toggle.classList.add('on');
+      toggle.onclick = async () => {
+        toggle.disabled = true;
+        try {
+          const res = await window.gw.permissionsSet(row.id, !row.on);
+          if (!res || !res.ok) {
+            // ⚠️ 失败要说出来 —— 静默无效是这个项目栽过最多次的东西。
+            logLine('wall', `权限开关失败（${row.name}）：${(res && res.error) || '没返回'}`);
+          }
+        } catch (error) {
+          logLine('wall', `权限开关抛了（${row.name}）：${error.message}`);
+        }
+        // ⚠️ 无论成败都重查 —— 显示的必须是**真实状态**，不是我们以为的状态。
+        renderPermissions();
+      };
+    }
+
+    // 授权徽章。点它跳到系统设置对应那页。
+    const badge = document.createElement('button');
+    badge.className = `act perm-auth ${permAuthClass(row.auth)}`;
+    badge.textContent = PERM_AUTH_TEXT[row.auth] || row.auth;
+    badge.title = `在系统设置里打开这一项（列表里找 ${row.listedAs}）`;
+    badge.onclick = () => window.gw.permissionsOpenPane(row.pane);
+
+    el.append(left, toggle, badge);
+
+    // 详情行：只在有话要说的时候出现。
+    const bits = [];
+    // ⚠️⚠️ helper 和主应用的授权**可能不一致** —— TCC 按可执行文件记，
+    //   而真正需要辅助功能的是 helper（GestureWallMouse），不是 GestureWall。
+    //   不一致本身就是最有用的诊断信息：主应用授权了、helper 没有 ⟹ 功能是死的。
+    if (row.helperAuth && row.helperAuth !== 'unknown' && row.helperAuth !== row.auth) {
+      bits.push(`<b>⚠️ 主应用是「${PERM_AUTH_TEXT[row.auth]}」，`
+        + `而真正干活的 ${row.listedAs} 是「${PERM_AUTH_TEXT[row.helperAuth]}」</b>`
+        + ` —— 授权按可执行文件记，要在列表里找 ${row.listedAs} 那一项`);
+    }
+    if (row.note) bits.push(row.note);
+    // ⚠️ 授权列表里显示的是 **helper 的名字**，不是 GestureWall ——
+    //   不说这句用户在那个列表里找不到该勾哪一项。
+    if (row.listedAs !== 'GestureWall') {
+      bits.push(`系统设置里这一项显示为 <code>${row.listedAs}</code>（不是 GestureWall）`);
+    }
+    if (row.on && row.auth === 'denied') {
+      bits.push('<b>开着但没授权 ⟹ 这个功能现在是不工作的</b>');
+    }
+    if (bits.length) {
+      const d = document.createElement('div');
+      d.className = 'perm-detail';
+      d.innerHTML = bits.join('<br>');
+      el.append(d);
+    }
+    host.append(el);
+  }
+
+  const note = document.getElementById('perm-note');
+  if (note && !out.packaged) {
+    // ⚠️ 开发模式下这些读数**没有意义** —— npm start 跑的是 node_modules 里的
+    //   Electron，授权列表里出现的是 Electron 而不是本应用。不说清楚的话
+    //   开发时看到一堆"未授权"会以为是 bug。
+    note.innerHTML = '<b>⚠️ 开发模式（npm start）—— 下面的读数不代表打包版</b>：'
+      + '授权按二进制记，而现在跑的是 node_modules 里的 Electron，'
+      + '系统列表里出现的是它、不是 GestureWall。要看真实状态得用打包版。';
+  }
+}
+
+// ⚠️ 主进程推来的权限变化（开关一动、helper 上报授权状态）—— 面板开着就跟着更新。
+if (window.gw.onPermissions) {
+  window.gw.onPermissions(() => {
+    const modal = document.getElementById('settings-modal');
+    if (modal && !modal.hidden) renderPermissions();
+  });
+}
+
 window.gw.getConfig().then(apply).catch((error) => {
   // apply 自己抛的话开关全绑不上，那是最坏的情况 —— 必须能看见。
   console.error('[dashboard] apply() 失败，开关可能都没绑上：', error);

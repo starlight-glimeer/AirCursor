@@ -5757,9 +5757,22 @@ check('辅助功能：不弹框、不自检，只报状态', () => {
   const src = codeOnly(mainSrc);
   assert.ok(!/function ensureAccessibility/.test(src),
     '主进程又加了启动时的辅助功能自检 ⟹ 用户点名"也不检测啥的"');
-  assert.ok(!/isTrustedAccessibilityClient/.test(src),
-    'main.js 又在查辅助功能授权 ⟹ 那是 system-bridge 的事（面板显示用），'
-    + '主进程查它只会导向"启动时提醒用户"，而那被否掉了');
+  // ⚠️⚠️ 这条原来是 `!/isTrustedAccessibilityClient/` —— **0.9.90 放开了**。
+  //   权限面板要显示"到底有没有授权"，那必须查。要禁的是**启动时查了然后拿它
+  //   去提醒用户**，不是"查"本身。⟹ 判据改成：查询只许出现在权限面板那一段，
+  //   而且**必须传 false**（不弹框）。
+  const axQueries = (src.match(/isTrustedAccessibilityClient\(/g) || []).length;
+  const axSafe = (src.match(/isTrustedAccessibilityClient\(false\)/g) || []).length;
+  assert.strictEqual(axQueries, axSafe,
+    `main.js 里有 ${axQueries - axSafe} 处查辅助功能没传 false ⟹ 那会弹系统框`);
+  // ⚠️ 而它们只许在 PERMISSIONS 那张表里（面板显示用）——
+  //   别的地方查它，唯一的用途就是"替用户做决定"，而那被否掉了。
+  const permTable = src.slice(src.indexOf('const PERMISSIONS = ['),
+    src.indexOf('function permissionSnapshot'));
+  assert.strictEqual((permTable.match(/isTrustedAccessibilityClient\(/g) || []).length,
+    axQueries,
+    'main.js 在权限面板之外查辅助功能 ⟹ 那只会导向"启动时提醒用户"，'
+    + '而用户点名不要（"也不检测啥的"）');
   const ready = src.slice(src.indexOf('app.whenReady()'),
     src.indexOf("app.on('window-all-closed'"));
   assert.ok(ready.length > 400, '切不出 whenReady ⟹ 断言失效');
@@ -6118,6 +6131,120 @@ check('授权框里说的是 GestureWall，不是 AirCursor', () => {
   assert.equal(pkg.build.appId, 'com.starlightglimeer.aircursor',
     '主 App 的 appId 被改了 ⟹ 同上，用户已给的所有授权失效（这个字段用户看不见，'
     + '改它纯亏）');
+});
+
+// ⚠️⚠️⚠️ **权限面板**（0.9.90）。用户 2026-08-02：
+//   「把所有需要授权的放在设置里面一个权限面板里面，这个里面可以主动选择开启或者
+//     关闭…那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常生效了吧，
+//     关闭了呢那就是应该关掉了…都集中在一个面板上，我才方便看现在到底有权限没权限。
+//     这块儿你再给我来一个诊断面板…到底是不是真的有，我关了到底是不是真的关了？」
+//
+// **这个设计对**，而它的关键是**两种状态分开**：
+//   · 开关 —— 我们的 config（关了就真的不跑）
+//   · 授权 —— macOS 的 TCC（只能查，改不了）
+// 混在一起就是"面板显示开着但其实没权限"，那正是他信不过面板的原因。
+check('权限面板：六条链都在 / 开关真生效 / 查不到的不许猜', () => {
+  const src = codeOnly(mainSrc);
+
+  // ① 六条授权链都要在面板上 —— 漏一条就是"集中在一个面板"这件事没做到
+  const perms = src.slice(src.indexOf('const PERMISSIONS = ['),
+    src.indexOf('function permissionSnapshot'));
+  assert.ok(perms.length > 500, '切不出 PERMISSIONS ⟹ 断言失效');
+  for (const id of ['gestures', 'mouseForward', 'controlCursor', 'audio',
+    'voice', 'appleEvents']) {
+    assert.ok(perms.includes(`id: '${id}'`), `权限面板漏了 ${id} ⟹ "都集中在一个面板"没做到`);
+  }
+  // ⚠️ 每一条都要有 pane（跳系统设置）和 listedAs（列表里叫什么名字）——
+  //   授权列表里显示的是 **helper 的二进制名**，不说的话用户找不到该勾哪一项。
+  const idCount = (perms.match(/id: '/g) || []).length;
+  const paneCount = (perms.match(/pane: '/g) || []).length;
+  const listedCount = (perms.match(/listedAs: '/g) || []).length;
+  assert.strictEqual(paneCount, idCount, `${idCount} 条权限只有 ${paneCount} 个 pane ⟹ 有的跳不到系统设置`);
+  assert.strictEqual(listedCount, idCount,
+    `${idCount} 条权限只有 ${listedCount} 个 listedAs ⟹ 用户在授权列表里找不到那一项`);
+
+  // ②⚠️⚠️ **查询不许弹框** —— 那是这个面板存在的前提（用户连问六轮"别弹了"）
+  assert.match(perms, /isTrustedAccessibilityClient\(false\)/,
+    '权限面板查辅助功能时没传 false ⟹ 它会自己弹系统框，而这个面板就是为了'
+    + '"不弹框也能看清状态"');
+  assert.ok(!/isTrustedAccessibilityClient\(true\)/.test(src),
+    'isTrustedAccessibilityClient(true) 会弹框 ⟹ 打开设置面板就弹，比原问题更糟');
+
+  // ③⚠️⚠️⚠️ **查不到真值的不许猜。**
+  //   语音识别（SFSpeechRecognizer 的状态 Electron 不暴露）和自动化
+  //   （查它的唯一办法是真发一个 AppleEvent，而那本身会弹框）——
+  //   这两条必须标 authQueryable: false 并给出"为什么查不到"。
+  //   ⚠️ 假装知道比说不知道糟得多：用户按面板做决定，而面板在骗他。
+  const voiceRow = perms.slice(perms.indexOf("id: 'voice'"), perms.indexOf("id: 'appleEvents'"));
+  assert.match(voiceRow, /authQueryable: false/,
+    '语音识别标成"能查" ⟹ 那是猜的（macOS 没给这个查询接口）');
+  assert.match(voiceRow, /unknownWhy:/, '语音识别没说清为什么查不到');
+  const aeRow = perms.slice(perms.indexOf("id: 'appleEvents'"));
+  assert.match(aeRow, /authQueryable: false/,
+    '自动化标成"能查" ⟹ 查它就得真发 AppleEvent，而那会弹框');
+  assert.match(aeRow, /unknownWhy:/, '自动化没说清为什么查不到');
+  // ⚠️ 而 authQueryable: false 的那两条**不许有 auth 查询函数** ——
+  //   有的话迟早被人接上，然后就是"标着查不到、实际在猜"。
+  assert.ok(!/authQueryable: false,\s*\n\s*auth:/.test(perms),
+    '标了 authQueryable: false 却还留着 auth 查询函数 ⟹ 迟早被接上变成猜');
+
+  // ④⚠️⚠️ **关了要真的关掉** —— 用户点名「关闭了呢那就是应该关掉了」。
+  //   光改 config 不够：鼠标转发那条要**真的把 helper 杀掉**，
+  //   否则"面板显示已关闭、进程还在跑"。
+  // ⚠️⚠️ 结束锚点必须是**代码**里的东西。原来我写的是注释 `// 清掉 0.9.88 之前`，
+  //   而 `src` 是 codeOnly（注释已剥）⟹ indexOf 返回 -1 ⟹ 切片是负区间、空串
+  //   ⟹ 这一段所有断言**静默失效**。反向验证第 ⑦ 条（"关了要真的关掉"，
+  //   这一节最重要的一条）显示永久绿才逮到。第 8 次栽在 slice 锚点上。
+  const setter = src.slice(src.indexOf("ipcMain.handle('permissions-set'"),
+    src.indexOf('const LEGACY_HELPER_RE'));
+  assert.ok(setter.length > 400,
+    `切不出 permissions-set（长度 ${setter.length}）⟹ 下面的断言全部静默失效`);
+  assert.match(setter, /if \(mouseTap\) \{ mouseTap\.stop\(\); mouseTap = null; \}/,
+    '从面板关掉鼠标转发时没杀 helper ⟹ 面板说"已关闭"而进程还在跑'
+    + '（用户："关闭了呢那就是应该关掉了"）');
+  assert.match(setter, /syncOverlayVisibility\(\)/,
+    '关摄像头没同步骨架层 ⟹ 关了摄像头还开着');
+  assert.match(setter, /syncAudioSource\(\)/, '改音源没同步 ⟹ 关了采集还在跑');
+  assert.match(setter, /systemBridge\.stopVoice\(\)/, '关语音没停 helper');
+  // ⚠️ 每一支都要 writeConfig —— 不落盘的话重开应用又回去了
+  const writes = (setter.match(/writeConfig\(\)/g) || []).length;
+  assert.ok(writes >= 5, `permissions-set 里只有 ${writes} 处 writeConfig（该有 5 个可开关的）`
+    + ' ⟹ 漏掉的那个重开应用就回去了');
+  // ⚠️ 改完要推给面板，否则显示的还是旧状态
+  assert.match(setter, /broadcast\('permissions'/, '开关改完没推给面板 ⟹ 显示的是旧状态');
+
+  // ⑤⚠️ 跳系统设置的那个 pane **必须白名单校验** ——
+  //   不校验的话这就是个"任意 URL scheme 打开器"（渲染进程能传任何字符串）。
+  const opener = src.slice(src.indexOf("ipcMain.handle('permissions-open-pane'"),
+    src.indexOf("ipcMain.handle('permissions-set'"));
+  assert.match(opener, /PERMISSIONS\.some\(\(p\) => p\.pane === pane\)/,
+    'permissions-open-pane 没校验 pane ⟹ 渲染进程能让它打开任意 URL scheme');
+
+  // ⑥ 面板那边：三个接口 + DOM 容器 + 每次打开重查
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  assert.match(html, /id="perm-rows"/, '设置弹窗里没有权限面板的容器');
+  assert.match(dash, /function renderPermissions/, '面板没有渲染权限的函数');
+  // ⚠️⚠️ **每次打开设置都重查** —— 用户可能刚在系统设置里改过，而那件事
+  //   我们收不到任何通知。缓存的话面板显示的是历史，
+  //   而"面板说有权限、实际没有"正是用户信不过它的原因。
+  assert.match(dash, /function openSettingsModal\(\)[\s\S]{0,600}?renderPermissions\(\)/,
+    '打开设置时没重查权限 ⟹ 显示的是上次的状态（用户刚在系统设置里改过就不对了）');
+  // ⚠️ 开关点完**无论成败**都要重查 —— 显示的必须是真实状态
+  assert.match(dash, /renderPermissions\(\);\s*\n\s*\};/,
+    '点开关之后没重查 ⟹ 显示的是"我们以为的"状态');
+  // ⚠️ 失败不许静默 —— 这个项目栽在"静默无效"上最多次
+  assert.match(dash, /权限开关失败/, '开关失败时没提示 ⟹ 静默无效');
+  // ⚠️⚠️ helper 和主应用授权不一致时要**明确说出来** ——
+  //   TCC 按可执行文件记，主应用授权了、helper 没有 ⟹ 功能是死的，
+  //   而那正是用户这几轮一直撞到的状态。
+  assert.match(dash, /row\.helperAuth !== row\.auth/,
+    '不比较 helper 和主应用的授权 ⟹ "主应用授权了但 helper 没有"这个状态看不出来，'
+    + '而那正是"我明明开了却不工作"的来源');
+  // ⚠️ 开发模式下这些读数没有意义（跑的是 node_modules 里的 Electron）—— 要说清
+  assert.match(dash, /out\.packaged/,
+    '面板不区分开发模式 ⟹ npm start 下看到一堆"未授权"会以为是 bug');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

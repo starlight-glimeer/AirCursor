@@ -732,6 +732,35 @@
   .sm-head { display: flex; align-items: center; margin-bottom: 12px; }
   .sm-head b { flex: 1; font-size: 14px; }
   #settings-modal-close { padding: 2px 8px; font-size: 13px; line-height: 1.3; }
+  /* ⚠️ 权限面板（0.9.90）—— 三列：名字+说明 / 开关 / 授权状态。
+     ⚠️ **两种状态必须视觉上分得开** —— 开关是我们的，授权是 macOS 的，
+       混在一起就是"面板显示开着但其实没权限"（用户信不过面板的原因）。 */
+  .sm-h { margin: 16px 0 6px; font-size: 12px; color: var(--dim); font-weight: 600; }
+  .perm-rows { display: grid; gap: 1px; }
+  .perm-row {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
+    align-items: center; padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .perm-row:last-child { border-bottom: 0; }
+  .perm-name { font-size: 12px; font-weight: 600; }
+  .perm-what { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  /* 授权状态的小徽章。⚠️ 颜色只有三种语义：给了 / 没给 / 不知道。
+     "不知道"必须和"没给"**长得不一样** —— 那两个的下一步动作完全不同。 */
+  .perm-auth {
+    font: 400 10px/1.6 ui-monospace, monospace; padding: 2px 7px;
+    border-radius: 999px; white-space: nowrap;
+    border: 1px solid var(--line);
+  }
+  .perm-auth.granted { color: var(--ok); border-color: rgba(138,255,193,.3); }
+  .perm-auth.denied { color: var(--warn); border-color: rgba(255,180,84,.32); }
+  .perm-auth.unknown { color: var(--dim); }
+  .perm-toggle { font-size: 11px; padding: 3px 10px; white-space: nowrap; }
+  /* 开关关着时按钮要"没通电"的样子，开着时高亮 —— 一眼看出哪些是开的 */
+  .perm-toggle.on { color: var(--accent); border-color: rgba(108,199,255,.35); }
+  .perm-detail { grid-column: 1 / -1; font-size: 10px; color: var(--dim); line-height: 1.6; }
+  .perm-detail b { color: var(--warn); font-weight: 600; }
+
   /* 快捷键：从 nav 底部搬来的。横排（弹窗宽），行距松一点。 */
   .sm-keys {
     margin: 14px 0 4px; padding-top: 12px;
@@ -1281,6 +1310,29 @@
       <kbd>⌃⇧D</kbd> 开发者工具<br>
       <kbd>⌃⇧X</kbd> 拆掉骨架层（鼠标点不动时用）　
       <kbd>⌃⇧Q</kbd> 退出
+    </div>
+
+    <!-- ⚠️⚠️⚠️ **权限面板**（0.9.90）。用户 2026-08-02：
+           「把所有需要授权的放在设置里面一个权限面板里面，这个里面可以主动选择
+             开启或者关闭…那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常
+             生效了吧，关闭了呢那就是应该关掉了…都集中在一个面板上，我才方便看
+             现在到底有权限没权限。这块儿你再给我来一个诊断面板，一点东西让我
+             可清楚看了，到底是不是真的有，我关了到底是不是真的关了？」
+
+         **这个设计对**，而它的关键是**两种状态分开显示**：
+           · 开关 —— 我们的 config，用户的意图，我们完全掌握
+           · 授权 —— macOS 的 TCC，系统的事实，我们只能查
+         混在一起就是"面板显示开着但其实没权限"，那正是他信不过面板的原因。
+
+         ⚠️ 这一块**不在 DEV-PANEL 里** —— 它是给正常用户看的（"我到底给了什么
+           权限"是 2C 用户会问的问题），而 DEV-PANEL 整块以后要删掉。 -->
+    <h4 class="sm-h">权限</h4>
+    <div class="card">
+      <div id="perm-rows" class="perm-rows">—</div>
+      <p class="hint" id="perm-note">
+        <b>开关</b>是我们这边的（关了就真的不跑）；<b>授权</b>是 macOS 那边的
+        —— 开关打开时系统会弹一次框问你，那个框归它，给了就一直有效。
+      </p>
     </div>
 
     <!-- ╔═══════════════════════════════════════════════════════════════════╗

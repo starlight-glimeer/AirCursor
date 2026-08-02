@@ -8,7 +8,7 @@
 // The wall is the only one that has to fight macOS for its window level, and that
 // fight is the reason for WALL_STRATEGIES below.
 const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme, Menu,
-  protocol, net, shell } = require('electron');
+  protocol, net, shell, systemPreferences } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 // spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
@@ -3518,6 +3518,202 @@ let mouseInjected = 0;
 // ⚠️ 这是分辨"注进去了但页面不响应"的唯一证据 —— 尤其
 // "mousedown 收到了但 pointerdown 没有"直接说明是事件族的问题。
 let pageMouseSeen = null;
+
+// ---------------------------------------------------------------------------
+// 权限面板：一个地方看清"要什么权限、开没开、真给了没有"
+// ---------------------------------------------------------------------------
+// ⚠️⚠️⚠️ 用户 2026-08-02：
+//   「把所有需要授权的放在设置里面一个权限面板里面，这个里面可以主动选择开启或者
+//     关闭…那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常生效了吧，关闭了呢
+//     那就是应该关掉了…都集中在一个面板上，我才方便看现在到底有权限没权限。
+//     这块儿你再给我来一个诊断面板，一点东西让我可清楚看了，到底是不是真的有，
+//     我关了到底是不是真的关了？」
+//
+// 这个设计对，而它的关键是**两种状态必须分开显示**：
+//   · **开关**（我们的 config）—— 用户的意图，我们完全掌握
+//   · **授权**（macOS 的 TCC）—— 系统的事实，我们只能查
+// 混在一起就是"我这儿显示开着，但其实没权限"，那正是他信不过面板的原因。
+//
+// ⚠️⚠️ **而有两条链的授权状态在 macOS 上查不到真值**（下面 authQueryable 标出来）。
+//   那种我**不许猜** —— 面板显示"查不到"，并给一条"怎么自己确认"的路。
+//   假装知道比说不知道糟得多：用户按面板做决定，而面板在骗他。
+const PERMISSIONS = [
+  {
+    id: 'gestures',
+    name: '摄像头',
+    what: '手势识别 —— 看你的手，判断挥手/捏合那些动作',
+    // 开关：config.gestures.enabled
+    get on() { return !!(config && config.gestures && config.gestures.enabled); },
+    // ⚠️ 摄像头的授权状态**能查真值**：Electron 的 getMediaAccessStatus。
+    //   'granted' / 'denied' / 'restricted' / 'not-determined'
+    authQueryable: true,
+    auth: () => systemPreferences.getMediaAccessStatus('camera'),
+    // ⚠️ 这条链的授权挂在**主应用**上（不是 helper）—— 所以列表里叫 GestureWall。
+    listedAs: 'GestureWall',
+    pane: 'Privacy_Camera',
+  },
+  {
+    id: 'mouseForward',
+    name: '辅助功能',
+    what: '把鼠标点击转发给壁纸 —— 「点一下掉流星」那类特效靠它',
+    get on() { return !!(config && config.we && config.we.mouseForward); },
+    // ⚠️ 辅助功能**能查真值**：isTrustedAccessibilityClient(false)（false = 不弹框）。
+    //   ⚠️⚠️ 但它查的是**主进程**有没有授权，而真正需要授权的是 helper
+    //     （GestureWallMouse，TCC 按可执行文件记）⟹ **两者可能不一致**。
+    //     helper 那边的真实状态由它自己上报（mouseStatus.trusted），
+    //     所以下面 permissionSnapshot 会把两个都给出去。
+    authQueryable: true,
+    auth: () => (systemPreferences.isTrustedAccessibilityClient(false) ? 'granted' : 'denied'),
+    helperAuth: () => (mouseStatus && typeof mouseStatus.trusted === 'boolean'
+      ? (mouseStatus.trusted ? 'granted' : 'denied') : 'unknown'),
+    listedAs: 'GestureWallMouse',
+    pane: 'Privacy_Accessibility',
+  },
+  {
+    id: 'controlCursor',
+    name: '辅助功能（手势控光标）',
+    what: '手势直接移动鼠标指针',
+    get on() { return !!(config && config.controlCursor); },
+    authQueryable: true,
+    auth: () => (systemPreferences.isTrustedAccessibilityClient(false) ? 'granted' : 'denied'),
+    listedAs: 'AirCursorPointer',
+    pane: 'Privacy_Accessibility',
+  },
+  {
+    id: 'audio',
+    name: '麦克风（系统声音）',
+    what: '采集正在播放的声音，驱动音频响应的壁纸',
+    // ⚠️ 这条的"开"不是一个布尔开关：音源不是 off 就算开。
+    get on() { return !!(config && config.we && config.we.audioSource !== 'off'); },
+    // ⚠️ 采集走的是 CoreAudio 进程 tap（0.9.36 从 ScreenCaptureKit 换过来的，
+    //   为了不显示"正在共享屏幕"）⟹ 它要的是**麦克风**权限。
+    authQueryable: true,
+    auth: () => systemPreferences.getMediaAccessStatus('microphone'),
+    listedAs: 'GestureWallAudio',
+    pane: 'Privacy_Microphone',
+  },
+  {
+    id: 'voice',
+    name: '语音识别',
+    what: '听语音指令（可选）',
+    get on() { return !!(config && config.voice); },
+    // ⚠️⚠️ **查不到真值。** macOS 的语音识别（SFSpeechRecognizer）授权状态
+    //   Electron 不暴露，而 `getMediaAccessStatus` 只支持 camera/microphone。
+    //   ⟹ 老老实实说"查不到"，别猜。
+    authQueryable: false,
+    unknownWhy: 'macOS 没给这一项的查询接口（Electron 只能查摄像头和麦克风）'
+      + ' —— 开了语音之后看它有没有反应就知道',
+    listedAs: 'AirCursorVoice',
+    pane: 'Privacy_SpeechRecognition',
+  },
+  {
+    id: 'appleEvents',
+    name: '自动化（系统事件）',
+    what: '换桌面壁纸的静态帧、按媒体键 —— 走 osascript',
+    // ⚠️ 这条没有开关：它是壁纸装载流程的一部分（换系统壁纸消掉切桌面的闪烁）。
+    on: null,
+    // ⚠️⚠️ **查不到真值**，而且**不该主动查** —— 查它的唯一办法是真发一个
+    //   AppleEvent，而那本身就会触发授权框。⟹ 不查。
+    authQueryable: false,
+    unknownWhy: '查它的唯一办法是真发一个 AppleEvent，而那本身就会弹授权框'
+      + ' —— 所以不查。没授权的表现是切桌面时闪一下，不影响别的',
+    listedAs: 'GestureWall',
+    pane: 'Privacy_Automation',
+  },
+];
+
+function permissionSnapshot() {
+  return PERMISSIONS.map((p) => {
+    const row = {
+      id: p.id, name: p.name, what: p.what,
+      on: typeof p.on === 'boolean' || p.on === null ? p.on : p.on,
+      listedAs: p.listedAs, pane: p.pane,
+      authQueryable: p.authQueryable,
+    };
+    if (process.platform !== 'darwin') {
+      row.auth = 'granted';           // 非 macOS 没有这套东西
+      row.note = '非 macOS —— 没有这套授权机制';
+      return row;
+    }
+    if (!p.authQueryable) {
+      row.auth = 'unknown';
+      row.note = p.unknownWhy;
+      return row;
+    }
+    // ⚠️ 查询本身可能抛（API 在某些系统版本上不存在）—— 那也是"查不到"，不是"没授权"。
+    try { row.auth = p.auth(); } catch (error) {
+      row.auth = 'unknown';
+      row.note = `查询失败：${error.message}`;
+    }
+    // ⚠️ helper 自己上报的状态（如果有）—— 它和主进程的查询**可能不一致**，
+    //   而不一致本身就是最有用的诊断信息（主应用授权了、helper 没有）。
+    if (p.helperAuth) {
+      try { row.helperAuth = p.helperAuth(); } catch { row.helperAuth = 'unknown'; }
+    }
+    return row;
+  });
+}
+
+ipcMain.handle('permissions-read', () => ({
+  ok: true,
+  packaged: app.isPackaged,
+  rows: permissionSnapshot(),
+}));
+
+// 打开系统设置里对应的那一页。
+// ⚠️ 只接受 PERMISSIONS 里出现过的 pane —— 不然这就是个"任意 URL scheme 打开器"。
+ipcMain.handle('permissions-open-pane', (_event, pane) => {
+  const known = PERMISSIONS.some((p) => p.pane === pane);
+  if (!known) return { ok: false, error: `未知的设置页：${pane}` };
+  shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+  return { ok: true };
+});
+
+// 从面板直接开/关某一项。
+// ⚠️⚠️ **这里只改我们自己的开关，不碰 macOS 的授权** —— 那是用户的话：
+//   「那个弹窗归他的弹窗，你只要授权，那我这边就是应该正常生效了吧」
+//   ⟹ 我们负责的是"开了就真的生效、关了就真的不跑"，授权归系统。
+ipcMain.handle('permissions-set', (_event, id, enabled) => {
+  const on = !!enabled;
+  switch (id) {
+    case 'gestures':
+      config.gestures = { ...config.gestures, enabled: on };
+      writeConfig();
+      syncOverlayVisibility();
+      break;
+    case 'mouseForward':
+      config.we = { ...config.we, mouseForward: on };
+      writeConfig();
+      // ⚠️ 关掉要真的把 helper 杀掉（不然"关了却还在跑"）——
+      //   syncMouseForward 里 !need 那支会 stop，但它只在 mouseTap 存在时管用，
+      //   所以先清掉再同步，和 we-set-mouse-forward 那条路一致。
+      if (mouseTap) { mouseTap.stop(); mouseTap = null; }
+      syncMouseForward();
+      break;
+    case 'controlCursor':
+      config.controlCursor = on;
+      writeConfig();
+      // ⚠️ 关掉不需要杀 helper：它是按需拉起的（startPointer），
+      //   而 config.controlCursor 是每帧都读的门 ⟹ 关了就不再有事件进去。
+      break;
+    case 'audio':
+      // ⚠️ 这条是三态（system / synth / off），面板的开关映射到 system ↔ off。
+      config.we = { ...config.we, audioSource: on ? 'system' : 'off' };
+      writeConfig();
+      syncAudioSource();
+      break;
+    case 'voice':
+      config.voice = on;
+      writeConfig();
+      if (!on) systemBridge.stopVoice();
+      break;
+    default:
+      return { ok: false, error: `这一项不能从面板开关：${id}` };
+  }
+  broadcast('config', config);
+  broadcast('permissions', permissionSnapshot());
+  return { ok: true, rows: permissionSnapshot() };
+});
 
 // ---------------------------------------------------------------------------
 // 清掉 0.9.88 之前那些带 hash 名的 helper 二进制

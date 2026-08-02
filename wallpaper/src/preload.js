@@ -67,6 +67,10 @@ contextBridge.exposeInMainWorld('gw', {
   weSetAudioSource: (source) => ipcRenderer.invoke('we-set-audio-source', source),
   weSetStrategy: (id) => ipcRenderer.invoke('we-set-strategy', id),
   weSetMouseForward: (patch) => ipcRenderer.invoke('we-set-mouse-forward', patch),
+  // ⚠️ 权限面板（0.9.90）—— 用户要"一个地方看清有没有权限、开没开"。
+  permissionsRead: () => ipcRenderer.invoke('permissions-read'),
+  permissionsSet: (id, enabled) => ipcRenderer.invoke('permissions-set', id, enabled),
+  permissionsOpenPane: (pane) => ipcRenderer.invoke('permissions-open-pane', pane),
 
   // 创意工坊
   workshopDownload: (input) => ipcRenderer.invoke('workshop-download', input),
@@ -140,6 +144,8 @@ contextBridge.exposeInMainWorld('gw', {
   resetWallpaperDir: () => ipcRenderer.invoke('workshop-reset-dir'),
   onWorkshopProgress: on('workshop-progress'),
   onMouseStatus: on('mouse-status'),
+  // ⚠️ 权限状态变了主动推一次（开关一动、helper 上报授权状态都会推）
+  onPermissions: on('permissions'),
   onVideoStatus: on('video-status'),
   onVideoSource: on('video-source'),
   onCancelRecording: on('cancel-recording'),
