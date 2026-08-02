@@ -2661,6 +2661,68 @@ check('启动页写的是产品名和 slogan', () => {
     + '"any wallpaper you want is here"');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️ **「承重决定」那节文档和代码对得上**（0.9.132）。用户 2026-08-02：
+//    「我想文档吧，我怕后面就是时间长了，可能会混淆什么的」
+//
+//  ⚠️ 而一份**会漂的文档比没有文档糟** —— 它会让人相信一件已经不成立的事。
+//    ⟹ 那节里凡是"具体的数字/字段值"，这里都对着代码核一遍。
+//  ⚠️ 我起草时**自己就写错了三处**（backdrop-filter 说 5 处实际 6、
+//    `.card` 说 11 个实际 10、误报守卫说"近一半"实际 8/62）——
+//    那正是这条守卫要防的：**文档里的数字是抄的那一刻的快照。**
+// ═══════════════════════════════════════════════════════════════════════
+check('MODULES.md 的「承重决定」和代码对得上（会漂的文档比没有糟）', () => {
+  const doc = fs.readFileSync(path.join(__dirname, '..', 'MODULES.md'), 'utf8');
+  const at = doc.indexOf('# ⛔ 承重决定');
+  assert.ok(at > 0, '「承重决定」那节没了 —— 它记的是"改了很贵"的决定，别删');
+  const sec = doc.slice(at);
+  const pkg = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+
+  // ① 三个不许改的字段，文档里写的值要和 package.json 一致
+  // ⚠️ 锚**那一行表格**，不是"这个词在整节里出现过" —— `aircursor` 在
+  //   appId 那行和正文里都出现（同一节里 4 次）⟹ 改坏 name 那行断言照样绿
+  //   （反向验证逮到的，这轮第七次撞到同一件事）。
+  assert.match(sec, new RegExp(`\\| \`name\`（顶层） \\| \`${pkg.name}\``),
+    `文档里 name 那一行和 package.json 不一致（实际是 ${pkg.name}）`);
+  assert.ok(sec.includes(pkg.build.appId),
+    `文档里的 appId 和 package.json 不一致（实际是 ${pkg.build.appId}）`);
+  assert.ok(sec.includes(`\`${PRODUCT}\``),
+    `文档里的 productName 和 package.json 不一致（实际是 ${PRODUCT}）`);
+
+  // ② backdrop-filter 的选择器个数
+  const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const style = css.slice(css.indexOf('<style>'), css.indexOf('</style>'))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const blurCount = [...style.matchAll(/([^\n{}]+)\{[^}]*backdrop-filter[^}]*\}/g)].length;
+  assert.ok(sec.includes(`**${blurCount} 个选择器`),
+    `文档说的 backdrop-filter 选择器数和实际不一致（实际 ${blurCount} 个）`);
+
+  // ③ `.card` 的实例数 —— 那是"为什么不给它 blur"的全部理由
+  const body = css.slice(css.indexOf('<body>'))
+    .replace(/<!--[\s\S]*?-->/g, '').replace(/<script[\s\S]*?<\/script>/g, '');
+  const cardCount = (body.match(/class="card"/g) || []).length;
+  assert.ok(sec.includes(`**${cardCount} 个实例**`),
+    `文档说的 .card 实例数和实际不一致（实际 ${cardCount} 个）`);
+
+  // ④ 两个兜底定时器的毫秒数（"壁纸的要更短"是有理由的，文档解释了它）
+  const boot = mainSrc.slice(mainSrc.indexOf('app.whenReady().then'));
+  const wallMs = (boot.match(/wallpaperGate = setTimeout\([\s\S]*?\}, (\d+)\)/) || [])[1];
+  const overlayMs = (boot.match(/overlayGate = setTimeout\([\s\S]*?\}, (\d+)\)/) || [])[1];
+  assert.ok(wallMs && overlayMs, '兜底定时器的写法变了，这条守卫要跟着改');
+  assert.ok(sec.includes(`**${Number(wallMs) / 1000} 秒**`),
+    `文档说的壁纸兜底秒数和代码不一致（代码是 ${wallMs}ms）`);
+  assert.ok(sec.includes(`${Number(overlayMs) / 1000} 秒`),
+    `文档说的骨架兜底秒数和代码不一致（代码是 ${overlayMs}ms）`);
+
+  // ⑤ 文档提到的守卫机制要真的存在
+  const self = fs.readFileSync(__filename, 'utf8');
+  assert.match(self, /const ALLOWED = \[/,
+    '文档说 backdrop-filter 有白名单，而这个文件里没有');
+  assert.match(self, /const PRODUCT = JSON\.parse/,
+    '文档说产品名从单一来源读，而这个文件里没有 PRODUCT');
+});
+
 // ⚠️ asar 必须关掉。MediaPipe 的 locateFile 返回**相对路径**，而 asarUnpack 会把
 // 文件搬到 app.asar.unpacked/ ⟹ 从 app.asar/ 里的相对路径到不了那儿。
 // 症状是"摄像头不启动、什么都不说"，这个项目为它烧过一轮。
