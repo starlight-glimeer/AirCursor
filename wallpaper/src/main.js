@@ -3798,6 +3798,56 @@ function sendWEMedia(track) {
   wc.send('we-media-thumbnail', WE.mediaThumbnail(track));
   wc.send('we-media-playback', WE.mediaPlayback(track));
   wc.send('we-media-timeline', WE.mediaTimeline(track));
+  sendMediaState(track);
+}
+
+// ⚠️⚠️⚠️ **`window.__mediaState` —— 我们一直漏掉的那个接口**（0.9.114）。
+//
+// 用户 2026-08-02：「我给你们这些壁纸本身都是能正常运行的，出了问题就说明是
+//   我们软件这边没做好适配」—— **他说得对。**
+//
+// 那个粒子壁纸（Steam 工坊「音域回响」）不用 WE 的 `wallpaperRegister*Listener`，
+// 它读一个**普通全局对象**：
+//     window.__mediaState = { title, artist, thumbnail, primaryColor, textColor,
+//                             isPlaying, position, duration, _callbacks: [] }
+// 我们从来没设过它 ⟹ 它落到全空的兜底值 ⟹ 进度恒为 0
+// ⟹ 壁纸自己造 performance.now() 计时器往前跑、跑到 duration 就重置
+//   —— 那正是用户看到的"跑一会儿自己重置"。
+//
+// ⚠️⚠️ **必须用 executeJavaScript 在主世界建，不能走 contextBridge** ——
+//   壁纸要往 `_callbacks` 里 `push`，而 contextBridge 暴露的是**冻结代理**，
+//   push 会抛。（这条约束 createWEWindow 那段注释里就写着：
+//   "壁纸→我们：executeJavaScript 跑在主世界"。）
+//
+// ⚠️ 而**对象只建一次**：每次都重建会把壁纸已经 push 进去的回调数组丢掉
+//   ⟹ 它订阅了却再也收不到通知（比不实现更糟：看起来接上了）。
+//   ⟹ 所以脚本里是"没有才建，有就只改字段 + 逐个调回调"。
+function sendMediaState(track) {
+  if (!weWindow || weWindow.isDestroyed()) return;
+  const payload = WE.mediaStatePayload(track);
+  // JSON 双重 stringify：内层变字面量，外层让它作为字符串安全嵌入
+  //（歌名里的引号/反斜杠会把脚本劈开 —— sendWEProperties 那边同一个理由）。
+  const script = `(() => {
+    const next = JSON.parse(${JSON.stringify(JSON.stringify(payload))});
+    let s = window.__mediaState;
+    if (!s) {
+      // ⚠️ _callbacks 必须在**建对象时**就有，因为壁纸可能比我们先跑到订阅那一行
+      s = window.__mediaState = { _callbacks: [] };
+    }
+    if (!Array.isArray(s._callbacks)) s._callbacks = [];
+    Object.assign(s, next);
+    // ⚠️ 逐个 try —— 一个壁纸回调抛异常不该让后面的收不到，
+    //   也不该把异常带回 executeJavaScript 的 Promise 里。
+    let ok = 0;
+    for (const cb of s._callbacks.slice()) {
+      try { cb(s); ok += 1; } catch (e) { /* 壁纸自己的错，不是我们的 */ }
+    }
+    return { subscribers: s._callbacks.length, notified: ok };
+  })()`;
+  weWindow.webContents.executeJavaScript(script, true).catch((error) => {
+    // ⚠️ 失败要说出来 —— 静默的话"进度不同步"又变成一个查不出来的谜
+    console.warn('[we] __mediaState 注入失败：', error && error.message);
+  });
 }
 
 // 音频帧入口。采集在原生 helper 里（Electron 的 desktopCapturer 在 macOS 上不给

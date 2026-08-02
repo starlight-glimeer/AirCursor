@@ -6439,4 +6439,81 @@ check('面板：数字等宽 / 按压有反馈 / 键盘看得见焦点', () => {
     '卡片又变回四边均匀的边框 ⟹ 那是最通用的那种卡片，而光在现实里有方向');
 });
 
+// ⚠️⚠️⚠️ **`window.__mediaState` —— 我们一直漏掉的那个接口**（0.9.114）。
+//
+// 用户 2026-08-02：「我给你们这些壁纸本身都是能正常运行的，出了问题就说明是我们
+//   软件这边没做好适配」—— **他说得对，而我查了三轮才找对地方。**
+//
+// 那个 Steam 工坊壁纸（「音域回响」）不用 WE 的 `wallpaperRegister*Listener`，
+// 它读一个**普通全局对象**：
+//     window.__mediaState = { title, artist, thumbnail, primaryColor, textColor,
+//                             isPlaying, position, duration, _callbacks: [] }
+// 我们从没设过它 ⟹ 落到全空兜底值 ⟹ 进度恒为 0 ⟹ 壁纸自己造计时器往前跑、
+// 跑到 duration 就重置 —— 那正是用户看到的现象。
+//
+// ⚠️⚠️ **我前两轮的结论都是错的**：
+//   ① 查"注册了哪些 Listener" ⟹ 只有 Audio ⟹ 我说"它不听进度，我们没法喂"
+//      —— **错**。它要那个数据，只是用另一种形式取。
+//   ② 查 applyGeneralProperties ⟹ 它只读 fps —— 也不是那条。
+//   ③ 顺着 `title:` 这个**它要显示的字段名**去搜才找到。
+//   ⟹ 教训：**"它没注册我们的接口"不等于"它不要这个数据"。**
+//     找不到时顺着"它要显示什么"搜，而不是顺着"我提供了什么"。
+check('__mediaState：建一次 / 保住订阅 / 字段名照壁纸的契约', () => {
+  const host = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'we-host.js'), 'utf8'));
+  const src = codeOnly(mainSrc);
+
+  // ① 载荷的八个字段名**一个都不许改** —— 那是从壁纸的字面量抄下来的契约
+  const fn = host.slice(host.indexOf('function mediaStatePayload'),
+    host.indexOf('function mediaTimeline'));
+  assert.ok(fn.length > 200, '切不出 mediaStatePayload ⟹ 断言失效');
+  for (const k of ['title', 'artist', 'thumbnail', 'primaryColor', 'textColor',
+    'isPlaying', 'position', 'duration']) {
+    assert.ok(new RegExp(`\\b${k}:`).test(fn),
+      `mediaStatePayload 少了 ${k} ⟹ 那是壁纸直接读的字段名，少一个它就拿到 undefined`);
+  }
+  // ⚠️ 字段名**不是**我们内部那套：这里 position（内部 elapsedTime）、
+  //   thumbnail（内部 artworkData）⟹ 这个函数就是那道翻译。
+  assert.match(fn, /position: line\.position/,
+    'position 不是从 mediaTimeline 来的 ⟹ 那道翻译断了');
+  assert.match(fn, /thumbnail: t\.thumbnail/, 'thumbnail 不是从 mediaThumbnail 来的');
+  // ⚠️ isPlaying 是布尔，而我们内部是三态 ⟹ 只有 PLAYING 算 true
+  assert.match(fn, /isPlaying: mediaPlayback\(track\)\.state === 0/,
+    'isPlaying 没从三态 playback 翻成布尔 ⟹ 壁纸会把"暂停"当成"在放"');
+  // ⚠️⚠️ 不许写 `PLAYBACK.PLAYBACK_PLAYING` —— 那个 const 声明在这函数**下面**，
+  //   const 没有提升 ⟹ 调用时抛 TDZ，而 node --check 查不出来（语法合法）。
+  assert.ok(!/PLAYBACK\.PLAYBACK_PLAYING/.test(fn),
+    'mediaStatePayload 里引用了 PLAYBACK 常量 ⟹ 它声明在下面，const 无提升 '
+    + '⟹ 运行时抛 TDZ，而 node --check 查不出来');
+
+  // ②⚠️⚠️ 注入必须走 executeJavaScript，**不能走 contextBridge** ——
+  //   壁纸要往 _callbacks 里 push，而 contextBridge 暴露的是冻结代理，push 会抛。
+  assert.match(src, /function sendMediaState/, '没有 sendMediaState ⟹ 那个全局没人设');
+  const inj = src.slice(src.indexOf('function sendMediaState'),
+    src.indexOf('function sendMediaState') + 2200);
+  // ⚠️ 锚**这一处**的完整调用 —— `executeJavaScript` 在 main.js 里有多处，
+  //   只查它出现过的话，破坏 sendMediaState 里那句照样绿（反向验证逮到）。
+  assert.match(inj, /weWindow\.webContents\.executeJavaScript\(script, true\)/,
+    '__mediaState 没走 executeJavaScript ⟹ contextBridge 那边是冻结代理，'
+    + '壁纸 push 回调会抛');
+  // ⚠️⚠️⚠️ **对象只许建一次** —— 每次重建会把壁纸已 push 的回调丢掉
+  //   ⟹ 它订阅了却再也收不到（比不实现更糟：看起来接上了）。
+  assert.match(inj, /if \(!s\) \{/,
+    '__mediaState 每次都重建 ⟹ 壁纸 push 进去的回调会被丢掉，'
+    + '它订阅了却收不到通知（那比不实现更糟）');
+  assert.match(inj, /Object\.assign\(s, next\)/,
+    '不是"只改字段"而是整个替换 ⟹ 同上，订阅会丢');
+  // ⚠️ _callbacks 要在建对象时就有（壁纸可能比我们先跑到订阅那行）
+  assert.match(inj, /window\.__mediaState = \{ _callbacks: \[\] \}/,
+    '建对象时没有 _callbacks ⟹ 壁纸先跑到订阅那行会对 undefined 取 push');
+  // ⚠️ 逐个 try —— 一个坏壁纸的回调不该让后面的收不到
+  assert.match(inj, /try \{ cb\(s\); ok \+= 1; \} catch/,
+    '回调没逐个 try ⟹ 一个壁纸抛异常，后面的全收不到');
+  // ⚠️ 注入失败要说出来（静默的话"进度不同步"又变成查不出来的谜）
+  assert.match(inj, /__mediaState 注入失败/, '注入失败没上报 ⟹ 静默失败');
+  // ⚠️ 而它必须**真的被调**（换歌/进度更新那条链上）
+  assert.match(src, /sendMediaState\(track\);/,
+    'sendMediaState 没在 sendWEMedia 里调 ⟹ 那个全局永远不更新');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

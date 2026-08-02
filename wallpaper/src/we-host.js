@@ -435,6 +435,63 @@ function mediaPlayback(track) {
   return { state: PLAYBACK.PLAYBACK_PLAYING };
 }
 
+// ⚠️⚠️⚠️ **`window.__mediaState` —— 我们一直没适配的那个接口**（0.9.114）。
+//
+// 用户 2026-08-02 报"网易云的进度和壁纸显示的进度不同步"，而他的推论是对的：
+//   「我给你们这些壁纸本身都是能正常运行的，出了问题就说明是我们软件这边没做好适配」
+//
+// ⚠️⚠️ 而我查了三轮才找对地方，前两轮都在错的前提上：
+//   ① 先查"它注册了哪些 wallpaperRegister*Listener" ⟹ **只有 Audio 一个**
+//      ⟹ 我据此说"它不听进度，所以我们没法喂"—— **那个结论错了**
+//   ② 又查 `applyGeneralProperties` ⟹ 它的回调只读 `fps`
+//   ③ 最后顺着 `title:` 这个字面量才找到真相：
+//        `_t = window.__mediaState || { title:"", artist:"", …, position:0, duration:0 }`
+//
+// **它读的是一个普通全局对象，不是 WE 的回调接口。** 而我们从来没设过它
+// ⟹ 每次都落到那个全空的兜底值 ⟹ 进度恒为 0、封面为空
+// ⟹ 壁纸自己造 `performance.now()` 计时器往前跑，跑到 duration 就重置
+//   —— **那正是用户看到的"跑一会儿自己重置"**。
+//
+// ⚠️ 教训：**"它没注册我们的接口"不等于"它不要这个数据"。**
+//   第三方壁纸可以用任何形式取数据，而我按"WE 官方接口"这一种可能就下了结论。
+//   ⟹ 找不到的时候，顺着**它要显示的那个字段名**（title/position）去搜，
+//     而不是顺着"我提供的接口名"。
+//
+// 契约（从 `index-DbT3gAaX.js` 的字面量抄下来，一个字段都不许改名）：
+//     window.__mediaState = {
+//       title, artist, thumbnail, primaryColor, textColor,
+//       isPlaying, position, duration,
+//       _callbacks: []      // 壁纸 push 自己的回调进来；我们变更时逐个调
+//     }
+// ⚠️ `_callbacks` 是**壁纸往里 push** 的 ⟹ 这个对象必须是**可写的普通对象**，
+//   不能走 contextBridge（那边暴露的是冻结代理，push 会抛）
+//   ⟹ 只能用 `executeJavaScript` 在主世界建（和 sendWEProperties 同一手法）。
+//
+// ⚠️⚠️ 字段名**不是**我们内部那套：这里是 `position`，而 media-control 给的是
+//   `elapsedTime`；这里是 `thumbnail`（data URL），而我们内部是 `artworkData`。
+//   ⟹ 这个函数就是那道翻译，而"两边名字不一样"正是前三次栽跟头的地方。
+function mediaStatePayload(track) {
+  const t = mediaThumbnail(track);
+  const line = mediaTimeline(track);
+  return {
+    title: (track && track.title) || '',
+    artist: (track && track.artist) || '',
+    thumbnail: t.thumbnail,
+    primaryColor: t.primaryColor,
+    textColor: t.textColor,
+    // ⚠️ 壁纸读的是布尔 `isPlaying`，而我们内部是三态的 playback.state
+    //   ⟹ 只有 PLAYING(0) 算 true。
+    // ⚠️ 不写 `=== PLAYBACK.PLAYBACK_PLAYING` —— `PLAYBACK` 那个 const 声明在
+    //   这个函数**下面**（431 行），而 const 没有提升 ⟹ 调用时会抛
+    //   "Cannot access before initialization"。而那种错只在真跑到时才炸，
+    //   node --check 查不出来（语法是合法的）。
+    //   ⟹ 直接比 0（PLAYBACK_PLAYING 的值，而它由 wallpaperMediaIntegration 契约定死）。
+    isPlaying: mediaPlayback(track).state === 0,
+    position: line.position,
+    duration: line.duration,
+  };
+}
+
 function mediaTimeline(track) {
   // ⚠️⚠️⚠️ **字段名又错了一处**（0.9.113）。用户 2026-08-02：
   //   「粒子壁纸会显示音乐的进度条，但是到达一定时间会自动重置，
@@ -586,5 +643,6 @@ root.GestureWallWE = {
   mediaThumbnail,
   mediaPlayback,
   mediaTimeline,
+  mediaStatePayload,
 };
 })(typeof window === 'undefined' ? globalThis : window);
