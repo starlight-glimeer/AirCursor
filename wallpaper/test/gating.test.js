@@ -6217,53 +6217,105 @@ check('进阶模式那道锁删了：所有手势动作无条件可用', () => {
   assert.ok(!/config\.proTier/.test(dash), 'dashboard.js 还在读 config.proTier');
 });
 
-// ⚠️⚠️⚠️ **video 壁纸：音轨解码失败要说对话**（0.9.109）。用户 2026-08-02：
-//   「我们的 video 这种类型的壁纸不稳定，运行着会弹出来」+ 截图原文：
-//       code 3: PIPELINE_ERROR_DECODE: **Failed to send audio packet** for decoding
+// ⚠️⚠️⚠️ **video 壁纸的音轨问题：真修法在宿主侧**（0.9.111）。
 //
-// ⚠️ 挂掉的是**音轨**，而 `<video>` 上有 `muted`
-//   ⟹ **Chromium 即使静音也照样解码音轨**（muted 只管"不输出到设备"）
-//   ⟹ 一个视频轨完全正常的壁纸会因为音轨编码不支持而整个黑屏。
+// 用户 2026-08-02 **两次**报同一个错，第二次是在我"修好"之后：
+//     code 3: PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding
 //
-// ⚠️⚠️ 而当时那条提示说的是"换一个 H.264 的壁纸，或者用 ffmpeg 转一次"——
-//   **对这个 case 是错的方向**（视频可能本来就是 H.264，转码白折腾）。
-//   而那条错误分支的注释里自己写着"**还没被真实触发过**，它是按已知事实写的"。
-//   ⟹ 教训：**一条从未触发过的错误分支，它的"下一步建议"是推断**。
-//     真触发时第一件事是核对"错误说的是什么"，而不是照搬那个建议。
-check('video 壁纸：音轨解码失败的提示和重试', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
-  const code = codeOnly(src);
+// 挂的是**音轨**，而 `<video>` 上有 `muted` ⟹ **Chromium 即使静音也照样解码音轨**
+// （muted 只管"不输出到设备"）⟹ 视频轨完全能放的壁纸整个黑屏。
+// 工坊里常见 AC-3 / E-AC-3 / DTS 音轨，Chromium 都不带解码器。
+//
+// ⚠️⚠️ **而 0.9.109 我在渲染进程加的"关掉 audioTracks 再重试"是空转** ——
+//   那个 API 在 Chromium 里默认不存在，而**我自己的注释里就写着"大概率拿不到"**。
+//   ⟹ 教训：**明知"大概率不管用"的修复不该当成修复发出去。**
+//     那一版让用户以为解决了，而它只是把同一个错又报了一遍 —— 比不修更糟，
+//     因为它消耗了一次"以为好了"的信任。
+//
+// ⟹ 真修法：macOS 自带 AVFoundation，`AVAssetExportSession` + passthrough
+//   只保留视频轨、**不重新编码**（几秒）。懒转换 + 缓存，只在真撞到错时才跑。
+check('video 音轨修复：宿主侧转换 + 提示不含 markdown', () => {
+  const vsrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
+  const vcode = codeOnly(vsrc);
+  const msrc = codeOnly(mainSrc);
 
-  // ① code 3 的提示必须指向**音轨**，而且给出确切命令
-  assert.match(code, /audio packet/,
-    'code 3 的提示没提"audio packet" ⟹ 用户对不上错误原文里那句');
-  assert.match(code, /-c:v copy -an/,
-    '没给"去掉音轨"的确切命令 ⟹ 用户只知道"编码不支持"，'
-    + '而正解是丢音轨（-c:v copy 不重编码，秒完）');
-  // ⚠️ 而"转视频"那条**不许当成首选** —— 它对这个 case 是白折腾
-  const spec3 = code.slice(code.indexOf('  3: {'), code.indexOf('  4: {'));
+  // ①⚠️ 提示是 `textContent` ⟹ **不许写 markdown**（用户截图里 `**音轨**`
+  //   原样显示成带星号的字，整段看起来像乱码）。
+  const spec3 = vcode.slice(vcode.indexOf('  3: {'), vcode.indexOf('  4: {'));
   assert.ok(spec3.length > 100, '切不出 code 3 那段 ⟹ 断言失效');
-  assert.ok(spec3.indexOf('-an') < spec3.indexOf('libx264'),
-    '"转视频编码"排在"去音轨"之前 ⟹ 顺序反了，用户会先做那个白折腾的');
+  assert.ok(!/\*\*/.test(spec3),
+    'code 3 的提示里有 `**` ⟹ 那是 textContent，markdown 会原样显示'
+    + '（用户截图里就是那样）');
+  // ⚠️ 而 `\n` 要真能换行 —— 靠 CSS 的 white-space
+  const vhtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.html'), 'utf8');
+  // ⚠️ 锚**规则里那一行**（`#err .hint {` 那个块内），而不是"文件里出现过" ——
+  //   注释里也写着这个词（反向验证逮到：删掉规则照样绿）。
+  assert.match(vhtml, /#err \.hint \{[\s\S]{0,200}?white-space: pre-line/,
+    '#err .hint 没有 white-space: pre-line ⟹ 提示里的 \\n 不换行，'
+    + '整段挤成一坨、ffmpeg 命令被折断在句子中间（用户截图）');
 
-  // ②⚠️ 自动重试只许针对音轨、只许一次、而且**必须报出来**
-  assert.match(code, /\/audio packet\/i\.test\(msg\)/,
-    '重试没判"是不是音轨挂的" ⟹ 别的错误重试就是白等');
-  assert.match(code, /let retried = false/, '没有"只重试一次"的标志 ⟹ 会无限重载');
-  assert.match(code, /if \(audioOnly && !retried\)/, '重试条件不对');
-  // ⚠️⚠️ **静默重试是这个项目栽过最多次的形状** —— 它会让"偶尔能放"变成一个谜
-  const retryBlock = code.slice(code.indexOf('if (audioOnly && !retried)'),
-    code.indexOf('// err.message 常常是空字符串'));
-  assert.match(retryBlock, /report\(/,
-    '重试没上报 ⟹ 静默重试，而"偶尔能放"会变成一个查不出来的谜');
-  // ⚠️ 重试要走 load()（错误状态下 play() 不会重新解封装）
-  assert.match(retryBlock, /video\.load\(\)/,
-    '重试只调 play() ⟹ 错误状态下不会重新解封装，等于没重试');
+  // ②⚠️⚠️ 渲染侧**不许**再用 audioTracks 那套空转的重试
+  assert.ok(!/audioTracks/.test(vcode),
+    'video.js 又在用 video.audioTracks ⟹ Chromium 里默认不存在，那是空转'
+    + '（0.9.109 的教训）');
+  // ⚠️ 锚**调用**那一行 —— 光查名字的话它在 `window.gw &&` 那个判断里也出现
+  //   （反向验证逮到）。
+  assert.match(vcode, /window\.gw\.videoAudioFailed\(\{ file: name \}\)/,
+    '渲染侧没把音轨失败报给宿主 ⟹ 只能干等，而宿主才有 AVFoundation');
+  // ⚠️ 同上：锚真正注册那一句。
+  assert.match(vcode, /window\.gw\.onVideoUseCache\(\(payload\)/,
+    '渲染侧不接受转好的缓存 URL ⟹ 转了也用不上');
+  // ⚠️ 换 URL 之后必须把错误框收起来，否则它盖在正常播放的视频上
+  // ⚠️ `classList.remove('on')` 在这个文件里有 4 处 ⟹ 锚**换 URL 那一段里**的那处。
+  assert.match(vcode, /errBox\.classList\.remove\('on'\);\s*\n\s*video\.src = url;/,
+    '换成缓存文件后没收起错误框 ⟹ 它盖在正常播放的画面上');
 
-  // ③⚠️ `muted` 必须还在 —— 壁纸出声是个更糟的 bug
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.html'), 'utf8');
-  assert.match(html, /<video[^>]*\bmuted\b/,
-    '<video> 没有 muted ⟹ 壁纸会出声（而且 autoplay 会被浏览器挡）');
+  // ③⚠️ 宿主侧：helper + 懒转换 + 缓存 + 异步
+  assert.match(msrc, /ipcMain\.on\('we-video-audio-failed'/,
+    '宿主没接"音轨失败"那条 ⟹ 渲染侧报了没人管');
+  assert.match(msrc, /GestureWallStripAudio/, '宿主没调去音轨的 helper');
+  // ⚠️⚠️ **必须异步 spawn** —— spawnSync 会把主进程整个卡住
+  //   （壁纸、面板、快捷键全冻），而几百 MB 的文件要几秒。
+  const strip = msrc.slice(msrc.indexOf("ipcMain.on('we-video-audio-failed'"),
+    msrc.indexOf('function loadWEProject'));
+  assert.ok(strip.length > 500, `切不出那段（长度 ${strip.length}）⟹ 断言失效`);
+  assert.ok(!/spawnSync\(binary/.test(strip),
+    '用 spawnSync 转视频 ⟹ 主进程冻住（壁纸/面板/快捷键全停），而转换要几秒');
+  assert.match(strip, /spawn\(binary/, '没有异步 spawn');
+  // ⚠️ 路径必须走 resolveAsset —— 渲染进程传来的路径不能直接拿去读文件
+  assert.match(strip, /WE\.resolveAsset/,
+    '直接信渲染进程传来的路径 ⟹ 那是任意文件读取；要走 resolveAsset 校验');
+  // ⚠️ 缓存 key 要带 mtime+size —— 用户换了同名文件要能失效
+  assert.match(msrc, /st\.mtimeMs.*st\.size/,
+    '缓存 key 不含 mtime+size ⟹ 用户换了同名文件还用旧缓存');
+  // ⚠️ 防重复：转换中再收到同一个请求不能再起一个进程
+  assert.match(strip, /stripping\.has\(src\)/, '没有防重复 ⟹ 会并发起好几个转换进程');
+  // ⚠️ 失败必须说出来（静默失败的话用户看到的还是原始报错，不知道我们试过了）
+  assert.match(strip, /去音轨失败/, '转换失败时没告诉用户 ⟹ 静默失败');
+
+  // ④ helper 要进预编译（否则用户机器上要装 Xcode）
+  const sh = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'prebuild-helpers.sh'), 'utf8');
+  assert.match(sh, /GestureWallStripAudio/,
+    '去音轨的 helper 没进预编译 ⟹ 用户机器上要现场编译（要 Xcode 命令行工具）');
+
+  // ⑤⚠️ Swift 那边两处最容易错的
+  const swift = fs.readFileSync(
+    path.join(__dirname, '..', 'native', 'GestureWallStripAudio.swift'), 'utf8');
+  // ⚠️⚠️ 必须用 AVMutableComposition —— 直接导出 asset 会把两条轨都搬过去（等于没干活）
+  // ⚠️ `AVMutableComposition` 在注释里也出现 ⟹ 锚**建实例**那一行。
+  assert.match(swift, /let composition = AVMutableComposition\(\)/,
+    '直接导出 asset ⟹ 音轨也会被搬过去，等于没干活');
+  assert.match(swift, /AVAssetExportPresetPassthrough/,
+    '不是 passthrough ⟹ 会重新编码，几分钟（壁纸装载不该卡那么久）');
+  // ⚠️ 竖屏视频靠 preferredTransform 旋转 —— 漏了导出来是躺倒的
+  assert.match(swift, /preferredTransform/,
+    '没保留 preferredTransform ⟹ 竖屏拍的视频导出来是躺倒的');
+  // ⚠️ 导出是异步的，命令行工具必须等 + 必须有超时
+  assert.match(swift, /DispatchSemaphore/, '不等异步导出 ⟹ 进程一退导出就断（半个文件）');
+  assert.match(swift, /timedOut/, '等待没超时 ⟹ 卡住的话上层等一个不回来的 helper');
+  // ⚠️ status == completed 但文件是 0 字节这种事在 AVFoundation 上出现过
+  assert.match(swift, /size < 1024/,
+    '不校验产出文件大小 ⟹ "成功"的空文件会让壁纸黑屏，而我们以为修好了');
 });
 
 // ⚠️⚠️⚠️ **封面那条链的字段名一直是错的**（0.9.110）。用户 2026-08-02 的截图里

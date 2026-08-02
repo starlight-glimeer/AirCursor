@@ -49,12 +49,14 @@ const MEDIA_ERRORS = {
     //   正解是**把音轨去掉**（壁纸本来就不该出声）。
     //   ⟹ 教训：一条从未被触发过的错误分支，它的"下一步建议"是**推断**。
     //     真触发时第一件事是核对"错误说的是什么"，而不是照搬那个建议。
-    hint: '解码挂在**音轨**上（错误里那句 "audio packet" 就是它）——'
-      + '壁纸本来不需要声音，把音轨去掉最省事：\n'
-      + 'ffmpeg -i 原文件 -c:v copy -an 新文件.mp4\n'
-      + '（-c:v copy = 视频不重新编码，秒完；-an = 丢掉音轨）\n'
-      + '如果去掉音轨还是这个错，那才是视频轨的编码不支持'
-      + '（HEVC/H.265 或 AV1）⟹ 再加 -c:v libx264 转一次。',
+    // ⚠️⚠️ **这里是 textContent，不是 markdown** —— 写 `**音轨**` 会原样显示成
+    //   带星号的字（用户 2026-08-02 的截图里就是那样，而那让整段话看起来像乱码）。
+    //   ⟹ 纯文本里不写 markdown 标记。强调靠**措辞和顺序**，不靠符号。
+    hint: '解码挂在音轨上 —— 错误里那句 "audio packet" 就是它。\n'
+      + '壁纸不需要声音，把音轨去掉最省事（视频不重新编码，秒完）：\n\n'
+      + 'ffmpeg -i 原文件.mp4 -c:v copy -an 新文件.mp4\n\n'
+      + '如果去掉音轨还报同一个错，那才是视频轨的编码不支持'
+      + '（HEVC/H.265 或 AV1）—— 再加 -c:v libx264 转一次。',
   },
   4: {
     title: '格式不支持',
@@ -76,25 +78,22 @@ function report(payload) {
   }
 }
 
-// ⚠️⚠️⚠️ **音轨挂掉时自动重试一次（丢掉音轨）**（0.9.109）。
+// ⚠️⚠️⚠️ **音轨挂掉时请宿主转一份没有音轨的**（0.9.111）。
 //
-// 用户 2026-08-02 报"video 这种壁纸不稳定，运行着会弹出来"，截图原文：
-//     code 3: PIPELINE_ERROR_DECODE: **Failed to send audio packet** for decoding
+// 用户 2026-08-02 两次报同一个错（第二次是在我"修好"之后）：
+//     code 3: PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding
 //
-// ⚠️ 挂掉的是**音轨** —— 而 `<video>` 上有 `muted`（video.html 那行）
-//   ⟹ **Chromium 即使静音也照样解码音轨**，muted 只管"不输出到设备"。
-//   ⟹ 一个视频轨完全正常的壁纸，会因为音轨编码不支持而整个黑屏。
+// 挂的是**音轨**，而 `<video>` 上有 `muted` ⟹ **Chromium 即使静音也照样解码音轨**
+// ⟹ 视频轨完全能放的壁纸整个黑屏（工坊里常见 AC-3/E-AC-3/DTS）。
 //
-// ⟹ 而这件事我们能自己救：`disableRemotePlayback` 不管用，但
-//   **重新加载时用 MediaSource 只挑视频轨**太重（要解封装）——
-//   代价最低的是 `video.audioTracks`（能关就关）+ 重试一次。
-//   ⚠️ 而 audioTracks 在 Chromium 里**默认没有**（要 flag）⟹ 大概率拿不到。
-//   ⟹ 所以真正的兜底是：**报错时告诉用户去掉音轨的确切命令**（见上面 hint），
-//     而不是假装能修好。
+// ⚠️⚠️ **而 0.9.109 我在这里加的"关掉 audioTracks 再重试"是空转** ——
+//   那个 API 在 Chromium 里默认不存在（我自己的注释都写了"大概率拿不到"）。
+//   ⟹ 教训：**明知"大概率不管用"的修复不该当成修复发出去** ——
+//     那一版让用户以为解决了，而它只是把同一个错又报了一遍。
 //
-// ⚠️ 这里只做一件有把握的事：**同一个源只重试一次，且必须报出来**。
-//   静默重试是这个项目栽过最多次的形状 —— 它会让"偶尔能放"变成一个谜。
-let retried = false;
+// ⟹ 真能修的地方在宿主：AVFoundation 只保留视频轨、不重新编码（几秒）。
+//   这边只负责两件事：**报上去** + **拿到新 URL 后换过去**。
+let askedStrip = false;
 
 video.addEventListener('error', () => {
   const err = video.error;
@@ -102,31 +101,40 @@ video.addEventListener('error', () => {
   const msg = (err && err.message) || '';
   const spec = MEDIA_ERRORS[code] || { title: '未知错误', hint: '' };
 
-  // ⚠️ 只有"音轨解码失败"这一种值得重试 —— 别的重试就是白等。
-  const audioOnly = code === 3 && /audio packet/i.test(msg);
-  if (audioOnly && !retried) {
-    retried = true;
-    // ⚠️ 关掉音轨（Chromium 通常没这个 API —— 有就用，没有就往下走）
-    let killed = false;
-    const tracks = video.audioTracks;
-    if (tracks && tracks.length) {
-      for (let i = 0; i < tracks.length; i += 1) tracks[i].enabled = false;
-      killed = true;
-    }
-    report({ ok: false, kind: '音轨解码失败，重试一次', detail: msg,
-      hint: killed ? '已关掉音轨' : 'Chromium 没给 audioTracks API，直接重载试试' });
-    // ⚠️ 重新 load 而不是 play() —— 错误状态下 play() 不会重新解封装。
-    const src = video.currentSrc || video.src;
-    video.removeAttribute('src');
-    video.load();
-    video.src = src;
-    video.load();
+  // ⚠️ 只有"音轨解码失败"值得请宿主转 —— 别的转了也没用。
+  const audioFail = code === 3 && /audio packet/i.test(msg);
+  if (audioFail && !askedStrip && window.gw && window.gw.videoAudioFailed) {
+    askedStrip = true;
+    // ⚠️ 先把错误显示出来**再**请求 —— 转换要几秒，那几秒里画面不该是空的，
+    //   而"正在处理"比"一片黑"好。转好之后 use-cache 会把它盖掉。
+    fail(spec.title, `code ${code}${msg ? `: ${msg}` : ''}`,
+      '这个视频的音轨 Chromium 放不了 —— 正在自动转一份没有音轨的（通常几秒）。\n'
+      + '⚠️ 如果一直停在这儿，看面板「?」页里 we 那段的日志。');
+    // ⚠️ 传**相对文件名**而不是完整 URL —— 宿主那边只信自己解析出来的路径
+    //   （渲染进程传来的路径不能直接拿去读文件）。
+    const name = decodeURIComponent(String(video.currentSrc || video.src)
+      .split('/').pop() || '');
+    window.gw.videoAudioFailed({ file: name });
     return;
   }
 
   // err.message 常常是空字符串，所以带上码 —— 没有它连"是哪一类"都不知道。
   fail(spec.title, `code ${code}${msg ? `: ${msg}` : ''}`, spec.hint);
 });
+
+// 宿主转好了 ⟹ 换成那个没有音轨的文件。
+// ⚠️ 而**必须把错误框收起来** —— 不收的话它盖在正常播放的视频上面。
+if (window.gw && window.gw.onVideoUseCache) {
+  window.gw.onVideoUseCache((payload) => {
+    const url = payload && payload.url;
+    if (!url) return;
+    errBox.classList.remove('on');
+    video.src = url;
+    video.load();
+    video.play().catch(() => { /* loadeddata 那条会再试一次 */ });
+    report({ ok: true, usingStrippedCache: true });
+  });
+}
 
 // ⚠️ 这条是"放了但看不见"的唯一证据。
 //

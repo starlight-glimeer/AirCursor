@@ -109,6 +109,9 @@ echo "预编译 Swift helper（${TARGET_ARCH}）"
 build_one native/AirCursorPointer.swift AirCursorPointer 11.0
 build_one wallpaper/native/GestureWallMouse.swift GestureWallMouse 11.0
 build_one wallpaper/native/GestureWallAudio.swift GestureWallAudio 13.0
+# ⚠️ 去音轨的那个（0.9.111）。AVFoundation 的 AVAssetExportSession ——
+#   macOS 自带，不用 ffmpeg。⚠️ macos 11.0 就有，和 Mouse 那个同档。
+build_one wallpaper/native/GestureWallStripAudio.swift GestureWallStripAudio 11.0
 
 # ⚠️ Voice 那个要把 Info.plist 塞进 __TEXT 段（语音识别的授权说明在里面），
 #   而且它的 hash 算的是**两个文件**（源码 + plist）—— 见 helperBinaryPath 的

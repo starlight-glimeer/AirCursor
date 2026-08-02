@@ -25,7 +25,17 @@
   #err.on { display: flex; }
   #err b { color: #fff; font-size: 16px; }
   #err .detail { color: rgba(255,255,255,.5); font-size: 12px; font-family: ui-monospace, monospace; }
-  #err .hint { color: rgba(255,180,180,.7); font-size: 12px; max-width: 34em; }
+  /* ⚠️⚠️ `white-space: pre-line` —— 提示里的 `\n` 要靠它才真的换行。
+     没有它的话整段挤成一坨（用户 2026-08-02 的截图就是那样，
+     那条 ffmpeg 命令被折断在句子中间，复制出来是错的）。
+     ⚠️ 而 `pre-line` 而不是 `pre`：前者仍然会把长行按容器宽度折行，
+     后者会让长命令溢出屏幕。 */
+  #err .hint {
+    color: rgba(255,180,180,.72); font-size: 12.5px; max-width: 40em;
+    white-space: pre-line; text-align: left; line-height: 1.9;
+  }
+  /* ⚠️ 命令那行要能看清是命令 —— 它混在中文里的话用户不知道该复制哪一段 */
+  #err .hint { font-family: -apple-system, "PingFang SC", sans-serif; }
 </style>
 </head>
 <body>

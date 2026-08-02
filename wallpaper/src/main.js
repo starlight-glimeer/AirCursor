@@ -14,6 +14,8 @@ const path = require('node:path');
 // spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
 const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
+// ⚠️ 0.9.111：视频缓存的文件名要按源路径+mtime+size算 key（见 stripCachePath）。
+const crypto = require('node:crypto');
 
 // 图库的纯逻辑（无 DOM、无 Electron），主进程和 dashboard 共用同一份 —— 两份实现
 // 只要有一点不同，就会出现"面板里显示的和实际存的不一样"。
@@ -43,6 +45,8 @@ const Workshop = globalThis.GestureWallWorkshop;
 
 const AudioSource = require('./audio-source.js');
 const MouseBridge = require('./mouse-bridge.js');
+// ⚠️ 0.9.111：去音轨那个 helper 也走预编译优先那条路（和音频/鼠标一样）。
+const { findPrebuilt } = require('./prebuilt-helper.js');
 
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'config.json');
 
@@ -1774,6 +1778,113 @@ function registerWEProtocol() {
     return net.fetch(pathToFileURL(target).href);
   });
 }
+
+// ---------------------------------------------------------------------------
+// 视频壁纸：音轨解码失败时，转一份"没有音轨"的缓存
+// ---------------------------------------------------------------------------
+// ⚠️⚠️⚠️ 用户 2026-08-02 两次报同一个错（第二次是在我"修好"之后）：
+//     code 3: PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding
+//
+// 挂掉的是**音轨**。而 `<video>` 上有 `muted` ⟹ **Chromium 即使静音也照样解码
+// 音轨**（muted 只管"不输出到设备"）⟹ 视频轨完全能放的壁纸整个黑屏。
+// 工坊里常见 AC-3 / E-AC-3 / DTS 音轨，Chromium 都不带解码器。
+//
+// ⚠️⚠️ **而 0.9.109 我在渲染进程里加的"关掉音轨再重试"是空转** ——
+//   `video.audioTracks` 在 Chromium 里默认不存在（我自己的注释都写了
+//   "大概率拿不到"），而用户的截图证明它真的没救回来。
+//   ⟹ 教训：**明知"大概率不管用"的修复不该当成修复发出去**。
+//     那一版让用户以为问题解决了，而它只是把同一个错又报了一遍。
+//
+// ⟹ 真正能修的地方在宿主侧：macOS **自带 AVFoundation**，
+//   `AVAssetExportSession` + `passthrough` 只保留视频轨、**不重新编码**
+//   （几百 MB 也就几秒）。不用 ffmpeg（那要往包里塞 40MB+）。
+//
+// ⚠️ **懒转换 + 缓存**：只在真撞到那个错时才转，不是每个视频壁纸都转一遍
+//   （绝大多数是 AAC 音轨，Chromium 放得好好的）。
+const stripCache = new Map();     // 源文件绝对路径 → 缓存文件绝对路径
+const stripping = new Set();      // 正在转的，防止重复触发
+
+function stripCacheDir() {
+  return path.join(app.getPath('userData'), 'video-cache');
+}
+
+// ⚠️ 缓存文件名带**源文件的 mtime+size** —— 用户换了同名文件要能失效。
+//   ⚠️ 不用内容 hash：几百 MB 的文件算一遍 sha256 要好几秒，而 mtime+size
+//     对"用户换了文件"这个场景够用了。
+function stripCachePath(src) {
+  try {
+    const st = fs.statSync(src);
+    const key = crypto.createHash('sha256')
+      .update(`${src}|${st.mtimeMs}|${st.size}`).digest('hex').slice(0, 16);
+    return path.join(stripCacheDir(), `${key}.mp4`);
+  } catch {
+    return null;
+  }
+}
+
+// 渲染进程报"音轨解码失败" → 这里转一份 → 转好通知它重载。
+ipcMain.on('we-video-audio-failed', (_event, payload) => {
+  if (!weProject || !weProject.dir) return;
+  // ⚠️ 只认**当前壁纸目录里**的文件 —— 渲染进程传来的路径不能直接信。
+  const rel = String((payload && payload.file) || weProject.file || '');
+  const src = WE.resolveAsset(`/${rel}`, weProject.dir, weProject.file);
+  if (!src || !fs.existsSync(src)) {
+    console.warn(`[video] 音轨修复：找不到源文件（${rel}）`);
+    return;
+  }
+  const out = stripCachePath(src);
+  if (!out) return;
+
+  // 已经转好了 ⟹ 直接让它用（这条走在"壁纸重载后又报一次"的情况下）
+  if (fs.existsSync(out)) {
+    broadcast('we-video-use-cache', { url: pathToFileURL(out).href });
+    return;
+  }
+  if (stripping.has(src)) return;         // 正在转，别重复
+  stripping.add(src);
+
+  broadcast('helper-log', { source: 'we',
+    message: `视频音轨 Chromium 放不了 —— 正在转一份没有音轨的（不重新编码，通常几秒）` });
+
+  // ⚠️ helper 路径和别的一样：预编译的优先，没有就现场编译（见 prebuilt-helper.js）
+  const binary = findPrebuilt('GestureWallStripAudio')
+    || path.join(app.getPath('userData'), 'GestureWallStripAudio');
+  if (!fs.existsSync(binary)) {
+    stripping.delete(src);
+    broadcast('helper-log', { source: 'we',
+      message: '去音轨的 helper 不在（打包时没编进来）—— 只能手动转：'
+        + 'ffmpeg -i 原文件 -c:v copy -an 新文件.mp4' });
+    return;
+  }
+
+  // ⚠️⚠️ **异步 spawn，不能 spawnSync** —— 几百 MB 的文件要几秒，
+  //   同步会把主进程整个卡住（壁纸、面板、快捷键全冻）。
+  const child = spawn(binary, [src, out], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+  child.stderr.on('data', (chunk) => {
+    console.warn('[video strip]', chunk.toString().trim().slice(0, 300));
+  });
+  child.on('exit', () => {
+    stripping.delete(src);
+    // helper 输出一行 JSON
+    let res = null;
+    try { res = JSON.parse(stdout.trim().split('\n').pop() || '{}'); } catch { /* 下面兜 */ }
+    if (res && res.ok && fs.existsSync(out)) {
+      stripCache.set(src, out);
+      broadcast('helper-log', { source: 'we',
+        message: `音轨去掉了（${Math.round((res.bytes || 0) / 1048576)}MB，`
+          + `${res.ms || '?'}ms）—— 壁纸重新加载` });
+      broadcast('we-video-use-cache', { url: pathToFileURL(out).href });
+    } else {
+      // ⚠️ 失败要说清 —— 静默失败的话用户看到的还是那个原始报错，
+      //   而他不知道我们试过了。
+      broadcast('helper-log', { source: 'we',
+        message: `去音轨失败：${(res && res.error) || 'helper 没给原因'}`
+          + ' —— 只能手动转：ffmpeg -i 原文件 -c:v copy -an 新文件.mp4' });
+    }
+  });
+});
 
 // 读壁纸目录的 project.json。
 function loadWEProject(dir) {

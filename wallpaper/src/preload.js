@@ -83,6 +83,10 @@ contextBridge.exposeInMainWorld('gw', {
 
   // video 页面 → 主进程
   sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),
+  // ⚠️ 0.9.111：视频音轨 Chromium 放不了时请宿主转一份没有音轨的
+  //   （AVFoundation passthrough，不重新编码 —— 见 main.js 那段）。
+  videoAudioFailed: (payload) => ipcRenderer.send('we-video-audio-failed', payload),
+  onVideoUseCache: on('we-video-use-cache'),
 
   setGestures: (enabled) => ipcRenderer.invoke('set-gestures', enabled),
   resetView: () => ipcRenderer.invoke('reset-view'),
