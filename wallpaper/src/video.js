@@ -52,11 +52,22 @@ const MEDIA_ERRORS = {
     // ⚠️⚠️ **这里是 textContent，不是 markdown** —— 写 `**音轨**` 会原样显示成
     //   带星号的字（用户 2026-08-02 的截图里就是那样，而那让整段话看起来像乱码）。
     //   ⟹ 纯文本里不写 markdown 标记。强调靠**措辞和顺序**，不靠符号。
-    hint: '解码挂在音轨上 —— 错误里那句 "audio packet" 就是它。\n'
-      + '壁纸不需要声音，把音轨去掉最省事（视频不重新编码，秒完）：\n\n'
-      + 'ffmpeg -i 原文件.mp4 -c:v copy -an 新文件.mp4\n\n'
-      + '如果去掉音轨还报同一个错，那才是视频轨的编码不支持'
-      + '（HEVC/H.265 或 AV1）—— 再加 -c:v libx264 转一次。',
+    // ⚠️⚠️⚠️ **2026-08-02 第二次真实触发，而提示又是错的**（反方向）。
+    //   用户截图里的原文：
+    //     code 3: PIPELINE_ERROR_DECODE: Error Domain=NSOSStatusErrorDomain
+    //     Code=-12909 "(null)" (-12909): VTDecompressionOutputCallback
+    //   ⚠️ 里面**没有 "audio packet"** —— 而这条 hint 无条件说"解码挂在音轨上，
+    //     错误里那句 audio packet 就是它" ⟹ **提示在说谎**。
+    //   ⚠️ `-12909` 是 VideoToolbox 的 `kVTVideoDecoderBadDataErr`，
+    //     而 `VTDecompressionOutputCallback` 是**视频轨**的解码回调
+    //     ⟹ 挂的是视频轨，方向和上一次完全相反。
+    //
+    // ⟹ 判据：**一个错误码下面可能有完全不同的原因，别给码配一句话** ——
+    //   要按**错误原文**分流。而"给码配一句话"这件事我在这条上错了两次
+    //   （第一次说 HEVC、第二次说音轨），两次都是拿唯一见过的那个 case
+    //   当成了这个码的全部含义。
+    // ⟹ 具体的分流在下面 `decodeHint()` 里，这里只留**不知道是哪种**时的兜底。
+    hint: null,
   },
   4: {
     title: '格式不支持',
@@ -64,6 +75,51 @@ const MEDIA_ERRORS = {
   },
 };
 
+// ⚠️⚠️⚠️ **按错误原文分流 code 3**（0.9.135）。
+//
+// 同一个 `PIPELINE_ERROR_DECODE` 底下至少有三种完全不同的原因，而它们的
+// "下一步"互相矛盾：
+//   · 音轨编码不支持（AC-3/E-AC-3/DTS）→ 去掉音轨（视频不用动）
+//   · 视频轨编码不支持（HEVC/AV1）      → 转码视频
+//   · 视频数据坏了 / 硬解不吃这一帧      → 转码也不一定救得回来
+// ⟹ 给码配一句话必然对其中两种说错话（我已经错了两次，两个方向）。
+function decodeHint(msg) {
+  const m = String(msg || '');
+  // ── ① 音轨（2026-08-02 第一次触发的那种）
+  if (/audio packet/i.test(m)) {
+    return '解码挂在音轨上（错误里那句 "audio packet" 就是它）。\n'
+      + '壁纸不需要声音，把音轨去掉最省事（视频不重新编码，秒完）：\n\n'
+      + 'ffmpeg -i 原文件.mp4 -c:v copy -an 新文件.mp4';
+  }
+  // ── ② VideoToolbox 的视频解码错（2026-08-02 第二次触发的那种）
+  //   ⚠️ `-12909` = kVTVideoDecoderBadDataErr（数据坏了 / 硬解不吃这一帧）
+  //   ⚠️ `-12911` = kVTVideoDecoderMalfunctionErr
+  //   ⚠️ `-8969`  = codecBadDataErr
+  //   而 `VTDecompressionOutputCallback` 出现就说明挂在**视频轨**的解码回调里。
+  if (/VTDecompression|VideoToolbox|-12909|-12911|-8969/i.test(m)) {
+    return '解码挂在视频轨上（错误里的 VTDecompression / -12909 是 macOS 的'
+      + '硬件解码器报的）。\n'
+      + '⚠️ 而它常常是放了一会儿才挂 —— 那说明不是"整个文件不支持"，'
+      + '是某几帧硬解器不吃（数据本身有问题，或者用了它不支持的编码特性）。\n\n'
+      + '重编码一次通常能救回来（用软件编码器重写每一帧）：\n\n'
+      + 'ffmpeg -i 原文件.mp4 -c:v libx264 -pix_fmt yuv420p -an 新文件.mp4\n\n'
+      + '⚠️ 如果它一装载就挂（不是放一会儿），那更可能是编码本身不支持'
+      + '（HEVC/H.265 或 AV1）—— 同一条命令也能转。';
+  }
+  // ── ③ 不知道是哪种：**别猜**，只说清"该看什么"
+  //   ⚠️ 判据：不知道的时候给观测入口，别给一个可能是错的建议。
+  return '解码失败，而错误原文里没有能定位到具体轨道的线索。\n'
+    + '⚠️ 把上面那行 code 3 的原文发给我 —— 音轨、视频轨、数据损坏三种的'
+    + '处理方式完全不同，看错方向会白折腾一遍转码。\n\n'
+    + '想先自己试：ffmpeg -i 原文件.mp4 -c:v libx264 -pix_fmt yuv420p -an 新文件.mp4'
+    + '（重编码视频 + 去掉音轨，三种都覆盖）';
+}
+
+// ⚠️⚠️ **这三个都是 `textContent`，不是 markdown** —— 写 `**音轨**` 会原样
+//   显示成带星号的字（用户 2026-08-02 的截图里就是那样，整段话看起来像乱码）。
+//   ⚠️ 而我 0.9.135 写 decodeHint 时**又踩了一次**（上一版的注释里就写着这条）
+//     ⟹ 判据：**强调靠措辞和顺序，不靠符号。** 纯文本里一个 `*` 都别写。
+//   ⚠️ 换行是有效的（CSS 里 `white-space: pre-wrap`，见 video.html）。
 function fail(kind, detail, hint) {
   errTitle.textContent = kind;
   errDetail.textContent = detail || '';
@@ -94,6 +150,8 @@ function report(payload) {
 // ⟹ 真能修的地方在宿主：AVFoundation 只保留视频轨、不重新编码（几秒）。
 //   这边只负责两件事：**报上去** + **拿到新 URL 后换过去**。
 let askedStrip = false;
+// ⚠️ "放了一会儿才挂"只自己重试一次 —— 见 error handler 里那段判据。
+let retriedMidPlay = false;
 
 video.addEventListener('error', () => {
   const err = video.error;
@@ -118,8 +176,39 @@ video.addEventListener('error', () => {
     return;
   }
 
+  // ⚠️⚠️⚠️ **放了一会儿才挂 ⟹ 先自己重试一次**（0.9.135）。
+  //
+  // 用户 2026-08-02：「video 类型的一个壁纸**运行着突然**解码失败」——
+  // 那个"运行着"是关键信息：文件本身能解码（已经放了一段时间），
+  // 挂掉的是**某几帧**（VideoToolbox 的 -12909 = 数据坏了 / 硬解不吃这一帧）。
+  //
+  // ⟹ 而壁纸是**循环播放**的：从头再来一遍很可能就过去了
+  //   （下一轮到那几帧时也许还挂，但至少不是"一挂就永久黑屏到用户来处理"）。
+  // ⚠️ 判据：**"从没放起来"和"放了一会儿挂了"是两类故障** ——
+  //   前者是文件/编码不支持（重试无用），后者可能是瞬时的（重试值得试）。
+  //   而原来的代码对两者一视同仁：直接显示错误、停在那儿。
+  //
+  // ⚠️ 只重试**一次**，而且要求已经放过 >2 秒：
+  //   · 无限重试会变成"黑屏闪烁"的死循环（比停住更糟）
+  //   · 没放起来就重试等于把同一个失败做两遍，白等
+  // ⚠️ 而重试失败之后照常显示错误 —— 不能把故障吞掉。
+  const playedFor = video.currentTime;
+  if (code === 3 && !retriedMidPlay && playedFor > 2) {
+    retriedMidPlay = true;
+    report({ ok: false, kind: '解码中断，正在重试', detail: `已放 ${playedFor.toFixed(1)}s`, midPlay: true });
+    // ⚠️ `load()` 会重置到头 —— 对壁纸没关系（它本来就在循环）。
+    video.load();
+    video.play().catch(() => { /* 真不行的话下一次 error 事件会走到下面 */ });
+    return;
+  }
+
   // err.message 常常是空字符串，所以带上码 —— 没有它连"是哪一类"都不知道。
-  fail(spec.title, `code ${code}${msg ? `: ${msg}` : ''}`, spec.hint);
+  // ⚠️ code 3 的 hint 按**错误原文**分流（见 decodeHint）——
+  //   给码配一句话会对其中两种原因说错话（实测栽过两次，两个方向）。
+  // ⚠️ 而"放了一会儿才挂"这件事要带进详情 —— 它决定用户该转码还是该换壁纸。
+  const when = playedFor > 2 ? `（已放 ${playedFor.toFixed(1)}s 后才挂，重试过一次）` : '';
+  fail(spec.title, `code ${code}${msg ? `: ${msg}` : ''}${when}`,
+    spec.hint !== null ? spec.hint : decodeHint(msg));
 });
 
 // 宿主转好了 ⟹ 换成那个没有音轨的文件。

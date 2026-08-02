@@ -7075,11 +7075,23 @@ check('video 音轨修复：宿主侧转换 + 提示不含 markdown', () => {
 
   // ①⚠️ 提示是 `textContent` ⟹ **不许写 markdown**（用户截图里 `**音轨**`
   //   原样显示成带星号的字，整段看起来像乱码）。
-  const spec3 = vcode.slice(vcode.indexOf('  3: {'), vcode.indexOf('  4: {'));
-  assert.ok(spec3.length > 100, '切不出 code 3 那段 ⟹ 断言失效');
-  assert.ok(!/\*\*/.test(spec3),
-    'code 3 的提示里有 `**` ⟹ 那是 textContent，markdown 会原样显示'
+  // ⚠️⚠️ **0.9.135 起 code 3 的 hint 不在这张表里了** —— 它按错误原文分流
+  //   （`decodeHint()`），因为同一个 code 3 底下至少三种原因、"下一步"互相矛盾
+  //   （我给这个码配一句话错了两次，方向相反）。
+  //   ⟹ 这条断言原来切 `3: { … }` 那段查 markdown，而那段现在只有 `hint: null`
+  //     ⟹ 长度检查报"切不出" ⟹ 在正确代码上报红。
+  //   ⟹ 改成查**decodeHint 整个函数**（那才是提示文案现在住的地方）。
+  const hintAt = vcode.indexOf('function decodeHint(');
+  assert.ok(hintAt > 0,
+    '没有 decodeHint ⟹ code 3 又变成"一个码配一句话"了，而那对某些原因必然说错话');
+  const hintFn = vcode.slice(hintAt, vcode.indexOf('\nfunction ', hintAt + 10));
+  assert.ok(hintFn.length > 300, '切不出 decodeHint ⟹ 断言失效');
+  assert.ok(!/\*\*/.test(hintFn),
+    'decodeHint 的提示里有 `**` ⟹ 那是 textContent，markdown 会原样显示'
     + '（用户截图里就是那样）');
+  // ⚠️ 而它必须**分流**，不能所有分支说同一件事
+  assert.match(hintFn, /audio packet/, 'decodeHint 里没有音轨那一支的判据');
+  assert.match(hintFn, /VTDecompression|-12909/, 'decodeHint 里没有视频轨那一支的判据');
   // ⚠️ 而 `\n` 要真能换行 —— 靠 CSS 的 white-space
   const vhtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.html'), 'utf8');
   // ⚠️ 锚**规则里那一行**（`#err .hint {` 那个块内），而不是"文件里出现过" ——
