@@ -74,18 +74,51 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
     broadcast('pointer-health', pointerHealth);
   }
 
-  function helperBinaryPath(binaryName, ...sources) {
+  // ⚠️⚠️⚠️ **二进制名里不许带 hash**（0.9.89）。用户 2026-08-02，第六轮：
+  //
+  //   「假如说每次的进程在系统看来都是不一样的程序，那这不就是有问题的吗？
+  //     我每次打开都是同一个产品啊…其他摄像头权限查了我一次后面都正常开了」
+  //
+  // **他说对了，而这是"反复弹框"的真正根因。** 原来叫
+  // `AirCursorPointer-${sha256(源码).slice(0,12)}`，而 **TCC 按可执行文件路径
+  // 记授权** ⟹ 每改一次源码就是一个新文件名 = 新程序，上次的授权对它不算。
+  //
+  // ⚠️ 对照用户的打包日志：`GestureWallAudio-0b0001ce0347` 五个版本没变
+  //   ⟹ 音乐权限只问一次 ✅；而 Pointer/Mouse 每版都换 ⟹ 每次都问 ❌。
+  //   差别不是"辅助功能比麦克风特殊"，是**我改了哪个文件**。
+  //
+  // ⟹ 路径固定，hash 挪到旁边的 `.hash` 文件（helperUpToDate 读它）。
+  function helperBinaryPath(binaryName) {
+    return path.join(app.getPath("userData"), binaryName);
+  }
+
+  function helperSourceHash(...sources) {
     const hash = crypto.createHash("sha256");
     for (const file of sources) hash.update(fs.readFileSync(file));
-    return path.join(app.getPath("userData"), `${binaryName}-${hash.digest("hex").slice(0, 12)}`);
+    return hash.digest("hex").slice(0, 12);
+  }
+
+  // ⚠️ 原来判"要不要重编"靠"那个带 hash 的文件名存不存在"（路径本身编码了源码内容，
+  //   所以存在即最新）。名字固定之后那个技巧没了 ⟹ 把 hash 写在旁边的戳文件里。
+  //   ⚠️ 不能用 mtime 比较 —— 那会让每次 `git checkout` 都重编，
+  //     而那正是这段代码当初 churn 不停的原因（原注释记着这一点）。
+  function helperUpToDate(binary, hash) {
+    if (!fs.existsSync(binary)) return false;
+    try { return fs.readFileSync(`${binary}.hash`, "utf8").trim() === hash; }
+    catch { return false; }
+  }
+
+  function stampHelper(binary, hash) {
+    // ⚠️ 只在编译成功后调 —— 提前写戳会让下次以为"已经最新"而拿旧二进制跑。
+    try { fs.writeFileSync(`${binary}.hash`, hash); } catch { /* 下次重编，无害 */ }
   }
   
   function compilePointerHelper() {
-    const helperBinary = helperBinaryPath("AirCursorPointer", helperSource);
-    // Existence is the whole gate: the path already encodes the source contents,
-    // so a file at that path cannot be stale. mtime comparison would rebuild on
-    // every `git checkout`, which is what made this churn constantly.
-    if (fs.existsSync(helperBinary)) return { helperBinary, compiled: false };
+    const helperBinary = helperBinaryPath("AirCursorPointer");
+    const hash = helperSourceHash(helperSource);
+    // ⚠️ 判据从"带 hash 的文件名存不存在"换成"戳文件对不对得上"（0.9.89，
+    //   见 helperBinaryPath 上面那段）。等价，而路径从此稳定 ⟹ 授权不会丢。
+    if (helperUpToDate(helperBinary, hash)) return { helperBinary, compiled: false };
 
     // ⚠️⚠️ **先看打包时预编译好的在不在**（0.9.75）——
     // 在就直接用，用户机器上不需要 Xcode 命令行工具。
@@ -94,7 +127,10 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
     //   `if (result.status !== 0)` 改成 `|| result.error`，
     //   **把手势整个弄坏了**（用户报"摄像头没法正常使用"，只能整版回退）。
     //   ⟹ 这次只加不改。
-    const prebuiltPointer = findPrebuilt(path.basename(helperBinary));
+    // ⚠️ 0.9.89 起直接传裸名 —— 原来是 path.basename(带 hash 的路径)，
+    //   而那个 basename 现在恰好也是裸名（能工作），但写死名字更明确：
+    //   预编译脚本里就是这个名字，两边对不上的后果是**静默重新编译**。
+    const prebuiltPointer = findPrebuilt("AirCursorPointer");
     if (prebuiltPointer) return { helperBinary: prebuiltPointer, compiled: false };
 
     const result = spawnSync("/usr/bin/swiftc", [helperSource, "-o", helperBinary], {
@@ -106,7 +142,8 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
       throw new Error((result.stderr?.trim() || "swiftc 编译 AirCursorPointer 失败")
         + "\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。");
     }
-  
+
+    stampHelper(helperBinary, hash);
     return { helperBinary, compiled: true };
   }
   
@@ -218,11 +255,15 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
   
   function compileSwiftHelper(source, binaryName) {
     const extraInputs = binaryName === "AirCursorVoice" ? [voiceInfoSource] : [];
-    const helperBinary = helperBinaryPath(binaryName, source, ...extraInputs);
-    if (fs.existsSync(helperBinary)) return helperBinary;
+    const helperBinary = helperBinaryPath(binaryName);
+    // ⚠️ 名字固定 + 戳文件判新旧（0.9.89，见 helperBinaryPath 上面那段）。
+    //   语音那个的 hash 要连 plist 一起算 —— plist 是链进二进制的（-sectcreate），
+    //   改了 plist 而不重编，弹框里的说明就还是旧的。
+    const hash = helperSourceHash(source, ...extraInputs);
+    if (helperUpToDate(helperBinary, hash)) return helperBinary;
 
     // ⚠️ 同上：预编译的在就用，不在原样走 swiftc（0.9.75）。
-    const prebuilt = findPrebuilt(path.basename(helperBinary));
+    const prebuilt = findPrebuilt(binaryName);
     if (prebuilt) return prebuilt;
   
     const args = [source, "-o", helperBinary];
@@ -239,7 +280,8 @@ function createSystemBridge({ root, broadcast, onVoiceText }) {
       throw new Error((result.stderr || `Failed to compile ${binaryName}.`)
         + "\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。");
     }
-  
+
+    stampHelper(helperBinary, hash);
     return helperBinary;
   }
   

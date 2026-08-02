@@ -15,12 +15,23 @@
 #
 # ⟹ 改成**打包时编译**（打包机有 swiftc）。用户机器上再也不需要工具链。
 #
-# ⚠️⚠️ **二进制名必须和运行时算的一致** —— 那是这个脚本唯一的技术约束：
-#   运行时用 `<HelperName>-<源码 sha256 前 12 位>` 命名，而且**文件存在就直接用**
-#   （见 system-bridge.js 的 helperBinaryPath / audio-source.js 的 ensureHelper）。
-#   ⟹ 我们按同一规则命名，运行时就会直接拿来用、跳过编译。
+# ⚠️⚠️ **二进制名必须和运行时算的一致** —— 那是这个脚本唯一的技术约束。
+#
+# ⚠️⚠️⚠️ **0.9.89 起名字里不带 hash 了**（就叫 `AirCursorPointer` 这样）。
+#   原来是 `<HelperName>-<源码 sha256 前 12 位>`，而 **TCC 按可执行文件路径记
+#   授权** ⟹ 我每改一次某个 .swift，打出来就是个新文件名 = 新程序，
+#   用户上次给的授权对它不算 ⟹ **每次开应用都被重新要权限**。
+#   用户 2026-08-02 连问六轮，而这是根因（前五版我全在改弹框逻辑）。
+#   他的话：「我每次打开都是同一个产品啊，你如果用一个不一样的东西作为
+#   某点来检测，那不是必然每次都会弹的吗？」
+#
+#   ⚠️ 对照他自己的打包日志：`GestureWallAudio-0b0001ce0347` 五个版本没变
+#     ⟹ 音乐权限只问一次 ✅；Pointer/Mouse 每版都换 ⟹ 每次都问 ❌。
+#
+#   ⟹ hash 挪到旁边的 `<name>.hash` 戳文件里（运行时读它判要不要重编），
+#     路径从此稳定。"源码变了要重编"这个能力一点没丢。
 #   ⚠️ 算错的后果不是报错，是**静默地重新编译**（回到没有这个脚本的状态）——
-#     所以下面每一个都打印出算出来的名字，而 gating 测试会核对那个规则没变。
+#     所以下面每一个都打印名字，而 gating 测试会核对那个规则没变。
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."          # 仓库根
@@ -73,19 +84,22 @@ build_one() {
   fi
   local h out
   h="$(hash_of "$src")"
-  out="$OUT/${name}-${h}"
+  out="$OUT/${name}"
   # ⚠️ 0.9.77 起上面会 `rm -rf "$OUT"` ⟹ 这个分支**走不到**了。
   #   留着是有意的：它是"增量编译"的实现，而如果哪天全量编译变慢到烦人
   #   （比如 helper 多到十几个），把那个 rm 去掉就能立刻回到增量。
-  #   ⟹ 删了的话得重写，而留着零成本。
-  if [ -f "$out" ]; then
-    echo "  ✓ 已有（源码没变）：${name}-${h}"
+  #   ⚠️ 0.9.89 起名字不带 hash 了 ⟹ 增量判据必须读戳文件，不能只看文件存在。
+  if [ -f "$out" ] && [ "$(cat "$out.hash" 2>/dev/null)" = "$h" ]; then
+    echo "  ✓ 已有（源码没变）：${name}"
     return 0
   fi
-  echo "  编译 ${name}-${h} …"
+  echo "  编译 ${name}（源码 ${h}）…"
   swiftc "$src" -o "$out" \
     -target "${TARGET_ARCH}-apple-macos${minos}" -O "$@"
-  echo "  ✓ ${name}-${h}"
+  # ⚠️ 编完才写戳。而这个戳**也要打进包** —— 运行时的 findPrebuilt 只看二进制，
+  #   但用户机器上那份（userData 下的）靠戳判新旧，两边规则得一样。
+  printf '%s' "$h" > "$out.hash"
+  echo "  ✓ ${name}"
 }
 
 echo "预编译 Swift helper（${TARGET_ARCH}）"
@@ -102,16 +116,17 @@ build_one wallpaper/native/GestureWallAudio.swift GestureWallAudio 13.0
 if [ -f native/AirCursorVoice.swift ] && [ -f native/AirCursorVoiceInfo.plist ]; then
   VH="$(cat native/AirCursorVoice.swift native/AirCursorVoiceInfo.plist \
         | shasum -a 256 | cut -c1-12)"
-  VOUT="$OUT/AirCursorVoice-${VH}"
-  if [ -f "$VOUT" ]; then
-    echo "  ✓ 已有（源码没变）：AirCursorVoice-${VH}"
+  VOUT="$OUT/AirCursorVoice"
+  if [ -f "$VOUT" ] && [ "$(cat "$VOUT.hash" 2>/dev/null)" = "$VH" ]; then
+    echo "  ✓ 已有（源码没变）：AirCursorVoice"
   else
-    echo "  编译 AirCursorVoice-${VH} …"
+    echo "  编译 AirCursorVoice（源码 ${VH}）…"
     swiftc native/AirCursorVoice.swift -o "$VOUT" \
       -target "${TARGET_ARCH}-apple-macos11.0" -O \
       -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
       -Xlinker native/AirCursorVoiceInfo.plist
-    echo "  ✓ AirCursorVoice-${VH}"
+    printf '%s' "$VH" > "$VOUT.hash"
+    echo "  ✓ AirCursorVoice"
   fi
 fi
 

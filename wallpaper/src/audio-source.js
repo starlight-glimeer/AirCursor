@@ -117,12 +117,24 @@ function describeStatus(msg, packaged = true) {
   }
 }
 
-// 编译 helper。和 AirCursor 一样按源码内容 hash 命名产物。
+// 编译 helper。源码没变不重编。
 //
-// ⚠️ hash 命名有个已知的代价：**源码一变，二进制路径就变，而 macOS 的权限授权是
-// 按二进制路径记的** —— 也就是改一次 helper 就要重新授权一次。AirCursor 在这上面
-// 栽过（笔记里"helper 路径带版本号致授权静默失效"那条）。这里仍然用 hash 是因为
-// 替代方案（固定名字）会让旧二进制被静默复用，那更难查。
+// ⚠️⚠️⚠️ **名字固定，hash 挪进旁边的 `.hash` 戳文件**（0.9.89）。
+//
+// 上面那段注释原来写着：「hash 命名有个已知的代价：源码一变二进制路径就变，
+// 而 macOS 的权限授权是按二进制路径记的 —— 也就是改一次 helper 就要重新授权
+// 一次。这里仍然用 hash 是因为替代方案（固定名字）会让旧二进制被静默复用。」
+//
+// ⚠️⚠️ **我知道这个代价，而且选错了。** 用户 2026-08-02 连问六轮"为什么每次
+//   打开都要辅助功能"，根因就是这个 —— 而我前五版全在改弹框逻辑。
+//   他的话：「假如说每次的进程在系统看来都是不一样的程序，那这不就是有问题的吗？
+//   我每次打开都是同一个产品啊」
+//
+// ⚠️ 而"旧二进制被静默复用"那个顾虑是真的，只是**解法不是把 hash 塞进文件名** ——
+//   写个 `.hash` 戳文件就同时拿到两样：路径稳定 + 源码变了能发现。
+//
+// ⚠️ 这个 helper 的源码恰好五个版本没变过（`GestureWallAudio-0b0001ce0347`），
+//   所以用户从没在它身上撞到这个问题 —— 那是巧合，不是它比别的安全。
 function ensureHelper(sourcePath, outDir, run = spawnSync) {
   if (!fs.existsSync(sourcePath)) {
     return { ok: false, error: `helper 源码不在：${sourcePath}` };
@@ -130,14 +142,20 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
   const source = fs.readFileSync(sourcePath);
   const hash = require('node:crypto').createHash('sha256')
     .update(source).digest('hex').slice(0, 12);
-  const binary = path.join(outDir, `GestureWallAudio-${hash}`);
-  if (fs.existsSync(binary)) return { ok: true, binary, cached: true };
+  const binary = path.join(outDir, 'GestureWallAudio');
+  const stamp = `${binary}.hash`;
+  if (fs.existsSync(binary)) {
+    let recorded = null;
+    try { recorded = fs.readFileSync(stamp, 'utf8').trim(); } catch { /* 没有戳 */ }
+    if (recorded === hash) return { ok: true, binary, cached: true };
+    // 源码变了 ⟹ 重编到**同一个路径**，授权跟着路径所以不会丢。
+  }
 
   // ⚠️⚠️ **先看打包时预编译好的在不在**（0.9.75）——
   // 在就直接用，用户机器上不需要 Xcode 命令行工具。
   // ⚠️ 不在就**原样往下走 swiftc**（下面那段一行没改）——
   //   那是一直在工作的代码，而这次改动的全部风险都在"我动了它"。
-  const pre = findPrebuilt(`GestureWallAudio-${hash}`);
+  const pre = findPrebuilt('GestureWallAudio');
   if (pre) return { ok: true, binary: pre, cached: true, prebuilt: true };
 
   fs.mkdirSync(outDir, { recursive: true });
@@ -171,6 +189,8 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
         + '\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。',
     };
   }
+  // ⚠️ 编完才写戳 —— 提前写会让下次以为"已经最新"而拿旧二进制跑。
+  try { fs.writeFileSync(stamp, hash); } catch { /* 下次重编，无害 */ }
   return { ok: true, binary, cached: false };
 }
 

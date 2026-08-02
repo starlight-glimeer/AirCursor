@@ -19,9 +19,13 @@
 //   （起因：上一轮我为了加一句提示把 `if (result.status !== 0)` 改成
 //    `|| result.error`，把手势整个弄坏了，用户报"摄像头没法正常使用"。）
 //
-// ⚠️ 二进制名必须和运行时算的**一致**：`<HelperName>-<源码 sha256 前 12 位>`。
-//   算错的后果不是报错，是**静默地重新编译** ⟹ 回到没有预编译的状态。
-//   ⟹ 所以 hash 由调用方传进来（它们各自已经算好了），这里不重复算。
+// ⚠️⚠️ 二进制名必须和运行时算的**一致**。0.9.89 起就是**固定名**
+//   （`AirCursorPointer` / `GestureWallMouse` / `GestureWallAudio` /
+//   `AirCursorVoice`），**不带 hash** —— 因为 TCC 按可执行文件路径记授权，
+//   名字里带 hash 意味着每改一次源码就是一个新程序，用户上次的授权全部作废
+//   ⟹ 每次开应用都被重新要权限（用户 2026-08-02 连问六轮的根因）。
+//   hash 现在写在旁边的 `<name>.hash` 戳文件里，由调用方读它判要不要重编。
+//   ⚠️ 算错的后果不是报错，是**静默地重新编译** ⟹ 回到没有预编译的状态。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,8 +41,8 @@ function prebuiltDir() {
 }
 
 // 找预编译好的那个。找到返回绝对路径，没有返回 null。
-// ⚠️ 参数就是调用方**已经算好**的二进制文件名（含 hash）——
-//   在这里重新算一遍就是第二份知识，而两份必然会漂。
+// ⚠️ 参数就是二进制文件名（0.9.89 起是固定名，不含 hash）——
+//   在这里自己算名字就是第二份知识，而两份必然会漂。
 function findPrebuilt(binaryFileName) {
   const dir = prebuiltDir();
   if (!dir) return null;

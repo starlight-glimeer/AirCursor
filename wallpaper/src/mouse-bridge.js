@@ -99,18 +99,49 @@ function toInputEvent(event, point) {
   }
 }
 
-// 编译 helper。和音频那个同一套：按源码 hash 命名，源码没变不重编。
+// 编译 helper。源码没变不重编。
+//
+// ⚠️⚠️⚠️ **文件名里不许带 hash**（0.9.89）。用户 2026-08-02，第六轮：
+//
+//   「假如说每次的进程在系统看来都是不一样的程序，那这不就是有问题的吗？
+//     我每次打开都是同一个产品啊，你如果用一个不一样的东西作为某点来检测，
+//     那不是必然每次都会弹的吗？其他摄像头权限查了我一次后面都正常开了」
+//
+// **他说对了，而这是"反复弹框"的真正根因。** 前五版我全在改弹框逻辑，
+// 而问题在**命名**：原来叫 `GestureWallMouse-${sha256(源码).slice(0,12)}`，
+// 而 **TCC 按可执行文件路径记授权** ⟹ 我每改一次这个 Swift 文件，
+// 打出来的就是一个**新文件名 = 新程序**，用户上次给的授权对它不算。
+//
+// ⚠️⚠️ 对照用户自己的打包日志就能坐实：
+//   `GestureWallAudio-0b0001ce0347` —— 五个版本一个字没变 ⟹ 音乐权限只问一次 ✅
+//   `GestureWallMouse-f57afb8d2af0 → 1635ebad82ad → 4edcf88e073a` ⟹ 每次都问 ❌
+//   差别不是"辅助功能比麦克风特殊"，是**我改了哪个文件**。
+//   而摄像头是**主应用自己**要的（bundle id 稳定）⟹ 从来没这个问题。
+//
+// ⟹ 二进制名固定为 `GestureWallMouse`，hash 挪到旁边的 `.hash` 文件里
+//   ——「源码变了要重编」这个能力一点没丢，而路径从此稳定。
+const HELPER_NAME = 'GestureWallMouse';
+
 function ensureHelper(sourcePath, outDir, run = spawnSync) {
   if (!fs.existsSync(sourcePath)) {
     return { ok: false, error: `鼠标 helper 源码不在：${sourcePath}` };
   }
   const hash = crypto.createHash('sha256')
     .update(fs.readFileSync(sourcePath)).digest('hex').slice(0, 12);
-  const binary = path.join(outDir, `GestureWallMouse-${hash}`);
-  if (fs.existsSync(binary)) return { ok: true, binary, cached: true };
+  const binary = path.join(outDir, HELPER_NAME);
+  const stamp = `${binary}.hash`;
+  // ⚠️ 判"要不要重编"改成读 .hash 文件 —— 原来是"那个带 hash 的文件名存不存在"。
+  //   两者等价，而这个版本的路径是固定的。
+  if (fs.existsSync(binary)) {
+    let recorded = null;
+    try { recorded = fs.readFileSync(stamp, 'utf8').trim(); } catch { /* 没有戳 */ }
+    if (recorded === hash) return { ok: true, binary, cached: true };
+    // ⚠️ 源码变了 ⟹ 重编到**同一个路径**。用户的授权跟着路径，所以不会丢。
+  }
 
   // ⚠️ 同 audio-source.js：预编译的在就用，不在原样走 swiftc（0.9.75）。
-  const pre = findPrebuilt(`GestureWallMouse-${hash}`);
+  // ⚠️ 预编译那个也是固定名了（见 scripts/prebuild-helpers.sh）。
+  const pre = findPrebuilt(HELPER_NAME);
   if (pre) return { ok: true, binary: pre, cached: true, prebuilt: true };
 
   fs.mkdirSync(outDir, { recursive: true });
@@ -128,6 +159,9 @@ function ensureHelper(sourcePath, outDir, run = spawnSync) {
         + '\n\n如果是「找不到 swiftc」：在「终端」里跑一次 xcode-select --install，装完重开本应用。',
     };
   }
+  // ⚠️ 编完才写戳 —— 编译失败时不能写，否则下次会以为"已经是最新的"
+  //   而拿一个旧二进制（或者压根没有）跑。
+  try { fs.writeFileSync(stamp, hash); } catch { /* 写不了就下次重编，无害 */ }
   return { ok: true, binary, cached: false };
 }
 

@@ -5540,28 +5540,79 @@ check('预编译 helper：四个都编 / 名字规则两边一致 / swiftc 那�
     assert.ok(sh.includes(name), `预编译脚本漏了 ${name} ⟹ 那个功能在用户机器上不可用`);
   }
 
-  // ②⚠️⚠️ **名字规则必须和运行时一致** —— 那是这次改动唯一的技术约束。
-  //   运行时：`<HelperName>-<源码 sha256 前 12 位>`，而且**文件存在就直接用**。
-  //   算错的后果**不是报错**，是静默地重新编译 ⟹ 回到没有预编译的状态
-  //   （而那时用户看到的还是"功能没反应"，我们却以为修好了）。
-  // ⚠️⚠️ **数次数**，不是"有一处就行"。
-  //   `shasum -a 256` 和 `cut -c1-12` 在这个脚本里**各出现两次**
-  //   （单文件的 hash_of 一处 + Voice 那个双文件一处）
-  //   ⟹ 改坏一处另一处还在 ⟹ `assert.match` 照样通过
-  //   （反向验证第 2、3 条：报红 0）。
-  //   "锚点太弱"第 12 次，而这次栽在**最重要的那条守卫**上。
+  // ②⚠️⚠️⚠️ **产物名里不许带 hash**（0.9.89）。用户 2026-08-02，第六轮：
+  //   「假如说每次的进程在系统看来都是不一样的程序，那这不就是有问题的吗？
+  //     我每次打开都是同一个产品啊…其他摄像头权限查了我一次后面都正常开了」
+  //
+  // **他说对了，而这是"每次开应用都要辅助功能"的真正根因** ——
+  //   原来叫 `<HelperName>-<源码 sha256 前 12 位>`，而 **TCC 按可执行文件路径
+  //   记授权** ⟹ 我每改一次某个 .swift，打出来就是个新文件名 = 新程序，
+  //   用户上次给的授权对它不算。前五版我全在改弹框逻辑，根因在命名。
+  //
+  // ⚠️⚠️ 对照用户自己的打包日志就能坐实：
+  //   `GestureWallAudio-0b0001ce0347` —— 五个版本一个字没变 ⟹ 音乐权限只问一次 ✅
+  //   `GestureWallMouse-f57afb8d2af0 → 1635ebad82ad → 4edcf88e073a` ⟹ 每次都问 ❌
+  //   差别不是"辅助功能比麦克风特殊"，是**我改了哪个文件**。
+  const sb = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  // ⚠️ 四条链的产物名都必须是**裸名**
+  assert.match(sb, /path\.join\(app\.getPath\("userData"\), binaryName\)/,
+    'system-bridge 的产物名又带 hash 了 ⟹ 每改一次源码就是新程序，'
+    + '用户的授权全部作废（连问六轮的根因）');
+  assert.ok(!/\$\{binaryName\}-\$\{/.test(sb),
+    'system-bridge 又在名字里拼 hash');
+  for (const [rel, bad] of [['src/mouse-bridge.js', /GestureWallMouse-\$\{/],
+    ['src/audio-source.js', /GestureWallAudio-\$\{/]]) {
+    const src = codeOnly(fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'));
+    assert.ok(!bad.test(src), `${rel} 又在产物名里拼 hash ⟹ 授权每版作废`);
+  }
+  assert.ok(!/\$OUT\/\$\{name\}-\$\{h\}/.test(sh),
+    '预编译脚本又在产物名里拼 hash');
+  assert.match(sh, /out="\$OUT\/\$\{name\}"/, '预编译脚本的产物名不是裸名');
+
+  // ⚠️⚠️ 但**"源码变了要重编"这个能力不许丢** —— 名字固定之后
+  //   "文件存在即最新"那个技巧没了，必须靠旁边的 `.hash` 戳文件。
+  //   ⚠️ 不能用 mtime：那会让每次 `git checkout` 都重编（这段代码当初就是
+  //     因为这个 churn 不停，原注释记着）。
+  assert.match(sb, /function helperUpToDate/,
+    'system-bridge 没有"戳文件对不对得上"的判断 ⟹ 名字固定 + 只看文件存在'
+    + ' = **旧二进制被静默复用**（那正是当初选 hash 命名的理由）');
+  assert.match(sb, /\$\{binary\}\.hash/, 'system-bridge 没读/写 .hash 戳文件');
+  assert.match(sb, /function stampHelper/, 'system-bridge 编译后不写戳 ⟹ 每次都重编');
+  for (const rel of ['src/mouse-bridge.js', 'src/audio-source.js']) {
+    const src = codeOnly(fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'));
+    assert.match(src, /\.hash`/, `${rel} 没用 .hash 戳文件判新旧 ⟹ 旧二进制会被静默复用`);
+    assert.match(src, /writeFileSync\(stamp, hash\)/, `${rel} 编译后不写戳 ⟹ 每次都重编`);
+  }
+  // ⚠️⚠️ 原来这条写的是 /\$out\.hash/ —— **太弱**：那个串在脚本里出现两次
+  //   （增量判断读它 + 编译后写它），把**写**那句删掉照样绿（反向验证逮到）。
+  //   ⟹ 数"写戳"的次数：单文件的 build_one 一处 + Voice 一处 = 2。
+  //   第 13 次栽在"锚点太弱"，而这次栽在"同一个串既被读又被写"。
+  const stampWrites = (sh.match(/printf '%s' "\$\w+" > "\$\w+\.hash"/g) || []).length;
+  assert.strictEqual(stampWrites, 2,
+    `预编译脚本里写 .hash 戳的地方有 ${stampWrites} 处（该有 2：build_one + Voice）`
+    + ' ⟹ 少一个那个 helper 每次打包都重编（慢，但更糟的是'
+    + '运行时读不到戳 ⟹ 用户机器上也会重编一次，产物换了但路径没换、无声无息）');
+  // ⚠️ hash 算法两边仍要一致（sha256 前 12 位）—— 只是它不再进文件名
   const shaCount = (sh.match(/shasum -a 256/g) || []).length;
   assert.strictEqual(shaCount, 2,
     `预编译脚本里 sha256 有 ${shaCount} 处（该有 2：单文件 + Voice 的双文件）`
-    + ' ⟹ 名字和运行时算的不一致，而后果是**静默地重新编译**（不报错）');
+    + ' ⟹ 戳文件里的 hash 和运行时算的对不上 ⟹ 每次启动都重编（静默）');
   const cutCount = (sh.match(/cut -c1-12/g) || []).length;
-  assert.strictEqual(cutCount, 2,
-    `预编译脚本里"取前 12 位"有 ${cutCount} 处（该有 2）⟹ 同上`);
-  // 运行时那两处也要还是 sha256 + 12 位
-  const sb = codeOnly(fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'system-bridge.js'), 'utf8'));
+  assert.strictEqual(cutCount, 2, `预编译脚本里"取前 12 位"有 ${cutCount} 处（该有 2）⟹ 同上`);
   assert.match(sb, /createHash\("sha256"\)[\s\S]{0,300}?slice\(0, 12\)/,
     'system-bridge 的 hash 规则变了 ⟹ 预编译脚本要跟着改（否则静默失效）');
+
+  // ⚠️⚠️ 存量那些带 hash 名的二进制要清掉 —— 它们**每一个都是系统授权列表里
+  //   的一条**，用户看到一堆 `GestureWallMouse-xxxx` 分不清哪个是当前的。
+  assert.match(codeOnly(mainSrc), /function cleanLegacyHelpers/,
+    '没有清理旧的带 hash 名 helper ⟹ 用户机器上躺着好几代，'
+    + '而每一个都在授权列表里占一行');
+  assert.match(codeOnly(mainSrc), /app\.whenReady[\s\S]*?cleanLegacyHelpers\(\)/,
+    'cleanLegacyHelpers 没在启动时调 ⟹ 那些文件永远不会被清掉');
+  // ⚠️ 正则必须钉死"四个 helper 名 + 12 位十六进制" —— 宽松的话会删到别的东西
+  assert.match(codeOnly(mainSrc), /LEGACY_HELPER_RE = \/\^\(AirCursorPointer\|AirCursorVoice\|GestureWallMouse\|GestureWallAudio\)-\[0-9a-f\]\{12\}\$\//,
+    '清理用的正则不是"四个确定的名字 + 12 位十六进制" ⟹ 可能删到用户别的文件');
 
   // ③⚠️ Voice 的 hash 算**两个文件**（源码 + Info.plist）——
   //   `helperBinaryPath(name, ...sources)` 逐个 update。
@@ -5592,7 +5643,8 @@ check('预编译 helper：四个都编 / 名字规则两边一致 / swiftc 那�
   // 而三处都要有"预编译优先"这条新路径
   // ⚠️ 同样数次数 —— 两个 helper（Pointer / Voice）各要查一次，
   //   漏一个就是那个功能在用户机器上还得编译（反向验证第 6 条：报红 0）。
-  const preCount = (sb.match(/findPrebuilt\(path\.basename\(helperBinary\)\)/g) || []).length;
+  // ⚠️ 0.9.89 起传的是**裸名**（不再是 path.basename(带 hash 的路径)）
+  const preCount = (sb.match(/findPrebuilt\("AirCursorPointer"\)|findPrebuilt\(binaryName\)/g) || []).length;
   assert.strictEqual(preCount, 2,
     `system-bridge 查预编译的地方有 ${preCount} 处（该有 2：Pointer + Voice）`
     + ' ⟹ 漏掉的那个在用户机器上仍然要 swiftc');

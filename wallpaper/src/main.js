@@ -3519,6 +3519,40 @@ let mouseInjected = 0;
 // "mousedown 收到了但 pointerdown 没有"直接说明是事件族的问题。
 let pageMouseSeen = null;
 
+// ---------------------------------------------------------------------------
+// 清掉 0.9.88 之前那些带 hash 名的 helper 二进制
+// ---------------------------------------------------------------------------
+// ⚠️⚠️ 它们叫 `GestureWallMouse-1635ebad82ad` 这种，而**每改一次 .swift 源码就多
+// 一个** —— 用户机器上现在躺着好几代。而真正的害处不是占空间：
+//   **每一个都是系统授权列表里的一条**（TCC 按可执行文件记授权）
+//   ⟹ 用户打开「隐私与安全性 → 辅助功能」看到一堆 `GestureWallMouse-xxxx`，
+//     完全分不清哪个是当前在跑的那个。
+//
+// ⚠️ 而删文件**不会**把 TCC 里那些条目删掉（那要 tccutil，而它只认 bundle id、
+//   对这些裸二进制无能为力）—— 那些条目会显示成灰色/失效项，得用户自己在列表里
+//   点减号删。我们能做的是**不再产生新的**，并且把文件删掉止损。
+//
+// ⚠️ 只删**我们自己**在 userData/native 和 userData 下按那个规则生成的东西 ——
+//   正则钉死了四个 helper 名 + 12 位十六进制后缀，不碰任何别的文件。
+const LEGACY_HELPER_RE = /^(AirCursorPointer|AirCursorVoice|GestureWallMouse|GestureWallAudio)-[0-9a-f]{12}$/;
+
+function cleanLegacyHelpers() {
+  if (process.platform !== 'darwin') return;
+  let removed = 0;
+  for (const dir of [app.getPath('userData'), path.join(app.getPath('userData'), 'native')]) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch { continue; }   // 目录不存在就算了
+    for (const name of names) {
+      if (!LEGACY_HELPER_RE.test(name)) continue;
+      try { fs.unlinkSync(path.join(dir, name)); removed += 1; } catch { /* 删不掉就算了 */ }
+    }
+  }
+  if (removed > 0) {
+    console.log(`[helper] 清掉 ${removed} 个旧的带 hash 名的 helper 二进制`
+      + '（0.9.89 起用固定名 —— 名字里带 hash 会让 macOS 每次都当成新程序要授权）');
+  }
+}
+
 function syncMouseForward() {
   // 只有 desktop 层需要转发 —— 普通窗口自己就能收鼠标，
   // 再转发一次会变成**双份事件**（点一下算两下）。
@@ -4424,6 +4458,14 @@ app.whenReady().then(() => {
   // 点关闭 = 整个退出，最小化 = 还在跑。托盘和"关窗不退出"是配套的，
   // 一起撤。
   config = readConfig();
+  // ⚠️⚠️ **清掉旧的带 hash 名的 helper 二进制**（0.9.89）。
+  //   0.9.88 之前它们叫 `GestureWallMouse-1635ebad82ad` 这样，而每改一次源码
+  //   就多一个（用户机器上现在躺着好几个）。留着有两个害处：
+  //     ① 白占几 MB
+  //     ② ⚠️ 更糟：**它们还在系统的辅助功能授权列表里**，用户看到一堆
+  //        `GestureWallMouse-xxxx` 分不清哪个是当前的。
+  //   ⟹ 删掉。它们已经没人引用了（现在只找固定名那个）。
+  cleanLegacyHelpers();
   // ⚠️ 必须在建窗口之前 —— 策略是创建时定的，迁移晚了这次启动仍然用旧值。
   if (migrateConfig(config)) writeConfig();
   registerWEProtocol();

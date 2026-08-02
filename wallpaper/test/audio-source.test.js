@@ -7,6 +7,8 @@
 // 半行 JSON、权限被拒、按 App 过滤悄悄退回全局。
 const assert = require('node:assert');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const A = require('../src/audio-source.js');
 
 let passed = 0;
@@ -132,15 +134,58 @@ check('编译失败把 swiftc 的话带出来（不然只知道"失败了"）', 
   assert.match(out.error, /第 42 行/, 'swiftc 的原文没带出来');
 });
 
-// 按源码 hash 命名：源码没变就不重编。
-// ⚠️ 代价是源码一变路径就变，而 macOS 的权限是按二进制路径记的 ⟹ 改 helper 要重新授权。
-// AirCursor 在这上面栽过（"helper 路径带版本号致授权静默失效"）。仍然用 hash 是因为
-// 固定名字会让旧二进制被静默复用，那更难查。
-check('产物名字带源码 hash', () => {
-  const out = A.ensureHelper(__filename, '/tmp/gw-audio-test', () => ({ status: 0 }));
+// ⚠️⚠️⚠️ **产物名固定，hash 进旁边的 .hash 戳文件**（0.9.89 翻过来了）。
+//
+// 这条原来断言的是 `^GestureWallAudio-[0-9a-f]{12}$`，注释里写着「代价是源码一变
+// 路径就变，而 macOS 的权限是按二进制路径记的 ⟹ 改 helper 要重新授权…仍然用
+// hash 是因为固定名字会让旧二进制被静默复用，那更难查」。
+//
+// ⚠️⚠️ **我知道这个代价，而且选错了。** 用户 2026-08-02 连问六轮"为什么每次打开
+//   都要辅助功能"，根因就是它 —— 而我前五版全在改弹框逻辑。他的话：
+//   「假如说每次的进程在系统看来都是不一样的程序，那这不就是有问题的吗？
+//     我每次打开都是同一个产品啊」
+// ⚠️ 而"旧二进制被静默复用"那个顾虑是真的，只是**解法不是把 hash 塞进文件名** ——
+//   写个 `.hash` 戳文件就同时拿到：路径稳定 + 源码变了能发现。
+check('产物名固定（不带 hash）—— 否则每改一次源码授权就作废', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gw-audio-name-'));
+  const out = A.ensureHelper(__filename, dir, () => ({ status: 0 }));
   assert.strictEqual(out.ok, true);
-  assert.match(path.basename(out.binary), /^GestureWallAudio-[0-9a-f]{12}$/,
-    `产物名不带 hash：${out.binary}`);
+  assert.strictEqual(path.basename(out.binary), 'GestureWallAudio',
+    `产物名不该带 hash（TCC 按路径记授权）：${out.binary}`);
+});
+
+// ⚠️⚠️ 名字固定了，"源码变了要重编"这个能力必须还在 —— 靠戳文件。
+//   ⚠️ 这条是**行为测试**：真跑两次 ensureHelper，看第二次有没有跳过编译。
+//     只查代码里有没有 `.hash` 证明不了它真的生效。
+check('戳文件：源码没变跳过编译，变了重编（且重编到同一路径）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gw-audio-stamp-'));
+  const src = path.join(dir, 'fake.swift');
+  fs.writeFileSync(src, 'let a = 1');
+
+  let compiles = 0;
+  // ⚠️ 假的 swiftc：记次数，并且真的把产物创建出来（不然下一次 existsSync 是 false）
+  const run = (_bin, args) => {
+    compiles += 1;
+    fs.writeFileSync(args[args.indexOf('-o') + 1], 'binary');
+    return { status: 0 };
+  };
+
+  const a = A.ensureHelper(src, dir, run);
+  assert.strictEqual(a.ok, true);
+  assert.strictEqual(compiles, 1, '第一次没编译');
+  assert.ok(fs.existsSync(`${a.binary}.hash`), '编译后没写戳文件 ⟹ 下次会重编');
+
+  const b = A.ensureHelper(src, dir, run);
+  assert.strictEqual(compiles, 1, '源码没变却又编译了一次 ⟹ 戳文件没起作用');
+  assert.strictEqual(b.cached, true, '第二次该是 cached');
+  assert.strictEqual(b.binary, a.binary, '两次路径不一样 ⟹ 名字又不稳定了');
+
+  // 改源码 ⟹ 必须重编，而且**编到同一个路径**（授权跟着路径，所以不会丢）
+  fs.writeFileSync(src, 'let a = 2');
+  const c = A.ensureHelper(src, dir, run);
+  assert.strictEqual(compiles, 2, '源码变了却没重编 ⟹ 会静默跑旧二进制（当初选 hash 命名就是怕这个）');
+  assert.strictEqual(c.binary, a.binary,
+    '重编换了路径 ⟹ 用户的授权作废，那就是这次要修的 bug');
 });
 
 console.log('\n  网易云');
