@@ -8311,4 +8311,46 @@ check('⚠️⚠️ 装载入口在（0.9.153 从按钮挪到预览图上）', (
 });
 
 
+
+check('⚠️⚠️⚠️ flex 列里显式声明谁可以被压（0.9.154，同一个 bug 第二次）', () => {
+  // 用户 2026-08-03：「生成结束之后，为什么会把最上面的目录给遮掉一半呢」
+  //
+  // ⚠️⚠️ 根因：`flex-shrink` 默认是 **1** ⟹ 生成完之后预览图 + 四行读数 + 配方
+  //   一起进来，容器高度不够时 flex 就去**压缩它上面的每一块** ——
+  //   而目录那个按钮只有 30px 高，压一半就是"遮掉一半"。
+  //
+  // ⚠️⚠️⚠️ 而这是**同一个 bug 的第二次**：0.9.146 我只给输入区加了
+  //   `flex-shrink: 0`（那时只有它出问题）—— 那是**治症状**。
+  //   ⟹ 判据：**flex 列里要显式声明"谁可以被压"，而不是让默认值决定。**
+  //     一个 flex 容器里只有少数几个成员该收缩，而默认值让**所有**成员都能收缩。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // ① 全局规则：ai-body 的直接子元素，除了对话流，一律不许被压
+  assert.match(css, /#ai-body > \*:not\(#ai-log\)\s*\{[^}]*flex-shrink:\s*0/,
+    'ai-body 里没有"除对话流外一律不许压缩"的规则'
+    + ' ⟹ 生成完之后新增的块会把上面的（目录/凭证）压扁');
+
+  // ②⚠️ 而对话流反过来 —— 它是唯一该吃剩余空间、也该被压的那个
+  const logAt = css.indexOf('#ai-log {');
+  assert.ok(logAt > 0, '找不到 #ai-log 的样式');
+  const logCss = css.slice(logAt, css.indexOf('}', logAt));
+  assert.match(logCss, /flex:\s*1/, '对话流没有 flex: 1 ⟹ 它不会吃掉剩余空间');
+  // ⚠️⚠️ 而它的收缩下界不能太大 —— 大了容器压不下去就会往上顶（那是本 bug 的另一半）
+  const minH = logCss.match(/min-height:\s*(\d+)px/);
+  assert.ok(minH, '对话流没设 min-height ⟹ 内容少时会塌成 0 高');
+  assert.ok(Number(minH[1]) <= 80,
+    `对话流的 min-height 是 ${minH[1]}px，太大了`
+    + ' ⟹ 生成完之后预览图+读数+配方占掉高度，容器压不下去就会把上面的顶出去');
+
+  // ③⚠️ 而 ai-body 本身要有 min-height: 0（flex 子项的默认 min-height 是 auto，
+  //   那会让它撑破父容器 —— 这个项目为它栽过）
+  const bodyAt = css.indexOf('#ai-body {');
+  const bodyCss = css.slice(bodyAt, css.indexOf('}', bodyAt));
+  assert.match(bodyCss, /min-height:\s*0/,
+    'ai-body 没有 min-height: 0 ⟹ flex 子项默认 min-height 是 auto，内容会撑破父容器');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

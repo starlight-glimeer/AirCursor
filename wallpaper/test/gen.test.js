@@ -1672,7 +1672,9 @@ check('⚠️ "波涛汹涌"拆成三样一起放大', () => {
   //   ⟹ 删掉那张表里的一行照样绿。⟹ 守那张表的三行都在。
   const at2 = plan.indexOf('| 放大什么 | 从 | 到 |');
   assert.ok(at2 > 0, '没有那张"放大什么"的表');
-  const t2 = plan.slice(at2, at2 + 400);
+  // ⚠️ 切到**表的结尾**（下一个 `⛔`），不用定长 —— 表里加一行就会漂
+  const t2End = plan.indexOf('⛔', at2);
+  const t2 = plan.slice(at2, t2End > 0 ? t2End : plan.length);
   for (const [what, why] of [
     ['振幅', '空间波的振幅要放大 —— 那是"波涛"的主体'],
     ['触发频率', '涟漪要更密 —— 那是"汹涌"的节奏来源'],
