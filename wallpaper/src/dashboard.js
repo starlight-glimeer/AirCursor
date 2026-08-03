@@ -4483,6 +4483,19 @@ function aiRenderResult(r) {
             + `${px.bands[1].toFixed(0)} / 下 ${px.bands[2].toFixed(0)}`
             + `（目标 25 / 90 / 50）`);
         }
+      }
+      // ── ⚠️⚠️ **动不动**（0.9.151）—— 用户连着两次说"动态的部分太少了"，
+      //   而那件事之前**面板上根本看不到**（我只截一帧）。
+      const mo = pr.motion;
+      if (mo && mo.frames >= 3) {
+        const spread = mo.diffMax > 0 ? 1 - mo.diffMin / mo.diffMax : 0;
+        lines.push(`${mark(mo.diffAvg >= 1.5)} 在动       帧间变化 ${mo.diffAvg.toFixed(1)}`
+          + `（目标 ~24）`);
+        // ⚠️ 这一条是"有没有节奏" —— 匀速运动的波动接近 0
+        lines.push(`${mark(spread >= 0.25)} 节奏       变化幅度波动 ${(100 * spread).toFixed(0)}%`
+          + `（目标 >25%，参考壁纸 78%）`);
+        lines.push(`${mark(mo.lumStd >= 1.2)} 呼吸       亮度起落 ±${mo.lumStd.toFixed(1)}`
+          + `（目标 ~13）`);
       } else {
         lines.push('  画面       （没截到图）');
       }

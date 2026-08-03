@@ -4011,6 +4011,8 @@ async function probeWallpaperRuntime(dir) {
     frames: 0,
     ms: 0,
     sampledPixels: null,
+    // ⚠️ 帧间变化 / 亮度起落（0.9.151）—— "活不活"的观测点，见下面那段判据
+    motion: null,
   };
   let win = null;
   try {
@@ -4124,18 +4126,88 @@ async function probeWallpaperRuntime(dir) {
     //   唯一自动判据，而那种失败在日志里完全干净。
     //   ⚠️ 用 capturePage 而不是读 canvas：壁纸可能用 WebGL，
     //     而 WebGL 的 canvas 读像素要 preserveDrawingBuffer（我们改不了它的代码）。
+    // ⚠️⚠️⚠️ **截多帧，不是一帧**（0.9.151）。用户 2026-08-03：
+    //   「动态的部分太少了」（连着说了两次）
+    //
+    // ⚠️ 而我之前只截**一帧** ⟹ "动态够不够"这件事**我从来没量过**。
+    //   我量的全是单帧指标（近黑占比、三带亮度、饱和度）—— 那是"构图"，
+    //   而"活不活"在**帧之间**。
+    //
+    // ⚠️ 参考壁纸的实测（preview.gif 200 帧）：
+    //   亮度随时间 **29 → 76**（差 47、标准差 12.9），40 个时刻里 8 个是峰
+    //   帧间变化率 8.3 → 37.3（**波动范围本身很大 = 有节奏，不是匀速**）
+    //   ⟹ 判据：**一帧测不出节奏。** 而"看起来死板"就是节奏的缺失。
+    //
+    // ⚠️ 5 帧、每帧隔 500ms ⟹ 覆盖 2 秒。⚠️ 而**不能更密**：capturePage
+    //   本身有开销，太密会把渲染挤慢、量出来的反而是我们自己造成的卡顿。
+    const shots = [];
     try {
-      const image = await win.webContents.capturePage();
-      const size = image.getSize();
-      if (size.width > 0 && size.height > 0) {
+      for (let k = 0; k < 5; k += 1) {
+        if (k > 0) await new Promise((r) => setTimeout(r, 500));
+        const img = await win.webContents.capturePage();
+        const sz = img.getSize();
+        if (sz.width > 0 && sz.height > 0) {
+          shots.push(img.resize({ width: 32, height: 32, quality: 'good' }).toBitmap());
+        }
+      }
+    } catch (error) {
+      console.warn('[gen] 多帧截图失败：', error.message);
+    }
+
+    // ⚠️⚠️ **帧间变化 + 亮度起落** —— 那是"活不活"的唯一自动判据
+    if (shots.length >= 3) {
+      const meanLum = (bm) => {
+        let sum = 0;
+        let n = 0;
+        for (let i = 0; i + 3 < bm.length; i += 4) {
+          sum += (bm[i] + bm[i + 1] + bm[i + 2]) / 3;
+          n += 1;
+        }
+        return n ? sum / n : 0;
+      };
+      const frameDiff = (a, b) => {
+        let sum = 0;
+        let n = 0;
+        for (let i = 0; i + 3 < a.length && i + 3 < b.length; i += 4) {
+          sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1])
+            + Math.abs(a[i + 2] - b[i + 2]);
+          n += 3;
+        }
+        return n ? sum / n : 0;
+      };
+      const lums = shots.map(meanLum);
+      const diffs = [];
+      for (let k = 1; k < shots.length; k += 1) diffs.push(frameDiff(shots[k - 1], shots[k]));
+      const avg = (xs) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+      const lumAvg = avg(lums);
+      probe.motion = {
+        frames: shots.length,
+        // 亮度的起落（参考壁纸：范围 47、标准差 12.9）
+        lumMin: Math.min(...lums),
+        lumMax: Math.max(...lums),
+        lumStd: Math.sqrt(avg(lums.map((v) => (v - lumAvg) ** 2))),
+        // 帧间变化（参考壁纸：平均 24.2，而**波动范围 8.3-37.3 才是节奏**）
+        diffAvg: avg(diffs),
+        diffMin: Math.min(...diffs),
+        diffMax: Math.max(...diffs),
+      };
+    }
+
+    try {
+      const image = shots.length ? null : await win.webContents.capturePage();
+      const size = image ? image.getSize() : { width: 32, height: 32 };
+      if (shots.length || (size.width > 0 && size.height > 0)) {
         // ⚠️ 缩到 20×20 再数 —— 400 个采样点足够判"是不是一片黑"，
         //   而全尺寸是 92 万像素（白费）。
         // ⚠️⚠️⚠️ **32×32 而不是 20×20**（0.9.145）—— 要按"上/中/下三分带"
         //   分别算亮度，20 行分不出干净的三等份（20/3 不是整数）。
         //   32 行 ⟹ 每带 10 行还余 2，够用而且开销仍然可忽略。
         const N = 32;
-        const small = image.resize({ width: N, height: N, quality: 'good' });
-        const bitmap = small.toBitmap();   // BGRA
+        // ⚠️ 单帧指标用**第一帧**（构图是静态的，一帧够）——
+        //   而"动不动"用上面那 5 帧算（见 probe.motion）
+        const bitmap = shots.length
+          ? shots[0]
+          : image.resize({ width: N, height: N, quality: 'good' }).toBitmap();   // BGRA
         let black = 0;
         let bright = 0;
         let total = 0;

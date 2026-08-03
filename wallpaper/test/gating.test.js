@@ -8228,4 +8228,48 @@ check('⚠️ 配方那个模块整个删掉了（留着没人用的模块会误
 });
 
 
+
+check('⚠️⚠️ 探针真的截多帧（0.9.151）', () => {
+  // ⚠️⚠️⚠️ 反向验证逮出这个缺口：我把"截 5 帧"改回"截 1 帧"，
+  //   测试**全绿** —— 因为 gen.test.js 里的 motion 数据是我**手造**的，
+  //   探针那边改了它测不出来。
+  //   ⟹ 判据：**纯函数的测试证明不了"上游真的给了它数据"。**
+  //     那条接线要单独守（这个项目为"注册成功但功能是死的"栽过七次）。
+  const src = codeOnly(mainSrc);
+  const fn = src.slice(src.indexOf('async function probeWallpaperRuntime('));
+  const body = fn.slice(0, fn.indexOf('\nfunction ') > 0 ? fn.indexOf('\nfunction ') : 6000);
+
+  // ① 要截多帧（≥3 才算得出帧间变化）
+  const loop = body.match(/for \(let k = 0; k < (\d+); k \+= 1\)/);
+  assert.ok(loop, '看不到多帧截图的循环 ⟹ 探针还是只截一帧');
+  assert.ok(Number(loop[1]) >= 3,
+    `只截 ${loop[1]} 帧 ⟹ 算不出"帧间变化的波动范围"（那需要至少 3 帧、2 个差值）`);
+
+  // ②⚠️ 帧之间要有间隔 —— 连着截 5 张几乎同一时刻的图等于没截
+  // ⚠️⚠️ 反向验证逮住这条：我原来的断言是 `/setTimeout\(r, \d+\)/` ——
+  //   而 `probeWallpaperRuntime` 里**本来就有别的 setTimeout**（等页面加载）
+  //   ⟹ 把帧间隔那句删掉照样绿。
+  //   ⟹ 锚到**那个循环里面**（截图循环的头几行）。
+  const loopAt = body.indexOf('for (let k = 0; k <');
+  const loopBody = body.slice(loopAt, body.indexOf('shots.push', loopAt));
+  assert.match(loopBody, /await new Promise/,
+    '截图循环里没有等待 ⟹ 那几张是几乎同一时刻的，测不出动态');
+  const gap = loopBody.match(/setTimeout\(r, (\d+)\)/);
+  assert.ok(gap && Number(gap[1]) >= 200,
+    `帧间隔只有 ${gap ? gap[1] : '?'}ms ⟹ 太密：40fps 的壁纸两帧之间只差 25ms，`
+    + '而 capturePage 本身有开销 ⟹ 量出来的是我们自己造成的卡顿');
+
+  // ③⚠️⚠️ 算出来的三个量都要写进 probe.motion（少一个下游就判不了）
+  assert.match(body, /probe\.motion = \{/, '没写 probe.motion');
+  const motionBlock = body.slice(body.indexOf('probe.motion = {'));
+  for (const key of ['diffAvg', 'diffMin', 'diffMax', 'lumStd', 'lumMin', 'lumMax']) {
+    assert.ok(motionBlock.includes(key),
+      `probe.motion 里没有 ${key} ⟹ 下游那条判定会静默跳过`);
+  }
+  // ④⚠️ diffMin/diffMax 是"有没有节奏"的唯一依据 —— 少了它匀速运动就漏了
+  assert.match(motionBlock, /diffMin:\s*Math\.min/, 'diffMin 不是真算的');
+  assert.match(motionBlock, /diffMax:\s*Math\.max/, 'diffMax 不是真算的');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

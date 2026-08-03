@@ -1393,4 +1393,102 @@ check('⚠️⚠️ 雾密度是算出来的，而参数合理', () => {
 });
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ 时间维度：动不动 / 有没有节奏（0.9.151）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-03 连着两次说「动态的部分太少了」——
+// ⚠️ 而我之前只截**一帧** ⟹ 这件事**我从来没量过**。
+//   我量的全是单帧指标（近黑/三带/饱和度）= 构图；而"活不活"在**帧之间**。
+//
+// ⚠️ 参考壁纸实测（preview.gif 200 帧）：
+//   亮度随时间 29 → 76（差 47、标准差 12.9）
+//   帧间变化率 8.3 → 37.3 —— **波动范围本身很大才是"有节奏"**
+//   ⟹ 匀速转圈的帧间差是恒定的；有节奏的是忽大忽小的。
+console.log('\n  动态与节奏（时间维度）');
+
+// 参考壁纸的 motion 实测值
+const REF_PROBE_BASE = {
+  frames: 180, ms: 3001, webgl: { context: true, objects: 4, glError: 0 }, errors: [],
+  sampledPixels: REF_PIXELS,
+};
+const REF_MOTION = {
+  frames: 5, lumMin: 29, lumMax: 76, lumStd: 12.9,
+  diffAvg: 24.2, diffMin: 8.3, diffMax: 37.3,
+};
+
+check('⚠️⚠️ 参考壁纸的动态数据零问题（校准基准）', () => {
+  const out = G.judgeComposition({ sampledPixels: REF_PIXELS, motion: REF_MOTION });
+  assert.deepStrictEqual(out, [],
+    `参考壁纸被判出 ${out.length} 个问题（${out.map((x) => x.id).join(',')}）`
+    + ' ⟹ 阈值定错了：目标本身必须能通过');
+});
+
+check('完全不动 → 逮住', () => {
+  const still = { frames: 5, lumMin: 50, lumMax: 50, lumStd: 0,
+    diffAvg: 0.3, diffMin: 0.2, diffMax: 0.4 };
+  const ids = G.judgeComposition({ sampledPixels: REF_PIXELS, motion: still })
+    .map((x) => x.id);
+  assert.ok(ids.includes('C-画面几乎不动'), `没逮住（报了 ${ids.join(',')}）`);
+  // ⚠️ 报错里要给**候选原因**，不是只说"不动"
+  const d = G.judgeComposition({ sampledPixels: REF_PIXELS, motion: still })
+    .find((x) => x.id === 'C-画面几乎不动').detail;
+  assert.match(d, /else/, '没提"空闲动画写在 else 里"这个最常见的原因');
+  assert.match(d, /needsUpdate/, '没提"忘了置 needsUpdate"这个原因');
+});
+
+check('⚠️⚠️⚠️ 匀速转圈 → 逮住（"它在那转圈"是用户原话）', () => {
+  // ⚠️ 这条是这一轮的**核心**：动得挺多，但**变化幅度恒定**
+  //   ⟹ 那正是整体旋转/整体缩放的特征，而它通不过任何单帧指标。
+  const spin = { frames: 5, lumMin: 50, lumMax: 51, lumStd: 0.4,
+    diffAvg: 20, diffMin: 19, diffMax: 21 };
+  const ids = G.judgeComposition({ sampledPixels: REF_PIXELS, motion: spin })
+    .map((x) => x.id);
+  assert.ok(ids.includes('C-动得没节奏'),
+    `没逮住匀速运动（报了 ${ids.join(',')}）`
+    + ' ⟹ 它的帧间变化平均值是正常的（20），只有"波动范围"能区分它');
+  assert.ok(ids.includes('C-亮度没起落'), '没逮住"明暗不呼吸"');
+  const d = G.judgeComposition({ sampledPixels: REF_PIXELS, motion: spin })
+    .find((x) => x.id === 'C-动得没节奏').detail;
+  // ⚠️ 要说清怎么改 —— 节奏来自事件触发的动态
+  assert.match(d, /事件触发/, '没说清"节奏来自事件触发的动态"');
+  assert.match(d, /8\.3 - 37\.3/, '没给参考壁纸的实测范围');
+});
+
+check('⚠️ 没有 motion 数据时不判（旧探针 / 截图失败）', () => {
+  assert.deepStrictEqual(
+    G.judgeComposition({ sampledPixels: REF_PIXELS }), [],
+    '没有 motion 数据时报了问题 ⟹ 升级过程中会出现一堆假问题');
+  assert.deepStrictEqual(
+    G.judgeComposition({ sampledPixels: REF_PIXELS, motion: { frames: 1 } }), [],
+    '只截到 1 帧时报了问题 ⟹ 那时算不出帧间变化');
+});
+
+check('⚠️⚠️ 观测报告里有动态那一节（模型要能看到它）', () => {
+  const obs = G.buildObservation({ ...REF_PROBE_BASE, motion: REF_MOTION }, 'x');
+  assert.match(obs, /## 动态/, '观测报告里没有动态那一节');
+  assert.match(obs, /帧间变化/, '没报帧间变化');
+  assert.match(obs, /8\.3-37\.3|8\.3 - 37\.3/, '没给参考壁纸的目标范围');
+  assert.match(obs, /范围要宽/, '没说清"范围窄=匀速"这件事');
+  // ⚠️ 而这一节**也不许出现判断词**（那是 buildObservation 的规矩）
+  for (const v of ['没节奏', '死板', '不好看']) {
+    assert.ok(!obs.includes(v), `观测报告里出现了判断词"${v}"`);
+  }
+});
+
+check('⚠️ 提示词讲清"节奏不是匀速"', () => {
+  const plan = G.buildPlanPrompt('');
+  assert.match(plan, /要有\*\*节奏\*\*/, '没说"动要有节奏"');
+  assert.match(plan, /8\.3 - 37\.3/, '没给参考壁纸的帧间变化范围');
+  assert.match(plan, /匀速运动.*恒定|恒定.*匀速/,
+    '没说清"匀速运动的帧间变化是恒定的"⟹ 模型不知道为什么转圈不行');
+  assert.match(plan, /只能当\*\*背景层\*\*/,
+    '没说清"匀速的那些只能当背景层" ⟹ 模型会以为不许用相机公转');
+  // ⚠️⚠️ 亮度也要跟音乐走 —— 那是"很暗淡"的另一半
+  assert.match(plan, /亮.*这件事本身也要跟音乐走/,
+    '没要求"亮度本身跟音乐走" ⟹ 只有几何在动而明暗恒定会发闷');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
