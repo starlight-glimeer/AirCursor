@@ -351,8 +351,11 @@ ${userWant || '（没特别要求，就按上面那个做）'}
 多少个（**几千**）、什么几何体、多大、怎么排（给出坐标公式）
 
 ## 环境
-底色（hex）、雾（类型 + near/far 或密度）、灯光（几个/类型/颜色/方向/强度，
-或者说明用自发光材质不打灯）
+底色（hex）、雾（类型 + near/far 或密度）
+⚠️⚠️ **灯光和材质要配套说清**（这是"画面一片黑"的头号原因）：
+   · 用 MeshBasicMaterial（自发光）⟹ 不需要灯，说"不打灯"
+   · 用 MeshStandardMaterial / Phong ⟹ **必须有灯**（没灯是纯黑，不是暗）
+     ⟹ 那就说清几个灯、什么类型、颜色、方向、强度
 
 ## 配色
 主色和辅色的 HSL 范围、**亮度和饱和度怎么随"到中心的距离"变**
@@ -427,7 +430,30 @@ ${skeletonSource}
    · 它每帧调 \`SCENE.frame(ctx)\` 之后自己会 \`renderer.render\` ⟹ 你别再调
    · 限帧 40fps（\`MIN_DT\`）⟹ 你不用自己做时间控制
    · \`SCENE.frame\` 连续抛异常 30 次它会**停止渲染** ⟹ 别让 frame 抛
-   · 音频是累积峰值的（\`Math.max\`）⟹ 你读到的 bass 已经是峰值，不用自己平滑`
+   · 音频是累积峰值的（\`Math.max\`）⟹ 你读到的 bass 已经是峰值，不用自己平滑
+
+# ⚠️⚠️⚠️ 灯光和材质必须配套（这是"画面一片黑"的头号原因）
+
+骨架默认往场景里放了 \`ctx.defaultLights\`（一个环境光 + 一个平行光）。
+你**可以**删掉它换自己的打光 —— 但**删了之后材质必须跟着换**：
+
+| 材质 | 需要灯吗 | 没灯的结果 |
+|---|---|---|
+| \`MeshBasicMaterial\` | **不需要** | 正常显示（自发光、扁平霓虹感） |
+| \`MeshStandardMaterial\` | **需要** | **纯黑**（字面的 0,0,0，不是"暗"） |
+| \`MeshPhongMaterial\` / \`Lambert\` / \`Physical\` / \`Toon\` | **需要** | **纯黑** |
+
+⟹ 三条合法组合，选一条：
+① \`scene.remove(ctx.defaultLights)\` + \`MeshBasicMaterial\`（自发光，霓虹感）
+② \`scene.remove(ctx.defaultLights)\` + **自己加灯** + Standard/Phong
+③ **留着 defaultLights** + Standard/Phong（最省事）
+
+⚠️ 而"删了灯 + Standard 材质 + 不加灯"= 必然全黑，检查器会拦住它。
+
+# ⚠️ 另外两个"什么都不显示"的常见原因
+· 建了 Mesh **没有 \`ctx.scene.add(...)\`** ⟹ 它不在场景里（不报错）
+· 元素坐标在相机背后或视锥外 ⟹ 相机在 (0,4,22) 看向 (0,1.5,0)，
+  所以元素应该在**原点附近**（X/Z 大致 -20..20，Y 大致 0..10）`
     : SKELETON_API;
 
   return `照下面这份设计说明写 scene.js。**设计已经定了，你只管把它翻译成代码。**
@@ -452,11 +478,35 @@ ${example}
 // ⚠️⚠️ 回喂：把**机器闸门的原文**给模型，不是我转述的结论。
 //   ⚠️ 判据：转述会丢信息（"缺鼠标处理"和"全文只有一个 addEventListener 且是
 //     resize"对模型是两种信息量），而丢的那部分正是它需要用来定位的。
-function buildRepairPrompt(previousCode, problems) {
+function buildRepairPrompt(previousCode, problems, roundInfo) {
+  // ⚠️⚠️⚠️ **同一个问题连着两轮没解决 ⟹ 说明改的方向不对**（0.9.147）。
+  //   用户 2026-08-03 那次：三轮都在修，而"一片黑"一直没好
+  //   （读数 12/9/6 → 三轮后还是 12/9/6）。
+  //   ⚠️ 根因是**回喂给的是现象**（"太暗了，把亮度提上去"）⟹ 模型改的是
+  //     颜色的 L 值，而真正的原因是"删了灯还用需要光的材质"（纯黑，不是暗）。
+  //   ⟹ 判据：**同一个问题第二次出现时，要明说"上一轮那样改没用"** ——
+  //     否则模型会继续沿着同一个错方向微调。
+  const repeated = (roundInfo && roundInfo.repeated) || [];
+  const stuckNote = repeated.length
+    ? `
+
+# ⚠️⚠️⚠️ 注意：下面这些问题**上一轮你已经改过一次了，但没解决**
+${repeated.map((id) => `· ${id}`).join('\n')}
+
+⟹ 那说明**你上一轮改的方向不对**，别再微调同一个地方。
+   停下来想：这个现象的**根因**可能是什么？
+   比如"画面太暗"的根因可能是：
+     · 删掉了 ctx.defaultLights 却用了需要光照的材质（那是**纯黑**，不是暗）
+     · 元素建了但没 ctx.scene.add(...)
+     · 元素在相机背后 / 在视锥外（检查坐标范围和相机朝向）
+     · 材质的 opacity/transparent 设错
+   ⚠️ 换一个假设，别改同一个系数。`
+    : '';
+
   return `你上一版写的 scene.js 没通过自动检查。下面是检查器的原始输出。
 
 # 检查器报告
-${problems.map((x, i) => `${i + 1}. [${x.id}] ${x.detail}`).join('\n')}
+${problems.map((x, i) => `${i + 1}. [${x.id}] ${x.detail}`).join('\n')}${stuckNote}
 
 ${SKELETON_API}
 
@@ -582,6 +632,51 @@ function inspect(code, hooks) {
   //   · `Math.random`（粒子诞生位置、初速度、相位都该随机 —— 见 F 那条）
   //   ⟹ 判据：**骨架是"在有限预算里稳定产出"的手段，不是审美的笼子。**
   //     它锁的是"会坏"（渲染循环 / 音频算法 / 错误上报），放的是"长什么样"。
+
+  // ── C2.⚠️⚠️⚠️ **删了灯还用需要光照的材质 = 必然全黑**（0.9.147）
+  //
+  // 用户 2026-08-03 实测："这次的效果看起来一片黑"，而读数是
+  //   场景 **1 个对象**、高亮 **0%**、三带 12/9/6。
+  // ⚠️ "1 个对象"是关键：骨架默认往 scene 里放了一个 `defaultLights` Group，
+  //   所以只有 1 个对象意味着**模型删掉了默认灯光**（或者它一个都没加）。
+  //   而 `MeshStandardMaterial` / `MeshPhongMaterial` / `MeshLambertMaterial`
+  //   **没有光就是纯黑** —— 那不是"暗"，是字面的 (0,0,0)。
+  //
+  // ⚠️⚠️ 而这个组合**三轮都没被修掉**：回喂里只有"太暗了"这种现象描述，
+  //   模型改的是颜色的 L 值 —— 而那改不动"没有光"这个根因。
+  //   ⟹ 判据：**回喂要给根因，不是给现象。** "把亮度提上去"和
+  //     "你删了灯又用了需要光的材质"是两条完全不同的指令。
+  //
+  // ⚠️ 我们**鼓励**模型换整套打光（0.9.140 特意放开的，见 MODULES.md ⑤b）——
+  //   所以这条不是"不许删灯"，是"删了要么自己加，要么换成自发光材质"。
+  const removesLights = /scene\.remove\s*\(\s*(ctx\.)?defaultLights/.test(src);
+  const addsOwnLight = /new\s+THREE\.(Ambient|Directional|Point|Spot|Hemisphere|RectArea)Light/
+    .test(src);
+  const needsLight = /new\s+THREE\.Mesh(Standard|Phong|Lambert|Physical|Toon)Material/
+    .test(src);
+  if (removesLights && needsLight && !addsOwnLight) {
+    add('C2-删了灯还用需光材质',
+      '你删掉了 ctx.defaultLights，又用了需要光照的材质'
+      + '（MeshStandard/Phong/Lambert/Physical/ToonMaterial），而没有加任何灯'
+      + ' ⟹ **画面会是纯黑的**（那些材质没有光就是字面的 (0,0,0)，不是"暗"）。'
+      + '\n两条路选一条：'
+      + '\n① 换成 MeshBasicMaterial（自发光、扁平霓虹感，不需要灯）'
+      + '\n② 保留 defaultLights，或者自己加灯'
+      + '（比如 new THREE.AmbientLight(0xffffff, 0.4) + 一个 DirectionalLight）');
+  }
+
+  // ── C3.⚠️ 场景里必须真的加了东西
+  //   ⚠️ 用户那次"场景 1 个对象" —— 而 1 就是骨架自己那个 defaultLights Group
+  //     ⟹ 模型什么都没加，或者加了但没 add 进 scene。
+  //   ⚠️ 判据：**`add(...)` 这个动作要能被看到** —— 建了 Mesh 不 add 进 scene
+  //     是这类代码最常见的漏，而它的症状是"什么都不显示"且**不报错**。
+  if (/new\s+THREE\.(Instanced)?Mesh\s*\(/.test(src)
+      && !/(ctx\.)?scene\.add\s*\(/.test(src)
+      && !/\.add\s*\(/.test(src)) {
+    add('C3-没加进场景',
+      '建了 Mesh 但看不到 scene.add(...) ⟹ 它不在场景里，画面上什么都没有'
+      + '（而这个不报错）。建好之后要 ctx.scene.add(那个 mesh)');
+  }
 
   // ── D.⚠️ InstancedMesh 用了就必须置 needsUpdate
   //   （不置的话画面完全静止而**不报错** —— 这个坑在骨架注释里也写着）
@@ -765,6 +860,26 @@ function judgeComposition(probe) {
       + '把大部分元素压暗，只让中心一小片亮');
   }
 
+  // ── ②b ⚠️⚠️⚠️ **而"太暗"也要判** —— 我第一版只判了上界。
+  //   用户 2026-08-03 实测："这次的效果看起来一片黑"，而读数是
+  //   **高亮 0%、三带 12/9/6** ⟹ 六条构图判定只报了一条（主体不在中间），
+  //   "一片黑"这个最显眼的问题**一条都没逮住**。
+  //   ⚠️ 而 `R-画面全黑`（近黑 > 99.5%）也没报 —— 因为它有 50% 的近黑，
+  //     不是"全黑"，是**"有东西但全都很暗"**。那是两种不同的失败。
+  //   ⟹ 判据：**一个区间要判两头。** 我判了"铺满/太亮"却漏了"太空/太暗"，
+  //     而后者恰恰是这次发生的。
+  if (brightRatio < 0.01) {
+    add('C-太暗了', `高亮区域只占 ${(brightRatio * 100).toFixed(1)}%（参考壁纸是 4-21%）`
+      + ' ⟹ 画面上没有任何"亮"的地方，看起来就是一片黑。'
+      + '把中心那一小片的亮度提上去（L 0.7 以上），让它成为视觉焦点');
+  }
+  // ⚠️ 整体亮度太低（参考：中带 58-110）
+  if (Number.isFinite(mid) && mid < 20 && blackRatio < 0.9) {
+    add('C-整体太暗', `主体那一带（中 1/3）平均亮度只有 ${mid.toFixed(0)}`
+      + '（参考壁纸是 58-110）⟹ 元素在那儿但太暗，看不出形状。'
+      + '把整体亮度提上去：材质颜色的 L 至少 0.4，中心那片 0.7 以上');
+  }
+
   // ── ③ 上 1/3 该是暗的（参考：恒定 ~25）
   //   ⚠️ 阈值 70 而不是 25 —— 25 是那一张的值，别把它当所有壁纸的标准。
   //     70 只用来逮"主体伸满了整个画面高度"。
@@ -793,8 +908,11 @@ function judgeComposition(probe) {
   if ([top, mid, bottom].every(Number.isFinite)) {
     const mx = Math.max(top, mid, bottom);
     const mn = Math.min(top, mid, bottom);
-    // ⚠️ 全暗的画面不判这条（那是 R-画面全黑 的活）
-    if (mx > 25 && mx - mn < mx * 0.25) {
+    // ⚠️⚠️ 阈值从 25 降到 8 —— 用户那次三带是 **12/9/6**，`mx=12 < 25`
+    //   ⟹ 这条整个跳过了，而那张确实"没有明暗层次"（也确实一片黑）。
+    //   ⚠️ 而 8 以下真的是全黑（`R-画面全黑` 管），那时候不该报"没层次"
+    //     （那是废话）。
+    if (mx > 8 && mx - mn < mx * 0.25) {
       add('C-没有明暗层次',
         `上/中/下三带亮度是 ${top.toFixed(0)}/${mid.toFixed(0)}/${bottom.toFixed(0)}`
         + '，几乎一样 ⟹ 画面是平的。'

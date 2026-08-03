@@ -956,4 +956,144 @@ check('⚠️ 事件动态的判定认不同的变量名（不是找关键词）
 });
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  "画面一片黑"的三个根因（0.9.147 —— 用户实测那次）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  一片黑的根因');
+
+const OK_SCENE = 'window.SCENE={build(ctx){},frame(ctx){Math.sin(ctx.t);}};';
+const H = { checkJsSyntax: () => null };
+
+check('⚠️⚠️⚠️ 删了默认灯还用需光材质 → 拦住（那是纯黑，不是暗）', () => {
+  // ⚠️⚠️ 用户 2026-08-03 实测："这次的效果看起来一片黑"，读数是
+  //   **场景 1 个对象、高亮 0%、三带 12/9/6**。
+  //   "1 个对象"是关键：骨架默认放了一个 defaultLights Group ⟹ 只有 1 个
+  //   意味着模型删掉了它（或者一个都没加）。而 MeshStandard/Phong/Lambert
+  //   **没有光就是字面的 (0,0,0)** —— 那不是"暗"，是纯黑。
+  //   ⚠️ 而这个组合**三轮都没被修掉**，因为回喂里只有"太暗了"这种现象描述。
+  //   ⟹ 判据：**回喂要给根因，不是给现象。**
+  const bad = `${OK_SCENE}ctx.scene.remove(ctx.defaultLights);`
+    + 'const m = new THREE.MeshStandardMaterial({}); ctx.scene.add(x);';
+  const ids = G.inspect(bad, H).map((x) => x.id);
+  assert.ok(ids.includes('C2-删了灯还用需光材质'),
+    `没拦住"删灯+需光材质"（只报了 ${ids.join(',') || '（无）'}）`
+    + ' ⟹ 那个组合必然全黑，而它在用户机器上真的发生了');
+  // ⚠️ 报错里要给**两条出路**，不是只说"错了"
+  const detail = G.inspect(bad, H).find((x) => x.id === 'C2-删了灯还用需光材质').detail;
+  assert.match(detail, /MeshBasicMaterial/, '没给"换自发光材质"这条出路');
+  assert.match(detail, /AmbientLight|自己加灯/, '没给"自己加灯"这条出路');
+  assert.match(detail, /纯黑/, '没说清是"纯黑"而不是"暗" ⟹ 模型会去调亮度系数');
+});
+
+check('⚠️ 而三种合法组合都要放过（我们鼓励模型换打光）', () => {
+  // ⚠️⚠️ 0.9.140 特意放开了灯光（见 MODULES.md ⑤b）——
+  //   这条闸门不是"不许删灯"，是"删了要么自己加、要么换自发光"。
+  const cases = [
+    ['删灯 + 自发光', 'ctx.scene.remove(ctx.defaultLights);'
+      + 'const m = new THREE.MeshBasicMaterial({});'],
+    ['删灯 + 自己加灯', 'ctx.scene.remove(ctx.defaultLights);'
+      + 'ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.4));'
+      + 'const m = new THREE.MeshStandardMaterial({});'],
+    ['留着默认灯', 'const m = new THREE.MeshStandardMaterial({}); ctx.scene.add(x);'],
+  ];
+  for (const [name, code] of cases) {
+    const ids = G.inspect(OK_SCENE + code, H).map((x) => x.id);
+    assert.ok(!ids.includes('C2-删了灯还用需光材质'),
+      `"${name}"被误判了 ⟹ 那是合法组合，闸门不该拦`);
+  }
+});
+
+check('建了 Mesh 但没 add 进场景 → 拦住（这个不报错）', () => {
+  const bad = `${OK_SCENE}const m = new THREE.InstancedMesh(g, mt, 5000);`;
+  const ids = G.inspect(bad, H).map((x) => x.id);
+  assert.ok(ids.includes('C3-没加进场景'),
+    `没拦住"建了不 add"（报了 ${ids.join(',')}）⟹ 那是"什么都不显示"且不报错`);
+});
+
+check('⚠️⚠️ 回喂时点名"上一轮改过但没解决"的那些', () => {
+  // ⚠️ 用户那次三轮都在修，读数 12/9/6 一动没动 ——
+  //   因为模型沿着同一个错方向微调（改颜色的 L 值，而根因是没有光）。
+  //   ⟹ 判据：**同一个问题第二次出现时要明说"上一轮那样改没用"。**
+  const p1 = G.buildRepairPrompt('code', [{ id: 'C-太暗了', detail: 'x' }], {});
+  assert.ok(!/上一轮你已经改过/.test(p1), '第一次出现时不该说"上一轮改过"');
+
+  const p2 = G.buildRepairPrompt('code', [{ id: 'C-太暗了', detail: 'x' }],
+    { repeated: ['C-太暗了'] });
+  assert.match(p2, /上一轮你已经改过一次了，但没解决/,
+    '重复出现的问题没被点名 ⟹ 模型会继续沿着同一个错方向微调');
+  assert.match(p2, /C-太暗了/, '没列出是哪些问题重复了');
+  // ⚠️⚠️ 而要给**候选根因**，不是只说"换个方向" —— 那句话没有信息量。
+  //   ⚠️⚠️⚠️ 反向验证逮住这条：我原来是三条 `assert.match` 各查一个关键词，
+  //     而**删掉其中任意一条候选根因，另两条还在 ⟹ 三个断言里只有一个报红**，
+  //     而那一个的失败信息说的是"没给 X"，看起来像只丢了一条。
+  //     ⟹ 那还算逮住了。但更本质的问题是：**"候选根因够不够多"这件事
+  //       我没在守** —— 剩一条也能过。
+  //   ⟹ 判据：**守数量下界**，那样删掉任何一条都会报红且说得清。
+  // ⚠️⚠️⚠️ **只在"候选根因那份清单"里找**，不是全文找。
+  //   反向验证逮住这条（第 11 次同类问题）：`defaultLights` 在整份提示词里
+  //   出现 **3 次**（候选根因那行 + SKELETON_API 摘要里的 ctx 字段表）
+  //   ⟹ 把候选根因那一行删掉，全文搜索照样命中 ⟹ 守卫是死的。
+  //   ⟹ 判据：**先把窗口收到"那件事发生的地方"，再找关键词。**
+  const listAt = p2.indexOf('比如"画面太暗"的根因可能是');
+  assert.ok(listAt > 0, '找不到候选根因那份清单 ⟹ 它被删了或者改了措辞');
+  const list = p2.slice(listAt, p2.indexOf('⚠️ 换一个假设', listAt));
+  const rootCauses = ['defaultLights', 'scene.add', '相机背后', 'opacity'];
+  const present = rootCauses.filter((k) => list.includes(k));
+  // ⚠️ 下界设成 4（提示词里正好有这 4 条）—— 设成 3 的话删掉一条刚好在界上、
+  //   不报红（反向验证逮到）。⟹ 判据：**下界要等于当前的数量**，
+  //   那样少任何一条都会红；真要减是有意的决定，那时改这个数字。
+  assert.strictEqual(present.length, rootCauses.length,
+    `候选根因只给了 ${present.length}/${rootCauses.length} 条`
+    + `（有：${present.join('/')}）⟹ "太暗"的根因有好几种`
+    + '（没光 / 没 add / 在视锥外 / 透明度设错），只给一部分等于把模型往那几个方向推');
+});
+
+check('⚠️⚠️ 提示词里讲清"灯光和材质要配套"', () => {
+  // ⚠️ 这条陷阱**之前提示词里一个字都没提** —— 我查过：
+  //   MeshBasicMaterial / defaultLights / 纯黑 三个词全部缺失。
+  //   ⟹ 而它是"一片黑"的头号原因。
+  const impl = G.buildImplementPrompt('plan', '// ex', G.readSkeletonSource());
+  // ⚠️⚠️ 同上：`MeshBasicMaterial` 在整份提示词里出现 **2 次**
+  //   （材质表 + 合法组合清单）⟹ 删掉表格那一行照样绿。
+  //   ⟹ 锚到**那张表**（它有表头"需要灯吗"，那是独一无二的）。
+  const tableAt = impl.indexOf('| 材质 | 需要灯吗 | 没灯的结果 |');
+  assert.ok(tableAt > 0,
+    '找不到"材质 vs 需不需要灯"那张表 ⟹ 那是"一片黑"头号原因的唯一说明');
+  const table = impl.slice(tableAt, impl.indexOf('⟹ 三条合法组合', tableAt));
+  // ⚠️ 表里三类材质都要在（不能只说 Basic 不说 Standard —— 那样模型不知道边界）
+  for (const m of ['MeshBasicMaterial', 'MeshStandardMaterial', 'Phong']) {
+    assert.ok(table.includes(m), `材质表里没有 ${m}`);
+  }
+  assert.match(table, /纯黑/, '表里没说清"没光是纯黑不是暗" ⟹ 模型会去调亮度系数');
+  assert.match(impl, /三条合法组合/, '没给出合法组合的清单');
+  // ⚠️ 另两个"什么都不显示"的原因也要提
+  assert.match(impl, /ctx\.scene\.add/, '没提"建了要 add 进场景"');
+  assert.match(impl, /相机背后|视锥/, '没提"元素在视锥外"');
+  // ⚠️ 设计那步也要要求它说清材质和灯的搭配
+  const plan = G.buildPlanPrompt('');
+  assert.match(plan, /灯光和材质要配套/,
+    '设计那步没要求说清材质和灯的搭配 ⟹ 那个决定在设计阶段就该定了');
+});
+
+check('⚠️⚠️ "太暗"也要判 —— 一个区间要判两头', () => {
+  // ⚠️⚠️⚠️ 我第一版只判了"太亮"（>45%）和"铺满"（近黑<8%）——
+  //   而用户那次是**高亮 0%、三带 12/9/6**，六条构图判定只报了一条
+  //   （主体不在中间），"一片黑"这个最显眼的问题一条都没逮住。
+  //   ⚠️ 而 R-画面全黑（近黑>99.5%）也没报 —— 它有 50% 近黑，
+  //     不是"全黑"，是**"有东西但全都很暗"**。那是两种不同的失败。
+  //   ⟹ 判据：**一个区间要判两头。**
+  const dark = { black: 514, total: 1024, bright: 0,
+    bands: [12, 9, 6], satMedian: 0.4, subjectRatio: 0.5 };
+  const ids = G.judgeComposition({ sampledPixels: dark }).map((x) => x.id);
+  assert.ok(ids.includes('C-太暗了'),
+    `用户那次的真实数据没报"太暗"（只报了 ${ids.join(',')}）`);
+  assert.ok(ids.includes('C-整体太暗'), '没报"主体那一带太暗"');
+  // ⚠️ 而参考壁纸仍须零问题（校准基准）
+  assert.deepStrictEqual(
+    G.judgeComposition({ sampledPixels: REF_PIXELS }), [],
+    '加了"太暗"判定之后参考壁纸被判红了 ⟹ 阈值错了');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

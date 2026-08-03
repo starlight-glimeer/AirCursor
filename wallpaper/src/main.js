@@ -3349,6 +3349,14 @@ function ourWallpaperDir() {
 //   ⚠️ 我第一版想做成 `Wallpapers/.staging/`，而**点号开头也照样被扫到**
 //     （扫描不跳隐藏目录）⟹ 那是"看起来隔离了"而实际没有。
 function aiStagingDir() {
+  // ⚠️ 在 userData 下（`~/Library/Application Support/aircursor/ai-staging/`）。
+  //   ⚠️⚠️ 那个 `aircursor` 是旧产品名，而它**不能改** —— 它由 `package.json`
+  //     的 `name` 决定，而那个字段决定 `app.getPath('userData')`
+  //     ⟹ 改了用户的 key / 壁纸目录 / 录过的手势全部找不到（见 MODULES.md ①）。
+  //   ⚠️ 我 0.9.147 想把工作区搬到 `Documents/DreamPaper/ai-工作区/`（用户提的），
+  //     而他知道目录名不能改之后说「那就不管了，不用搬」⟹ 保持原样。
+  //   ⚠️ 而它**不能放壁纸目录里面** —— 那个目录会被扫（2 层深），
+  //     放里面的话工作区自己会被当成壁纸扫出来（点号开头也照样被扫到）。
   return path.join(app.getPath('userData'), 'ai-staging');
 }
 
@@ -4378,6 +4386,12 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   //   三轮 × 300 秒 = 15 分钟，那对"我说一句话你给我一张壁纸"太久了。
   const GEN_TIMEOUT_MS = 150000;
   const MAX_ROUNDS = 3;
+  // ⚠️⚠️ **记住上一轮报了什么** —— 同一个 id 连着出现说明改的方向不对，
+  //   而那时要明说"上一轮那样改没用"（见 buildRepairPrompt 那段判据）。
+  //   ⚠️ 用户 2026-08-03 那次：三轮都在修，读数 12/9/6 一动没动 ——
+  //     因为回喂给的是现象（"太暗"）而不是根因（"删了灯还用需光材质"）。
+  let prevIds = [];
+  let repeatedIds = [];
   let code = null;
   let problems = [];
   const history_ = [];
@@ -4430,7 +4444,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       //   ⚠️ 3 秒一跳而不是每秒 —— 每秒会把事件环刷满，而"它活着"这个信息
       //     3 秒的粒度完全够。
       const prompt = isRepair
-        ? Gen.buildRepairPrompt(code, problems)
+        ? Gen.buildRepairPrompt(code, problems, { repeated: repeatedIds })
         : Gen.buildImplementPrompt(plan, example, skeletonSource);
       const out = await callModelWithHeartbeat(ai, prompt,
         isRepair ? `第 ${round} 轮：按检查结果修` : '第 2 步：照设计写代码',
@@ -4459,7 +4473,13 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       }
 
       if (problems.length && problems.some((x) => !String(x.id).startsWith('C-'))) {
-        history_.push({ round, lines, problems: problems.map((x) => x.id) });
+        const ids = problems.map((x) => x.id);
+        repeatedIds = ids.filter((id) => prevIds.includes(id));
+        if (repeatedIds.length) {
+          logEvent('gen', `⚠️ 这些问题上一轮改过但没解决：${repeatedIds.join(' / ')}`);
+        }
+        prevIds = ids;
+        history_.push({ round, lines, problems: ids });
         continue;
       }
       // ⚠️ 只剩软问题（设计层）⟹ **继续落盘 + 真跑**，让构图判定也参与，
@@ -4495,6 +4515,14 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       //   ⚠️⚠️ 而软问题来自**两处**：代码层（inspectDesign）+ 像素层（judgeComposition）
       //     ⟹ 合起来回喂，那样一轮修能同时改设计和构图。
       problems = [...problems, ...softFromCode, ...compProblems];
+      // ⚠️ 算"这一轮还在的、上一轮也报过的" ⟹ 下一轮的提示词里点名它们
+      const nowIds = problems.map((x) => x.id);
+      repeatedIds = nowIds.filter((id) => prevIds.includes(id));
+      if (repeatedIds.length) {
+        logEvent('gen', `⚠️ 这些问题上一轮改过但没解决：${repeatedIds.join(' / ')}`
+          + ' ⟹ 下一轮会明说"别再微调同一个地方"');
+      }
+      prevIds = nowIds;
       history_.push({ round, lines, probe, problems: problems.map((x) => x.id) });
       if (!problems.length) {
         // ── ④ 预览图：把试跑那一帧存下来（网格卡片要它）
