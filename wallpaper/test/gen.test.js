@@ -845,4 +845,115 @@ check('⚠️ 这个仓里不许出现任何真凭证', () => {
   }
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  构图 / 设计判定（0.9.145 —— "好不好看"里能机器判的那部分）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  构图与设计判定');
+
+// ⚠️ 参考壁纸的实测值（preview.gif 200 帧逐帧量化）
+const REF_PIXELS = {
+  black: 300, total: 1024, bright: 120,
+  bands: [25, 90, 50], satMedian: 0.32, subjectRatio: 0.35,
+};
+
+check('⚠️⚠️ 参考壁纸的实测值本身零问题（否则这套判定是错的）', () => {
+  // ⚠️⚠️⚠️ 这是这套判定器的**校准基准**：目标本身必须通过。
+  //   ⟹ 判据：**一条闸门把"公认好的那个"判红，就是闸门错了。**
+  const out = G.judgeComposition({ sampledPixels: REF_PIXELS });
+  assert.deepStrictEqual(out, [],
+    `参考壁纸的实测值被判出 ${out.length} 个问题（${out.map((x) => x.id).join(',')}）`
+    + ' ⟹ 阈值定错了：目标本身必须能通过');
+});
+
+check('铺满 / 全亮 / 全平 / 荧光色 四种都逮得住', () => {
+  const cases = [
+    ['C-铺满了', { ...REF_PIXELS, black: 20 }],
+    ['C-太亮了', { ...REF_PIXELS, bright: 700 }],
+    ['C-上方太亮', { ...REF_PIXELS, bands: [120, 130, 100] }],
+    ['C-颜色太艳', { ...REF_PIXELS, satMedian: 0.95 }],
+    ['C-没有明暗层次', { ...REF_PIXELS, bands: [80, 82, 79] }],
+  ];
+  for (const [id, px] of cases) {
+    const ids = G.judgeComposition({ sampledPixels: px }).map((x) => x.id);
+    assert.ok(ids.includes(id), `${id} 没被逮住（只报了 ${ids.join(',') || '（无）'}）`);
+  }
+});
+
+check('⚠️ 没有像素数据时不判（截图失败不是壁纸的错）', () => {
+  assert.deepStrictEqual(G.judgeComposition({}), []);
+  assert.deepStrictEqual(G.judgeComposition({ sampledPixels: { black: 0, total: 0 } }), []);
+  // ⚠️ 老版探针没有 bands 字段 ⟹ 也不判（别让升级过程中报一堆假问题）
+  assert.deepStrictEqual(
+    G.judgeComposition({ sampledPixels: { black: 5, total: 400 } }), []);
+});
+
+check('⚠️ 报错里要带**具体数字和参考值**（不然模型改不动）', () => {
+  const out = G.judgeComposition({ sampledPixels: { ...REF_PIXELS, black: 20 } });
+  const detail = out.map((x) => x.detail).join(' ');
+  // ⚠️⚠️ 这是这一层存在的**全部理由**：模型拿到"近黑只占 2%（参考是 20-45%）"
+  //   能真的改，而"不好看"它改不了。
+  assert.match(detail, /\d+%/, '没给出实测百分比');
+  assert.match(detail, /参考壁纸/, '没给出参考值 ⟹ 模型不知道该改到多少');
+  // ⚠️ 而要给出**怎么改** —— 只说"不对"等于把问题扔回去
+  assert.match(detail, /收缩|没入|雾/, '没说怎么改');
+});
+
+check('⚠️⚠️ inspectDesign 逮住"元素太少 / 视角太高 / 只有一种动态"', () => {
+  // ⚠️ 这三条从像素测不出来（俯视和低视角在三带亮度上可以完全一样），
+  //   但能从代码里读 ⟹ 判据：能从代码读的就别猜像素。
+  const bad = [
+    'new THREE.InstancedMesh(geo, mat, 16 * 16);',
+    'camera.position.set(0, 14, 18);',
+    'grid.scale.set(1 + bass, 1, 1 + bass);',
+  ].join('\n');
+  const ids = G.inspectDesign(bad).map((x) => x.id);
+  for (const id of ['C-元素太少', 'C-视角太高', 'C-只有一种动态']) {
+    assert.ok(ids.includes(id), `${id} 没被逮住（报了 ${ids.join(',')}）`);
+  }
+});
+
+check('⚠️⚠️⚠️ 而我们自己那份示例场景零问题（校准基准）', () => {
+  // ⚠️⚠️ `scene.example.js` 是**用户在真机上跑过、说"能看"的那份**
+  //   （2026-08-02：「深蓝黑底 + 中间一块青色的柱体网格在缓慢起伏」+ 会跟音乐）
+  //   ⟹ 判据：**一条闸门把已知可接受的产物判红，就是阈值错了。**
+  //     我第一版视角阈值 0.55 就把它判红了（它是 (0,15,26)，y/z=0.58）⟹ 放到 0.75。
+  const ex = fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'scene.example.js'), 'utf8');
+  const out = G.inspectDesign(ex);
+  assert.deepStrictEqual(out, [],
+    `示例场景被判出 ${out.length} 个问题（${out.map((x) => x.id).join(',')}）`
+    + ' ⟹ 那份是用户真机验过能看的，阈值把它判红就是阈值错了');
+});
+
+check('⚠️ inspectDesign 不误报：算不出个数时不判', () => {
+  // ⚠️ 第三个参数是表达式而没有字面数字 ⟹ **宁可不判也别误判**
+  //   （F 闸门为"误报正确写法"栽过：连三轮误报粒子诞生的 Math.random）
+  const expr = 'new THREE.InstancedMesh(geo, mat, count * rows);';
+  const ids = G.inspectDesign(expr).map((x) => x.id);
+  assert.ok(!ids.includes('C-元素太少'),
+    '个数是表达式（算不出来）时误报了"元素太少"');
+  // ⚠️ 没用 InstancedMesh 的也不判个数（一个大球体可能就是对的）
+  assert.ok(!G.inspectDesign('const m = new THREE.Mesh(g, mt);').map((x) => x.id)
+    .includes('C-元素太少'), '没用 InstancedMesh 时误报了个数');
+  // ⚠️ z 很小时不判视角（那可能是刻意的正视构图）
+  assert.ok(!G.inspectDesign('camera.position.set(0, 8, 2);').map((x) => x.id)
+    .includes('C-视角太高'), 'z 很小（刻意正视）时误报了视角');
+});
+
+check('⚠️ 事件动态的判定认不同的变量名（不是找关键词）', () => {
+  // ⚠️⚠️ 判据：找**那个模式的三个动作**（push / 每帧推进 / 到期 filter），
+  //   而不是找 `ripples` 这个名字 —— 叫 pulses、waves、shocks 都该认。
+  for (const name of ['ripples', 'pulses', 'waves', 'shocks']) {
+    const code = `${name}.push({ x: 0, r: 0, life: 1 });\n`
+      + `for (const w of ${name}) { w.r += ctx.dt * 12; w.life -= ctx.dt * 0.5; }\n`
+      + `${name} = ${name}.filter((w) => w.life > 0);\n`
+      + 'camera.position.set(0, 4, 22);';
+    const ids = G.inspectDesign(code).map((x) => x.id);
+    assert.ok(!ids.includes('C-只有一种动态'),
+      `变量叫 ${name} 时没认出事件动态 ⟹ 那条判定在找名字而不是找模式`);
+  }
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

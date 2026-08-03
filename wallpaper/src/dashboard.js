@@ -4502,11 +4502,13 @@ async function aiGo() {
       return;
     }
     aiRenderResult(r);
-    if (r.partial) {
-      // ⚠️⚠️ 三轮没修完**仍然给用户**（见 main.js 那段判据）——
-      //   但必须说清还剩什么，否则他会以为是播放器坏了。
-      aiSay('bad', `${r.note}\n\n还剩的问题：\n${
-        (r.problems || []).map((p) => `· ${p.detail}`).join('\n')}`);
+    // ⚠️⚠️ `partial` 那个字段 0.9.142 就没了（三轮没过的硬问题现在
+    //   **不搬进壁纸目录**，走 `ok: false`）⟹ 这里只剩 `softOnly` 一种：
+    //   能跑，但构图上和参考壁纸不一样。
+    //   ⚠️ 而它**必须说清是哪几处** —— 否则用户看到一张不满意的壁纸
+    //     只能说"不好看"，而那句话没法改进任何东西。
+    if (r.softOnly) {
+      aiSay('bad', r.note);
     } else {
       aiSay('ok', `做好了：${r.dirName}\n`
         + `（${r.rounds} 轮通过全部检查）\n`

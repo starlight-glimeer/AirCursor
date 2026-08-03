@@ -4123,20 +4123,55 @@ async function probeWallpaperRuntime(dir) {
       if (size.width > 0 && size.height > 0) {
         // ⚠️ 缩到 20×20 再数 —— 400 个采样点足够判"是不是一片黑"，
         //   而全尺寸是 92 万像素（白费）。
-        const small = image.resize({ width: 20, height: 20, quality: 'good' });
+        // ⚠️⚠️⚠️ **32×32 而不是 20×20**（0.9.145）—— 要按"上/中/下三分带"
+        //   分别算亮度，20 行分不出干净的三等份（20/3 不是整数）。
+        //   32 行 ⟹ 每带 10 行还余 2，够用而且开销仍然可忽略。
+        const N = 32;
+        const small = image.resize({ width: N, height: N, quality: 'good' });
         const bitmap = small.toBitmap();   // BGRA
         let black = 0;
+        let bright = 0;
         let total = 0;
+        // ⚠️ 三分带的亮度和 —— 这是"构图对不对"的观测点（见下面 judgeComposition）
+        const bandSum = [0, 0, 0];
+        const bandCount = [0, 0, 0];
+        // ⚠️ 主体（亮度 > 30）的饱和度和色相 —— 参考壁纸实测 S 中位 0.30-0.34，
+        //   而**模型默认会给高饱和霓虹色**，那是"一眼就俗"的主因。
+        const sats = [];
         for (let i = 0; i + 3 < bitmap.length; i += 4) {
           const b = bitmap[i];
           const g = bitmap[i + 1];
           const r = bitmap[i + 2];
+          const idx = i / 4;
+          const row = Math.floor(idx / N);
+          const lum = (r + g + b) / 3;
           total += 1;
           // ⚠️ 阈值 18 而不是 0：深色壁纸的底色常常是 #05060a 这种
           //   （不是纯黑但肉眼看不出区别）⟹ 把它算成"黑"才符合观感。
           if (r < 18 && g < 18 && b < 18) black += 1;
+          // ⚠️ 高亮阈值 120（和参考壁纸的量化口径一致）
+          if (lum > 120) bright += 1;
+          const band = row < N / 3 ? 0 : (row < (2 * N) / 3 ? 1 : 2);
+          bandSum[band] += lum;
+          bandCount[band] += 1;
+          if (lum > 30) {
+            const mx = Math.max(r, g, b);
+            const mn = Math.min(r, g, b);
+            // HSV 的 S = (max - min) / max
+            sats.push(mx > 0 ? (mx - mn) / mx : 0);
+          }
         }
-        probe.sampledPixels = { black, total };
+        sats.sort((x, y) => x - y);
+        probe.sampledPixels = {
+          black,
+          total,
+          bright,
+          // 三分带平均亮度（0-255）
+          bands: bandSum.map((sum, i) => (bandCount[i] ? sum / bandCount[i] : 0)),
+          // ⚠️ 中位数而不是平均 —— 平均会被少数极亮点拉high
+          satMedian: sats.length ? sats[Math.floor(sats.length / 2)] : null,
+          subjectRatio: total ? sats.length / total : 0,
+        };
       }
     } catch (error) {
       // ⚠️ 截图失败不算壁纸的问题 —— 那是我们这边的能力缺失。
@@ -4312,10 +4347,50 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   // ── 配方：读已有壁纸的历史，挑一组避开它们
   const root = ensureOurWallpaperDir();
   const history = readRecipeHistory(root);
-  const recipe = Recipe.pickRecipe(history);
-  const recipeText = Recipe.describeRecipe(recipe);
-  const historyText = Recipe.describeHistory(history);
+
+  // ⚠️⚠️⚠️ **复刻模式**（0.9.145）。用户 2026-08-03：
+  //   「我们就先生成一个具体的，就是目标能生成我这张，就通过提示词来复刻出
+  //     我这张壁纸的效果，然后实现以后我们再把它泛化，那我理解这种类型
+  //     我们就拿下了，以此类推逐渐扩张就行」
+  //
+  // ⚠️ 而这**同时把验收标准从"好不好看"变成"像不像"** —— 后者能量化
+  //   （近黑占比 / 三分带亮度 / 饱和度中位），前者只能靠感觉吵。
+  //
+  // ⚠️⚠️ 随机挑 12,096 种组合的问题**不是"不够多样"，是每次目标都不一样
+  //   ⟹ 一次都收不敛**（用户连着看到三张都"抽象不好看"）。
+  //   ⟹ 判据：**先把一个目标做到位，再放开维度。**
+  //
+  // ⚠️ 触发条件：`REPLICATE_UNTIL` 张之前都走复刻。到了那个数说明这一类
+  //   已经稳定了 ⟹ 自动放开成随机配方（泛化）。
+  //   ⚠️ 而这个数**故意小**（3）—— 复刻是为了验证"这条路走得通"，
+  //     不是让用户永远只能得到同一张。
+  const REPLICATE_UNTIL = 3;
+  const replicate = history.length < REPLICATE_UNTIL;
+  const recipe = replicate ? { ...Recipe.REFERENCE } : Recipe.pickRecipe(history);
+  // ⚠️⚠️ 复刻时喂的是**实测规格**（`REFERENCE_SPEC`），不走 DIMENSIONS 那层抽象
+  //   ⟹ 维度是为了组合，而现在要精确命中一个点。
+  const recipeText = replicate
+    ? Recipe.REFERENCE_SPEC
+    : Recipe.describeRecipe(recipe);
+  const historyText = replicate
+    ? `（复刻模式：这是第 ${history.length + 1} 张，先把参考那张做到位，`
+      + `到第 ${REPLICATE_UNTIL + 1} 张开始换配方）`
+    : Recipe.describeHistory(history);
   const example = fs.readFileSync(path.join(skelDir, 'scene.example.js'), 'utf8');
+  // ⚠️⚠️⚠️ **把骨架的真源码给模型**（0.9.145）。用户 2026-08-03：
+  //   「我们这个壁纸渲染器本来就是我们做，所以代码相关的…也可以告诉我们的模型，
+  //     这是我们很大的优势」
+  //   ⟹ 之前给的是我手写的 `SKELETON_API` 摘要，而它已经漂了
+  //     （漏了 MIN_DT / __dpScene / frameErrors 三样）。
+  //   ⚠️ 判据：**手写摘要必然漂移，真源码不会。**
+  const skeletonSource = Gen.readSkeletonSource();
+  if (!skeletonSource) {
+    // ⚠️ 读不到会退回摘要 —— 那能跑，但模型看的是二手信息
+    //   ⟹ 必须说出来，否则这件事静默发生
+    logEvent('gen', '⚠️ 读不到 skeleton/runtime.js ⟹ 退回手写摘要（模型看的是二手信息）');
+  } else {
+    logEvent('gen', `骨架源码 ${skeletonSource.length} 字节已喂给模型（不是摘要）`);
+  }
 
   // ⚠️⚠️ 撞了几维要**算**，不能写死 —— 我第一版这里直接打"避重后撞 0 维"，
   //   而那是**没算过的断言**：历史够多时每个选项都用过，避重会无路可走，
@@ -4324,9 +4399,13 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   //     一条会说谎的日志比没有日志更坏（这个项目为"video 提示无条件甩锅音轨"栽过）。
   const worstCollide = history.reduce(
     (mx, h) => Math.max(mx, Recipe.collide(h, recipe).length), 0);
-  genProgress('配方已定', Object.values(recipe).join(' / '));
-  logEvent('gen', `配方：${Object.values(recipe).join(' / ')}`
-    + `（历史 ${history.length} 张，和其中最像的那张撞 ${worstCollide} 维）`);
+  genProgress(replicate ? '复刻参考壁纸' : '配方已定',
+    replicate ? `第 ${history.length + 1}/${REPLICATE_UNTIL} 张` : Object.values(recipe).join(' / '));
+  logEvent('gen', replicate
+    ? `复刻模式：第 ${history.length + 1}/${REPLICATE_UNTIL} 张`
+      + `（目标是参考壁纸的实测指标；到第 ${REPLICATE_UNTIL + 1} 张自动换随机配方）`
+    : `配方：${Object.values(recipe).join(' / ')}`
+      + `（历史 ${history.length} 张，和其中最像的那张撞 ${worstCollide} 维）`);
 
   // ⚠️ 目录名带时间戳 —— 同一句描述生成两次要是两个目录
   const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, '');
@@ -4399,7 +4478,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       //     3 秒的粒度完全够。
       const prompt = isRepair
         ? Gen.buildRepairPrompt(code, problems, recipeText)
-        : Gen.buildImplementPrompt(plan, example);
+        : Gen.buildImplementPrompt(plan, example, skeletonSource);
       const out = await callModelWithHeartbeat(ai, prompt,
         isRepair ? `第 ${round} 轮：按检查结果修` : '第 2 步：照设计写代码',
         { timeoutMs: GEN_TIMEOUT_MS, hint: '通常 40-90 秒' });
@@ -4413,10 +4492,26 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       problems = Gen.inspect(code, { checkJsSyntax });
       for (const x of problems) logEvent('gen', `闸门：[${x.id}] ${x.detail.slice(0, 120)}`);
 
-      if (problems.length) {
+      // ── ①b⚠️⚠️ **设计检查**（0.9.145）：元素多不多 / 视角高不高 / 动态几种。
+      //   ⚠️ 这三条从像素测不出来（俯视和低视角在三带亮度上可以完全一样），
+      //     但**能从代码里读** ⟹ 判据：能从代码读的就别猜像素。
+      //   ⚠️ 它是**软的**：进 problems 触发下一轮修，但最后一轮之后仍然落盘。
+      const designProblems = Gen.inspectDesign(code);
+      for (const x of designProblems) logEvent('gen', `设计：[${x.id}] ${x.detail.slice(0, 150)}`);
+      // ⚠️⚠️ 硬问题优先 —— 有硬问题时**不带上软的**：
+      //   一次回喂里塞七条，模型会挑容易的改。而硬问题不修掉这张壁纸根本跑不起来。
+      //   ⟹ 判据：**回喂要聚焦** —— 先让它能跑，再让它好看。
+      if (!problems.length && designProblems.length) {
+        problems = designProblems;
+      }
+
+      if (problems.length && problems.some((x) => !String(x.id).startsWith('C-'))) {
         history_.push({ round, lines, problems: problems.map((x) => x.id) });
         continue;
       }
+      // ⚠️ 只剩软问题（设计层）⟹ **继续落盘 + 真跑**，让构图判定也参与，
+      //   然后把两边的软问题一起回喂。那样一轮修能同时改设计和构图。
+      const softFromCode = problems.filter((x) => String(x.id).startsWith('C-'));
 
       // ── 落盘到**工作区**（不是壁纸目录）
       writeWallpaperFiles(stageDir, code, recipe, want, dirName, skelDir, threeSrc);
@@ -4433,6 +4528,20 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       for (const e of probe.errors) logEvent('gen', `试跑报错：${String(e).slice(0, 200)}`);
 
       problems = Gen.judgeRuntime(probe);
+      // ⚠️⚠️⚠️ **构图判定**（0.9.145）—— "好不好看"里能机器判的那部分。
+      //   ⚠️ 它是**软的**：进 problems（会触发下一轮修），但最后一轮之后
+      //     **仍然落盘** —— 构图是审美，判错了不该让用户拿不到壁纸。
+      //   ⚠️ 而它的价值在**回喂具体数字**：模型拿到"近黑只有 5%（该 20-45%）"
+      //     能真的改，而"不好看"它改不了。
+      const compProblems = Gen.judgeComposition(probe);
+      if (compProblems.length) {
+        logEvent('gen', `构图：${compProblems.map((x) => x.id).join(' / ')}`);
+        for (const x of compProblems) logEvent('gen', `构图判定：[${x.id}] ${x.detail.slice(0, 160)}`);
+      }
+      // ⚠️ 硬问题排在前面 —— 回喂时模型先看到"会坏"的那些
+      //   ⚠️⚠️ 而软问题来自**两处**：代码层（inspectDesign）+ 像素层（judgeComposition）
+      //     ⟹ 合起来回喂，那样一轮修能同时改设计和构图。
+      problems = [...problems, ...softFromCode, ...compProblems];
       history_.push({ round, lines, probe, problems: problems.map((x) => x.id) });
       if (!problems.length) {
         // ── ④ 预览图：把试跑那一帧存下来（网格卡片要它）
@@ -4481,7 +4590,39 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     if (code && !fs.existsSync(path.join(stageDir, 'scene.js'))) {
       writeWallpaperFiles(stageDir, code, recipe, want, dirName, skelDir, threeSrc);
     }
-    genProgress('failed', `${MAX_ROUNDS} 轮还有 ${problems.length} 个问题`);
+
+    // ⚠️⚠️⚠️ **只剩构图问题 ⟹ 照样交付**（0.9.145）。
+    //   构图判定是**软的**：它判的是审美，而审美判错了不该让用户拿不到壁纸
+    //   （"C-上方太亮"在有意做成亮色调的壁纸上就是误报）。
+    //   ⟹ 判据：**硬闸门拦"必然出事"（黑屏/报错/不动），软判定只提示。**
+    //     而三轮之后还剩软问题 = 模型没改到位，那时把**数字**告诉用户，
+    //     让他自己看一眼 —— 他的眼睛是第三层闸门。
+    const hard = problems.filter((x) => !String(x.id).startsWith('C-'));
+    if (!hard.length) {
+      await savePreview(stageDir);
+      try {
+        const keep = path.join(aiStagingDir(), `${dirName}.plan.md`);
+        fs.copyFileSync(path.join(stageDir, 'plan.md'), keep);
+      } catch { /* 留档失败不影响交付 */ }
+      const moved = promoteFromStaging(stageDir, dir);
+      logEvent('gen', `只剩构图问题（${problems.length} 条）⟹ 照样交付（${moved.method}）`);
+      genProgress('done', `${dirName} —— 能跑，构图还有 ${problems.length} 处可改`);
+      return {
+        ok: true,
+        softOnly: true,
+        dir,
+        dirName,
+        rounds: MAX_ROUNDS,
+        recipe,
+        problems,
+        history: history_,
+        note: `能跑，但构图上还有 ${problems.length} 处和参考壁纸不一样：\n`
+          + problems.map((x) => `· ${x.detail.split('⟹')[0].trim()}`).join('\n')
+          + '\n\n先看一眼 —— 能接受就用，不行再说一遍要求重生成。',
+      };
+    }
+
+    genProgress('failed', `${MAX_ROUNDS} 轮还有 ${hard.length} 个硬问题`);
     return {
       ok: false,
       stageDir,
