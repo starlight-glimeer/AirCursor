@@ -8199,7 +8199,15 @@ check('⚠️⚠️⚠️ 提示词里内置了参考壁纸的实测指标（"�
   const gen = fs.readFileSync(path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8');
   const at = gen.indexOf('function buildPlanPrompt(');
   assert.ok(at > 0, '找不到 buildPlanPrompt');
-  const body = gen.slice(at, gen.indexOf('\n}\n', at));
+  // ⚠️⚠️⚠️ **不能用 `\n}\n` 找函数结尾**（0.9.153 逮到）——
+  //   提示词里现在有**示例代码块**（`for (const w of ripples) { … }`），
+  //   而那里面的 `}` 会让切点提前 ⟹ 后半段的实测数字全被切掉、守卫报假红。
+  //   ⟹ 判据：**在字符串里嵌了代码的函数，不能靠缩进为 0 的 `}` 定位结尾。**
+  //     改成锚到**下一个顶层 function 声明**。
+  const after = gen.indexOf('\nfunction ', at + 10);
+  const body = gen.slice(at, after > 0 ? after : gen.length);
+  assert.ok(body.length > 3000,
+    `buildPlanPrompt 只切出 ${body.length} 字节 ⟹ 切点又提前了（提示词里的代码块 { } 干扰）`);
   // ⚠️ 那些实测数字要真的在提示词里（不是只在注释里）
   for (const [num, why] of [
     ['#070815', '底色'],
@@ -8269,6 +8277,37 @@ check('⚠️⚠️ 探针真的截多帧（0.9.151）', () => {
   // ④⚠️ diffMin/diffMax 是"有没有节奏"的唯一依据 —— 少了它匀速运动就漏了
   assert.match(motionBlock, /diffMin:\s*Math\.min/, 'diffMin 不是真算的');
   assert.match(motionBlock, /diffMax:\s*Math\.max/, 'diffMax 不是真算的');
+});
+
+
+
+check('⚠️⚠️ 装载入口在（0.9.153 从按钮挪到预览图上）', () => {
+  // 用户 2026-08-03：「生成好一张图片后不要那个"用这张"按钮，太丑了」
+  // ⟹ 而**装载这个能力得留** —— 那是"生成完之后怎么用它"的唯一出口。
+  //   ⟹ 判据：**一个功能不该因为它的按钮丑就被删掉**，该搬到更自然的位置。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.html'), 'utf8');
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+
+  // ① 旧按钮真的没了
+  assert.ok(!html.includes('id="ai-use"'), '"用这张"按钮还在 HTML 里');
+  assert.ok(!dash.includes("aiEl('ai-use')"), 'JS 里还在找那个按钮');
+
+  // ②⚠️⚠️ 但装载能力**必须还在** —— 挪到预览图上
+  assert.match(html, /id="ai-preview-wrap"/,
+    '预览图外层那个可点的 wrap 不在 ⟹ 生成完就没有装载入口了');
+  assert.match(dash, /aiEl\('ai-preview-wrap'\)\.onclick/,
+    '预览图没绑点击 ⟹ 按钮删了而功能没搬过去（那是净损失）');
+  assert.match(dash, /workshopLoadLocal\(aiLastDir\)/,
+    '点了预览图没真的装载');
+
+  // ③⚠️ "能点"这件事要可发现 —— 否则用户不知道图能点
+  assert.match(html, /ai-shot-hint/, '没有 hover 提示 ⟹ 用户不知道预览图能点');
+  assert.match(html, /\.ai-shot:hover \.ai-shot-hint \{ opacity: 1/,
+    '提示不是 hover 才出来 ⟹ 那又变成一块永久占地方的界面（原按钮的问题）');
+  // ④ 而 wrap 要跟着结果显示/隐藏
+  assert.match(dash, /shotWrap\.hidden = !aiLastDir/,
+    'wrap 没跟着结果显隐 ⟹ 没生成时会显示一个空框');
 });
 
 

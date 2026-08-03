@@ -4430,19 +4430,16 @@ function aiRenderResult(r) {
   const box = aiEl('ai-checks');
   const img = aiEl('ai-preview');
   const rec = aiEl('ai-recipe');
-  const use = aiEl('ai-use');
+  const shotWrap = aiEl('ai-preview-wrap');
 
   // ── 预览图（生成时截的那一帧）
   if (img) {
     if (r && r.dir) {
       // ⚠️ 加时间戳绕开缓存 —— 同一个路径的图换了内容，不加的话显示旧的
       img.src = `file://${encodeURI(r.dir)}/preview.jpg?t=${Date.now()}`;
-      img.hidden = false;
-      // ⚠️ 截图可能失败（那不算生成失败）⟹ 加载不出来就把它收起来，
-      //   而不是留一个破图标。
-      img.onerror = () => { img.hidden = true; };
-    } else {
-      img.hidden = true;
+      // ⚠️ 截图可能失败（那不算生成失败）⟹ 加载不出来就把**整块**收起来，
+      //   而不是留一个破图标。⚠️ 0.9.153 起要收的是外层那个可点的 wrap。
+      img.onerror = () => { if (shotWrap) shotWrap.hidden = true; };
     }
   }
 
@@ -4516,9 +4513,9 @@ function aiRenderResult(r) {
     } else { rec.hidden = true; }
   }
 
-  // ── 「用这张」
+  // ── ⚠️ 装载入口挪到预览图上了（0.9.153，原来那个"用这张"按钮用户说太丑）
   aiLastDir = (r && r.dir) || null;
-  if (use) use.hidden = !aiLastDir;
+  if (shotWrap) shotWrap.hidden = !aiLastDir;
 }
 
 async function aiGo() {
@@ -4536,7 +4533,7 @@ async function aiGo() {
   //     模型看得到它（而它看不到）。⟹ 界面不该暗示不存在的能力。
   if (aiLog) aiLog.textContent = '';
   aiResetSteps();
-  // ⚠️ 上一次的结果也清掉（预览图/读数/「用这张」）
+  // ⚠️ 上一次的结果也清掉（预览图/读数）
   aiRenderResult(null);
 
   // ⚠️⚠️ **空着也能生成**（0.9.146）—— 内置提示词本身就是完整的设计，
@@ -4590,10 +4587,14 @@ async function aiGo() {
 
 if (aiEl('ai-go')) aiEl('ai-go').onclick = aiGo;
 
-// ⚠️ 「用这张」= 装载它。⚠️ 而**不关闭 AI 工坊** —— 用户可能想接着再生成一张，
+// ⚠️ **点预览图 = 装载它**（0.9.153）。用户 2026-08-03：
+//   「生成好一张图片后不要那个"用这张"按钮，太丑了」
+//   ⟹ 而装载这个能力得留 ⟹ 挪到预览图上（图就是那张壁纸，点它 = 用它）。
+//   ⚠️ 判据：**一个功能不该因为它的按钮丑就被删掉** —— 该搬到更自然的位置。
+// ⚠️ 而**不关闭 AI 工坊** —— 用户可能想接着再生成一张，
 //   而"点了就把面板收走"会打断那个节奏。
-if (aiEl('ai-use')) {
-  aiEl('ai-use').onclick = async () => {
+if (aiEl('ai-preview-wrap')) {
+  aiEl('ai-preview-wrap').onclick = async () => {
     if (!aiLastDir) return;
     const out = await window.gw.workshopLoadLocal(aiLastDir);
     if (out && out.ok) {

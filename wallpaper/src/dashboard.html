@@ -1126,12 +1126,33 @@
     display: flex; flex-direction: column; gap: 7px;
     margin-top: 10px; flex-shrink: 0;
   }
-  /* 预览图：16:10，和壁纸卡片一致 */
+  /* 预览图：16:10，和壁纸卡片一致。⚠️ 0.9.153 起**整块可点 = 装载** */
+  .ai-shot {
+    position: relative; display: block; width: 100%; padding: 0;
+    background: none; border: none; cursor: pointer;
+    border-radius: var(--r-md); overflow: hidden; margin-bottom: 10px;
+    /* ⚠️ 按钮默认会继承一些 UA 样式，显式清掉 */
+    -webkit-appearance: none; appearance: none;
+    text-align: left; color: inherit; font: inherit;
+  }
   #ai-preview {
     width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
-    border-radius: var(--r-md); background: var(--img-bg);
-    border: 1px solid var(--line); display: block; margin-bottom: 10px;
+    background: var(--img-bg); display: block;
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    transition: filter .18s ease;
   }
+  /* ⚠️ 提示条只在 hover 时出来 —— 那让"能点"这件事可发现，
+     而不占据一块永久的界面（那正是原来那个按钮的问题）。 */
+  .ai-shot-hint {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 8px 10px; font-size: 11.5px; letter-spacing: .02em;
+    color: var(--text); text-align: center;
+    background: linear-gradient(transparent, rgba(8, 8, 12, .88));
+    opacity: 0; transition: opacity .18s ease;
+  }
+  .ai-shot:hover .ai-shot-hint { opacity: 1; }
+  .ai-shot:hover #ai-preview { filter: brightness(1.08); }
+  .ai-shot:active #ai-preview { filter: brightness(.94); }
   /* 四个读数：一行一条，等宽数位（它们是数字） */
   #ai-checks {
     font: 400 11px/1.9 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1565,8 +1586,16 @@
           </details>
 
           <!-- ⚠️ 预览图：生成完在隐藏窗口截一帧（**不动桌面上正在放的壁纸**）。
-               ⚠️ 一直占位（不是生成完才出现）—— 否则每次生成界面会跳一下。 -->
-          <img id="ai-preview" alt="" hidden>
+               ⚠️ 一直占位（不是生成完才出现）—— 否则每次生成界面会跳一下。
+               ⚠️⚠️ **点它就装载**（0.9.153）。用户 2026-08-03：
+                 「生成好一张图片后不要那个"用这张"按钮，太丑了」
+                 ⟹ 而"装载"这个能力得留 ⟹ 挪到预览图本身。
+                 ⚠️ 判据：**一个按钮的功能不该因为按钮丑就被删掉** ——
+                   它该搬到那个更自然的位置（图就是那张壁纸，点它=用它）。 -->
+          <button class="ai-shot" id="ai-preview-wrap" type="button" hidden>
+            <img id="ai-preview" alt="">
+            <span class="ai-shot-hint">点这里装到桌面</span>
+          </button>
 
           <!-- ⚠️⚠️ 四个读数 = "能不能跑"由机器判。
                而"好不好看"只有用户能判 ⟹ 两者要在同一屏上，
@@ -1581,7 +1610,6 @@
           <!-- 进度 / 对话流 -->
           <div id="ai-log"></div>
 
-          <button class="act primary full" id="ai-use" type="button" hidden>用这张</button>
 
           <!-- ⚠️⚠️⚠️ **输入区在最下面**（0.9.142）。用户 2026-08-02：
                「我看你这个输入框怎么在那个显示对话的这块的上面」
