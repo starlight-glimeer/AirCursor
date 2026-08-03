@@ -1096,4 +1096,83 @@ check('⚠️⚠️ "太暗"也要判 —— 一个区间要判两头', () => {
 });
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️ 拿**真实产物**当测试样本（0.9.148）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️⚠️⚠️ `fixtures/bad-cone-and-dark.scene.js` 是用户 2026-08-03 在真机上
+//   生成出来的那张（`wallpaper-08030114`），他说"生成的不好看"。
+//   读数：高亮 **0%**、三带 8/28/9、画面是"中间一个亮尖 + 四周全黑"。
+//
+// ⚠️ 判据：**闸门要拿真实的失败产物当样本，不是我手写的假代码。**
+//   我手写的样本只会命中我想到的那种写法 —— 而这次两条判定的第一版
+//   都在真实代码上没逮住（详见 wallpaper-gen.js 里那两段注释）。
+console.log('\n  真实失败产物（用户 08030114 那张）');
+
+const BAD_REAL = (() => {
+  try {
+    return fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'bad-cone-and-dark.scene.js'), 'utf8');
+  } catch { return null; }
+})();
+
+check('⚠️⚠️ 那张"中间一个尖、四周全黑"的要被逮住', () => {
+  assert.ok(BAD_REAL, 'fixtures/bad-cone-and-dark.scene.js 不在 ⟹ 那是真实失败样本，别删');
+  const ids = G.inspectDesign(BAD_REAL).map((x) => x.id);
+  // ① 亮度连乘 —— 它 `lum *= (0.1 + 0.9*(1-dd))` 在平方衰减之后又乘了一次
+  assert.ok(ids.includes('C-亮度连乘'),
+    `没逮住亮度连乘（报了 ${ids.join(',') || '（无）'}）`
+    + ' ⟹ 那张的外圈乘到 0.1，实测高亮占比 0.0%');
+  // ② 像个圆锥 —— 高度里 `core * 2.6` 和频谱的 `* 3.5` 同量级
+  assert.ok(ids.includes('C-像个圆锥'),
+    `没逮住"像个圆锥"（报了 ${ids.join(',')}）`
+    + ' ⟹ 那张的高度里硬加了 core * 2.6，不管音乐怎么放中心那个尖都在');
+});
+
+check('⚠️⚠️⚠️ 而"有位置噪声"不足以证明它不是圆锥（第一版判错在这）', () => {
+  assert.ok(BAD_REAL, '样本不在');
+  // ⚠️ 我第一版判的是"高度里有距离变量 && 没有 Math.sin(x)" ——
+  //   而那张**两个条件都满足**（它有 `Math.sin(x * 0.3) * Math.cos(z * 0.3)`）
+  //   ⟹ 判定没触发。看代码才发现：那个位置噪声**只在"没音频"那条分支里**。
+  //   ⟹ 判据：**判"距离项的权重"，不是判"有没有位置噪声"。**
+  assert.match(BAD_REAL, /Math\.sin\(x \* 0\.3/,
+    '样本里应该有位置噪声（这条测试的全部意义就是"有它也照样是圆锥"）');
+  assert.match(BAD_REAL, /core \* 2\.6/,
+    '样本里应该有 core * 2.6（那是硬加的圆锥）');
+  // ⟹ 所以判定必须靠权重比较才能逮住它
+  const ids = G.inspectDesign(BAD_REAL).map((x) => x.id);
+  assert.ok(ids.includes('C-像个圆锥'), '权重判定失效了');
+});
+
+check('⚠️ 正确写法不误报（距离只选 bin + 位置噪声）', () => {
+  const good = [
+    'const bin = Math.floor(dist / R * 40);',
+    'let target = 0.3 + bins[bin] * 4 + Math.sin(x * 0.3) * Math.cos(z * 0.4) * 0.5;',
+    'const lum = 0.85 - 0.6 * d;',
+    'camera.position.set(0, 4, 22);',
+    'ripples.push({ r: 0, life: 1 });',
+    'for (const w of ripples) { w.r += ctx.dt * 12; w.life -= ctx.dt * 0.5; }',
+    'ripples = ripples.filter((w) => w.life > 0);',
+    'new THREE.InstancedMesh(geo, mat, 8000);',
+  ].join('\n');
+  assert.deepStrictEqual(G.inspectDesign(good), [],
+    '正确写法被误报了 ⟹ 距离只用来选 bin、亮度一次衰减、有位置噪声，那是对的');
+});
+
+check('⚠️ 提示词里讲清"地形不是圆锥"和"亮度只衰减一次"', () => {
+  const plan = G.buildPlanPrompt('');
+  // ⚠️ 这两条**之前提示词里一个字都没提** —— 而实测三次都错在结构上
+  assert.match(plan, /一整片起伏的地形/, '没说清它是地形不是几何体');
+  assert.match(plan, /中心一个尖锥/, '没点名"中心一个尖锥"这个错法');
+  assert.match(plan, /不直接决定高度/,
+    '没说清"到中心的距离只用来选频段，不直接决定高度" ⟹ 那是最容易做错的一条');
+  assert.match(plan, /不许连乘/, '没警告亮度连乘');
+  // ⚠️ 而要给**具体的对的写法**，不是只说"别那样"
+  assert.match(plan, /0\.85 - 0\.6 \* d/, '没给出正确的亮度衰减公式');
+  assert.match(plan, /sqrt\(i\/N\)/,
+    '没点名"中心密外圈疏"那种分布（它会强化圆丘观感）');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
