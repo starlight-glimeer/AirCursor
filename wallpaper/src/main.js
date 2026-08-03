@@ -497,9 +497,16 @@ const defaultConfig = {
       //   ⚠️ 而 `resolveAiConfig()` 会读环境变量 AWS_BEARER_TOKEN_BEDROCK ——
       //     那正是用户 .bashrc 里已经有的那个。
       apiKey: null,
-      // ⚠️ Sonnet 4.5 而不是 Opus：生成一张壁纸约 1-2 万 token，
-      //   Sonnet 在代码上够强而且快得多（Opus 会让"等 90 秒"变成"等 4 分钟"）。
-      model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      // ⚠️⚠️ **Opus 4.8**（0.9.144）。用户 2026-08-03：
+      //   「这个模型默认应该用 opus 4.8」
+      //   ⚠️ 我 0.9.143 选的是 Sonnet 4.5，理由是"快得多"—— 而**那个权衡
+      //     不该由我替他做**：这个功能的第一要义是"稳定生成高质量的壁纸"
+      //     （用户 2026-08-02 原话），而生成一张壁纸是**一次性的、几十秒的**
+      //     操作，不是每帧都要跑的东西 ⟹ 慢一倍换质量是划算的。
+      //   ⟹ 判据：**"贵/慢"这类取舍，用户点名了就按他的来** ——
+      //     他知道成本，而我不知道他对质量的下限。
+      //   ⚠️ 这个 ID **没有版本后缀**（不像 sonnet-4-5-20250929-v1:0）。
+      model: 'us.anthropic.claude-opus-4-8',
       region: 'us-west-2',
     },
     // 用户自己加的壁纸存储目录。⚠️ steamcmd 的下载目录是自动扫的，
@@ -823,7 +830,7 @@ function migrateConfig(cfg) {
   const OURS = ['deepseek-v4-flash', 'deepseek-v4-pro'];
   if (ai.provider === 'openai' && OURS.includes(String(ai.model || ''))) {
     ai.provider = 'bedrock';
-    ai.model = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
+    ai.model = 'us.anthropic.claude-opus-4-8';
     ai.region = ai.region || 'us-west-2';
     // ⚠️⚠️ **apiKey 清成 null** —— DeepSeek 的 key 在 Bedrock 上是 401，
     //   留着它只会让用户看到一句"key 填错了"而不知道是换了提供方。
@@ -837,6 +844,24 @@ function migrateConfig(cfg) {
       + '（实测推理小模型把预算烧在思考上、产物质量不够；'
       + 'DeepSeek 的 key 在 Bedrock 上无效已清掉，'
       + '环境变量 AWS_BEARER_TOKEN_BEDROCK 会自动用上）');
+  }
+
+  // ⚠️⚠️ **0.9.143 那一版存的是 Sonnet 4.5 ⟹ 换成 Opus 4.8**（0.9.144）。
+  //   用户 2026-08-03：「这个模型默认应该用 opus 4.8」
+  //
+  // ⚠️ 这条和上面那条是**两条独立的迁移**，不能合并：
+  //   上面那条从 DeepSeek 来（要换提供方 + 清 key），这条只换模型 ID。
+  //   ⚠️⚠️ 而这条**绝不动 apiKey** —— 0.9.143 用户已经把 Bedrock 的 token
+  //     填进去并且验证通了，清掉它等于让他白填一次。
+  //     ⟹ 判据：**同一个提供方内换模型，凭证是有效的，别碰。**
+  //       （上面那条清 key 是因为**换了提供方**，两件事不一样。）
+  if (ai.provider === 'bedrock'
+      && String(ai.model || '') === 'us.anthropic.claude-sonnet-4-5-20250929-v1:0') {
+    ai.model = 'us.anthropic.claude-opus-4-8';
+    we.ai = ai;
+    changed = true;
+    console.log('[config] 迁移：AI 模型 Sonnet 4.5 → Opus 4.8'
+      + '（用户点名；同一个提供方，已填的 token 继续有效）');
   }
 
   // ⚠️⚠️⚠️ **清掉壁纸动作的存量录制**（0.9.130）。用户 2026-08-02：
@@ -4551,7 +4576,7 @@ function resolveAiConfig() {
       //   而让用户为了"我已经配好了"再去填一个模型 ID 很怪。
       model: saved.model
         || env.DREAMPAPER_AI_MODEL
-        || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+        || 'us.anthropic.claude-opus-4-8',
       // ⚠️ 标记来源 ⟹ 面板上要说清"这次用的是环境变量里那个"，
       //   否则用户会以为面板那个空框是个 bug。
       fromEnv: 'AWS_BEARER_TOKEN_BEDROCK',

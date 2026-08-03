@@ -322,6 +322,8 @@ async function chat(cfg, messages, options) {
 //       · 有没有 reasoning_content（会思考 ⟹ 生成长代码大概率烧光预算）
 //       · 思考花了多少 token（那是"烧得多不多"的量）
 async function ping(cfg) {
+  // ⚠️ 下面解析响应要按提供方分支 ⟹ 先取出来（cfg.provider 在 buildRequest 里已校验过）
+  const provider = cfg && cfg.provider;
   const { url, headers, body } = buildRequest(cfg,
     // ⚠️ 让它写一行代码而不是"回两个字" —— 推理模型对"写代码"这类任务
     //   才会启动长链思考，而问"通了吗"它可能直接答（那就测不出来）。
@@ -345,18 +347,47 @@ async function ping(cfg) {
 
   // ⚠️ 这里**不能用 parseResponse** —— 它在正文为空时会抛，
   //   而探针恰恰要把"正文空但有思考"当成一个**有用的结论**报出来，不是失败。
-  const msg = (data.choices && data.choices[0] && data.choices[0].message) || {};
-  const reasoning = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
-  const text = typeof msg.content === 'string' ? msg.content : '';
+  //
+  // ⚠️⚠️⚠️ **两家的响应形状不同，而探针只认了 OpenAI 那家**（0.9.144 修）。
+  //   用户 2026-08-02 实测：Bedrock Claude 探针说"通了"而 `回了「」`——
+  //   因为 Bedrock 的正文在 `data.content[0].text`，不在
+  //   `data.choices[0].message.content`。
+  //   ⟹ 症状是"通了但看起来什么都没回"，而那**比报错更坏**：
+  //     它让人以为模型有问题，而其实是我这边读错了字段。
+  //   ⟹ 判据：**一个函数支持两种协议时，两条分支都要有人走过。**
+  //     `chat()` 那边一直是分开处理的（`if (provider === 'bedrock')`），
+  //     而探针漏了 —— 因为它是后加的，而当时默认提供方是 DeepSeek。
+  let text = '';
+  let reasoning = '';
+  let finish = null;
   const usage = data.usage || {};
+
+  if (provider === 'bedrock') {
+    // ⚠️ Anthropic 形状：`content` 是块数组，只取 `type === 'text'` 的
+    //   （开了 thinking 之后第一块可能是 thinking 块，而那不是正文）
+    const parts = Array.isArray(data.content) ? data.content : [];
+    text = parts.filter((c) => c && c.type === 'text').map((c) => c.text || '').join('');
+    // ⚠️ thinking 块 = 这家的"思考过程" ⟹ 和 reasoning_content 同一个意思
+    reasoning = parts.filter((c) => c && c.type === 'thinking')
+      .map((c) => c.thinking || '').join('');
+    finish = data.stop_reason || null;
+  } else {
+    const msg = (data.choices && data.choices[0] && data.choices[0].message) || {};
+    reasoning = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
+    text = typeof msg.content === 'string' ? msg.content : '';
+    finish = (data.choices && data.choices[0] && data.choices[0].finish_reason) || null;
+  }
+
   return {
     ok: true,
     reply: String(text).trim().slice(0, 60),
-    // ⚠️⚠️ 这两个字段是这次事故的直接产物 —— 面板拿它们提醒用户换模型。
+    // ⚠️⚠️ 这两个字段是 0.9.126 那次事故的直接产物 —— 面板拿它们提醒用户换模型。
     thinks: !!reasoning,
     reasoningChars: reasoning.length,
-    outputTokens: usage.completion_tokens,
-    finish: (data.choices && data.choices[0] && data.choices[0].finish_reason) || null,
+    // ⚠️ Bedrock 的 usage 字段名不一样（output_tokens 而不是 completion_tokens）
+    outputTokens: usage.completion_tokens !== undefined
+      ? usage.completion_tokens : usage.output_tokens,
+    finish,
   };
 }
 

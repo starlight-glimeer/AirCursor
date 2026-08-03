@@ -570,7 +570,7 @@ check('HTTP 错误要说"该动哪里"，不是只给个状态码', () => {
 // ⚠️⚠️ 而**光改 defaultConfig 对存量用户无效** —— `mergeConfig` 会保留用户
 //   存过的值（那是对的），而 0.9.123 装过一次就已经把 bedrock 写进磁盘了。
 //   ⟹ 必须有显式迁移。这个项目为同一件事栽过（we.strategy 那次）。
-check('⚠️ 默认走 Bedrock 上的 Claude（0.9.143 换的）', () => {
+check('⚠️ 默认走 Bedrock 上的 Claude Opus（0.9.144 定的）', () => {
   // ⚠️⚠️⚠️ **这条守卫守的决定翻了两次**：
   //   0.9.123 默认 Bedrock → 0.9.126 换 DeepSeek（"Bedrock 要申请模型访问权，
   //     门槛太高"）→ 0.9.143 换回 Bedrock Claude。
@@ -585,10 +585,15 @@ check('⚠️ 默认走 Bedrock 上的 Claude（0.9.143 换的）', () => {
   // ⚠️ 切到这个对象字面量的结尾（`\n    },`），不用固定长度
   const block = main.slice(at, main.indexOf('\n    },', at));
   assert.match(block, /provider: 'bedrock'/, '默认提供方不是 bedrock');
-  // ⚠️ Sonnet 而不是 Opus —— 生成一张约 1-2 万 token，Opus 会让"等 90 秒"
-  //   变成"等 4 分钟"，而代码质量上 Sonnet 对这个任务够用。
-  assert.match(block, /model: 'us\.anthropic\.claude-sonnet/,
-    '默认模型不是 Bedrock 上的 Claude Sonnet');
+  // ⚠️⚠️ **Opus**（0.9.144，用户点名）。我 0.9.143 选的是 Sonnet，理由是
+  //   "快得多" —— 而那个权衡不该由我替他做：这个功能的第一要义是
+  //   "稳定生成高质量的壁纸"，而生成一张是一次性的几十秒操作，
+  //   不是每帧都跑的东西 ⟹ 慢一倍换质量划算。
+  //   ⟹ 判据：**"贵/慢"这类取舍，用户点名了就按他的来。**
+  // ⚠️ 而**不盯死完整 ID** —— 版本会升（4.8 → 之后的），
+  //   盯死它会让每次升版都红一次而那不是错误。守"是 opus"就够。
+  assert.match(block, /model: 'us\.anthropic\.claude-opus/,
+    '默认模型不是 Bedrock 上的 Claude Opus');
   assert.match(block, /region: 'us-west-2'/, 'Bedrock 那支要 region');
   assert.match(block, /apiKey: null/, 'apiKey 的默认值必须是 null（绝不许硬编码 key）');
   // ⚠️ baseUrl 字段留着（切回 OpenAI 兼容那支时不用改两处），但它对 bedrock 无用
@@ -616,7 +621,23 @@ check('⚠️⚠️ 存量迁移：磁盘上的 deepseek 换成 Claude（光改�
   assert.match(body, /ai\.provider === 'openai'/,
     'migrateConfig 里没有把存量的 deepseek 迁走 ⟹ 改了默认值对已装过的人没用'
     + '（mergeConfig 会保留他们存过的 deepseek-v4-flash）');
-  assert.match(body, /ai\.model = 'us\.anthropic\.claude-sonnet/, '迁移没换成 Claude');
+  assert.match(body, /ai\.model = 'us\.anthropic\.claude-opus/, '迁移没换成 Claude Opus');
+
+  // ⚠️⚠️ **0.9.143 装过的人存的是 Sonnet ⟹ 要有第二条迁移**（0.9.144）。
+  //   ⚠️ 而这两条是**独立的**：上面那条从 DeepSeek 来（换提供方 + 清 key），
+  //     这条只换模型 ID。
+  assert.match(body, /=== 'us\.anthropic\.claude-sonnet-4-5-20250929-v1:0'/,
+    '没有"Sonnet → Opus"那条迁移 ⟹ 0.9.143 装过的人会一直用 Sonnet');
+  // ⚠️⚠️⚠️ 而这条**绝不许动 apiKey** —— 用户 0.9.143 已经填过 Bedrock token
+  //   并且验证通了，清掉等于让他白填一次。
+  //   ⟹ 判据：**同一个提供方内换模型，凭证有效，别碰。**
+  //     （上面那条清 key 是因为换了提供方 —— 两件事不一样。）
+  const sonnetMig = body.slice(body.indexOf("=== 'us.anthropic.claude-sonnet"));
+  const nextIf = sonnetMig.indexOf('\n  if (');
+  const migBody = sonnetMig.slice(0, nextIf > 0 ? nextIf : 900);
+  assert.ok(!/ai\.apiKey\s*=/.test(migBody),
+    'Sonnet → Opus 那条迁移动了 apiKey ⟹ 同一个提供方，用户填过的 token 还有效，'
+    + '清掉等于让他白填一次');
 
   // ⚠️⚠️ **迁移只认"我们自己写进去的那两个模型 ID"** ——
   //   写成活规则（"凡是 deepseek 就换"）会把用户以后主动选的 deepseek 也换掉。
@@ -679,6 +700,59 @@ check('探针问的是"写一行代码"，不是"回两个字"（推理模型才
   assert.ok(!/parseResponse\s*\(\s*cfg\.provider/.test(body),
     '探针调了 parseResponse(cfg.provider, …) ⟹ 正文空时它会抛，'
     + '而那正是探针最该报告的情况');
+});
+
+check('⚠️⚠️ 探针两家协议都要能读出正文（0.9.144 真事故）', () => {
+  // ⚠️⚠️⚠️ 用户 2026-08-02 实测：Bedrock Claude 探针说"通了"而 `回了「」`。
+  //   根因：`ping()` 只认 OpenAI 的 `data.choices[0].message.content`，
+  //   而 Bedrock 的正文在 `data.content[0].text`。
+  //   ⟹ 症状是"通了但看起来什么都没回"，而那**比报错更坏**：
+  //     它让人以为模型有问题，而其实是我这边读错了字段。
+  //   ⟹ 判据：**一个函数支持两种协议时，两条分支都要有人走过。**
+  //     `chat()` 那边一直是分开处理的，而探针漏了 ——
+  //     因为它是后加的，而当时默认提供方是 DeepSeek（另一条分支）。
+  const llmRaw = fs.readFileSync(path.join(__dirname, '..', 'src', 'llm.js'), 'utf8');
+  // ⚠️⚠️⚠️ **必须剥注释**。反向验证逮住这条：我在 ping 上面写的那段注释里
+  //   **引用了这些字符串本身**（"Bedrock 的正文在 `data.content[0].text`，
+  //   不在 `data.choices[0].message.content`"、"`if (provider === 'bedrock')`"、
+  //   "output_tokens 而不是 completion_tokens"）
+  //   ⟹ 把真正的代码整个删掉，注释还在，断言照样满足 ⟹ 守卫是死的。
+  //   ⟹ 判据：**守卫读的是代码，不是注释** —— 而"我为了说清楚而引用了
+  //     那个标识符"恰恰让注释成为最容易骗过守卫的东西。
+  //     （这个项目为"关键词撞到注释"栽过多次，这是又一次，而这次是
+  //      **我自己刚写的注释**撞的。）
+  const llm = llmRaw.split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const at = llm.indexOf('async function ping(');
+  assert.ok(at > 0, '找不到 ping');
+  const body = llm.slice(at, llm.indexOf('\nmodule.exports', at));
+  // ① 要按提供方分支
+  assert.match(body, /provider === 'bedrock'/,
+    'ping 没有按提供方分支 ⟹ 它只认得一家的响应形状（另一家会"通了但正文空"）');
+  // ②⚠️ Bedrock 那支要读 data.content 里的 text 块。
+  //   ⚠️⚠️ 锚到**那一整句**，不是 `data.content` 这四个字 ——
+  //     它在 ping 里出现在两处代码上（`Array.isArray(data.content) ? data.content`
+  //     本身就是两次）⟹ 改坏一处照样绿（反向验证逮到）。
+  assert.match(body, /Array\.isArray\(data\.content\) \? data\.content : \[\]/,
+    'ping 没读 Bedrock 的 data.content ⟹ Claude 回的正文读不出来'
+    + '（症状是"通了但回了「」"，而那比报错更坏：让人以为模型有问题）');
+  assert.match(body, /c\.type === 'text'/,
+    '没只取 text 块 ⟹ 开了 thinking 之后第一块是 thinking，那不是正文');
+  // ③⚠️ 而 OpenAI 那支要还在。同上：锚整句 ——
+  //   `data.choices` 在 ping 里出现在**四处**（取 message、取 finish_reason）
+  assert.match(body, /const msg = \(data\.choices && data\.choices\[0\] && data\.choices\[0\]\.message\)/,
+    'OpenAI 兼容那支的正文解析没了 ⟹ 换回 DeepSeek 的人会看到"通了但回了「」"');
+  assert.match(body, /data\.choices\[0\]\.finish_reason/,
+    'OpenAI 兼容那支没读 finish_reason ⟹ "被长度截断"这条判不出来');
+  // ④⚠️ usage 的字段名两家也不同（completion_tokens vs output_tokens）
+  assert.match(body, /output_tokens/,
+    'Bedrock 的 usage 字段名是 output_tokens，不是 completion_tokens'
+    + ' ⟹ 不认它的话"花了多少 token"永远是 undefined');
+  // ⑤⚠️⚠️ 而 thinking 块要当成"这个模型会思考"的信号
+  //   （那是 0.9.126 事故的观测点，Anthropic 这边叫 thinking 不叫 reasoning_content）
+  assert.match(body, /c\.type === 'thinking'/,
+    'Bedrock 那支没认 thinking 块 ⟹ "这个模型会不会空转思考"在 Claude 上测不出来');
 });
 
 check('面板：探针发现是推理模型要当场提醒（"通了"不等于"能用"）', () => {
