@@ -26,12 +26,32 @@ const TARGET = {
   // 底色：近黑偏蓝紫
   bg: 0x070815,
   // 主色相：安静时洋红紫，激烈时偏蓝紫
-  hueCalm: 310,
+  // ⚠️⚠️ 294 而不是 310（0.9.155 校准）—— 分圈实测的**中心色相中位是 294**，
+  //   而我原来那个 310 是从"整幅色相分布的峰值带 290-330"取的中值。
+  //   ⟹ 那两个是不同口径：整幅算上外围（偏蓝），峰值带自然偏高。
+  //   ⚠️ 而 `hueAt` 的空间偏移是负的（往外偏蓝）⟹ 起点定高会让整体偏红。
+  hueCalm: 294,
   hueLoud: 235,
   // ⚠️⚠️ 饱和度中位 0.30-0.34（激烈时才到 0.65）——
   //   **低饱和是"高级感"的关键**，而模型默认给高饱和霓虹色。
   satBase: 0.32,
   satLoud: 0.62,
+  // ⚠️⚠️⚠️ **空间分布**（0.9.155 补的，之前只量了"整幅的中位数"）。
+  //   实测（按到中心的距离分三圈，只统计亮度 >25 的像素）：
+  //
+  //     区域        H 中位   S 中位   V 中位
+  //     中心 r<15     294     0.30    0.33-0.81
+  //     中层 15-35    253-265 0.41-0.58
+  //     外围 r>35     251     0.58    0.18
+  //
+  //   ⟹ 两条规律，而**我原来的曲线把第一条搞反了**：
+  //     ① 色相：中心洋红紫 294 → 外围蓝紫 251，**往下偏 43 度**
+  //        （我原来是往上偏 18 度 ⟹ 方向反了）
+  //     ② 饱和度：中心 0.30 → 外围 0.58，**往上 +0.28**（方向对，幅度差 14%）
+  //   ⚠️ 判据：**"中位数对了"不等于"分布对了"** ——
+  //     整幅的饱和度中位可以是 0.32，而中心 0.30/外围 0.58 才是它的观感来源。
+  hueSpatialShift: -43,
+  satSpatialGain: 0.28,
   // 亮度：中心偏白 → 外围没入底色
   lumCenter: 0.86,
   lumEdge: 0.18,
@@ -75,7 +95,10 @@ function lumAt(d, energy) {
 function satAt(d, loudness) {
   const dd = clamp01(d);
   const l = clamp01(loudness);
-  const base = TARGET.satBase * (0.55 + 0.75 * dd);
+  // ⚠️ 中心 0.30 → 外围 0.58（实测），线性 ⟹ base + gain * d
+  //   ⚠️ 我原来是 `satBase * (0.55 + 0.75*dd)` ⟹ 中心只有 0.18，比实测低 40%
+  //     （那让中心太白、少了那点紫调）。
+  const base = TARGET.satBase + TARGET.satSpatialGain * dd;
   return Math.max(0, Math.min(0.85, base + l * (TARGET.satLoud - TARGET.satBase)));
 }
 
@@ -85,7 +108,11 @@ function hueAt(d, loudness) {
   const l = clamp01(loudness);
   // ⚠️ 走**短弧** —— 310 → 235 直接线性插值是对的（差 75 度，不跨 0）
   const h = TARGET.hueCalm + (TARGET.hueLoud - TARGET.hueCalm) * l;
-  return (h + dd * 18) % 360;
+  // ⚠️⚠️ 空间偏移是**负的**（中心洋红紫 → 外围蓝紫）——
+  //   我原来写的是 `+ dd * 18`，**方向反了**（那让外围更偏红，而实测更偏蓝）。
+  //   ⟹ 实测差 43 度（294 → 251）。
+  // ⚠️ `+ 360` 是因为负数取模在 JS 里会得到负值。
+  return (h + dd * TARGET.hueSpatialShift + 360) % 360;
 }
 
 // ⚠️⚠️ **注入进 scene.js 的那段代码**（0.9.148）。
@@ -111,7 +138,7 @@ const DP = {
   sat(d, loudness) {
     const dd = _c01(d);
     const l = _c01(loudness);
-    return Math.max(0, Math.min(0.85, ${TARGET.satBase} * (0.55 + 0.75 * dd) + l * ${(TARGET.satLoud - TARGET.satBase).toFixed(2)}));
+    return Math.max(0, Math.min(0.85, ${TARGET.satBase} + ${TARGET.satSpatialGain} * dd + l * ${(TARGET.satLoud - TARGET.satBase).toFixed(2)}));
   },
   // ⚠️⚠️⚠️ 雾密度：**用这个函数算，别自己填数字**
   //   FogExp2 的透光率是 exp(-(density*distance)^2) —— 那是平方衰减，
@@ -129,7 +156,7 @@ const DP = {
   hue(d, loudness) {
     const dd = _c01(d);
     const l = _c01(loudness);
-    return (${TARGET.hueCalm} + (${TARGET.hueLoud} - ${TARGET.hueCalm}) * l + dd * 18) % 360;
+    return (${TARGET.hueCalm} + (${TARGET.hueLoud} - ${TARGET.hueCalm}) * l + dd * (${TARGET.hueSpatialShift}) + 360) % 360;
   },
 };
 `;
