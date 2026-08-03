@@ -1491,4 +1491,107 @@ check('⚠️ 提示词讲清"节奏不是匀速"', () => {
 });
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  第三张真实失败产物（08030206）—— vertexColors 纯黑（0.9.152）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  真实失败产物（08030206：一排柱子的剪影）');
+
+const BAD_VC = (() => {
+  try {
+    return fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'bad-vertexcolors.scene.js'), 'utf8');
+  } catch { return null; }
+})();
+
+check('⚠️⚠️⚠️ vertexColors + instanceColor → 逮住（那是纯黑剪影）', () => {
+  // ⚠️⚠️ 用户 2026-08-03 第三张：画面是**一排柱子的剪影**，比背景还黑。
+  //   读数：中 1/3 亮度 **1**、高亮 0%。
+  // ⚠️ 而它的代码里 `L = 0.45 + 0.45*(1-d²) + ...` ⟹ **L 最低 0.45**，
+  //   `instanceColor` 建了、`needsUpdate` 也置了 ⟹ 按理该很亮。
+  // ⛔ 死因：`MeshBasicMaterial({ color: 0xffffff, vertexColors: true })`
+  //   `vertexColors: true` 让 three.js 去读**几何体的顶点色属性**，
+  //   而 BoxGeometry 没有 ⟹ shader 读不存在的属性 ⟹ 输出纯黑。
+  //   ⟹ 那和 instanceColor 是两套机制，同时开会冲突。
+  assert.ok(BAD_VC, 'fixtures/bad-vertexcolors.scene.js 不在 ⟹ 真实样本，别删');
+  // ⚠️ 先确认样本的前提：它的 L 本来是够亮的（否则这条测试没意义）
+  assert.match(BAD_VC, /L = 0\.45/, '样本里的 L 基线该是 0.45（那说明它不是"算暗了"）');
+  assert.match(BAD_VC, /vertexColors: true/, '样本里该有 vertexColors: true');
+  const ids = G.inspectDesign(BAD_VC).map((x) => x.id);
+  assert.ok(ids.includes('C-vertexColors 冲突'), `没逮住（报了 ${ids.join(',')}）`);
+  const d = G.inspectDesign(BAD_VC).find((x) => x.id === 'C-vertexColors 冲突').detail;
+  assert.match(d, /纯黑/, '没说清结果是纯黑（模型会以为只是"暗"）');
+  assert.match(d, /两套/, '没说清那是两套不同的机制');
+  assert.match(d, /去掉/, '没给出修法');
+});
+
+check('⚠️ 只用 instanceColor（不开 vertexColors）不误报', () => {
+  const ok = 'const m = new THREE.MeshBasicMaterial({});\n'
+    + 'grid.instanceColor = new THREE.InstancedBufferAttribute(arr, 3);\n'
+    + 'grid.setColorAt(i, c);';
+  assert.ok(!G.inspectDesign(ok).map((x) => x.id).includes('C-vertexColors 冲突'),
+    '只用 instanceColor 被误报了 ⟹ 那是**正确**做法');
+  // ⚠️ 而只开 vertexColors、不用 instanceColor 也不该报
+  //   （那可能是刻意给几何体加了 color attribute）
+  const vcOnly = 'const m = new THREE.MeshBasicMaterial({ vertexColors: true });\n'
+    + 'geo.setAttribute("color", new THREE.BufferAttribute(cols, 3));';
+  assert.ok(!G.inspectDesign(vcOnly).map((x) => x.id).includes('C-vertexColors 冲突'),
+    '只用 vertexColors（自己加了 color attribute）被误报了');
+});
+
+check('⚠️⚠️⚠️ 提示词讲清"这张图在表达什么"（内在逻辑）', () => {
+  // 用户 2026-08-03：「我看不懂这有啥意义…他是用柱子上下波动来模拟**波浪**，
+  //   你明白吗？…我觉得你就是缺乏一些**内在逻辑**」
+  // ⚠️ 而我查过：提示词里"为什么/意义/代表"**一个都没有** ——
+  //   全是约束（不许铺满/不许俯视/饱和度别超），没有一句说"那些柱子是什么"。
+  // ⟹ 判据：**先决定"它是什么"，再决定"怎么画"。**
+  const plan = G.buildPlanPrompt('');
+  assert.match(plan, /这张图在表达什么/, '没有"先想清楚它在表达什么"那一节');
+  // ⚠️ 要有那张"画面上的东西 → 它表示什么"的对照表
+  // ⚠️⚠️ 反向验证逮住这条：`一片水面` 在提示词里出现**多次**
+  //   （对照表 + "要做的东西"那节）⟹ 删掉最关键那句照样绿。
+  //   ⟹ 锚到**那句话本身**（"柱子不是元素，柱子是水面上的一个点"）——
+  //     那是整节的核心，删了它剩下的都是修饰。
+  assert.match(plan, /柱子是.{0,6}水面上的一个点/,
+    '没说清"柱子不是元素，是水面上的一个点" ⟹ 那是这一节的核心'
+    + '（用户原话：「他是用柱子上下波动来模拟波浪，你明白吗」）');
+  // ⚠️ 而那张"画面上的东西 → 它表示什么"的对照表也要在
+  assert.match(plan, /它表示什么/, '没有"画面上的东西 → 它表示什么"那张对照表');
+  assert.match(plan, /冲击波|石子入水/, '对照表里没说清圆环表示什么');
+  assert.match(plan, /相邻点的高度连续/,
+    '没说清"一片水和一排柱子的区别是相邻点连续" ⟹ 那是唯一可执行的判据');
+  assert.match(plan, /先决定.*是什么/, '没给出"先想是什么再想怎么画"这个顺序');
+  // ⚠️ 而要允许它换别的东西（沙丘/云海），不是只能做水
+  assert.match(plan, /沙丘|云海|星云/,
+    '没说"可以换成别的东西" ⟹ 那会把它锁死在一种题材上');
+});
+
+check('⚠️⚠️ 而元素尺度只给**算式**，不给数字（两个样本互相矛盾）', () => {
+  // ⚠️⚠️⚠️ 我写过两版闸门想判"像不像一片水"，**两次都在校准基准上判错**：
+  //   ① 判"有没有空间连续性" ⟹ 08030206 有（sin(x)*cos(z)）被放过，
+  //      而我们的示例用 sin(t + dist) 被判红 —— 两个方向都错
+  //   ② 判"元素在画面上多少 px" ⟹ 那个数算得很准（19px vs 26px），
+  //      但**更粗的那个（示例 26px）用户说能看**，19px 那个说看不懂
+  //      ⟹ 元素大小不是原因
+  // ⟹ 判据：**一个能算准的数字，不等于它代理的是对的东西。**
+  //   ⟹ 那个算式进提示词（信息），不做成闸门（会误伤）。
+  const plan = G.buildPlanPrompt('');
+  assert.match(plan, /2 × 相机距离 × tan/, '算式没进提示词');
+  assert.match(plan, /别照抄我的数字/,
+    '没说清"这个数我给不出准值" ⟹ 模型会把我编的阈值当标准');
+  // ⚠️ 而要把那两个矛盾的样本摆出来 —— 那才是"我为什么不给数字"的证据
+  assert.match(plan, /19px/, '没摆出 19px 那个样本');
+  assert.match(plan, /26px/, '没摆出 26px 那个（更粗但用户说能看的）样本');
+
+  // ⚠️⚠️ 而那两条闸门必须**真的不在**（否则会误伤示例）
+  const ex = fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'scene.example.js'), 'utf8');
+  const ids = G.inspectDesign(ex).map((x) => x.id);
+  assert.ok(!ids.includes('C-元素太大'), '"元素太大"那条闸门还在 ⟹ 它误伤示例');
+  assert.ok(!ids.includes('C-一排柱子不是水面'),
+    '"一排柱子"那条闸门还在 ⟹ 它误伤示例');
+  assert.deepStrictEqual(ids, [], `示例被判出 ${ids.join(',')} ⟹ 它是校准基准`);
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
