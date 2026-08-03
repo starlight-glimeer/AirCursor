@@ -821,15 +821,17 @@ check('提示词里要求"直接写代码、别长篇分析"（生成和回喂�
   //   而提示词是我们的。
   // ⚠️ 0.9.140 改名：buildGeneratePrompt → buildScenePrompt（它现在产的是
   //   "写 scene.js"的提示词，而不是"写整个 index.html"）。
-  const recipe = { layout: 'ring', audioMap: 'height', palette: 'ice',
-    motion: 'breathe', environment: 'topLight' };
-  const rt = 'layout = ring：同心圆环';
+  // ⚠️ `buildScenePrompt` 0.9.148 删了（只剩测试在调它 = 死代码）——
+  //   生产流程从 0.9.142 起是两步：设计 → 写代码。⟹ 改成测那两个。
   for (const [name, prompt] of [
-    ['生成', G.buildScenePrompt('极光', recipe, rt, '（第一张）', '// example')],
-    ['回喂', G.buildRepairPrompt('window.SCENE={}', [{ id: 'X', detail: 'y' }], rt)],
+    ['设计', G.buildPlanPrompt('极光')],
+    ['写代码', G.buildImplementPrompt('设计说明', '// example', null)],
+    ['回喂', G.buildRepairPrompt('window.SCENE={}', [{ id: 'X', detail: 'y' }])],
   ]) {
-    assert.match(prompt, /不要先长篇分析|不要先长篇/,
-      `${name}提示词里没要求"直接写代码" ⟹ 推理模型会把预算烧在思考上`);
+    // ⚠️ 三步的措辞不同：设计那步要"别写成文章"，写代码那步要"别复述设计"
+    //   ⟹ 判据：**守"有没有要求它别空转"这件事，不是守某一句话。**
+    assert.match(prompt, /不要先长篇分析|不要先长篇|别更长|不要复述设计|别写成文章/,
+      `${name}提示词里没要求"别空转" ⟹ 推理模型会把预算烧在思考/复述上`);
   }
 });
 
@@ -1172,6 +1174,110 @@ check('⚠️ 提示词里讲清"地形不是圆锥"和"亮度只衰减一次"',
   assert.match(plan, /0\.85 - 0\.6 \* d/, '没给出正确的亮度衰减公式');
   assert.match(plan, /sqrt\(i\/N\)/,
     '没点名"中心密外圈疏"那种分布（它会强化圆丘观感）');
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ReAct：先给现场，再给结论，要求它说诊断（0.9.149）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  ReAct（观察 → 思考 → 行动）');
+
+const REAL_PROBE = {
+  frames: 180, ms: 3001, webgl: { context: true, objects: 1, glError: 0 }, errors: [],
+  sampledPixels: { black: 777, total: 1024, bright: 0, bands: [8, 28, 9], satMedian: 0.40 },
+};
+
+check('⚠️⚠️ 观测报告给的是**事实**，不是我的判断', () => {
+  // 用户 2026-08-03：「思考方式 react 可能比较好」
+  // ⟹ ReAct 的关键是模型能自己观察，而观察到的要是**原始数据**。
+  //   ⚠️ 判据：**给"你写了什么"的事实，比给"你错了"的判断有用。**
+  //     我的判断（"太暗了"）会把它往一个方向推；原始数据让它自己连因果。
+  assert.ok(BAD_REAL, '真实样本不在');
+  const obs = G.buildObservation(REAL_PROBE, BAD_REAL);
+  // ① 真实的数字要照抄进去（带目标区间）
+  assert.match(obs, /75\.9%/, '近黑占比没照抄真实数字');
+  assert.match(obs, /目标 20-45%/, '没给目标区间 ⟹ 一个孤立的数字读不出好坏');
+  assert.match(obs, /上 8 \/ 中 28 \/ 下 9/, '三分带亮度没照抄');
+  // ②⚠️⚠️ "场景 1 个对象"要点出它的含义（那是最有信息量的一个）
+  // ⚠️⚠️ `defaultLights` 在报告里出现 **2 次**（这句提示 + 材质那一行）
+  //   ⟹ 全文搜索删一处照样绿（反向验证逮到）⟹ 锚到**那一行**。
+  const objLine = obs.split('\n').find((l) => l.includes('顶层对象'));
+  assert.ok(objLine, '没报场景对象数');
+  assert.match(objLine, /defaultLights/,
+    '"1 个对象"那一行没说清它的含义（骨架默认放了一个 defaultLights Group）'
+    + ' ⟹ 那个数字本身没有意义，而它恰恰是最有信息量的一个');
+  assert.match(objLine, /删了它|什么都没 add/,
+    '没说清"只有 1 个"意味着什么 ⟹ 模型读不出这个数的含义');
+  // ③⚠️⚠️⚠️ 从它自己代码里量出来的事实
+  assert.match(obs, /亮度变量被 `\*=` 了/, '没量"亮度被乘了几次"');
+  assert.match(obs, /lum \*= \(0\.1/, '没把那一行原文摆出来 ⟹ 它得自己去找');
+  assert.match(obs, /core \* 2\.6/, '没摆出高度算式里的距离项');
+  // ⚠️ 那行原文里 `删掉了` 和 `defaultLights` 之间隔着 markdown 的 `**`
+  //   ⟹ 连写匹配不上。锚到那两个词各自出现在**同一行**上。
+  const matLine = obs.split('\n').find((l) => l.includes('材质：'));
+  assert.ok(matLine, '观测报告里没有"材质"那一行');
+  assert.match(matLine, /删掉了/, '没报"删了默认灯"这个事实');
+  assert.match(matLine, /没有.*自己加灯/, '没报"也没自己加灯"这个事实');
+  assert.match(matLine, /MeshBasicMaterial/, '没报用的是什么材质');
+  assert.match(obs, /没用播放器提供的 DP\.lum/, '没报"它自己推了公式"');
+});
+
+check('⚠️ 观测报告里不许出现我的判断词', () => {
+  // ⚠️ 判据：**这一层只报数**。判断留给检查器报告那一段（它在后面）。
+  const obs = G.buildObservation(REAL_PROBE, BAD_REAL);
+  for (const verdict of ['太暗了', '不好看', '很抽象', '像个圆锥', '铺满了']) {
+    assert.ok(!obs.includes(verdict),
+      `观测报告里出现了判断词"${verdict}" ⟹ 那会把模型往一个方向推，`
+      + '而这一层的全部价值是让它自己发现');
+  }
+});
+
+check('⚠️⚠️ 观测排在检查器报告**前面**', () => {
+  const obs = G.buildObservation(REAL_PROBE, BAD_REAL);
+  const p = G.buildRepairPrompt(BAD_REAL, [{ id: 'C-太暗了', detail: 'x' }], {}, obs);
+  const obsAt = p.indexOf('实际观测到的数据');
+  const verdictAt = p.indexOf('检查器报告');
+  assert.ok(obsAt > 0, '观测报告没进提示词');
+  assert.ok(obsAt < verdictAt,
+    '检查器结论排在观测数据前面 ⟹ 模型会直接跳到"行动"、沿着我指的方向微调'
+    + '（实测那次三轮都没修掉就是这样）');
+});
+
+check('⚠️⚠️⚠️ 要求先写诊断再给代码，而分隔符能切开', () => {
+  const p = G.buildRepairPrompt('code', [{ id: 'X', detail: 'y' }], {}, 'obs');
+  assert.match(p, /第一段：诊断/, '没要求先写诊断');
+  assert.match(p, /===SCENE===/, '没给分隔符 ⟹ 诊断和代码混在一起没法切');
+  // ⚠️ 而要说清"为什么这一步不是形式"
+  assert.match(p, /不是形式/,
+    '没说清诊断那一步的必要性 ⟹ 模型会敷衍一句然后照旧');
+
+  // ── 切分要对
+  const out = '诊断：近黑 76% 太高，是第 165 行造成的。\n===SCENE===\n'
+    + 'window.SCENE = { build() {}, frame() {} };';
+  assert.match(G.extractScene(out), /^window\.SCENE/, '没把诊断切掉');
+  assert.strictEqual(G.extractDiagnosis(out), '诊断：近黑 76% 太高，是第 165 行造成的。');
+
+  // ⚠️⚠️ **没有分隔符时不能报错** —— 第一轮（buildImplementPrompt）不要求诊断
+  const plain = 'window.SCENE = { build() {}, frame() {} };';
+  assert.match(G.extractScene(plain), /^window\.SCENE/,
+    '没有分隔符时把代码切掉了 ⟹ 第一轮就废了');
+  assert.strictEqual(G.extractDiagnosis(plain), '', '没有分隔符时诊断该是空字符串');
+
+  // ⚠️ 而代码里**恰好出现** ===SCENE=== 的字样时要取最后一个
+  const tricky = 'x\n===SCENE===\n// 说明：===SCENE=== 是分隔符\n'
+    + '===SCENE===\nwindow.SCENE = { build() {}, frame() {} };';
+  assert.match(G.extractScene(tricky), /^window\.SCENE/, '多个分隔符时没取最后一个');
+});
+
+check('⚠️ measureCode 只报数，算不出来就不报', () => {
+  // ⚠️ 判据：**宁可少报也别报错的数**（F 闸门为误报栽过）
+  assert.deepStrictEqual(G.measureCode(''), [], '空代码不该报任何东西');
+  assert.deepStrictEqual(G.measureCode(null), [], 'null 不该崩');
+  // ⚠️ 用了 DP 曲线的要给正面确认（那让模型知道"这条我做对了"）
+  const good = 'color.setHSL(DP.hue(d, l) / 360, DP.sat(d, l), DP.lum(d, e));';
+  assert.ok(G.measureCode(good).some((f) => f.includes('✓ 用了播放器提供的 DP.lum')),
+    '用了 DP 曲线没给正面确认 ⟹ 只报错会让模型不确定哪些是对的');
 });
 
 

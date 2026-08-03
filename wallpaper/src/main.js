@@ -4392,6 +4392,14 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   //     因为回喂给的是现象（"太暗"）而不是根因（"删了灯还用需光材质"）。
   let prevIds = [];
   let repeatedIds = [];
+  // ⚠️⚠️⚠️ **上一轮的观测数据**（0.9.149）—— ReAct 的"观察"那一步要它。
+  //   用户 2026-08-03：「思考方式 react 可能比较好」
+  //   ⟹ 回喂时先给现场（真跑的帧数/像素分布/从它代码里量出来的事实），
+  //     再给检查器结论，并要求它**先写诊断再改**。
+  //   ⚠️ 判据：**先给现场，再给结论。** 先给结论会让模型跳过"思考"、
+  //     直接沿着我指的方向微调 —— 实测那次三轮都没修掉就是这样。
+  let lastProbe = null;
+  let lastCode = null;
   let code = null;
   let problems = [];
   const history_ = [];
@@ -4444,13 +4452,23 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       //   ⚠️ 3 秒一跳而不是每秒 —— 每秒会把事件环刷满，而"它活着"这个信息
       //     3 秒的粒度完全够。
       const prompt = isRepair
-        ? Gen.buildRepairPrompt(code, problems, { repeated: repeatedIds })
+        ? Gen.buildRepairPrompt(code, problems, { repeated: repeatedIds },
+          // ⚠️ 第一轮没有 probe（还没跑过）⟹ 那时只给"从代码量出来的事实"
+          Gen.buildObservation(lastProbe, lastCode))
         : Gen.buildImplementPrompt(plan, example, skeletonSource);
       const out = await callModelWithHeartbeat(ai, prompt,
         isRepair ? `第 ${round} 轮：按检查结果修` : '第 2 步：照设计写代码',
         { timeoutMs: GEN_TIMEOUT_MS, hint: '通常 40-90 秒' });
       const ms = out.ms;
+      // ⚠️⚠️ **诊断那一段要留下来** —— 那是"模型怎么想的"唯一记录，
+      //   而它是排查时最有用的东西（我们为"报错不带现场"栽过很多次）。
+      const diagnosis = Gen.extractDiagnosis(out.text);
+      if (diagnosis) {
+        logEvent('gen', `模型的诊断：${diagnosis.replace(/\s+/g, ' ').slice(0, 400)}`);
+        genProgress('模型说', diagnosis.split('\n')[0].slice(0, 60));
+      }
       code = Gen.extractScene(out.text);
+      lastCode = code;
       const lines = code.split('\n').length;
       genProgress('检查代码', `${lines} 行 · ${Math.round(ms / 1000)}s`);
       logEvent('gen', `第 ${round} 轮：${lines} 行、${Math.round(ms / 1000)}s`);
@@ -4488,6 +4506,14 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
 
       // ── 落盘到**工作区**（不是壁纸目录）
       writeWallpaperFiles(stageDir, code, want, dirName, skelDir, threeSrc);
+      // ⚠️ 每轮的诊断追加进工作区 —— 那让"它第 2 轮想的和第 3 轮想的"能对比，
+      //   而"连着两轮说同样的话"本身就是一个信号。
+      if (diagnosis) {
+        try {
+          fs.appendFileSync(path.join(stageDir, 'diagnosis.md'),
+            `\n\n## 第 ${round} 轮\n\n${diagnosis}\n`);
+        } catch { /* 留档失败不影响生成 */ }
+      }
 
       // ── ② 真跑闸门
       genProgress('试跑 3 秒', '看 WebGL 有没有真的画出东西');
@@ -4500,6 +4526,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
         + (probe.errors.length ? ` · 报错 ${probe.errors.length} 条` : ''));
       for (const e of probe.errors) logEvent('gen', `试跑报错：${String(e).slice(0, 200)}`);
 
+      lastProbe = probe;
       problems = Gen.judgeRuntime(probe);
       // ⚠️⚠️⚠️ **构图判定**（0.9.145）—— "好不好看"里能机器判的那部分。
       //   ⚠️ 它是**软的**：进 problems（会触发下一轮修），但最后一轮之后

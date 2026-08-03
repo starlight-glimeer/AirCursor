@@ -33,6 +33,9 @@
 
 'use strict';
 
+// ⚠️ 配色/亮度曲线（算出来的，不让模型猜 —— 见那个文件的头注释）
+const Palette = require('./palette.js');
+
 // ---------------------------------------------------------------------------
 // ⚠️⚠️⚠️ **骨架契约**（0.9.140 起，模型面对的是这个，不是宿主接口）
 // ---------------------------------------------------------------------------
@@ -174,43 +177,13 @@ const CONSTRAINTS = `# 硬约束（每条都不能破）
 // ---------------------------------------------------------------------------
 // 提示词
 // ---------------------------------------------------------------------------
-function buildScenePrompt(userWant, recipe, recipeText, historyText, example) {
-  return `你在为一个 macOS 动态壁纸播放器写一个 3D 场景。
-
-${SKELETON_API}
-
-# ⚠️⚠️ 这一张要用的"配方"（**必须照它做**）
-
-${recipeText}
-
-⚠️ 这五个维度是**指定的**，不是建议 —— 照着做。
-   而在每个维度内部你有充分自由（比如 layout=ring 时，几个环、疏密、
-   环之间怎么错开、元素是方块还是细杆，都你定）。
-
-# ⚠️⚠️⚠️ 已经生成过的组合（**避开它们**）
-
-${historyText}
-
-⚠️ 用户的原话：「我不希望同质化很严重，同一种风格的是允许的，但是每次生成
-   给人感觉说这不是一样的吗，这就不行」
-⟹ 上面那些是已经有的。而**底色、雾、打光**是"第一眼"看到的东西 ——
-   照配方里的 palette 和 environment 做，别落回"深蓝黑底 + 一个顶光"那个默认。
-
-# 用户这次想要的
-${userWant || '（没特别要求，按配方做一个好看的）'}
-
-# 参考实现（**风格参考，不是照抄** —— 它的配方和你的不一样）
-\`\`\`js
-${example}
-\`\`\`
-
-# 输出
-只输出 scene.js 的完整内容（一个 IIFE，挂 window.SCENE）。
-⚠️ 在文件开头用注释写一行：\`// 配方：layout=… audioMap=… palette=… motion=… environment=…\`
-   那是给人看的（出问题时能对上配方）。
-⚠️ 直接开始写代码，不要先长篇分析 —— 预算要留给代码本身。
-不要 markdown 围栏、不要解释。`;
-}
+//
+// ⚠️⚠️ `buildScenePrompt`（0.9.140 那版"一次性生成整个场景"的提示词）
+//   **0.9.148 删了** —— 生产流程从 0.9.142 起就是两步
+//   （`buildPlanPrompt` 设计 → `buildImplementPrompt` 写代码），
+//   而那个函数只剩测试在调它。
+//   ⟹ 判据：**只有测试在用的函数是死代码**，而它会漂（我刚就把一段
+//     重要的提示词插进了它里面，插完发现生产路径根本不经过那儿）。
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ⚠️⚠️⚠️ **拆成三步**（0.9.142）。用户 2026-08-02：
@@ -395,6 +368,8 @@ bass / mid / treble 各驱动什么，具体数值范围。
 没有音乐时怎么动（**必须有** —— 否则用户会以为坏了）
 
 ⚠️ 400-700 字。这是给下一步写代码用的规格书，不是文章。
+⚠️⚠️ **直接开始写那几个小标题，不要先长篇分析**（也不要复述上面的要求）——
+   实测过：推理模型在这一步烧了 6,465 字思考、正文一个字没写就撞上预算了。
 ⚠️⚠️ 而**构图那几条是硬要求** —— 元素排得再巧，俯视看全景 + 铺满画面
    还是会得到"很抽象、不好看"的结果。`;
 }
@@ -487,6 +462,25 @@ ${plan}
 
 ${skeleton}
 
+# ⚠️⚠️⚠️ 配色和亮度：**用下面这段现成的，别自己推公式**
+
+把这段**原样抄进你的 scene.js 顶部**（IIFE 里面），然后调它：
+
+\`\`\`js
+${Palette.INJECT}\`\`\`
+
+⟹ 用法：
+· 底色：\`ctx.scene.background = new THREE.Color(DP.bg)\`
+· 每个元素的颜色：
+  \`const d = dist / RADIUS;\`  （0..1，到中心的归一化距离）
+  \`color.setHSL(DP.hue(d, loud) / 360, DP.sat(d, loud), DP.lum(d, energy));\`
+  （\`loud\` 用 \`audio.bass\` 或三段平均，\`energy\` 用该点那一段频谱值）
+
+⚠️⚠️ **DP.lum 已经把"中心偏白、外围没入底色"算好了 ⟹ 别再乘任何系数。**
+   实测过：模型自己推公式时写成了三次衰减，外圈乘到 0.1，画面高亮占比 **0.0%**，
+   而它自己的注释里还写着"根因分析：上一版把 lum 一路乘小"——
+   **诊断对了，改的时候又犯了一次**。⟹ 所以这段由播放器提供，你只管调。
+
 # 参考实现（**看它的写法，不是抄它的设计** —— 它的设计和你的不一样）
 \`\`\`js
 ${example}
@@ -494,15 +488,157 @@ ${example}
 
 # 输出
 只输出 scene.js 的完整内容（一个 IIFE，挂 window.SCENE）。
-⚠️ 在文件开头用注释写一行：\`// 配方：…\`（照设计说明里的）
+⚠️ **包括上面那段 DP**（原样抄进去，别改里面的数字）。
 ⚠️ 直接开始写代码，不要复述设计、不要解释 —— 设计已经在上面了。
 不要 markdown 围栏。`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **观测报告 —— 给模型看的"眼睛"**（0.9.149）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-03：「就是 agent 的 skills / tools 这些东西肯定都是要正常的
+//   配给他的，包括说什么 runtime 这些东西」「思考方式 react 可能比较好」
+//
+// ⚠️⚠️ 而现在的架构是：模型盲写 → 我们判 → **回喂一句结论**。
+//   那不是 ReAct，那是"改作业"。ReAct 的关键是模型能**自己观察**，
+//   而观察到的东西要是**原始数据**，不是我的判断。
+//
+// ⟹ 判据：**把观测数据原样给它，让它自己说诊断。**
+//   我的判断（`C-太暗了`）会把它往一个方向推；而原始数据
+//   （"上/中/下三带亮度 8/28/9，高亮 0%，你的代码里 lum 被 *= 了两次"）
+//   让它能自己发现"哦，我把亮度乘了两遍"。
+//
+// ⚠️ 而这**不是把闸门换掉** —— 闸门照旧（那是确定性的、拦"必然出事"的）。
+//   这一层是**在闸门之外多给它一份现场**。
+function buildObservation(probe, code) {
+  const p = probe || {};
+  const px = p.sampledPixels;
+  const lines = [];
+
+  lines.push('# 你上一版真跑了 3 秒，下面是**实际观测到的数据**（不是我的判断）');
+  lines.push('');
+
+  // ── ① 运行时
+  const gl = p.webgl || {};
+  const fps = p.ms > 0 ? (p.frames / (p.ms / 1000)) : 0;
+  lines.push('## 运行时');
+  lines.push(`· 画了 ${p.frames} 帧 / ${p.ms}ms（约 ${fps.toFixed(1)} fps）`);
+  lines.push(`· WebGL context：${gl.context ? '正常' : '**没建起来**'}`
+    + `，gl.getError() = ${gl.glError === undefined ? '?' : gl.glError}`);
+  // ⚠️⚠️ 场景对象数是最有信息量的一个 —— 骨架默认放了一个 defaultLights Group
+  //   ⟹ 只有 1 个就说明模型删了灯或者什么都没加（实测那次就是）
+  lines.push(`· 场景里有 ${gl.objects} 个顶层对象`
+    + (gl.objects === 1
+      ? '（⚠️ 骨架默认放了一个 defaultLights Group ⟹ **只有 1 个说明你要么删了它、'
+        + '要么什么都没 add 进场景**）'
+      : ''));
+  if ((p.errors || []).length) {
+    lines.push('· ⚠️ 页面里报的错（原文）：');
+    for (const e of p.errors.slice(0, 6)) lines.push(`    ${String(e).slice(0, 300)}`);
+  }
+  lines.push('');
+
+  // ── ②⚠️⚠️ 像素观测 + **目标区间**（那让它能自己判差多少）
+  if (px && px.total) {
+    const pct = (n) => `${((100 * n) / px.total).toFixed(1)}%`;
+    lines.push('## 画面（32×32 采样，共 1024 点）');
+    lines.push(`· 近黑(<25)  ${pct(px.black)}    ← 目标 20-45%`);
+    lines.push(`· 高亮(>120) ${pct(px.bright || 0)}    ← 目标 5-20%`);
+    if (Array.isArray(px.bands)) {
+      lines.push(`· 三分带平均亮度  上 ${px.bands[0].toFixed(0)}`
+        + ` / 中 ${px.bands[1].toFixed(0)} / 下 ${px.bands[2].toFixed(0)}`
+        + '    ← 目标 25 / 90 / 50（中间最亮，上面几乎全暗）');
+    }
+    if (Number.isFinite(px.satMedian)) {
+      lines.push(`· 主体饱和度中位  ${px.satMedian.toFixed(2)}`
+        + '    ← 目标 0.30-0.34（低饱和才"高级"，高饱和霓虹色一眼就俗）');
+    }
+    lines.push('');
+  } else {
+    lines.push('## 画面');
+    lines.push('· （没截到图 —— 那是我们这边的问题，不是你的）');
+    lines.push('');
+  }
+
+  // ── ③⚠️⚠️⚠️ **从你自己的代码里量出来的事实**
+  //   ⚠️ 判据：**给"你写了什么"的事实，比给"你错了"的判断有用。**
+  //     实测那次：模型自己的注释里写着"根因分析：上一版把 lum 一路乘小"
+  //     ⟹ 它诊断对了、但改的时候又犯了一次 ⟹ 说明它需要的是**当场的证据**。
+  const facts = measureCode(code);
+  if (facts.length) {
+    lines.push('## 从你上一版代码里量出来的（事实，不是判断）');
+    for (const f of facts) lines.push(`· ${f}`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// ⚠️ 从代码里量出**可数的事实** —— 不做判断，只报数。
+//   ⚠️ 判据：**"你的 lum 被 *= 了 2 次"是事实，"太暗了"是判断。**
+//     前者让模型能自己连上因果，后者只能让它去调那个它以为相关的系数。
+function measureCode(code) {
+  const src = String(code || '');
+  if (!src) return [];
+  const out = [];
+
+  // 元素个数
+  const inst = src.match(/new\s+THREE\.InstancedMesh\s*\([^,]+,[^,]+,\s*([^)]+)\)/);
+  if (inst) out.push(`InstancedMesh 的实例数参数是 \`${inst[1].trim()}\``);
+
+  // 相机
+  const cam = src.match(/camera\.position\.set\s*\(([^)]*)\)/);
+  const look = src.match(/lookAt\s*\(([^)]*)\)/);
+  if (cam) {
+    out.push(`相机位置 (${cam[1].trim()})`
+      + (look ? `，看向 (${look[1].trim()})` : '')
+      + '  ← 目标是压低到贴近地平线：高度不超过距离的 1/4');
+  }
+
+  // ⚠️⚠️ 亮度被乘了几次 —— 这是实测那次的直接死因
+  const lumLines = src.split('\n').filter((l) => /\b(lum|bright|lightness)\b/i.test(l));
+  const mul = lumLines.filter((l) => /\b(lum|bright|lightness)\w*\s*\*=/i.test(l));
+  if (mul.length) {
+    out.push(`亮度变量被 \`*=\` 了 **${mul.length} 次**`
+      + `（那几行：${mul.map((l) => l.trim().slice(0, 60)).join(' ｜ ')}）`
+      + '  ← 衰减只该做一次；两次以上外圈会变成纯黑而不是"暗"');
+  }
+  // 有没有用我们给的 DP 曲线
+  if (/\bDP\.lum\s*\(/.test(src)) {
+    out.push('✓ 用了播放器提供的 DP.lum 曲线');
+  } else if (/setHSL|setRGB/.test(src)) {
+    out.push('⚠️ 没用播放器提供的 DP.lum/DP.sat/DP.hue，自己推的公式'
+      + '  ← 那三个是从目标壁纸实测算出来的，自己推容易出上面那种连乘问题');
+  }
+
+  // 材质 + 灯
+  const mats = [...src.matchAll(/new\s+THREE\.(Mesh\w+Material)/g)].map((m) => m[1]);
+  if (mats.length) {
+    const uniq = [...new Set(mats)];
+    const removed = /scene\.remove\s*\(\s*(ctx\.)?defaultLights/.test(src);
+    const added = /new\s+THREE\.\w*Light\s*\(/.test(src);
+    out.push(`材质：${uniq.join(' / ')}`
+      + `；${removed ? '**删掉了** defaultLights' : '保留了 defaultLights'}`
+      + `；${added ? '自己加了灯' : '**没有**自己加灯'}`);
+  }
+
+  // ⚠️ 高度里的距离项 —— "像个圆锥"的直接证据
+  const heightLine = src.split('\n').find((l) =>
+    /\b(target|h|height)\s*=\s*[^=]/.test(l) && /\b(core|dist|dc|rNorm)\b/.test(l));
+  if (heightLine) {
+    out.push(`高度的算式里用到了"到中心的距离"：\`${heightLine.trim().slice(0, 90)}\``
+      + '  ← 距离该只用来**选频段**；高度要靠频段能量 + 跟位置有关的噪声，'
+      + '否则画出来是个圆锥');
+  }
+
+  return out;
 }
 
 // ⚠️⚠️ 回喂：把**机器闸门的原文**给模型，不是我转述的结论。
 //   ⚠️ 判据：转述会丢信息（"缺鼠标处理"和"全文只有一个 addEventListener 且是
 //     resize"对模型是两种信息量），而丢的那部分正是它需要用来定位的。
-function buildRepairPrompt(previousCode, problems, roundInfo) {
+function buildRepairPrompt(previousCode, problems, roundInfo, observation) {
   // ⚠️⚠️⚠️ **同一个问题连着两轮没解决 ⟹ 说明改的方向不对**（0.9.147）。
   //   用户 2026-08-03 那次：三轮都在修，而"一片黑"一直没好
   //   （读数 12/9/6 → 三轮后还是 12/9/6）。
@@ -527,9 +663,19 @@ ${repeated.map((id) => `· ${id}`).join('\n')}
    ⚠️ 换一个假设，别改同一个系数。`
     : '';
 
-  return `你上一版写的 scene.js 没通过自动检查。下面是检查器的原始输出。
+  // ⚠️⚠️⚠️ **观测数据排在检查器报告前面**（0.9.149）。用户 2026-08-03：
+  //   「思考方式 react 可能比较好」
+  //   ⟹ ReAct = 观察 → 思考 → 行动。而我原来是**先给结论**
+  //     （"[C-太暗了] 把亮度提上去"）⟹ 模型直接跳到"行动"，
+  //     沿着我指的方向微调 ⟹ 三轮都没修掉。
+  //   ⟹ 判据：**先给现场，再给结论；而且要求它把诊断说出来。**
+  //     说出来那一步不是形式 —— 它强迫模型把"数据"和"我改了什么"连上，
+  //     而那正是它上次跳过的一步（它注释里诊断对了，改的时候又犯了一次）。
+  const obs = observation ? `${observation}\n` : '';
 
-# 检查器报告
+  return `你上一版写的 scene.js 没通过自动检查。
+
+${obs}# 检查器报告（确定性检查，这些是必须修掉的）
 ${problems.map((x, i) => `${i + 1}. [${x.id}] ${x.detail}`).join('\n')}${stuckNote}
 
 ${SKELETON_API}
@@ -549,6 +695,22 @@ ${previousCode}
 
 ⚠️ 其余（A- B- D- E- F- R- 开头，以及 C-重做骨架）是 bug ——
    **保留原来的视觉设计**，只修那个具体错误。
+
+# ⚠️⚠️⚠️ 输出格式（两段，顺序不能换）
+
+## 第一段：诊断（3-6 行，普通文字）
+先把**观测数据**和**你的代码**连起来，一条一条说：
+  · 哪个数字不对（照抄上面那个数）
+  · 它是你代码里哪一行造成的
+  · 你打算怎么改（改哪一行、改成什么）
+
+⚠️ 这一步**不是形式** —— 实测过：你上一版的注释里写着"根因分析：上一版把
+   lum 一路乘小"，说明诊断是对的，**但改的时候又犯了一次同样的错**。
+   ⟹ 把因果显式写出来，能让你在动手前发现"我要改的这一行正是我上次改错的那行"。
+
+## 第二段：完整的 scene.js
+在诊断之后，用一行 \`===SCENE===\` 分隔，然后是完整代码。
+⚠️ 不要 markdown 围栏。
 只输出修好的 scene.js 完整内容。
 ⚠️ 直接开始写代码，不要先长篇分析 —— 预算要留给代码本身。
 不要 markdown 围栏、不要解释。`;
@@ -566,6 +728,15 @@ ${previousCode}
 function extractScene(text) {
   const raw = String(text || '');
   let body = raw;
+
+  // ⚠️⚠️⚠️ **先切掉诊断那一段**（0.9.149）。回喂时要求模型
+  //   "先写诊断，再用 ===SCENE=== 分隔，然后是代码"（ReAct 的"思考"那一步）
+  //   ⟹ 这里要把分隔符前面的文字扔掉。
+  //   ⚠️ 而**没有分隔符时不能报错** —— 第一轮（buildImplementPrompt）
+  //     不要求诊断，那时整段都是代码。⟹ 有就切，没有就当全是代码。
+  const sep = body.lastIndexOf('===SCENE===');
+  if (sep >= 0) body = body.slice(sep + '===SCENE==='.length);
+
   // ⚠️ 模型经常不听"不要 markdown 围栏"（实测过）⟹ 这里必须兜。
   const fence = body.match(/```(?:js|javascript)?\s*\n([\s\S]*?)```/i);
   if (fence) body = fence[1];
@@ -584,6 +755,16 @@ function extractScene(text) {
     throw new Error('模型输出了 HTML —— 这一版只要 scene.js（骨架那些文件我们自己给）');
   }
   return body;
+}
+
+// ⚠️ 把诊断那一段拿出来 —— 它要进日志和 plan 留档。
+//   ⚠️ 判据：**"模型怎么想的"是排查时唯一的线索**，而它现在会写出来了
+//     ⟹ 别扔掉（我们为"报错不带现场"栽过）。
+function extractDiagnosis(text) {
+  const raw = String(text || '');
+  const sep = raw.lastIndexOf('===SCENE===');
+  if (sep < 0) return '';
+  return raw.slice(0, sep).trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,9 +1343,11 @@ module.exports = {
   CONTRACT,
   CONSTRAINTS,
   SKELETON_API,
-  buildScenePrompt,
+  buildObservation,
+  measureCode,
   buildRepairPrompt,
   extractScene,
+  extractDiagnosis,
   inspect,
   judgeRuntime,
   judgeComposition,
