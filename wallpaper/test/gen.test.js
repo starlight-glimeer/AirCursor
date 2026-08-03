@@ -1281,4 +1281,116 @@ check('⚠️ measureCode 只报数，算不出来就不报', () => {
 });
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  第二张真实失败产物（08030141）—— 雾 / DP / 空闲二选一（0.9.150）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  真实失败产物（用户 08030141 那张）');
+
+const BAD_FOG = (() => {
+  try {
+    return fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'bad-fog-and-idle-else.scene.js'), 'utf8');
+  } catch { return null; }
+})();
+
+check('⚠️⚠️⚠️ 雾太浓 → 逮住（这是那张"很暗淡"的真死因）', () => {
+  // ⚠️⚠️ `FogExp2(BG, 0.12)` + 相机在 (0, 3.2, 12)
+  //   ⟹ 透光率 = exp(-(0.12*12)²) ≈ **0.13** ⟹ 元素亮度被乘掉 87%
+  //   ⟹ 模型把 L 给到 0.85，实际显示 0.11。那就是读数"三带 8/10/10"的来源。
+  // ⚠️⚠️⚠️ 而模型**三轮都在调 L**，诊断每轮都很到位（"根因不是系数"、
+  //   "亮度没有以离中心距离做强衰减"），但**没有一轮怀疑到雾** ——
+  //   因为雾在 `setHSL` 之后作用，它看不见那个乘法。
+  //   ⟹ 判据：**当一个参数的效果隔着好几层才显现，模型不可能靠试错找到它。**
+  assert.ok(BAD_FOG, 'fixtures/bad-fog-and-idle-else.scene.js 不在 ⟹ 真实样本，别删');
+  const ids = G.inspectDesign(BAD_FOG).map((x) => x.id);
+  assert.ok(ids.includes('C-雾太浓'), `没逮住雾太浓（报了 ${ids.join(',')}）`);
+  const detail = G.inspectDesign(BAD_FOG).find((x) => x.id === 'C-雾太浓').detail;
+  // ⚠️ 报错里要把**那个乘法**算出来给它看，不能只说"雾太浓了"
+  assert.match(detail, /透光率/, '没算出透光率');
+  assert.match(detail, /13%|1[0-9]%/, '没给出具体的百分比');
+  assert.match(detail, /setHSL.*之后|之后作用/,
+    '没说清"雾在 setHSL 之后作用" ⟹ 模型还会继续调 L');
+  assert.match(detail, /DP\.fogDensity/, '没给出正确做法');
+});
+
+check('⚠️⚠️ 完全没用 DP 曲线 → 逮住（"我给了它"不等于"它用了"）', () => {
+  // ⚠️ 那张里 `DP.` 出现 **0 次** —— 我注入了那段代码、提示词也写了
+  //   "原样抄进去然后调它"，而它完全忽略、自己推了一套（那套正是死因）。
+  assert.ok(BAD_FOG, '样本不在');
+  assert.strictEqual((BAD_FOG.match(/\bDP\./g) || []).length, 0,
+    '样本里居然用了 DP ⟹ 那这条测试的前提不成立了');
+  const ids = G.inspectDesign(BAD_FOG).map((x) => x.id);
+  assert.ok(ids.includes('C-没用给的配色曲线'), `没逮住（报了 ${ids.join(',')}）`);
+});
+
+check('⚠️⚠️ 空闲动画写在 else 里 → 逮住（有音乐时动态反而更少）', () => {
+  // ⚠️ 用户原话「动态的部分太少了」—— 而它的动态**在有音乐时比静音时更少**，
+  //   那是反直觉的，正是 `if (hasAudio) {频谱} else {行波}` 造成的：
+  //   有音乐时"整片都在起伏"那一层整个消失，剩下各点各自跟频谱 = 噪点感。
+  assert.ok(BAD_FOG, '样本不在');
+  const ids = G.inspectDesign(BAD_FOG).map((x) => x.id);
+  assert.ok(ids.includes('C-空闲动画二选一'), `没逮住（报了 ${ids.join(',')}）`);
+  const detail = G.inspectDesign(BAD_FOG).find((x) => x.id === 'C-空闲动画二选一').detail;
+  // ⚠️ 要给出**叠加**的写法，不是只说"别二选一"
+  assert.match(detail, /\+=/, '没给出叠加的写法');
+  assert.match(detail, /不能变成 0|一直在/, '没说清"空闲波要一直在"');
+});
+
+check('⚠️ 两张真实产物的问题都被逮住（而示例仍然零问题）', () => {
+  // ⚠️⚠️ 判据：**闸门要拿真实的失败产物当样本。** 我手写的假代码只会命中
+  //   我想到的那种写法 —— 而这一轮的 C-雾太浓 / C-空闲动画二选一 两条，
+  //   都是**读了真实产物才发现的**（我之前完全没想到雾会是死因）。
+  assert.ok(BAD_REAL && BAD_FOG, '两个样本都要在');
+  assert.ok(G.inspectDesign(BAD_REAL).length >= 4,
+    '08030114 那张该被逮住至少 4 条（亮度连乘 / 圆锥 / 雾 / 没用 DP）');
+  assert.ok(G.inspectDesign(BAD_FOG).length >= 3,
+    '08030141 那张该被逮住至少 3 条（雾 / 没用 DP / 空闲二选一）');
+  // ⚠️⚠️⚠️ 而**我们自己的示例必须零问题** —— 它是喂给模型的范例，
+  //   自己违规等于在示范"可以违规"（0.9.150 为此把它改成用 DP 了）
+  const ex = fs.readFileSync(
+    path.join(__dirname, '..', 'skeleton', 'scene.example.js'), 'utf8');
+  assert.deepStrictEqual(G.inspectDesign(ex), [],
+    `示例场景被判出问题（${G.inspectDesign(ex).map((x) => x.id).join(',')}）`
+    + ' ⟹ 它是范例，自己违规等于在示范"可以违规"');
+});
+
+check('⚠️ 提示词：动态五组是硬规则 + 反默认清单', () => {
+  // 用户 2026-08-03：「动态的部分太少了」
+  const plan = G.buildPlanPrompt('');
+  assert.match(plan, /五组，缺一条就是没做完/, '没把动态写成硬规则');
+  // ⚠️ 五组每一组都要说清"缺了什么症状" —— 那让它能自查
+  for (const kind of ['持续', '事件', '粒子', '慢', '空闲']) {
+    assert.ok(plan.includes(kind), `五组里没有"${kind}"`);
+  }
+  assert.match(plan, /空闲波要一直在/, '没警告"空闲动画写 else 里"这个坑');
+  // ⚠️⚠️ 反默认清单（借 taste-skill 的形式：具体禁令而不是形容词）
+  assert.match(plan, /别落回这些/, '没有反默认清单');
+  for (const trap of ['中心一个尖锥', '雾密度自己填数字', '亮度连乘',
+    '高饱和霓虹紫', '俯视看全景']) {
+    assert.ok(plan.includes(trap), `反默认清单里没有"${trap}"`);
+  }
+});
+
+check('⚠️⚠️ 雾密度是算出来的，而参数合理', () => {
+  const Pal = require(path.join(__dirname, '..', 'src', 'palette.js'));
+  // ⚠️ 相机 22m、场景半径 20 ⟹ 最远 42m 处透光 25%（没入而不是消失）
+  const den = Pal.fogDensityFor(22, 20);
+  assert.ok(Pal.fogTransmission(den, 8) > 0.9,
+    `近处（8m）透光率只有 ${Pal.fogTransmission(den, 8).toFixed(2)} ⟹ 雾太浓`);
+  assert.ok(Pal.fogTransmission(den, 22) > 0.5,
+    '相机距离处透光率低于 50% ⟹ 主体被压暗（那正是 08030141 的死因）');
+  assert.ok(Pal.fogTransmission(den, 42) < 0.35,
+    '最远处透光率太高 ⟹ 外圈没"没入底色"，画面会铺满');
+  // ⚠️ 而模型那次填的 0.12 必须落在"太浓"那一侧（否则闸门的阈值错了）
+  assert.ok(Pal.fogTransmission(0.12, 12) < 0.45,
+    '0.12 + 12m 算出来不算"太浓" ⟹ 那闸门的阈值定错了');
+  // ⚠️ 极端输入不崩
+  for (const [a, b] of [[0, 0], [-1, 5], [NaN, 20], [22, NaN]]) {
+    assert.ok(Number.isFinite(Pal.fogDensityFor(a, b)),
+      `fogDensityFor(${a}, ${b}) 不是有限数`);
+  }
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

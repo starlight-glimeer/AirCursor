@@ -113,6 +113,18 @@ const DP = {
     const l = _c01(loudness);
     return Math.max(0, Math.min(0.85, ${TARGET.satBase} * (0.55 + 0.75 * dd) + l * ${(TARGET.satLoud - TARGET.satBase).toFixed(2)}));
   },
+  // ⚠️⚠️⚠️ 雾密度：**用这个函数算，别自己填数字**
+  //   FogExp2 的透光率是 exp(-(density*distance)^2) —— 那是平方衰减，
+  //   density 从 0.03 调到 0.12 会让 13m 处的元素从 88% 掉到 13%。
+  //   ⚠️ 实测栽过：填了 0.12 + 相机在 13m ⟹ 所有元素被乘掉 91%，
+  //     而 setHSL 的 L 给到 0.85 也只剩 0.07（画面全暗）。
+  //   ⚠️ 雾该做的是"让最外圈没入底色"，不是"让整片变暗"。
+  fogDensity(cameraDist, sceneRadius) {
+    const cd = Number(cameraDist);
+    const r = Number(sceneRadius);
+    if (!Number.isFinite(cd) || !Number.isFinite(r) || cd <= 0 || r <= 0) return 0.02;
+    return Math.max(0.005, Math.min(0.06, Math.sqrt(-Math.log(0.25)) / (cd + r)));
+  },
   // 色相(度)：安静洋红紫 → 激烈蓝紫
   hue(d, loudness) {
     const dd = _c01(d);
@@ -122,4 +134,45 @@ const DP = {
 };
 `;
 
-module.exports = { TARGET, lumAt, satAt, hueAt, INJECT };
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **雾的密度 —— 算出来的**（0.9.150）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-03 那张（wallpaper-08030141）的死因就是这个：
+//   `ctx.scene.fog = new THREE.FogExp2(BG, 0.12)` + 相机在 12-14m
+//   ⟹ `FogExp2` 的透光率是 `exp(-(density * distance)²)`
+//     = exp(-(0.12*13)²) ≈ **0.086** ⟹ 所有元素被乘掉 **91%**
+//   ⟹ 模型把 L 给到 0.85，乘完变 0.073 —— 那就是三带 8/10/10 的来源。
+//
+// ⚠️⚠️ 而模型**三轮都在调 L**，因为雾在 `setHSL` 之后作用、它看不见。
+//   它的诊断每轮都很到位（"根因不是系数"、"亮度没有以离中心距离做强衰减"），
+//   但**没有一轮怀疑到雾** —— 那不是它笨，是**雾的影响不在它能观察的东西里**。
+//   ⟹ 判据：**当一个参数的效果隔着好几层才显现，模型不可能靠试错找到它。**
+//     那种参数要么由我们算，要么在观测报告里直接把它的影响算给它看。
+//
+// ⚠️ 而雾**该做的事**是"让最外圈没入底色"，不是"让整片变暗"：
+//   最远处（相机到场景边缘）透光率 ~25%，最近处 >90%。
+function fogDensityFor(cameraDist, sceneRadius) {
+  const cd = Number(cameraDist);
+  const r = Number(sceneRadius);
+  if (!Number.isFinite(cd) || !Number.isFinite(r) || cd <= 0 || r <= 0) return 0.02;
+  // 最远的元素大约在 cameraDist + sceneRadius 处
+  const far = cd + r;
+  // ⚠️ 解 exp(-(density*far)²) = 0.25 ⟹ density = sqrt(-ln(0.25)) / far
+  const density = Math.sqrt(-Math.log(0.25)) / far;
+  // ⚠️ 夹在合理范围 —— 太小等于没雾、太大就是这次的坑
+  return Math.max(0.005, Math.min(0.06, density));
+}
+
+// ⚠️ 给定雾密度和距离，透光率是多少 —— 观测报告要用它把"雾吃掉多少"算给模型看
+function fogTransmission(density, distance) {
+  const d = Number(density);
+  const x = Number(distance);
+  if (!Number.isFinite(d) || !Number.isFinite(x)) return 1;
+  return Math.exp(-Math.pow(d * x, 2));
+}
+
+module.exports = {
+  TARGET, lumAt, satAt, hueAt, INJECT,
+  fogDensityFor, fogTransmission,
+};

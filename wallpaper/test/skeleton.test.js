@@ -47,8 +47,14 @@ const THREE={ REVISION:'128', DynamicDrawUsage:35048,
   WebGLRenderer:class{constructor(o){this.o=o;this._dpr=1}
     getContext(){return {getParameter:()=>'fake', getError:()=>0, VERSION:1, RENDERER:2}}
     setPixelRatio(v){this._dpr=v} getPixelRatio(){return this._dpr} setSize(){} render(){this.rendered=(this.rendered||0)+1}},
-  Fog:class{constructor(){}}, Color:class{constructor(){this.r=0;this.g=0;this.b=0}
-    setRGB(r,g,b){this.r=r;this.g=g;this.b=b;return this} multiplyScalar(){return this}},
+  Fog:class{constructor(){}},
+  // ⚠️ FogExp2：0.9.150 起示例场景用它（密度由 DP.fogDensity 算 —— 实测填死数字栽过）
+  FogExp2:class{constructor(c,d){this.color=c;this.density=d}},
+  Color:class{constructor(){this.r=0;this.g=0;this.b=0}
+    setRGB(r,g,b){this.r=r;this.g=g;this.b=b;return this}
+    // ⚠️ setHSL：示例场景 0.9.150 起走 DP.hue/sat/lum ⟹ 这个双要跟上
+    setHSL(h,s2,l){this.r=h;this.g=s2;this.b=l;return this}
+    multiplyScalar(){return this}},
   AmbientLight:class extends Obj3D{}, DirectionalLight:class extends Obj3D{},
   // ⚠️ Group：0.9.140 起骨架把默认灯光装进一个 Group（让模型能一句话换整套打光）
   Group:class extends Obj3D{},

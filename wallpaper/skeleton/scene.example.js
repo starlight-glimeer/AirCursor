@@ -19,6 +19,46 @@
 (() => {
   'use strict';
 
+// ── 配色/亮度：由播放器提供的曲线（别自己推公式，那次三轮都推错了）
+// ⚠️ NaN 会传染（一个 NaN 亮度会让 setHSL 静默失败）⟹ 非数字当 0
+const _c01 = (v) => { const n = Number(v); return !Number.isFinite(n) ? 0 : (n < 0 ? 0 : (n > 1 ? 1 : n)); };
+const DP = {
+  bg: 0x070815,
+  // 亮度：d 是到中心的归一化距离(0..1)，energy 是该点音频能量(0..1)
+  // ⚠️ 这条曲线已经把"中心偏白、外围没入底色"算好了 ⟹ **别再乘任何系数**
+  lum(d, energy) {
+    const dd = _c01(d);
+    const e = _c01(energy);
+    const t = dd * 0.65 + dd * dd * 0.35;
+    return Math.max(0, Math.min(1, 0.86 + (0.18 - 0.86) * t + e * 0.12));
+  },
+  // 饱和度：中心低(偏白)、外围高(偏紫)；loudness 是整体响度(0..1)
+  sat(d, loudness) {
+    const dd = _c01(d);
+    const l = _c01(loudness);
+    return Math.max(0, Math.min(0.85, 0.32 * (0.55 + 0.75 * dd) + l * 0.30));
+  },
+  // ⚠️⚠️⚠️ 雾密度：**用这个函数算，别自己填数字**
+  //   FogExp2 的透光率是 exp(-(density*distance)^2) —— 那是平方衰减，
+  //   density 从 0.03 调到 0.12 会让 13m 处的元素从 88% 掉到 13%。
+  //   ⚠️ 实测栽过：填了 0.12 + 相机在 13m ⟹ 所有元素被乘掉 91%，
+  //     而 setHSL 的 L 给到 0.85 也只剩 0.07（画面全暗）。
+  //   ⚠️ 雾该做的是"让最外圈没入底色"，不是"让整片变暗"。
+  fogDensity(cameraDist, sceneRadius) {
+    const cd = Number(cameraDist);
+    const r = Number(sceneRadius);
+    if (!Number.isFinite(cd) || !Number.isFinite(r) || cd <= 0 || r <= 0) return 0.02;
+    return Math.max(0.005, Math.min(0.06, Math.sqrt(-Math.log(0.25)) / (cd + r)));
+  },
+  // 色相(度)：安静洋红紫 → 激烈蓝紫
+  hue(d, loudness) {
+    const dd = _c01(d);
+    const l = _c01(loudness);
+    return (310 + (235 - 310) * l + dd * 18) % 360;
+  },
+};
+
+
   // ── 这个场景自己的状态（别挂全局，换场景时要能干净替换）
   let grid = null;          // InstancedMesh
   let cols = 0;
@@ -57,6 +97,11 @@
 
       baseColor = new THREE.Color();
 
+      // ⚠️ 底色和雾也走 DP —— 雾密度**算出来**，别自己填数字
+      //   （实测栽过：填 0.12 + 相机 12m ⟹ 透光率 9%，整片被乘掉 91%）
+      ctx.scene.background = new THREE.Color(DP.bg);
+      ctx.scene.fog = new THREE.FogExp2(DP.bg, DP.fogDensity(26, cols * 0.5));
+
       // 相机：俯视一点，能看到网格的起伏
       ctx.camera.position.set(0, 15, 26);
       ctx.camera.lookAt(0, 0, 0);
@@ -90,9 +135,6 @@
       for (const rp of ripples) { rp.r += ctx.dt * 14; rp.life -= ctx.dt * 0.55; }
       ripples = ripples.filter((rp) => rp.life > 0);
 
-      // ── 主色：跟着封面走（拿不到就用参数里的）
-      const c = ctx.track.primaryColor || opts.accent || [0.33, 0.84, 0.98];
-
       const half = (cols - 1) / 2;
       let i = 0;
       for (let gz = 0; gz < rows; gz += 1) {
@@ -121,10 +163,18 @@
           dummy.m.updateMatrix();
           grid.setMatrixAt(i, dummy.m.matrix);
 
-          // 颜色：高的更亮（HSL 的 L 跟高度走）
-          const lum = Math.min(0.72, 0.24 + h * 0.055);
-          baseColor.setRGB(c[0], c[1], c[2]);
-          baseColor.multiplyScalar(0.5 + lum);
+          // ⚠️⚠️ 颜色**走 DP 曲线**（0.9.150）—— 那三个函数的数字是从目标壁纸
+          //   逐帧量化出来的。⚠️ 而这份示例是喂给模型的范例 ⟹ 它自己不用 DP
+          //   等于在示范"可以不用"（实测：模型完全忽略了那段注入的代码）。
+          //   ⚠️ 判据：**范例要示范正确做法**，而不只是"能跑"。
+          const dNorm = dist / (cols * 0.5);          // 0..1，到中心的归一化距离
+          const energy = audio.bins[bin];             // 该点那一段频谱
+          baseColor.setHSL(
+            DP.hue(dNorm, audio.bass) / 360,
+            DP.sat(dNorm, audio.bass),
+            // ⚠️ 加法可以（给高的柱子额外提一点），**乘法不行**
+            Math.min(1, DP.lum(dNorm, energy) + Math.min(0.08, h * 0.01)),
+          );
           grid.setColorAt(i, baseColor);
         }
       }
