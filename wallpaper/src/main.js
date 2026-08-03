@@ -51,7 +51,6 @@ const MouseBridge = require('./mouse-bridge.js');
 const LLM = require('./llm.js');
 const Gen = require('./wallpaper-gen.js');
 // ⚠️ 0.9.140：防同质化的配方表（枚举维度 + 读历史避重）。纯逻辑、有测试。
-const Recipe = require('./wallpaper-recipe.js');
 // ⚠️ 0.9.111：去音轨那个 helper 也走预编译优先那条路（和音频/鼠标一样）。
 const { findPrebuilt } = require('./prebuilt-helper.js');
 
@@ -4186,31 +4185,6 @@ async function probeWallpaperRuntime(dir) {
   return probe;
 }
 
-// ⚠️⚠️ **读已经生成过的配方** —— 那是"避重"的输入。
-//
-// ⚠️ 从 `project.json` 的 `gwRecipe` 读（生成时写进去的）。
-//   ⟹ 判据：**"多样"要可观测才可控** —— 历史存在磁盘上、和壁纸本身在一起，
-//     而不是存在内存里（那样重启就没了、也没法在用户说"这两张像"时查）。
-// ⚠️ 而它**只读我们自己生成的**（`gwGenerated` 为真）—— 工坊下载的壁纸没有配方。
-function readRecipeHistory(root) {
-  const out = [];
-  let names = [];
-  try { names = fs.readdirSync(root); } catch { return out; }
-  for (const name of names) {
-    try {
-      const raw = fs.readFileSync(path.join(root, name, 'project.json'), 'utf8');
-      const proj = JSON.parse(raw);
-      if (proj && proj.gwGenerated && proj.gwRecipe) {
-        // ⚠️ 带上 mtime 排序 —— "最近几张"要按时间，不是按目录名字母序
-        let mtime = 0;
-        try { mtime = fs.statSync(path.join(root, name, 'project.json')).mtimeMs; } catch { /* 用 0 */ }
-        out.push({ ...proj.gwRecipe, __t: mtime });
-      }
-    } catch { /* 不是我们生成的，或者读不出来 ⟹ 跳过 */ }
-  }
-  out.sort((a, b) => a.__t - b.__t);
-  return out;
-}
 
 // ⚠️⚠️ **预览图**（0.9.140）：网格卡片要它，没有就是个空白方块。
 //
@@ -4310,9 +4284,11 @@ async function callModelWithHeartbeat(ai, prompt, label, opts) {
 // ⚠️⚠️ 而**防同质化**是另一条硬需求：
 //   「我不希望同质化很严重，同一种风格的是允许的，但是每次生成给人感觉说
 //     这不是一样的吗，这就不行」
-//   ⟹ 靠 `wallpaper-recipe.js`：五个维度枚举 + **读历史避重**。
-//     实测（6 张连续生成）：纯随机最坏撞 4 维、平均 1.38 维；
-//     避重版最坏 0 维。⟹ 撞 4 维就是"这不是一样的吗"。
+//   ⚠️⚠️ 0.9.146 **拆掉了配方那套**（wallpaper-recipe.js 已删）：五维枚举 +
+//     读历史避重 + 前三张固定配方。它的问题是每次目标都不一样 ⟹ 一次都收不敛，
+//     而用户要的是「你把提示词调到能一次出那个效果，然后内置」。
+//     ⟹ 多样性靠模型自己（同一套提示词下它每次的实现本来就不同），
+//       不靠我们枚举维度。而**不做记忆**是用户明确要的（"先不做记忆系统"）。
 ipcMain.handle('gen-wallpaper', async (_event, payload) => {
   const want = String((payload && payload.want) || '').trim();
 
@@ -4346,36 +4322,26 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
 
   // ── 配方：读已有壁纸的历史，挑一组避开它们
   const root = ensureOurWallpaperDir();
-  const history = readRecipeHistory(root);
 
-  // ⚠️⚠️⚠️ **复刻模式**（0.9.145）。用户 2026-08-03：
-  //   「我们就先生成一个具体的，就是目标能生成我这张，就通过提示词来复刻出
-  //     我这张壁纸的效果，然后实现以后我们再把它泛化，那我理解这种类型
-  //     我们就拿下了，以此类推逐渐扩张就行」
+  // ⚠️⚠️⚠️ **没有"模式"这回事**（0.9.146）。用户 2026-08-03：
+  //   「你理解错了，我说的这个是让你去调整提示词的方法…我们要复刻就是那个
+  //     粒子效果通过一次把它复刻出来，我们这个就是你不断自己调整内置提示词吗？
+  //     以后我说生成，你已经给我个预置提示词…然后我们再泛化，
+  //     那这种类型的壁纸不就被我们拿下了吗？我是这个意思，什么复刻模式？不要这样」
   //
-  // ⚠️ 而这**同时把验收标准从"好不好看"变成"像不像"** —— 后者能量化
-  //   （近黑占比 / 三分带亮度 / 饱和度中位），前者只能靠感觉吵。
+  // ⚠️⚠️ 我 0.9.145 把**我调提示词的方法**做成了运行时的状态机
+  //   （前 3 张固定配方、第 4 张起随机）—— 那是把开发过程暴露成产品行为。
+  //   ⟹ 判据：**"我怎么把它调好"和"用户点一下发生什么"是两件事。**
+  //     调好了就内置成默认，不留档、不计数、不看历史张数。
   //
-  // ⚠️⚠️ 随机挑 12,096 种组合的问题**不是"不够多样"，是每次目标都不一样
-  //   ⟹ 一次都收不敛**（用户连着看到三张都"抽象不好看"）。
-  //   ⟹ 判据：**先把一个目标做到位，再放开维度。**
+  // ⟹ 现在只有一条路：**内置的那套提示词**（`REFERENCE_SPEC` 里那些实测指标
+  //   已经并进 COMPOSITION 和 buildPlanPrompt）。用户说一句话 ⟹ 出一张。
   //
-  // ⚠️ 触发条件：`REPLICATE_UNTIL` 张之前都走复刻。到了那个数说明这一类
-  //   已经稳定了 ⟹ 自动放开成随机配方（泛化）。
-  //   ⚠️ 而这个数**故意小**（3）—— 复刻是为了验证"这条路走得通"，
-  //     不是让用户永远只能得到同一张。
-  const REPLICATE_UNTIL = 3;
-  const replicate = history.length < REPLICATE_UNTIL;
-  const recipe = replicate ? { ...Recipe.REFERENCE } : Recipe.pickRecipe(history);
-  // ⚠️⚠️ 复刻时喂的是**实测规格**（`REFERENCE_SPEC`），不走 DIMENSIONS 那层抽象
-  //   ⟹ 维度是为了组合，而现在要精确命中一个点。
-  const recipeText = replicate
-    ? Recipe.REFERENCE_SPEC
-    : Recipe.describeRecipe(recipe);
-  const historyText = replicate
-    ? `（复刻模式：这是第 ${history.length + 1} 张，先把参考那张做到位，`
-      + `到第 ${REPLICATE_UNTIL + 1} 张开始换配方）`
-    : Recipe.describeHistory(history);
+  // ⚠️ 而**每次都是全新任务，不看历史**（用户同一条消息）：
+  //   「我理解我们说一句话，然后是一次任务吗？一张壁纸，那我要做下一张壁纸呢，
+  //     是不是不应该记忆留存的吧？应该从零开始，就是我们先不做记忆系统」
+  //   ⟹ 判据：**没被要求的状态就别引入。** 记忆会让"这次为什么和上次不同"
+  //     变成一个要查的问题，而现在它连问题都不是。
   const example = fs.readFileSync(path.join(skelDir, 'scene.example.js'), 'utf8');
   // ⚠️⚠️⚠️ **把骨架的真源码给模型**（0.9.145）。用户 2026-08-03：
   //   「我们这个壁纸渲染器本来就是我们做，所以代码相关的…也可以告诉我们的模型，
@@ -4392,24 +4358,11 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     logEvent('gen', `骨架源码 ${skeletonSource.length} 字节已喂给模型（不是摘要）`);
   }
 
-  // ⚠️⚠️ 撞了几维要**算**，不能写死 —— 我第一版这里直接打"避重后撞 0 维"，
-  //   而那是**没算过的断言**：历史够多时每个选项都用过，避重会无路可走，
-  //   那时它必然撞而日志还在说 0。
-  //   ⟹ 判据：**日志里的数字要么是算出来的，要么别写。**
-  //     一条会说谎的日志比没有日志更坏（这个项目为"video 提示无条件甩锅音轨"栽过）。
-  const worstCollide = history.reduce(
-    (mx, h) => Math.max(mx, Recipe.collide(h, recipe).length), 0);
-  genProgress(replicate ? '复刻参考壁纸' : '配方已定',
-    replicate ? `第 ${history.length + 1}/${REPLICATE_UNTIL} 张` : Object.values(recipe).join(' / '));
-  logEvent('gen', replicate
-    ? `复刻模式：第 ${history.length + 1}/${REPLICATE_UNTIL} 张`
-      + `（目标是参考壁纸的实测指标；到第 ${REPLICATE_UNTIL + 1} 张自动换随机配方）`
-    : `配方：${Object.values(recipe).join(' / ')}`
-      + `（历史 ${history.length} 张，和其中最像的那张撞 ${worstCollide} 维）`);
+  genProgress('开始', want ? want.slice(0, 40) : '（按内置的设计做一张）');
 
   // ⚠️ 目录名带时间戳 —— 同一句描述生成两次要是两个目录
   const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, '');
-  const dirName = Gen.slugifyTitle(want || recipe.layout, stamp);
+  const dirName = Gen.slugifyTitle(want || 'wallpaper', stamp);
   // ⚠️⚠️⚠️ **两个目录**（0.9.142）：
   //   `stageDir` = AI 自己的工作区（userData/ai-staging/…）—— 中间产物写这儿
   //   `dir`      = 壁纸目录里的最终位置 —— **只有过了全部闸门才搬进去**
@@ -4443,9 +4396,9 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     //  ⚠️ 而 `plan.md` **落在工作区里** ⟹ 失败时能回看"它到底想了什么"，
     //    那是唯一能区分"设计就跑偏了"和"设计对但代码写错了"的东西。
     // ═══════════════════════════════════════════════════════════════════
-    genProgress('第 1 步：设计这一张长什么样', Object.values(recipe).join(' / '));
+    genProgress('第 1 步：设计这一张长什么样', want ? want.slice(0, 30) : '按内置设计');
     const planOut = await callModelWithHeartbeat(ai,
-      Gen.buildPlanPrompt(want, recipeText, historyText),
+      Gen.buildPlanPrompt(want),
       '第 1 步：设计这一张长什么样',
       // ⚠️ 设计只要几百字 ⟹ 预算给 4000 就够，而**小预算也让它快**
       //   （推理模型在小预算下会自己收敛，不会长篇大论）。
@@ -4458,7 +4411,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     }
     // ⚠️ 落盘 —— 这是"AI 自己的工作区"里第一份中间产物
     fs.writeFileSync(path.join(stageDir, 'plan.md'),
-      `# ${want || '（没特别要求）'}\n\n配方：${Object.values(recipe).join(' / ')}\n\n${plan}\n`);
+      `# ${want || '（没特别要求）'}\n\n${plan}\n`);
     logEvent('gen', `设计：${plan.length} 字、${Math.round(planOut.ms / 1000)}s`
       + ` ⟹ 写到 ${path.join(stageDir, 'plan.md')}`);
     genProgress('设计好了', `${plan.length} 字 · ${Math.round(planOut.ms / 1000)}s`);
@@ -4466,7 +4419,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     for (let round = 1; round <= MAX_ROUNDS; round += 1) {
       const isRepair = round > 1;
       genProgress(isRepair ? `第 ${round} 轮：按检查结果修` : '正在写场景',
-        isRepair ? `上一轮 ${problems.length} 个问题` : Object.values(recipe).join('/'));
+        isRepair ? `上一轮 ${problems.length} 个问题` : '照 plan.md 翻译成代码');
 
       // ⚠️⚠️ **等模型这段要报"已经等了多久"**。用户 2026-08-02：
       //   「这个生成比较耗时间啊，你现在就我看到了，他现在就是这样，
@@ -4477,7 +4430,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       //   ⚠️ 3 秒一跳而不是每秒 —— 每秒会把事件环刷满，而"它活着"这个信息
       //     3 秒的粒度完全够。
       const prompt = isRepair
-        ? Gen.buildRepairPrompt(code, problems, recipeText)
+        ? Gen.buildRepairPrompt(code, problems)
         : Gen.buildImplementPrompt(plan, example, skeletonSource);
       const out = await callModelWithHeartbeat(ai, prompt,
         isRepair ? `第 ${round} 轮：按检查结果修` : '第 2 步：照设计写代码',
@@ -4514,7 +4467,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       const softFromCode = problems.filter((x) => String(x.id).startsWith('C-'));
 
       // ── 落盘到**工作区**（不是壁纸目录）
-      writeWallpaperFiles(stageDir, code, recipe, want, dirName, skelDir, threeSrc);
+      writeWallpaperFiles(stageDir, code, want, dirName, skelDir, threeSrc);
 
       // ── ② 真跑闸门
       genProgress('试跑 3 秒', '看 WebGL 有没有真的画出东西');
@@ -4568,7 +4521,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
         const moved = promoteFromStaging(stageDir, dir);
         logEvent('gen', `搬进壁纸目录（${moved.method}）：${dir}`);
         genProgress('done', `${dirName} —— ${round} 轮通过`);
-        return { ok: true, dir, dirName, rounds: round, recipe, history: history_ };
+        return { ok: true, dir, dirName, rounds: round, history: history_ };
       }
       for (const x of problems) logEvent('gen', `试跑判定：[${x.id}] ${x.detail.slice(0, 120)}`);
     }
@@ -4588,7 +4541,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     //     实际是把我们判定不了的东西推给他 —— 而这次我们判定得很清楚。
     //   ⚠️ 但**产物留着**（在工作区里，路径报出去）⟹ 想看能看，不占壁纸墙。
     if (code && !fs.existsSync(path.join(stageDir, 'scene.js'))) {
-      writeWallpaperFiles(stageDir, code, recipe, want, dirName, skelDir, threeSrc);
+      writeWallpaperFiles(stageDir, code, want, dirName, skelDir, threeSrc);
     }
 
     // ⚠️⚠️⚠️ **只剩构图问题 ⟹ 照样交付**（0.9.145）。
@@ -4613,7 +4566,6 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
         dir,
         dirName,
         rounds: MAX_ROUNDS,
-        recipe,
         problems,
         history: history_,
         note: `能跑，但构图上还有 ${problems.length} 处和参考壁纸不一样：\n`
@@ -4628,7 +4580,6 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
       stageDir,
       dirName,
       rounds: MAX_ROUNDS,
-      recipe,
       problems,
       history: history_,
       error: `跑了 ${MAX_ROUNDS} 轮，还剩 ${problems.length} 个问题没修掉`
@@ -4641,7 +4592,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
     genProgress('failed', error.message);
     logEvent('gen', `失败：${error.message}`);
     // ⚠️ 带上工作区路径 —— 那是"模型到底写出了什么"唯一能回看的地方
-    return { ok: false, error: error.message, recipe, history: history_, stageDir };
+    return { ok: false, error: error.message, history: history_, stageDir };
   }
 });
 
@@ -4654,7 +4605,7 @@ ipcMain.handle('gen-wallpaper', async (_event, payload) => {
 //     不能做什么危险操作，危害电脑」
 //   ⟹ 判据：**收口成一个函数**，那样"会写到哪"是看一眼就能回答的问题，
 //     而不是散在两处、下次改动漏掉一处。
-function writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc) {
+function writeWallpaperFiles(dir, code, want, dirName, skelDir, threeSrc) {
   fs.mkdirSync(path.join(dir, 'vendor'), { recursive: true });
   fs.copyFileSync(path.join(skelDir, 'index.html'), path.join(dir, 'index.html'));
   fs.copyFileSync(path.join(skelDir, 'runtime.js'), path.join(dir, 'runtime.js'));
@@ -4673,10 +4624,11 @@ function writeWallpaperFiles(dir, code, recipe, want, dirName, skelDir, threeSrc
   }
 
   fs.writeFileSync(path.join(dir, 'scene.js'), code);
-  // ⚠️ `gwGenerated` + `gwRecipe` 是"下次避重"的唯一数据源（见 readRecipeHistory）
-  //   ⟹ 漏写的话防同质化会静默失效：能生成、能跑，就是越来越像。
+  // ⚠️ `gwGenerated` 标记"这张是 AI 生成的" —— 面板上要能分辨，出问题时
+  //   知道该去看生成记录。
+  //   ⚠️ 0.9.146 起**不再写 gwRecipe**：没有配方这个概念了（见上面那段判据）。
   fs.writeFileSync(path.join(dir, 'project.json'),
-    JSON.stringify(Gen.buildProjectJson(want.slice(0, 40) || dirName, want, recipe), null, 2));
+    JSON.stringify(Gen.buildProjectJson(want.slice(0, 40) || dirName, want), null, 2));
   logEvent('gen', `落盘：${dir}（scene.js ${code.length} 字节）`);
 }
 
@@ -4798,7 +4750,6 @@ ipcMain.handle('gen-meta', () => ({
   sideWidth: (config.we && config.we.sideWidth) || 340,
   // ⚠️⚠️ 已有配方的历史 —— 面板上要能说"这张和那张撞了几维"
   //   （用户说"这两张太像了"时，不用靠感觉调）
-  recipeCount: readRecipeHistory(ensureOurWallpaperDir()).length,
   // ⚠️ 环境变量里有也算"有 key" —— 否则面板会说"还没填"而它其实能用
   hasKey: !!resolveAiConfig().apiKey,
   // ⚠️ 而要说清是**哪来的** —— 用户看到空输入框会以为是 bug

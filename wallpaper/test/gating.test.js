@@ -7632,27 +7632,36 @@ check('骨架文件先检查再生成（缺了就是白屏，而那时会怪模�
     'three.js 缺了但没说"跑 npm run vendor" ⟹ 用户只会看到一句没法行动的报错');
 });
 
-check('⚠️ 每张壁纸都写 gwRecipe —— 它是下次避重的唯一数据源', () => {
+check('⚠️⚠️ 没有配方、没有记忆（0.9.146 拆掉的）', () => {
+  // ⚠️⚠️⚠️ **这条守卫守的东西整个反过来了。** 用户 2026-08-03：
+  //   「你理解错了，我说的这个是让你去调整提示词的方法…什么复刻模式？不要这样」
+  //   「我理解我们说一句话，然后是一次任务吗？一张壁纸，那我要做下一张壁纸呢，
+  //     是不是不应该记忆留存的吧？应该从零开始，就是我们先不做记忆系统」
+  //
+  // ⚠️ 我 0.9.140-145 建了一整套：五维配方枚举 + 读历史避重 + 前 3 张固定配方。
+  //   而那全都是**我把自己调提示词的方法做成了运行时状态机** ——
+  //   用户要的是"你把提示词调到能一次出那个效果，然后内置"。
+  //   ⟹ 判据：**"我怎么把它调好"和"用户点一下发生什么"是两件事。**
+  //     调好了就内置成默认，不留档、不计数、不看历史。
+  const src = codeOnly(mainSrc);
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+
+  // ① 不读历史
+  assert.ok(!/readRecipeHistory/.test(src),
+    '还在读生成历史 ⟹ 用户明确说"先不做记忆系统"，从零开始');
+  // ② 不挑配方
+  assert.ok(!/pickRecipe|REPLICATE_UNTIL|replicate/.test(genBody),
+    '还在挑配方/还有"复刻模式" ⟹ 那是把我调提示词的过程暴露成产品行为');
+  // ③⚠️ 而 `gwGenerated` 要留着 —— 那是"这张是 AI 生成的"标记，
+  //   面板要能分辨、出问题时要知道去看生成记录。它不是记忆。
   const gen = codeOnly(fs.readFileSync(
     path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8'));
-  assert.match(gen, /gwGenerated: true/, 'project.json 没标 gwGenerated');
-  assert.match(gen, /gwRecipe:/,
-    'project.json 没写 gwRecipe ⟹ 下次读不到历史 ⟹ 防同质化静默失效'
-    + '（能生成、能跑，就是越来越像 —— 最难发现的那种坏）');
-
-  const src = codeOnly(mainSrc);
-  assert.match(src, /function readRecipeHistory\(/, '没有读历史的函数');
-  const rh = src.slice(src.indexOf('function readRecipeHistory('));
-  assert.match(rh.slice(0, 900), /proj\.gwGenerated && proj\.gwRecipe/,
-    '读历史时没同时要求 gwGenerated 和 gwRecipe');
-  // ⚠️⚠️ 反向验证逮住这条：我第一版是 `/mtime|__t/`，而**注释里就有 mtime**
-  //   ⟹ 把 `__t: mtime` 那句删掉守卫照样绿（codeOnly 只剥注释、不剥
-  //     整行注释之外的…这里是整行注释，被剥了，但 statSync 那行还带 mtime）。
-  //   ⟹ 判据：守**排序这个动作本身**，那是"最近几张"唯一依赖的东西。
-  assert.match(rh.slice(0, 1200), /out\.sort\(\(a, b\) => a\.__t - b\.__t\)/,
-    '读历史没按时间排序 ⟹ "避开最近几张"变成"避开目录名字母序靠前的几张"');
-  assert.match(rh.slice(0, 1200), /__t: mtime/,
-    '历史项没带时间戳 ⟹ 上面那个 sort 是拿 undefined 在排（不报错，就是不生效）');
+  assert.match(gen, /gwGenerated: true/,
+    'gwGenerated 也删了 ⟹ 那个不是记忆，是"这张哪来的"的标记，要留');
+  // ④⚠️⚠️ 而 gwRecipe 必须**不再写** —— 没有配方这个概念了
+  assert.ok(!/gwRecipe:/.test(gen),
+    '还在写 gwRecipe ⟹ 配方那套已经拆了，留个空字段只会让下一个人以为它有用');
 });
 
 check('⚠️⚠️ 生成流程里的判定全是代码，模型不参与', () => {
@@ -7687,14 +7696,21 @@ check('⚠️⚠️ 生成流程里的判定全是代码，模型不参与', () 
 });
 
 check('⚠️ 日志里的数字是算出来的，不是写死的', () => {
-  // ⚠️⚠️ 我第一版这里直接打"避重后撞 0 维" —— 那是**没算过的断言**：
-  //   历史够多时避重会无路可走，那时它必然撞而日志还在说 0。
-  //   （这个项目为"video 提示无条件甩锅音轨"栽过同一个毛病。）
+  // ⚠️⚠️ 原来守的是"撞 N 维"那句（配方避重时算的）—— 0.9.146 拆掉配方之后
+  //   那句话整个没了。⟹ 而**这条判据本身仍然成立**，换个锚点继续守：
+  //   一条会说谎的日志比没有日志更坏（这个项目为"video 提示无条件甩锅音轨"栽过）。
   const src = codeOnly(mainSrc);
   assert.ok(!/撞 0 维/.test(src),
-    '日志里写死了"撞 0 维" ⟹ 那是没算过的断言，历史多了它就在说谎');
-  assert.match(src, /Recipe\.collide\(h, recipe\)\.length/,
-    '没真算撞了几维');
+    '日志里写死了"撞 0 维" ⟹ 那是没算过的断言');
+  const genBody = src.slice(src.indexOf("ipcMain.handle('gen-wallpaper'"),
+    src.indexOf('function writeWallpaperFiles('));
+  // ⚠️ 设计那步报的字数要是**真长度**，不是估的
+  assert.match(genBody, /plan\.length/,
+    '设计那步没报真实字数 ⟹ 报个估计值等于在说谎');
+  // ⚠️ 骨架源码那条也要报真字节数（而"退回摘要"要说出来）
+  assert.match(genBody, /skeletonSource\.length/, '骨架源码没报真字节数');
+  assert.match(genBody, /退回手写摘要/,
+    '读不到骨架源码时没说"退回摘要" ⟹ 那件事会静默发生，而模型看的就是二手信息');
 });
 
 check('骨架自己不许被模型改（它是"稳定"的地基）', () => {
@@ -8098,6 +8114,117 @@ check('⚠️⚠️ 设计说明搬走之后还能看（不满意恰恰发生在
   // ⚠️ 两个额度不能是同一个 —— 目录几十 MB 一个，留档几 KB 一个
   assert.match(psBody, /dirs\.slice\(keep\)/, '目录没用 keep 那个额度');
   assert.match(psBody, /plans\.slice\(\d+\)/, '留档没有自己的额度');
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  一句话 = 一次任务 = 一张壁纸（0.9.146）
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n  AI 交互：一次任务一张壁纸');
+
+check('⚠️⚠️ 每次从零开始（清对话流、清上次结果）', () => {
+  // 用户 2026-08-03：「我理解我们说一句话，然后是一次任务吗？一张壁纸，
+  //   那我要做下一张壁纸呢，是不是不应该记忆留存的吧？应该从零开始，
+  //   就是我们先不做记忆系统」
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const at = dash.indexOf('async function aiGo()');
+  assert.ok(at > 0, '找不到 aiGo');
+  const body = dash.slice(at, dash.indexOf('\n}\n', at));
+  // ⚠️⚠️ 清对话流 —— 留着上一次的记录会让人以为模型看得到它（而它看不到）
+  //   ⟹ 判据：**界面不该暗示不存在的能力。**
+  assert.match(body, /aiLog\.textContent = ''/,
+    '新一次生成没清对话流 ⟹ 留着上次的记录会让人以为模型看得到它');
+  // ⚠️ 上次的预览图/读数也要清
+  assert.match(body, /aiRenderResult\(null\)/,
+    '没清上一次的结果 ⟹ 新任务开始时还显示着上一张的预览图和读数');
+});
+
+check('⚠️ 输入框立刻清空（不是等成功之后）', () => {
+  // 用户 2026-08-03：「我一句话发上去，然后那句话留的数框」
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const at = dash.indexOf('async function aiGo()');
+  const body = dash.slice(at, dash.indexOf('\n}\n', at));
+  const clearAt = body.indexOf("input.value = ''");
+  const callAt = body.indexOf('genWallpaper(');
+  assert.ok(clearAt > 0, '输入框没清空');
+  // ⚠️⚠️ **在发请求之前清** —— 消息已经进对话流了，框里留一份是重复的；
+  //   而清空之后用户能在生成期间就想下一句。
+  assert.ok(clearAt < callAt,
+    '输入框是等生成完才清的 ⟹ 那期间框里和对话流里各有一份同样的话');
+});
+
+check('⚠️ 空着也能生成（内置提示词本身就是完整设计）', () => {
+  // ⚠️ 我原来是"先说一句你想要什么效果"然后 return ——
+  //   那让"点一下试试"这条最自然的路走不通。
+  //   ⟹ 判据：**用户那句话是补充，不是必需。**
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const at = dash.indexOf('async function aiGo()');
+  const body = dash.slice(at, dash.indexOf('\n}\n', at));
+  assert.ok(!/if \(!want\) \{[^}]*return/.test(body),
+    '输入为空就直接 return ⟹ "点一下看看默认长什么样"走不通');
+  // ⚠️ 而空输入要在对话流里说清"用的是内置设计"（否则看起来像什么都没发生）
+  assert.match(body, /按内置的设计做一张|内置/,
+    '空输入时没说"按内置设计做" ⟹ 用户不知道它在按什么做');
+});
+
+check('⚠️⚠️ 读数带"目标区间"（"不好看"没法改进任何东西）', () => {
+  const dash = codeOnly(fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'dashboard.js'), 'utf8'));
+  const at = dash.indexOf('function aiRenderResult(');
+  const body = dash.slice(at, dash.indexOf('\nasync function aiGo', at));
+  // ⚠️ 三个"像不像"的读数，每个都要带参考区间
+  for (const [what, hint] of [
+    ['留白', '目标 20-45%'],
+    ['高亮', '目标 5-20%'],
+    ['饱和度', '目标 0.30-0.34'],
+  ]) {
+    assert.ok(body.includes(what), `读数里没有"${what}"`);
+    assert.ok(body.includes(hint),
+      `"${what}"没带目标区间（该有"${hint}"）⟹ 一个孤立的数字用户读不出好坏`);
+  }
+  // ⚠️⚠️ 而"配方"那一行必须没了（0.9.146 拆的）
+  assert.ok(!/配方  \$\{Object\.entries/.test(body),
+    '还在显示配方 ⟹ 那套已经拆了');
+});
+
+check('⚠️⚠️⚠️ 提示词里内置了参考壁纸的实测指标（"这份提示词就是产品"）', () => {
+  // 用户 2026-08-03：「我们这个就是你不断自己调整内置提示词吗？
+  //   以后我说生成，你已经给我个预置提示词…我一看生成我想要的这个效果了，
+  //   然后就说明现在这个词至少在这张壁纸上是 OK 了，然后我们再泛化」
+  // ⟹ 判据：**"我怎么把它调好"是开发过程，不是运行时状态机。**
+  const gen = fs.readFileSync(path.join(__dirname, '..', 'src', 'wallpaper-gen.js'), 'utf8');
+  const at = gen.indexOf('function buildPlanPrompt(');
+  assert.ok(at > 0, '找不到 buildPlanPrompt');
+  const body = gen.slice(at, gen.indexOf('\n}\n', at));
+  // ⚠️ 那些实测数字要真的在提示词里（不是只在注释里）
+  for (const [num, why] of [
+    ['#070815', '底色'],
+    ['0.30-0.34', '饱和度中位 —— 低饱和是"高级感"的关键'],
+    ['290-330', '安静时的主色相'],
+    ['(0, 4, 22)', '相机位置（贴近地平线）'],
+    ['8000', '元素个数（几千个小点，不是几十个大方块）'],
+  ]) {
+    assert.ok(body.includes(num),
+      `提示词里没有 ${num}（${why}）⟹ 那是从参考壁纸实测出来的，不是我编的审美`);
+  }
+  // ⚠️⚠️ 而**不许再有"配方"这个参数** —— 那套拆了
+  assert.match(gen, /function buildPlanPrompt\(userWant\)/,
+    'buildPlanPrompt 还收配方/历史参数 ⟹ 那套已经拆了，留着参数会传 undefined 进提示词'
+    + '（我实测过：提示词里出现了两个字面的 "undefined"）');
+});
+
+check('⚠️ 配方那个模块整个删掉了（留着没人用的模块会误导）', () => {
+  // ⚠️ 判据：**拆功能要连它的文件一起拆。** 留一个没人 require 的模块，
+  //   下一个人会以为它有用、会去维护它。
+  const recipePath = path.join(__dirname, '..', 'src', 'wallpaper-recipe.js');
+  assert.ok(!fs.existsSync(recipePath),
+    'wallpaper-recipe.js 还在 ⟹ 配方那套拆了，留着文件会让下一个人以为它有用');
+  const src = codeOnly(mainSrc);
+  assert.ok(!/require\('\.\/wallpaper-recipe/.test(src), 'main.js 还在 require 它');
 });
 
 

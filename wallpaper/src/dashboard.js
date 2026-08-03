@@ -4455,22 +4455,50 @@ function aiRenderResult(r) {
       const px = pr.sampledPixels;
       const fps = pr.ms > 0 ? (pr.frames / (pr.ms / 1000)) : 0;
       const mark = (ok) => (ok ? '✓' : '✗');
-      box.textContent = [
+      // ⚠️⚠️ 读数分两组：**能不能跑**（上面四条）和**像不像目标**（下面三条）。
+      //   ⚠️ 后者带参考区间 —— 那让"这张和目标差在哪"是看一眼就知道的事，
+      //     而不用用户说"不好看"（那句话没法改进任何东西）。
+      const lines = [
         `${mark(gl.context)} WebGL      ${gl.context ? '正常' : '建不起来'}`
           + (gl.glError ? `（gl.getError=${gl.glError}）` : ''),
         `${mark(fps >= 8)} 渲染       ${fps.toFixed(1)} fps（${pr.frames} 帧 / ${pr.ms}ms）`,
         `${mark(gl.objects > 0)} 场景       ${gl.objects} 个对象`,
-        px ? `${mark(px.black / px.total <= 0.995)} 画面       ${px.total - px.black}/${px.total} 个采样点有内容`
-          : '  画面       （没截到图）',
-      ].join('\n');
+      ];
+      if (px && px.total) {
+        const blackPct = (100 * px.black) / px.total;
+        const brightPct = (100 * (px.bright || 0)) / px.total;
+        lines.push(`${mark(px.black / px.total <= 0.995)} 画面       `
+          + `${px.total - px.black}/${px.total} 个采样点有内容`);
+        // ⚠️ 参考区间来自参考壁纸的实测（见 wallpaper-gen.js 那段）
+        lines.push(`${mark(blackPct >= 8)} 留白       ${blackPct.toFixed(0)}%`
+          + `（目标 20-45%）`);
+        lines.push(`${mark(brightPct <= 45)} 高亮       ${brightPct.toFixed(0)}%`
+          + `（目标 5-20%）`);
+        if (Number.isFinite(px.satMedian)) {
+          lines.push(`${mark(px.satMedian <= 0.72)} 饱和度     ${px.satMedian.toFixed(2)}`
+            + `（目标 0.30-0.34，越低越高级）`);
+        }
+        if (Array.isArray(px.bands)) {
+          lines.push(`  明暗       上 ${px.bands[0].toFixed(0)} / 中 `
+            + `${px.bands[1].toFixed(0)} / 下 ${px.bands[2].toFixed(0)}`
+            + `（目标 25 / 90 / 50）`);
+        }
+      } else {
+        lines.push('  画面       （没截到图）');
+      }
+      box.textContent = lines.join('\n');
       box.hidden = false;
     }
   }
 
-  // ── 配方（可观测才可控）
+  // ── ⚠️ 这里原来显示"配方"（0.9.140-145 那套五维枚举）—— 0.9.146 拆了。
+  //   ⟹ 换成显示**还剩哪几处没达标**，那才是用户下一步能用上的信息。
   if (rec) {
-    if (r && r.recipe) {
-      rec.textContent = `配方  ${Object.entries(r.recipe).map(([k, v]) => `${k}=${v}`).join('  ')}`;
+    const soft = ((r && r.problems) || []).filter((x) => String(x.id).startsWith('C-'));
+    if (soft.length) {
+      // ⚠️ 只显示"是什么"，不显示"怎么改" —— 后者是给模型看的（回喂用），
+      //   而用户要的是"差在哪"。⟹ 判据：同一份数据给人和给模型的粒度不同。
+      rec.textContent = `还差：${soft.map((x) => x.id.replace(/^C-/, '')).join('、')}`;
       rec.hidden = false;
     } else { rec.hidden = true; }
   }
@@ -4484,11 +4512,30 @@ async function aiGo() {
   if (aiBusy) return;
   const input = aiEl('ai-want');
   const want = input ? input.value.trim() : '';
-  if (!want) { aiSay('bad', '先说一句你想要什么效果'); return; }
-  aiSay('me', want);
-  // ⚠️ 新一次生成 ⟹ 上一次的 step 节点作废（否则第二次生成的第一步会去
-  //   改上一次那条，看起来像"历史被改写了"）
+
+  // ⚠️⚠️⚠️ **一句话 = 一次任务 = 一张壁纸，从零开始**（0.9.146）。
+  //   用户 2026-08-03：「我理解我们说一句话，然后是一次任务吗？一张壁纸，
+  //     那我要做下一张壁纸呢，是不是不应该记忆留存的吧？应该从零开始，
+  //     就是我们先不做记忆系统」
+  //   ⟹ 判据：**没被要求的状态就别引入。** 上一次的对话/配方/历史都不参与
+  //     这一次 —— 那让"这次为什么和上次不同"连问题都不是。
+  //   ⚠️ 所以每次开始就**清空对话流** —— 留着上一次的记录会让人以为
+  //     模型看得到它（而它看不到）。⟹ 界面不该暗示不存在的能力。
+  if (aiLog) aiLog.textContent = '';
   aiResetSteps();
+  // ⚠️ 上一次的结果也清掉（预览图/读数/「用这张」）
+  aiRenderResult(null);
+
+  // ⚠️⚠️ **空着也能生成**（0.9.146）—— 内置提示词本身就是完整的设计，
+  //   用户那句话是**补充**不是必需（他可能就想看看默认长什么样）。
+  //   ⟹ 我原来是"先说一句你想要什么效果"然后 return，那让"点一下试试"
+  //     这条最自然的路走不通。
+  aiSay('me', want || '（按内置的设计做一张）');
+  // ⚠️⚠️ **立刻清输入框** —— 而不是等成功之后。用户 2026-08-03：
+  //   「我一句话发上去，然后那句话留的数框」
+  //   ⟹ 消息已经进对话流了，框里再留一份是重复的；而清空之后
+  //     他能马上打下一句（生成期间就能想）。
+  if (input) input.value = '';
   aiSetBusy(true);
   try {
     const r = await window.gw.genWallpaper({ want });
@@ -4521,7 +4568,6 @@ async function aiGo() {
     //     而那个频道根本没人听 —— 静默 no-op）⟹ 刷新在这里做，
     //     用现成那条已经在工作的路（renderMine 本来就是重扫磁盘的入口）。
     if (typeof renderMine === 'function') await renderMine();
-    if (input) input.value = '';
   } catch (error) {
     aiSay('bad', `出错了：${error.message}`);
   } finally {
