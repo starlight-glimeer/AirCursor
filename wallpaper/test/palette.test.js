@@ -180,4 +180,112 @@ check('⚠️⚠️ 而**夹紧要在入口做**（不能靠下游兜）', () =>
   assert.ok(Number.isFinite(P.hueAt(NaN, NaN)), 'hueAt(NaN, NaN) 不是有限数');
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ 颜色可换，关系不可换（0.9.156）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-03：「目标的颜色是可以修改的，没必要紫色，我只是想要实现他那种效果」
+//
+// ⚠️ 而我一路把"色相 294→251"当成了硬指标 —— 那是**把"风格"和"审美原理"搞混了**。
+//   ⟹ 判据：**从参考物量出来的东西要分两类**：
+//     「关系」（中心低饱和→外围高饱和、亮度往外降、色相往外偏冷）= 效果的来源
+//     「取值」（具体是紫还是青）= 那一张的选择
+console.log('\n颜色可换，关系不可换');
+
+check('⚠️⚠️ 换主色相之后，那三条关系全部不变**而且值是对的**', () => {
+  // ⚠️⚠️⚠️ 反向验证逮住这条：我原来只比较 `alt.x === ref.x`（换色前后一致）——
+  //   而把 `satBase: TARGET.satBase` 改成 `satBase: 0.6` 时**两边都变成 0.6**
+  //   ⟹ "一致"照样成立，守卫全绿。
+  //   ⟹ 判据：**"前后一致"不等于"值是对的"** —— 一个错的常数在所有调用里
+  //     都一样错，那种错法用"比较两次调用"是抓不到的。
+  //   ⟹ 所以两件都要守：① 值等于 TARGET（对）② 换色前后一致（不受色相影响）
+  const ref = P.paletteFor(294);   // 参考壁纸那套
+  for (const hue of [195, 40, 150, 0, 359]) {
+    const alt = P.paletteFor(hue);
+    for (const key of ['satBase', 'satLoud', 'satSpatialGain',
+      'lumCenter', 'lumEdge', 'hueSpatialShift']) {
+      // ① ⚠️ 值必须等于实测标定的那个（改坏常数会在这里红）
+      assert.strictEqual(alt[key], P.TARGET[key],
+        `主色 ${hue} 的 ${key} 是 ${alt[key]}，而 TARGET.${key} 是 ${P.TARGET[key]}`
+        + ' ⟹ 那几个值是从参考壁纸实测标定的，不能改');
+      // ② 而换色前后要一致（那是"关系不随配色变"这条）
+      assert.strictEqual(alt[key], ref[key],
+        `主色 ${hue} 时 ${key} 和参考那套不一样 ⟹ 关系跟着配色变了`);
+    }
+  }
+  // ③⚠️⚠️ 而那几个值本身要在合理范围 —— 否则"等于 TARGET"只是等于一个错的东西
+  assert.ok(P.TARGET.satBase >= 0.25 && P.TARGET.satBase <= 0.40,
+    `TARGET.satBase = ${P.TARGET.satBase} 不在 0.25-0.40（实测中心 0.30）`);
+  assert.ok(P.TARGET.satSpatialGain > 0.15,
+    `TARGET.satSpatialGain = ${P.TARGET.satSpatialGain} 太小`
+    + ' ⟹ 饱和度的空间梯度没了，画面会是平的');
+  assert.ok(P.TARGET.hueSpatialShift < -20,
+    `TARGET.hueSpatialShift = ${P.TARGET.hueSpatialShift} 不是"往外偏冷"`
+    + '（该是负数且绝对值 >20）');
+});
+
+check('⚠️ 而主色相真的换了（不是摆设）', () => {
+  for (const hue of [195, 40, 150]) {
+    const pal = P.paletteFor(hue);
+    assert.strictEqual(pal.hueCalm, hue, `paletteFor(${hue}) 的主色相不是 ${hue}`);
+    // ⚠️⚠️ 激烈时往**冷**的方向偏 —— 那让"高潮"在颜色上也能看出来
+    //   ⚠️ 而"冷的方向"是色相减小，要处理绕过 0 的情况
+    const delta = ((pal.hueCalm - pal.hueLoud) % 360 + 360) % 360;
+    assert.ok(delta > 40 && delta < 80,
+      `主色 ${hue}：激烈时只偏了 ${delta} 度（该是 ~59）⟹ 那让"高潮"看不出颜色变化`);
+  }
+});
+
+check('⚠️⚠️ 底色跟着主色走（一套青色配蓝紫底会脏）', () => {
+  for (const [hue, expectDominant] of [[195, 'b'], [40, 'r'], [120, 'g']]) {
+    const pal = P.paletteFor(hue);
+    const r = (pal.bg >> 16) & 255;
+    const g = (pal.bg >> 8) & 255;
+    const b = pal.bg & 255;
+    // ⚠️ 底色要**很暗**（近黑）—— 那是"大片留白"的基础
+    assert.ok(Math.max(r, g, b) <= 40,
+      `主色 ${hue} 的底色 #${pal.bg.toString(16).padStart(6, '0')} 太亮了`
+      + `（最大通道 ${Math.max(r, g, b)}，该 ≤40）`);
+    // ⚠️⚠️ 但它要**带着主色的调子** —— 否则底色和主体像两张图拼的
+    const dom = { r, g, b };
+    const maxKey = Object.keys(dom).reduce((a, k) => (dom[k] > dom[a] ? k : a), 'r');
+    assert.strictEqual(maxKey, expectDominant,
+      `主色 ${hue} 的底色主通道是 ${maxKey}，该是 ${expectDominant}`
+      + ' ⟹ 底色没跟着主色走，那会让底色和主体像两张图拼的');
+  }
+});
+
+check('极端/非法主色相不崩', () => {
+  for (const bad of [NaN, Infinity, -30, 720, null, undefined, 'abc']) {
+    const pal = P.paletteFor(bad);
+    assert.ok(Number.isFinite(pal.hueCalm) && pal.hueCalm >= 0 && pal.hueCalm < 360,
+      `paletteFor(${String(bad)}) 的色相是 ${pal.hueCalm}`);
+    assert.ok(Number.isFinite(pal.bg) && pal.bg >= 0 && pal.bg <= 0xffffff,
+      `paletteFor(${String(bad)}) 的底色不合法`);
+  }
+  // ⚠️ -30 和 720 该被折进 0-360（而不是当成非法）
+  assert.strictEqual(P.paletteFor(-30).hueCalm, 330, '-30 没折成 330');
+  assert.strictEqual(P.paletteFor(720).hueCalm, 0, '720 没折成 0');
+});
+
+check('hslToRgb 是对的（那是底色的来源）', () => {
+  // ⚠️ 拿几个已知值验 —— 一个错的 HSL→RGB 会让所有底色都偏
+  assert.deepStrictEqual(P.hslToRgb(0, 1, 0.5), [255, 0, 0], '纯红不对');
+  assert.deepStrictEqual(P.hslToRgb(1 / 3, 1, 0.5), [0, 255, 0], '纯绿不对');
+  assert.deepStrictEqual(P.hslToRgb(2 / 3, 1, 0.5), [0, 0, 255], '纯蓝不对');
+  assert.deepStrictEqual(P.hslToRgb(0, 0, 0.5), [128, 128, 128], '灰不对（s=0 那条分支）');
+  assert.deepStrictEqual(P.hslToRgb(0, 0, 0), [0, 0, 0], '黑不对');
+  assert.deepStrictEqual(P.hslToRgb(0, 0, 1), [255, 255, 255], '白不对');
+  // ⚠️⚠️ 反向验证逮住这条：`t < 1/6` 那个分支只有**橙黄色系**会走
+  //   ⟹ 上面那六个用例（红/绿/蓝/灰/黑/白）都绕过它，改坏了照样绿。
+  //   ⟹ 判据：**验一个分段函数要覆盖每一段**，而不是几个"典型值"。
+  assert.deepStrictEqual(P.hslToRgb(30 / 360, 1, 0.5), [255, 128, 0],
+    '橙色不对（那是 t < 1/6 那个分支）');
+  assert.deepStrictEqual(P.hslToRgb(60 / 360, 1, 0.5), [255, 255, 0], '黄色不对');
+  assert.deepStrictEqual(P.hslToRgb(180 / 360, 1, 0.5), [0, 255, 255], '青色不对');
+  assert.deepStrictEqual(P.hslToRgb(300 / 360, 1, 0.5), [255, 0, 255], '洋红不对');
+});
+
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

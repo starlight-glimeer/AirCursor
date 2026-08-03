@@ -23,7 +23,20 @@
 // ⚠️ 参考壁纸的实测值（preview.gif 200 帧逐帧量化）——
 //   这些是**目标**，不是我的审美主张。
 const TARGET = {
-  // 底色：近黑偏蓝紫
+  // ⚠️⚠️⚠️ **颜色是可换的，关系不可换**（0.9.156）。用户 2026-08-03：
+  //   「目标的颜色是可以修改的，没必要紫色，我只是想要实现他那种效果」
+  //
+  // ⚠️ 而我一路把"色相 294→251"当成了硬指标 ——
+  //   那让模型把力气花在对齐一套**恰好是那张壁纸用的**配色上。
+  //   ⟹ 判据：**从参考物里量出来的东西要分两类** ——
+  //     「关系」（中心低饱和 → 外围高饱和、亮度跟着波纹走）是那个效果的来源；
+  //     「取值」（具体是紫还是青）只是那一张的选择。
+  //     ⚠️ 我把两类都写成了硬指标，那是把"风格"和"审美原理"搞混了。
+  //
+  // ⟹ 下面这组是**默认值**（照参考壁纸），而 `hueBase` 一改，整套配色就换 ——
+  //   而那几条**关系**（梯度方向、饱和度范围、亮度曲线）保持不变。
+  //
+  // 底色：近黑，色相跟着 hueBase 走（不是写死的紫）
   bg: 0x070815,
   // 主色相：安静时洋红紫，激烈时偏蓝紫
   // ⚠️⚠️ 294 而不是 310（0.9.155 校准）—— 分圈实测的**中心色相中位是 294**，
@@ -199,7 +212,69 @@ function fogTransmission(density, distance) {
   return Math.exp(-Math.pow(d * x, 2));
 }
 
+// ⚠️⚠️⚠️ **换一套配色**（0.9.156）。用户 2026-08-03：
+//   「目标的颜色是可以修改的，没必要紫色」
+//
+// ⟹ 给定一个主色相（度），产出一套**保持同样关系**的配色：
+//   · 中心低饱和（偏白）→ 外围高饱和（那是"中心亮、往外没入"的观感来源）
+//   · 激烈时色相往冷的方向偏（那让"高潮"在颜色上也能看出来）
+//   · 亮度曲线不变（它跟颜色无关）
+//
+// ⚠️ 判据：**"关系"是可复用的，"取值"是可换的。**
+//   而这个函数存在的意义就是把那条界线画出来 ——
+//   谁想换配色，改一个数就行，而不用重新推那几条关系。
+//
+// ⚠️ 而底色也跟着走 —— 一套青色的场景配一个蓝紫底色会脏。
+function paletteFor(hueDeg) {
+  const h = Number(hueDeg);
+  const base = Number.isFinite(h) ? ((h % 360) + 360) % 360 : TARGET.hueCalm;
+  // ⚠️ 激烈时往**冷**的方向偏 59 度（照参考壁纸的 294 → 235）
+  //   ⚠️ 而"冷的方向"就是色相减小（红→紫→蓝）
+  const loud = ((base - 59) % 360 + 360) % 360;
+  // ⚠️ 底色：同色系、极低饱和、极低亮度（HSL 0.72 / 0.06 / 0.06 那个量级）
+  //   ⟹ 那让底色和主色"是一家的"，而不是硬凑一个近黑。
+  const bgRgb = hslToRgb(base / 360, 0.55, 0.06);
+  return {
+    hueBase: base,
+    hueCalm: base,
+    hueLoud: loud,
+    // ⚠️ 这几条**不随配色变** —— 它们是那个效果的来源
+    hueSpatialShift: TARGET.hueSpatialShift,
+    satBase: TARGET.satBase,
+    satLoud: TARGET.satLoud,
+    satSpatialGain: TARGET.satSpatialGain,
+    lumCenter: TARGET.lumCenter,
+    lumEdge: TARGET.lumEdge,
+    bg: (bgRgb[0] << 16) | (bgRgb[1] << 8) | bgRgb[2],
+  };
+}
+
+// HSL → RGB（0..255 三元组）。⚠️ 纯函数，云端能测。
+function hslToRgb(h, s, l) {
+  const hue2rgb = (pp, qq, t0) => {
+    let t = t0;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return pp + (qq - pp) * 6 * t;
+    if (t < 1 / 2) return qq;
+    if (t < 2 / 3) return pp + (qq - pp) * (2 / 3 - t) * 6;
+    return pp;
+  };
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const pv = 2 * l - q;
+  return [
+    Math.round(hue2rgb(pv, q, h + 1 / 3) * 255),
+    Math.round(hue2rgb(pv, q, h) * 255),
+    Math.round(hue2rgb(pv, q, h - 1 / 3) * 255),
+  ];
+}
+
 module.exports = {
   TARGET, lumAt, satAt, hueAt, INJECT,
   fogDensityFor, fogTransmission,
+  paletteFor, hslToRgb,
 };
