@@ -392,4 +392,86 @@ check('⚠️⚠️⚠️ 主进程未捕获异常要先记进诊断报告再显
     '未捕获异常被吞掉了 ⟹ 坏掉的主进程继续跑，后续症状更难查');
 });
 
+check('⚠️⚠️⚠️ 逐帧循环调的函数不能定义在 build() 里面', () => {
+  // ⚠️⚠️ **用户实测栽在这里**（0.9.159 第二次）：
+  //   我把 `drawBars` / `makeBarsTexture` 写在 `build()` 里面，
+  //   而渲染循环 `loop()` 在外面 ⟹ 屏幕上刷
+  //   「Uncaught ReferenceError: drawBars is not defined @ scene-render.js:769」，
+  //   而它**每帧抛一次**（截图上叠了十几个错误框）。
+  //
+  // ⚠️ 而 `node --check` 是绿的：函数声明本身没问题，
+  //   是"谁能看见谁"错了 —— 那要**真的跑起来**才暴露。
+  //   ⟹ 判据：**逐帧循环调的东西，作用域必须和循环同级或更外。**
+  //     `build()` 是一次性的装载函数，把每帧要用的东西定义在它里面
+  //     等于"只有装载那一刻能看见"。
+  //
+  // ⟹ 这条守卫做的是：抠出 `build()` 的函数体，列出它内部声明的名字，
+  //   再确认**渲染循环和 3 秒自检里没有一个用到它们**。
+  const bi = render.indexOf('  async function build(payload) {');
+  assert.ok(bi > 0, 'build() 找不到了 —— 锚点变了，这条守卫要跟着改');
+  // 配对大括号找函数体
+  const bodyEnd = (from) => {
+    let depth = 0;
+    for (let j = render.indexOf('{', from); j < render.length; j += 1) {
+      if (render[j] === '{') depth += 1;
+      else if (render[j] === '}') { depth -= 1; if (!depth) return j; }
+    }
+    return -1;
+  };
+  const be = bodyEnd(bi);
+  assert.ok(be > bi, 'build() 的函数体配不上括号');
+  const buildBody = render.slice(bi, be + 1);
+  const after = render.slice(be + 1);
+
+  // build() 内部**顶层缩进**（4 空格）声明的名字
+  const inner = [];
+  for (const m of buildBody.matchAll(/^ {4}(?:function|const|let)\s+([A-Za-z_$][\w$]*)/gm)) {
+    inner.push(m[1]);
+  }
+  assert.ok(inner.length > 3,
+    `build() 里只找到 ${inner.length} 个声明 —— 缩进变了？这条守卫要跟着改`);
+
+  // ⚠️ build() 之后的代码（渲染循环 / 自检 / IPC 回调）里不许出现它们
+  const outside = after
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``')
+    .replace(/(['"])(?:[^\\'"\n]|\\.)*\1/g, "''");
+  const leaked = inner.filter(
+    (n) => new RegExp(`(^|[^.\\w$])${n}\\s*[([.]`).test(outside));
+  assert.deepStrictEqual(leaked, [],
+    `这些定义在 build() 里的名字被 build() 外面用了：${leaked.join(' ')}`
+    + ' ⟹ 真机上每帧抛 ReferenceError（而 node --check 是绿的）');
+});
+
+check('⚠️⚠️⚠️ 壁纸窗口的报错要通到面板（进日志不等于被看见）', () => {
+  // ⚠️ 用户实测**两次**都撞在这条缝上：屏幕上刷 ReferenceError，
+  //   而「设置 → 开发者选项 → 壁纸状态」那一栏什么都没有。
+  //   ⚠️⚠️ 因为那些报错走 `logEvent`（终端 + 诊断报告），
+  //     而**打包版没有终端** ⟹ 用户唯一能看的那一栏反而是空的。
+  //   ⟹ 判据：**观测通道要通到"用户真的会去看的那个地方"。**
+  const emitFn = /const emit = \(text, extra\) => \{[\s\S]*?\n  \};/.exec(mainCode);
+  assert.ok(emitFn, 'watchRendererErrors 的 emit 抠不出来 —— 锚点变了');
+  assert.match(emitFn[0], /lastWeErrors\.push/,
+    '壁纸窗口的报错没存下来 ⟹ 面板拿不到它');
+  assert.match(emitFn[0], /broadcast\('we-status'/,
+    '存了但没广播 ⟹ 面板要等下一次状态变化才看到（而那可能永远不来）');
+  // ⚠️ 面板三个分支都要显示（"没装上"和"装上了但脚本挂了"经常同时发生）
+  assert.match(dash, /function weErrorLines\(/, '面板没有渲染壁纸报错的地方');
+  const calls = (dash.match(/weErrorLines\(status\.weErrors\)/g) || []).length;
+  assert.strictEqual(calls, 2,
+    `weErrorLines 被调了 ${calls} 次，该是 2 次（装载失败那支 + 正常那支）`
+    + ' ⟹ 少一支就会在那种情况下看不到报错');
+  // ⚠️⚠️ 换壁纸时要清掉上一张的报错（否则查错对象）
+  //   ⚠️ 锚到 `weProject = loaded.project;` **之后那几行** ——
+  //     `lastWeErrors = []` 和模块级声明 `let lastWeErrors = []` 长得一样，
+  //     只查全文的话删掉清空那处、声明还在 ⟹ 守卫照样绿（反向验证逮到的）。
+  const onLoad = /weProject = loaded\.project;[\s\S]{0,400}?destroyWEWindow\(\);/
+    .exec(mainCode);
+  assert.ok(onLoad, '装载壁纸那段抠不出来 —— 锚点变了，这条守卫要跟着改');
+  assert.match(onLoad[0], /lastWeErrors = \[\];/,
+    '装载新壁纸时没清空上一张的报错 ⟹ 会让人查错对象');
+  assert.match(onLoad[0], /lastSceneDiag = null;/,
+    '装载新壁纸时没清空上一张的 scene 读数');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

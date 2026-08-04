@@ -229,6 +229,71 @@
   const layers = [];
   let built = null;
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⚠️⚠️⚠️ **音频柱**（`Simple_Audio_Bars`）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // ⚠️⚠️⚠️ **这两个函数必须在 `build()` 外面** —— 用户实测栽在这里：
+  //   我原来把它们写在 `build()` 里面，而渲染循环（`loop()`）在外面
+  //   ⟹ 屏幕上刷「Uncaught ReferenceError: drawBars is not defined」，
+  //     而它**每帧都抛一次**（那张图上叠了十几个错误框）。
+  //   ⚠️ 而 `node --check` 是绿的：函数声明本身没问题，
+  //     是"谁能看见谁"错了 —— 那要到**真的跑起来**才暴露。
+  //   ⟹ 判据：**逐帧循环调的东西，作用域必须和循环同级或更外**。
+  //     `build()` 是一次性的装载函数，把每帧要用的东西定义在它里面
+  //     等于"只有装载那一刻能看见"。
+  //
+  // ⚠️ 那是 shader 里唯一一个我们能还原的 —— 它的参数是**完全声明式**的
+  //   （Bar Count / Spacing / Bounds / Color），而我们**已经有 WE 那套 128 段频谱**。
+  //   ⟹ 用 canvas 按参数逐帧画，不用编译它的 `.frag`。
+  // ⚠️⚠️ 实测两个样本各有 1 / 3 处 ⟹ 它是音乐可视化壁纸的主要视觉元素，
+  //   而这也是**这一版唯一会随音乐动的东西**。
+  function makeBarsTexture(o) {
+    const b = o.audioBars;
+    const boxW = Math.max(64, Math.abs(o.size[0]) || 512);
+    const boxH = Math.max(64, Math.abs(o.size[1]) || 256);
+    const cv = document.createElement('canvas');
+    // ⚠️ 柱子是硬边，不用超采样那么多；而太大会拖慢逐帧重绘
+    cv.width = Math.min(2048, Math.round(boxW));
+    cv.height = Math.min(1024, Math.round(boxH));
+    const ctx = cv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cv);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    return { tex, cv, ctx, bars: b };
+  }
+
+  // ⚠️ 逐帧重绘一个音频柱
+  function drawBars(unit, sp) {
+    const { cv, ctx, bars: b } = unit;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    const n = b.count;
+    const slot = cv.width / n;
+    const barW = slot * (1 - b.spacing);
+    // ⚠️⚠️ **128 段是左 64 + 右 64（镜像）** —— 那是这个项目逆向 WE 时
+    //   烧掉十一轮才定的事实（见 audio-bins.js）。
+    //   ⟹ 取左声道那 64 段，按柱子数重采样。
+    const half = Math.max(1, Math.floor(sp.length / 2));
+    ctx.fillStyle = `rgb(${Math.round(b.color[0] * 255)},`
+      + `${Math.round(b.color[1] * 255)},${Math.round(b.color[2] * 255)})`;
+    ctx.globalAlpha = b.alpha;
+    for (let i = 0; i < n; i += 1) {
+      // ⚠️ 重采样：n 个柱子摊到 half 段上
+      const lo = Math.floor((i / n) * half);
+      const hi = Math.max(lo + 1, Math.floor(((i + 1) / n) * half));
+      let v = 0;
+      for (let k = lo; k < hi && k < sp.length; k += 1) v = Math.max(v, sp[k] || 0);
+      // ⚠️ 高度 = lower..upper 之间（占对象高度的比例）
+      const frac = b.lower + Math.max(0, Math.min(1, v)) * (b.upper - b.lower);
+      const h = frac * cv.height;
+      const x = i * slot + (slot - barW) / 2;
+      ctx.fillRect(x, cv.height - h, barW, h);
+    }
+    ctx.globalAlpha = 1;
+    unit.tex.needsUpdate = true;
+  }
+
   async function build(payload) {
     // ── 底色
     // ⚠️ `general.clearcolor` 是 "r g b" 三个 0..1 浮点（不是 hex）
@@ -394,59 +459,6 @@
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = false;
       return tex;
-    }
-
-    // ──⚠️⚠️⚠️ **音频柱**（`Simple_Audio_Bars`）
-    //
-    // ⚠️ 那是 shader 里唯一一个我们能还原的 —— 它的参数是**完全声明式**的
-    //   （Bar Count / Spacing / Bounds / Color），而我们**已经有 WE 那套 128 段频谱**。
-    //   ⟹ 用 canvas 按参数逐帧画，不用编译它的 `.frag`。
-    // ⚠️⚠️ 实测两个样本各有 1 / 3 处 ⟹ 它是音乐可视化壁纸的主要视觉元素，
-    //   而这也是**这一版唯一会随音乐动的东西**。
-    function makeBarsTexture(o) {
-      const b = o.audioBars;
-      const boxW = Math.max(64, Math.abs(o.size[0]) || 512);
-      const boxH = Math.max(64, Math.abs(o.size[1]) || 256);
-      const cv = document.createElement('canvas');
-      // ⚠️ 柱子是硬边，不用超采样那么多；而太大会拖慢逐帧重绘
-      cv.width = Math.min(2048, Math.round(boxW));
-      cv.height = Math.min(1024, Math.round(boxH));
-      const ctx = cv.getContext('2d');
-      const tex = new THREE.CanvasTexture(cv);
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.generateMipmaps = false;
-      return { tex, cv, ctx, bars: b };
-    }
-
-    // ⚠️ 逐帧重绘一个音频柱
-    function drawBars(unit, sp) {
-      const { cv, ctx, bars: b } = unit;
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      const n = b.count;
-      const slot = cv.width / n;
-      const barW = slot * (1 - b.spacing);
-      // ⚠️⚠️ **128 段是左 64 + 右 64（镜像）** —— 那是这个项目逆向 WE 时
-      //   烧掉十一轮才定的事实（见 audio-bins.js）。
-      //   ⟹ 取左声道那 64 段，按柱子数重采样。
-      const half = Math.max(1, Math.floor(sp.length / 2));
-      ctx.fillStyle = `rgb(${Math.round(b.color[0] * 255)},`
-        + `${Math.round(b.color[1] * 255)},${Math.round(b.color[2] * 255)})`;
-      ctx.globalAlpha = b.alpha;
-      for (let i = 0; i < n; i += 1) {
-        // ⚠️ 重采样：n 个柱子摊到 half 段上
-        const lo = Math.floor((i / n) * half);
-        const hi = Math.max(lo + 1, Math.floor(((i + 1) / n) * half));
-        let v = 0;
-        for (let k = lo; k < hi && k < sp.length; k += 1) v = Math.max(v, sp[k] || 0);
-        // ⚠️ 高度 = lower..upper 之间（占对象高度的比例）
-        const frac = b.lower + Math.max(0, Math.min(1, v)) * (b.upper - b.lower);
-        const h = frac * cv.height;
-        const x = i * slot + (slot - barW) / 2;
-        ctx.fillRect(x, cv.height - h, barW, h);
-      }
-      ctx.globalAlpha = 1;
-      unit.tex.needsUpdate = true;
     }
 
     // ── 图层 + 文字

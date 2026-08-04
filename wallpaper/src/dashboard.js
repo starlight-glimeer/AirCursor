@@ -1747,7 +1747,11 @@ async function renderWEStatus() {
     // ⟹ 只说事实：没装壁纸，现在是内置的那个。
     node.innerHTML = '还没装载壁纸：现在显示的是内置壁纸' + menuBar;
   } else if (status.error) {
-    node.innerHTML = `<span class="warn">${status.error}</span>\n${status.dir}`;
+    // ⚠️ 装载失败时**也要**带上壁纸窗口的报错和 scene 的步骤 ——
+    //   "没装上"和"装上了但脚本挂了"经常同时发生，而只显示前者会漏掉真因。
+    node.innerHTML = `<span class="warn">${status.error}</span>\n${status.dir}`
+      + weErrorLines(status.weErrors)
+      + sceneLines(status.scene);
   } else {
     node.innerHTML = `<b>${status.title}</b>\n${status.dir}\n`
       + (status.ready
@@ -1755,6 +1759,7 @@ async function renderWEStatus() {
         : '⏳ 页面加载了，但壁纸还没报 ready：如果一直这样，是里面的脚本没跑起来')
       + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频')
       + propsLine(status.props)
+      + weErrorLines(status.weErrors)
       + sceneLines(status.scene)
       + menuBar;
   }
@@ -1776,6 +1781,20 @@ async function renderWEStatus() {
   // ⟹ 参数只由 `renderMineSide(item)` 在**点了卡片**时渲染（那里判 item.active）。
   // ⚠️ 而"点了卡片之后壁纸的属性又变了"这种情况：属性是我们推给壁纸的，
   //   面板这边的值不会被壁纸改回来 ⟹ 不需要跟着 status 刷。
+}
+
+// ⚠️⚠️⚠️ **壁纸窗口自己抛的异常**（0.9.159）
+//
+// 用户实测两次都撞在这条缝上：屏幕上刷「Uncaught ReferenceError: drawBars is not
+// defined」，而「设置 → 开发者选项 → 壁纸状态」那一栏**什么都没有**。
+//
+// ⚠️ 因为那些报错走的是 `logEvent`（终端 + 诊断报告），而**打包版没有终端**
+//   ⟹ 用户唯一能看的那一栏反而是空的。
+// ⟹ 判据：**观测通道要通到"用户真的会去看的那个地方"** ——
+//   进了日志不等于被看见。
+function weErrorLines(errors) {
+  if (!errors || !errors.length) return '';
+  return `\n${errors.map((e) => `<span class="warn">❌ ${e}</span>`).join('\n')}`;
 }
 
 // ⚠️⚠️⚠️ **scene 类壁纸的装载读数**（0.9.159）

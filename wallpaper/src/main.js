@@ -1065,6 +1065,10 @@ function buildStamp() {
   return `v${version} ${commit} ${app.isPackaged ? '打包版' : 'npm start'}`;
 }
 
+// 壁纸窗口最近的报错。⚠️ 面板那一栏要显示它（见 emit 里那段判据）。
+//   ⚠️ 每次装载新壁纸时清空 —— 上一张的报错留着会让人查错对象。
+let lastWeErrors = [];
+
 function watchRendererErrors(win, label) {
   if (!win || win.isDestroyed()) return;
   // ⚠️ 重复折叠。同一条消息刷几千行会把真问题埋掉,而日志是我们唯一的观测通道。
@@ -1083,6 +1087,20 @@ function watchRendererErrors(win, label) {
     const suffix = n > 3 ? ` (× ${n})` : '';
     console.error(`[${label}] ${text}${suffix}`);
     logEvent(label, `${text}${suffix}`, extra);
+    // ⚠️⚠️⚠️ **壁纸窗口的报错要送到面板**（0.9.159）——
+    //   用户实测两次都撞在这条缝上：屏幕上刷「drawBars is not defined」，
+    //   而「设置 → 开发者选项 → 壁纸状态」那一栏**什么都没有**。
+    //   ⚠️ 因为 `logEvent` 只进终端 + 诊断报告，而**打包版没有终端**
+    //     ⟹ 用户唯一能看的那一栏反而是空的。
+    //   ⟹ 判据：**观测通道要通到"用户真的会去看的那个地方"** ——
+    //     进了日志不等于被看见。
+    //   ⚠️ 只送壁纸层（label==='we'）的前几条：那一栏是给"这张壁纸怎么了"用的，
+    //     而面板/骨架层的报错有它们自己的出口。
+    if (label === 'we' && n <= 3) {
+      lastWeErrors.push(text);
+      if (lastWeErrors.length > 6) lastWeErrors.shift();
+      try { broadcast('we-status', weStatus(null)); } catch { /* 启动早期可能还没就绪 */ }
+    }
   };
 
   win.webContents.on('render-process-gone', (_e, details) => {
@@ -2638,6 +2656,10 @@ function weStatus(error) {
     //   ⟹ 判据：**探针不能只放在"要观测的那个东西"里面** ——
     //     它挂了的时候探针跟着挂，那正是最需要读数的时刻。
     //   ⟹ 所以同一份读数也走 `we-status` 到**面板**（那是用户一定能打开的地方）。
+    // ⚠️ 壁纸窗口自己抛的异常（渲染层的 ReferenceError 那类）——
+    //   它和 `error`（装载失败）是两件事：前者"装上了但脚本挂了"，
+    //   后者"根本没装上"，而两者的症状都是"壁纸不对"。
+    weErrors: lastWeErrors.slice(),
     scene: lastSceneDiag ? {
       at: lastSceneDiag.at,
       steps: lastSceneDiag.steps,
@@ -2671,6 +2693,9 @@ function setWEWallpaper(dir) {
 
   weProject = loaded.project;
   weReady = false;
+  // ⚠️ 上一张壁纸的报错要清掉 —— 留着会让人查错对象
+  lastWeErrors = [];
+  lastSceneDiag = null;
   wePropState = { state: '未开始', count: 0 };
   // 两种壁纸源互斥：都钉在桌面层会互相遮挡，而"我看到的是哪个"就没法判断了。
   if (wallWindow && !wallWindow.isDestroyed()) wallWindow.destroy();
