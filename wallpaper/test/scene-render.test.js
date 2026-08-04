@@ -609,4 +609,45 @@ check('⚠️⚠️ 相机偏移要夹住（露黑边比少偏几十像素严重
   assert.match(renderCode, /camClamped/, '夹住这件事没报出来');
 });
 
+check('⚠️⚠️⚠️ scene 装载**只读**壁纸目录，一个字节都不写', () => {
+  // ⚠️ 用户 2026-08-04：「不动壁纸本身」
+  //   （而更早那条一直在：「写入的地方只能是我们限定的壁纸那个目录，
+  //     不能做什么危险操作」—— 这里是**更严**的一条：工坊壁纸是**别人的内容**，
+  //     我们是播放器，连它自己的目录都不该改。）
+  //
+  // ⚠️⚠️ 判据：**渲染器对输入只读。**
+  //   一旦写进去，"这张壁纸本来是什么样"就永久丢了（用户重下才能恢复），
+  //   而那种损坏是不可逆的 —— 比任何渲染 bug 都严重。
+  //
+  // ⟹ 这条守卫穷举 scene 装载路径里的每个 `fs.*` 调用，
+  //   只允许读操作（existsSync / readFileSync / statSync / readdirSync）。
+  const bodyOf = (name) => {
+    const i = main.indexOf(`async function ${name}(`);
+    if (i < 0) return null;
+    let depth = 0;
+    for (let j = main.indexOf('{', i); j < main.length; j += 1) {
+      if (main[j] === '{') depth += 1;
+      else if (main[j] === '}') { depth -= 1; if (!depth) return main.slice(i, j + 1); }
+    }
+    return null;
+  };
+  const READ_ONLY = new Set(['existsSync', 'readFileSync', 'statSync', 'readdirSync']);
+  for (const name of ['sendSceneData', 'sendSceneLoose']) {
+    const b = bodyOf(name);
+    assert.ok(b, `${name} 找不到了 —— 锚点变了，这条守卫要跟着改`);
+    const calls = [...new Set([...b.matchAll(/fs\.(\w+)\(/g)].map((m) => m[1]))];
+    const writes = calls.filter((c) => !READ_ONLY.has(c));
+    assert.deepStrictEqual(writes, [],
+      `${name} 里有非只读的 fs 调用：${writes.join(', ')}`
+      + ' ⟹ 那会改动用户的工坊壁纸（不可逆，重下才能恢复）');
+  }
+  // ⚠️ 解析层和渲染层**一个 fs 调用都不该有**
+  //   （解析是纯函数；渲染进程是 sandbox，本来也读不了文件）
+  const parse = fs.readFileSync(path.join(SRC, 'scene-pkg.js'), 'utf8');
+  assert.ok(!/require\(['"]node:fs['"]\)|require\(['"]fs['"]\)/.test(parse),
+    'scene-pkg.js 引了 fs ⟹ 它该是纯函数（云端可测的前提）');
+  assert.ok(!/\bfs\./.test(renderCode),
+    'scene-render.js 里有 fs 调用 ⟹ 渲染进程是 sandbox，那本来就不该有');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
