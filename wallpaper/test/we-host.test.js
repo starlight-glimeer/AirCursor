@@ -78,9 +78,21 @@ check('认出 Web 类型并取出入口文件', () => {
 //
 // ⚠️ video 曾经也在这条断言里。2026-07-30 起 video 支持了（一个 <video> 标签），
 // 所以那半条挪到下面「四种类型的分派」里 —— 留在这会变成一条反向的谎。
-check('scene 明确判为不支持（不假装能放）', () => {
-  assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, false);
-  assert.strictEqual(WE.parseProject({ type: 'application' }).supported, false);
+check('⚠️⚠️ scene 现在支持了（0.9.158），而 application 照旧不支持', () => {
+  // ⚠️⚠️⚠️ **这条守卫守的决定翻了。** 用户 2026-08-03：
+  //   「scene 这种类型我们可以支持，后面我们的 agent 也支持生成 scene 类型的壁纸」
+  //
+  // ⚠️ 而我 2026-07-30 那份评估的结论是"不该做" —— **它错在量错了对象**：
+  //   我读的是 linux-wallpaperengine 的代码规模（30470 行 C++），
+  //   而实测两个真实工坊壁纸之后，主体是"图层 + 文字 + 变换"
+  //   （样本 B：140 个对象里 **1 个**粒子系统）。
+  //   ⟹ 判据：**评估工作量要量"真实输入里有什么"，不是量"引擎有多少行"。**
+  assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, true,
+    'scene 该支持了（0.9.158）—— 见 scene-pkg.js 那 20 项测试');
+  // ⚠️ 而 application（别人编译的 Windows .exe）**照旧不支持** ——
+  //   那不是能力问题，是"跑不了也不该跑"（用户明确不做）。
+  assert.strictEqual(WE.parseProject({ type: 'application' }).supported, false,
+    'application 该照旧不支持（那是 Windows .exe）');
 });
 
 check('入口文件缺省是 index.html', () => {
@@ -416,7 +428,8 @@ check('WE 的四种类型都认识，加上我们扩的 image', () => {
     [...WE_OFFICIAL, 'image'].sort());
   assert.strictEqual(WE.parseProject({ type: 'web' }).supported, true);
   assert.strictEqual(WE.parseProject({ type: 'video', file: 'a.mp4' }).supported, true);
-  assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, false);
+  // ⚠️ scene 0.9.158 起支持（见上面那条守卫的判据）
+  assert.strictEqual(WE.parseProject({ type: 'scene' }).supported, true);
   assert.strictEqual(WE.parseProject({ type: 'application' }).supported, false);
 });
 
@@ -492,10 +505,17 @@ check('image 类被认识且支持（否则我们造的 project.json 自己不�
 // 用户明确要求支持 GIF。而 GIF 在 WE 自己那边是包成 scene（gifscene.json），
 // 那条要 scene 渲染；但 legacy 的裸 GIF 不需要 —— 一个 <img> 就够。
 check('两条 GIF 路径不混：gifscene 归 scene，裸 GIF 归 image', () => {
+  // ⚠️⚠️ 两条路**都支持了**（0.9.158 起 scene 也支持）——
+  //   但它们走**不同的渲染路径**，而那个区分仍然要在：
+  //     `gifscene.json` 是 WE 把 GIF 包成 scene ⟹ 走 scene 渲染
+  //     legacy 的裸 GIF 没有 project.json ⟹ 我们造一个标成 image，一个 <img> 就够
+  //   ⚠️ 判据：**"都支持"不等于"可以混"** —— 走错路径的症状是白屏。
   const gifScene = WE.parseProject({ type: 'scene', file: 'gifscene.json' });
-  assert.strictEqual(gifScene.supported, false, 'gifscene 要 scene 渲染，不该判成支持');
+  assert.strictEqual(gifScene.supported, true, 'gifscene 是 scene，0.9.158 起支持');
+  assert.strictEqual(gifScene.type, 'scene', 'gifscene 的类型该是 scene（决定渲染路径）');
   const bareGif = WE.parseProject({ type: 'image', file: 'wallpaper.gif' });
   assert.strictEqual(bareGif.supported, true, '裸 GIF 一个 <img> 就够，该支持');
+  assert.strictEqual(bareGif.type, 'image', '裸 GIF 该走 image 路径，不是 scene');
 });
 
 // video 和 image 走同一个渲染页（容器逻辑一样：铺满、cover、居中），
@@ -536,15 +556,16 @@ check('workshop.js 里没有硬编码的支持列表', () => {
 
 // 少一个分支的后果不是"少说一句"，是**说错**，而说错比不说糟。
 check('每个不支持的类型都有自己的理由，不会串台', () => {
-  const scene = WE.typeRefusal('scene');
   const app = WE.typeRefusal('application');
-  assert.match(scene, /私有格式|shader/);
-  assert.match(app, /Windows/);
-  assert.notStrictEqual(scene, app, '两种不支持给了同一句话');
-  // 支持的类型不该有拒绝理由
-  for (const t of ['web', 'video', 'image']) {
+  assert.match(app, /Windows/, 'application 的理由该提 Windows');
+  // ⚠️ 支持的类型不该有拒绝理由 —— scene 0.9.158 起进了这一组
+  for (const t of ['web', 'video', 'image', 'scene']) {
     assert.strictEqual(WE.typeRefusal(t), null, `${t} 被给了拒绝理由`);
   }
+  // ⚠️⚠️ 而没见过的类型仍要给一句通用的（不能套用 application 的）
+  const unknown = WE.typeRefusal('某种没见过的');
+  assert.ok(unknown, '没见过的类型该给一句话');
+  assert.notStrictEqual(unknown, app, '没见过的类型套用了 application 的理由');
 });
 
 // 没见过的类型也要给一句话（而不是 undefined 或者错误地套用别的理由）。
