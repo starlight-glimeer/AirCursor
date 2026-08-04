@@ -1755,6 +1755,7 @@ async function renderWEStatus() {
         : '⏳ 页面加载了，但壁纸还没报 ready：如果一直这样，是里面的脚本没跑起来')
       + (status.wantsAudio ? '\n这个壁纸要音频' : '\n这个壁纸不需要音频')
       + propsLine(status.props)
+      + sceneLines(status.scene)
       + menuBar;
   }
   renderAudioStatus(status.audio);
@@ -1775,6 +1776,37 @@ async function renderWEStatus() {
   // ⟹ 参数只由 `renderMineSide(item)` 在**点了卡片**时渲染（那里判 item.active）。
   // ⚠️ 而"点了卡片之后壁纸的属性又变了"这种情况：属性是我们推给壁纸的，
   //   面板这边的值不会被壁纸改回来 ⟹ 不需要跟着 status 刷。
+}
+
+// ⚠️⚠️⚠️ **scene 类壁纸的装载读数**（0.9.159）
+//
+// 用户实测反馈：「你说的右上角诊断框我不知道在哪里」。
+//
+// ⚠️ 那个框在**壁纸窗口**里（`scene.html` 的 `#diag`），而壁纸铺在桌面最底层
+//   ⟹ 桌面上有别的窗口挡着就看不见；
+//   而**装载在送数据之前就崩的话它根本没机会显示**
+//   （这次就是：主进程 ReferenceError，页面加载完了但一个字都没送）。
+//
+// ⟹ 判据：**探针不能只放在"要观测的那个东西"里面** ——
+//   它挂了的时候探针跟着挂，而那正是最需要读数的时刻。
+//   ⟹ 同一份读数也显示在**面板**上（用户一定能打开的地方）。
+function sceneLines(scene) {
+  if (!scene) return '';
+  const out = [];
+  // ⚠️ 错误排最前 —— 那是"为什么是黑的"的答案
+  for (const e of scene.errors || []) out.push(`<span class="warn">❌ ${e}</span>`);
+  for (const w of scene.warnings || []) out.push(`<span class="warn">⚠️ ${w}</span>`);
+  // ⚠️ 只显示后 6 步 —— 全列会把状态行撑得很长，而失败总在最后几步
+  const steps = (scene.steps || []).slice(-6);
+  for (const st of steps) {
+    out.push(`· ${st.name}${st.detail ? `：${st.detail}` : ''}（${st.ms}ms）`);
+  }
+  if (scene.willDraw) {
+    const w = scene.willDraw;
+    out.push(`⟹ 预计画：图层 ${w.image} · 文字 ${w.text} · 音频柱 ${w.audioBars}`);
+  }
+  if (scene.renderability) out.push(scene.renderability);
+  return out.length ? `\n${out.join('\n')}` : '';
 }
 
 // 实际频谱值。⚠️ **这是"参数该调多少"的唯一依据。**

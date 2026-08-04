@@ -27,6 +27,7 @@ const render = fs.readFileSync(path.join(SRC, 'scene-render.js'), 'utf8');
 const html = fs.readFileSync(path.join(SRC, 'scene.html'), 'utf8');
 const main = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
 const preload = fs.readFileSync(path.join(SRC, 'preload.js'), 'utf8');
+const dash = fs.readFileSync(path.join(SRC, 'dashboard.js'), 'utf8');
 // ⚠️ 去掉注释再找 —— 那是"关键词撞注释"的正面解法
 const renderCode = render.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 const mainCode = main.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -297,6 +298,98 @@ check('⚠️⚠️ 字体有总量上限，而丢掉的要报出来', () => {
   // ⚠️ 要**从小到大**装（丢大的）—— 反过来会让一个 16MB 的字体吃掉全部预算
   assert.match(mainCode, /fonts\.sort\(\(a, b\) => a\.data\.length - b\.data\.length\)/,
     '装字体前没按体积从小到大排 ⟹ 一个 16MB 的字体会吃掉全部预算');
+});
+
+check('⚠️⚠️⚠️ 装载回调里不能出现模块级不存在的裸标识符', () => {
+  // ⚠️⚠️ **用户实测栽在这里**（0.9.159）：我在 `did-finish-load` 回调里写了
+  //   `sendSceneData(win, dir)`，而 `createWEWindow()` **没有 dir 参数** ——
+  //   壁纸目录挂在模块级的 `weProject` 上。
+  //   ⟹ 用户一点 scene 就弹「ReferenceError: dir is not defined」。
+  //
+  // ⚠️⚠️⚠️ 而 `node --check` 和当时全部 65 项守卫**都是绿的**：
+  //   语法没问题，而那一行只在"真的装载一张 scene"时才执行 ——
+  //   那一步云端跑不了（要 Electron 窗口 + did-finish-load 事件）。
+  //   ⟹ 判据：**"云端能测的"和"真机才跑到的"之间有一条缝，
+  //     而回调里的自由变量正好落在缝里。**
+  //
+  // ⟹ 所以这条守卫做的是**穷举那个分支里的裸标识符**，
+  //   逐个确认它在模块级或者局部有定义。
+  //   ⚠️ 它只覆盖 scene 那个分支（那是这次出事的地方）——
+  //     全文件扫会有大量假阳性（对象字面量的键、解构、模板串），
+  //     而假阳性多的守卫会被忽略，那等于没有。
+  const branch = /if \(weProject\.type === 'scene'\) \{[\s\S]*?\n  \} else if/.exec(mainCode);
+  assert.ok(branch, 'scene 那个分支找不到了 —— 锚点变了，这条守卫要跟着改');
+  const code = branch[0]
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``')
+    .replace(/(['"])(?:[^\\'"\n]|\\.)*\1/g, "''");
+  // 模块级绑定
+  const modLevel = new Set();
+  for (const m of main.matchAll(/^(?:const|let|var|function|async function|class)\s+([A-Za-z_$][\w$]*)/gm)) {
+    modLevel.add(m[1]);
+  }
+  // 这个分支里自己声明的 + 回调参数
+  const local = new Set(['win', 'error']);
+  for (const m of code.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)/g)) local.add(m[1]);
+  for (const m of code.matchAll(/\(([A-Za-z_$][\w$,\s]*)\)\s*=>/g)) {
+    m[1].split(',').forEach((x) => local.add(x.trim()));
+  }
+  const KEYWORDS = new Set(['if', 'else', 'const', 'let', 'return', 'new', 'await',
+    'async', 'function', 'true', 'false', 'null', 'undefined', 'typeof', 'catch', 'try']);
+  const GLOBALS = new Set(['console', 'path', 'fs', 'Buffer', 'JSON', 'Math', 'Number',
+    'String', 'Object', 'Array', 'Set', 'Map', 'Promise', 'Date', '__dirname']);
+  const undef = [];
+  // ⚠️ `[^.\w$]` 前缀 = 不在点号后面（那些是属性名）；`(?!\s*:)` = 不是对象键
+  for (const m of code.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)(?!\s*:)/g)) {
+    const id = m[1];
+    if (KEYWORDS.has(id) || GLOBALS.has(id)) continue;
+    if (modLevel.has(id) || local.has(id)) continue;
+    undef.push(id);
+  }
+  assert.deepStrictEqual([...new Set(undef)], [],
+    `scene 装载分支里这些标识符在模块级和局部都找不到：${[...new Set(undef)].join(' ')}`
+    + ' ⟹ 真机一装载就会 ReferenceError（而 node --check 是绿的）');
+});
+
+check('⚠️⚠️⚠️ 探针不能只放在壁纸窗口里（它挂了探针跟着挂）', () => {
+  // ⚠️ 用户实测反馈：「你说的右上角诊断框我不知道在哪里」。
+  //   ⚠️⚠️ 两个原因：① 那个框在**壁纸窗口**里，而壁纸铺在桌面最底层
+  //     ⟹ 有别的窗口挡着就看不见；
+  //     ② 而**装载在送数据之前就崩的话，它根本没机会显示**
+  //       （那次就是主进程 ReferenceError，页面加载完了但一个字都没送）。
+  //   ⟹ 判据：**探针不能只放在"要观测的那个东西"里面。**
+  // ⚠️⚠️ 锚到 **weStatus 函数体内** —— `scene: lastSceneDiag` 有两处
+  //   （这里 + 诊断报告那份）⟹ 只查那个片段的话，改坏一处另一处还能让它变绿。
+  //   （反向验证逮到的。）
+  const weStatusFn = /function weStatus\(error\)[\s\S]*?\n\}/.exec(mainCode);
+  assert.ok(weStatusFn, 'weStatus 抠不出来 —— 锚点变了，这条守卫要跟着改');
+  //   ⚠️⚠️ 而键名前面要卡住行首空白 —— `_scene:` **含有** `scene:` 这个子串，
+  //     不卡的话把键改名（等于面板读不到）照样绿。（同一条守卫上栽的第二次。）
+  assert.match(weStatusFn[0], /\n\s*scene: lastSceneDiag \?/,
+    'weStatus 没带 scene 读数 ⟹ 面板上看不到，而壁纸窗口那个框可能被挡住/来不及显示');
+  assert.match(dash, /function sceneLines\(/, '面板没有渲染 scene 读数的地方');
+  assert.match(dash, /\+ sceneLines\(status\.scene\)/,
+    'sceneLines 定义了但没被调用 ⟹ 那是个静默 no-op');
+  // ⚠️ 装载失败要广播 —— 否则面板停在装载前的状态，而屏幕上一片黑
+  assert.match(mainCode, /broadcast\('we-status', weStatus\(`scene 装载失败/,
+    'scene 装载失败时没广播 ⟹ 面板和屏幕两边都不说话');
+});
+
+check('⚠️⚠️⚠️ 主进程未捕获异常要先记进诊断报告再显示', () => {
+  // ⚠️ 用户实测撞到 macOS 那个原生框：
+  //   「A JavaScript error occurred in the main process: ReferenceError: dir is not defined」
+  //   ⚠️⚠️ 那是 Electron 的默认行为，而它**不进 logEvent** ⟹ 诊断报告里没有它
+  //     ⟹ 用户把报告发过来，最要紧的那次崩溃反而看不到。
+  assert.match(mainCode, /process\.on\('uncaughtException'/,
+    '主进程没有未捕获异常的兜底 ⟹ 崩溃不进诊断报告');
+  assert.match(mainCode, /process\.on\('unhandledRejection'/,
+    '主进程没接 unhandledRejection');
+  // ⚠️ 要 logEvent（那才进报告的 events）
+  const handler = /process\.on\('uncaughtException'[\s\S]{0,900}?\n\}\);/.exec(mainCode);
+  assert.ok(handler, 'uncaughtException 的 handler 抠不出来 —— 锚点变了');
+  assert.match(handler[0], /logEvent\(/, '崩溃没记进 logEvent ⟹ 诊断报告里看不到');
+  // ⚠️⚠️ 而**不能吞掉它** —— 一个坏掉的主进程继续跑会产生更难查的后续症状
+  assert.match(handler[0], /throw error;/,
+    '未捕获异常被吞掉了 ⟹ 坏掉的主进程继续跑，后续症状更难查');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

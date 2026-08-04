@@ -2403,9 +2403,26 @@ function createWEWindow() {
     //   ⟹ 只送场景结构 + 用到的纹理（逐张按需送）。
     win.loadFile(path.join(__dirname, 'scene.html'));
     win.webContents.once('did-finish-load', () => {
-      sendSceneData(win, dir).catch((error) => {
+      // ⚠️⚠️⚠️ `weProject.dir` **不是** `dir` —— `createWEWindow()` 没有 dir 参数，
+      //   壁纸目录挂在模块级的 `weProject` 上（`loadWEProject` 返回 `{...parsed, dir}`）。
+      //   ⚠️ 我第一版写了裸 `dir` ⟹ 用户一点 scene 就弹
+      //     「A JavaScript error occurred in the main process:
+      //       ReferenceError: dir is not defined」。
+      //   ⚠️⚠️ 而 `node --check` 和全部 65 项守卫**都是绿的** ——
+      //     语法没问题、而那一行只在"真的装载一张 scene"时才执行，
+      //     而那一步云端跑不了（要 Electron 窗口 + did-finish-load 事件）。
+      //   ⟹ 判据：**"云端能测的"和"真机才跑到的"之间有一条缝，
+      //     而回调里的自由变量正好落在缝里。** 那种引用错误连 lint 都不一定报
+      //     （模块级 `let dir` 若存在就更查不出）—— 只能靠"这个名字在这个作用域里
+      //     到底是什么"逐个核。
+      // ⚠️⚠️ `.catch` 里要**广播** —— 否则面板停在装载前的状态，
+      //   而屏幕上是一片黑 ⟹ 两边都不说话。
+      sendSceneData(win, weProject.dir).then(() => {
+        broadcast('we-status', weStatus(null));
+      }).catch((error) => {
         console.error('[scene] 送场景数据失败：', error.message);
         logEvent('we', `scene 数据没送成：${error.message}`);
+        broadcast('we-status', weStatus(`scene 装载失败：${error.message}`));
       });
     });
   } else if (WE.isMediaType(weProject.type)) {
@@ -2612,6 +2629,24 @@ function weStatus(error) {
     audioSource: config && config.we ? config.we.audioSource : 'off',
     // 采集侧的状态（权限、是否真的按 App 过滤成功）单独一层，别和窗口状态混。
     audio: audioStatus,
+    // ⚠️⚠️⚠️ **scene 的装载读数**（0.9.159）——
+    //   用户实测反馈：「你说的右上角诊断框我不知道在哪里」。
+    //   ⚠️ 那个框在**壁纸窗口**里（`scene.html`），而壁纸铺在桌面最底层
+    //     ⟹ 桌面上有图标、有别的窗口挡着时它就看不见；
+    //     而**装载在送数据之前就崩的话，那个框根本没机会显示**
+    //     （这次就是：主进程 ReferenceError，页面加载完了但一个字都没送）。
+    //   ⟹ 判据：**探针不能只放在"要观测的那个东西"里面** ——
+    //     它挂了的时候探针跟着挂，那正是最需要读数的时刻。
+    //   ⟹ 所以同一份读数也走 `we-status` 到**面板**（那是用户一定能打开的地方）。
+    scene: lastSceneDiag ? {
+      at: lastSceneDiag.at,
+      steps: lastSceneDiag.steps,
+      warnings: lastSceneDiag.warnings,
+      errors: lastSceneDiag.errors,
+      willDraw: lastSceneDiag.willDraw || null,
+      renderability: lastSceneDiag.renderability
+        ? lastSceneDiag.renderability.summary : null,
+    } : null,
     error: error || null,
   };
 }
@@ -6734,6 +6769,50 @@ function buildAppMenu() {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **主进程未捕获异常的兜底**（0.9.159）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ 用户实测撞到：点一张 scene 壁纸，弹出 macOS 那个原生框
+//     「A JavaScript error occurred in the main process
+//       Uncaught Exception: ReferenceError: dir is not defined
+//       at WebContents.<anonymous> (…/main.js:2406:26)」
+//
+// ⚠️⚠️ 那个框是 **Electron 的默认行为**（`dialog.showErrorBox`），而它有三个问题：
+//   ① 它不说"这是装载哪张壁纸时发生的"（那个信息只在我们这边）
+//   ② 它不进 `logEvent` ⟹ **诊断报告里没有它**
+//      ⟹ 用户把报告发过来，最要紧的那次崩溃反而看不到
+//   ③ 事件回调里抛的异常会**跳过**调用方的 try/catch
+//      （`once('did-finish-load', …)` 那个回调不在任何 try 里）
+//      ⟹ "我包了 try 所以安全"是错的
+//
+// ⟹ 判据：**未捕获异常要先记下来再显示** ——
+//   而"记下来"要落到用户能发给我们的那个文件里，不是只弹一个框。
+//   ⚠️ 而这里**不吞掉它**（不 return / 不假装没事）：
+//     一个坏掉的主进程继续跑会产生更难查的后续症状。
+//     ⟹ 记 + 显示 + 让它按原样崩。
+process.on('uncaughtException', (error) => {
+  const where = (error.stack || '').split('\n')[1] || '';
+  const msg = `主进程未捕获异常：${error.message}${where ? ` @${where.trim()}` : ''}`;
+  console.error(`[fatal] ${msg}`);
+  try {
+    // ⚠️ logEvent 进诊断报告的 events ⟹ 用户发过来我们能看到
+    logEvent('app', msg);
+    // ⚠️ 装载壁纸时崩的话，把当前壁纸也记上 —— 那是"哪张壁纸触发的"
+    if (weProject) logEvent('we', `崩溃时装载的是：${weProject.title || weProject.dir}`);
+    broadcast('we-status', weStatus(msg));
+  } catch { /* 兜底自己不能再抛 */ }
+  // ⚠️ 不吞 —— 让 Electron 按原样处理（弹框 / 退出）
+  throw error;
+});
+
+process.on('unhandledRejection', (reason) => {
+  const e = reason instanceof Error ? reason : new Error(String(reason));
+  const msg = `主进程有 Promise 没接住：${e.message}`;
+  console.error(`[fatal] ${msg}`);
+  try { logEvent('app', msg); } catch { /* 同上 */ }
+});
 
 app.whenReady().then(() => {
   // ⚠️ 菜单要**最先**建 —— 它是退出的兜底路径，而后面任何一步抛异常都会让
