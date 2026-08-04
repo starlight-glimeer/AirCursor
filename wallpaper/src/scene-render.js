@@ -122,6 +122,13 @@
   let baseW = 1920;
   let baseH = 1080;
 
+  // ⚠️⚠️ **相机偏移和缩放**（`scene.json` 的 `camera.eye` + `general.zoom`）——
+  //   实测样本 B 的 eye 是 `(-103.6, 120.9)`，而我原来**整个忽略了它**
+  //   ⟹ 画面整体偏了 104 像素（那在"大小不太对"里混着，很难单独看出来）。
+  //   ⚠️ 样本 A 的 eye 是 (0,0) ⟹ 只看一个样本发现不了这条。
+  const camOffset = { x: 0, y: 0 };
+  let camZoom = 1;
+
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     W = window.innerWidth;
@@ -131,7 +138,8 @@
     // ⚠️⚠️ **按"覆盖"缩放**（cover 而不是 contain）——
     //   壁纸铺满屏幕，宁可裁掉边缘也不要留黑边。
     //   ⚠️ 那和 `background-size: cover` 是同一个道理。
-    const scale = Math.max(W / baseW, H / baseH);
+    // ⚠️ `camZoom` 来自 `general.zoom`（实测两个样本都是 1，但它是个真参数）
+    const scale = Math.max(W / baseW, H / baseH) * camZoom;
     const halfW = W / 2 / scale;
     const halfH = H / 2 / scale;
     camera.left = -halfW;
@@ -139,6 +147,10 @@
     camera.top = halfH;
     camera.bottom = -halfH;
     camera.updateProjectionMatrix();
+    // ⚠️⚠️ 相机偏移：`camera.eye` 是**画布像素坐标**里的位置
+    //   ⟹ 和 origin 一样要换成中心原点（减半宽半高）。
+    camera.position.set(camOffset.x, camOffset.y, 100);
+    camera.lookAt(camOffset.x, camOffset.y, 0);
   }
   resize();
   window.addEventListener('resize', resize);
@@ -166,15 +178,27 @@
       const bytes = info.data instanceof Uint8Array
         ? info.data : new Uint8Array(info.data);
       const mime = info.container === 'JPEG' ? 'image/jpeg' : 'image/png';
-      const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
+      // ⚠️⚠️⚠️ **`imageOrientation: 'flipY'` 必须在这里给**（0.9.159 用户实测）。
+      //
+      // ⚠️ `texture.flipY` 对 **ImageBitmap 无效** —— three 是靠
+      //   `gl.pixelStorei(UNPACK_FLIP_Y_WEBGL, texture.flipY)` 实现翻转的，
+      //   而 WebGL 规范说那个 pack 参数**对 ImageBitmap 源不起作用**
+      //   （它只作用于 `<img>` / `<canvas>` / ArrayBuffer 那些）。
+      //   ⟹ 所以翻转要在**创建位图的时候**做。
+      //
+      // ⚠️⚠️ 而这个 bug 的形状很有代表性：**文字是正的、图层是反的** ——
+      //   因为文字走 `CanvasTexture(canvas)`（flipY 生效），
+      //   图层走 `CanvasTexture(ImageBitmap)`（flipY 被忽略）。
+      //   ⟹ 判据：**同一个属性在不同的纹理源上行为不同** ——
+      //     "这个属性我设过了"不等于"它生效了"。
+      //     而"一半正一半反"这个症状恰好指向了那条分界线。
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }),
+        { imageOrientation: 'flipY' });
       const tex = new THREE.CanvasTexture(bitmap);
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       // ⚠️ 大图要 mipmap —— 一张 5760×2880 缩到 1920 宽不生成 mipmap 会闪
       tex.generateMipmaps = true;
-      // ⚠️⚠️ **不翻 Y** —— `createImageBitmap` 出来的位图已经是正的，
-      //   而 three 的 CanvasTexture 默认 flipY=true 正好对上 WebGL 的坐标系。
-      //   ⚠️ 我原来在 DXT 路径上手动设了 flipY，那条对这里是多余的。
       tex.needsUpdate = true;
       texCache.set(info.name, tex);
       return tex;
@@ -359,6 +383,26 @@
       say(`画布 ${baseW}×${baseH}（${payload.canvas.source}）`);
     } else {
       warn(`拿不到画布尺寸，用默认 ${baseW}×${baseH}`);
+    }
+    // ──⚠️⚠️ **相机**（`camera.eye` + `general.zoom`）
+    //   ⚠️ 实测样本 B 的 eye 是 (-103.6, 120.9) —— 我原来整个忽略了它
+    //     ⟹ 画面整体偏 104 像素。而样本 A 是 (0,0) ⟹ 只看一个样本发现不了。
+    const eye = (payload.camera && payload.camera.eye) || null;
+    if (typeof eye === 'string') {
+      const e = eye.trim().split(/\s+/).map(Number);
+      if (e.length >= 2 && e.every(Number.isFinite)) {
+        // ⚠️ 和 origin 同一个换算：画布像素 → 中心原点
+        camOffset.x = e[0] - baseW / 2;
+        camOffset.y = e[1] - baseH / 2;
+        if (camOffset.x || camOffset.y) {
+          say(`相机偏移 (${camOffset.x.toFixed(0)}, ${camOffset.y.toFixed(0)})`);
+        }
+      }
+    }
+    const z = Number((payload.general || {}).zoom);
+    if (Number.isFinite(z) && z > 0 && z !== 1) {
+      camZoom = z;
+      say(`相机缩放 ${z}`);
     }
     resize();
 
@@ -597,7 +641,20 @@
         const bad = rs.filter((r) => !r.ok);
         say(`字体 ${okN}/${rs.length} 个加载成功`, okN === rs.length ? 'ok' : 'warn');
         if (bad.length) {
-          warn(`加载失败的字体：${bad.slice(0, 3).map((b) => `${short(b.name)}(${b.error})`).join(' / ')}`);
+          // ⚠️⚠️⚠️ **这类失败通常是那张字体自己不合规范，不是我们读坏的。**
+          //   实测 `迷你简综艺.ttf`：Chromium 的 OTS 报
+          //     「cmap: Out of order end range (59299 <= 59299)」
+          //   ⟹ 我把它的 cmap format 4 子表逐段解出来核过：
+          //     3710 段里有 **8 段** endCode 不是严格递增（59299 后面又是 59299）
+          //     ⟹ 那是**字体作者的问题**，规范要求严格递增。
+          //   ⚠️ 而字节是完好的（魔数 0x00010000、24 个字体全部合法）——
+          //     所以不是解包/切片出错。
+          //   ⟹ 判据：**第三方内容不合规范时，要说清"这不是我们的 bug"** ——
+          //     否则用户（和下一个我）会去查一个查不出结果的方向。
+          //   ⚠️ 而它**不致命**：那几段字回退成系统字体，画面照样有内容。
+          warn(`${bad.length} 个字体被浏览器拒了（那是字体本身不合规范，`
+            + '不是我们读坏的 —— 那几段字会回退成系统字体）：'
+            + `${bad.slice(0, 3).map((b) => `${short(b.name)}(${b.error})`).join(' / ')}`);
         }
         // ⚠️ 重画那些用了包内字体的文字
         let redrawn = 0;

@@ -526,4 +526,53 @@ check('⚠️⚠️ 同一屏上的两个数字要能互相解释', () => {
     '合成层那行用「个」报种类数 ⟹ 和下面的实例数撞词，看起来像对不上账');
 });
 
+check('⚠️⚠️⚠️ ImageBitmap 的翻转要在创建时给（texture.flipY 对它无效）', () => {
+  // ⚠️⚠️ **用户实测**：「有图，但是是上下颠倒的」——
+  //   而**文字是正的**。那个"一半正一半反"恰好指出了分界线：
+  //     文字 → `CanvasTexture(canvas)`      ⟹ flipY 生效  ✅
+  //     图层 → `CanvasTexture(ImageBitmap)` ⟹ flipY 被忽略 ❌
+  //   ⚠️ 因为 three 是靠 `gl.pixelStorei(UNPACK_FLIP_Y_WEBGL, texture.flipY)`
+  //     实现翻转的，而 WebGL 规范说那个 pack 参数**对 ImageBitmap 源不起作用**。
+  //   ⟹ 判据：**同一个属性在不同的纹理源上行为不同** ——
+  //     "这个属性我设过了"不等于"它生效了"。
+  assert.match(renderCode, /createImageBitmap\([\s\S]{0,80}?\{ imageOrientation: 'flipY' \}\)/,
+    "createImageBitmap 没给 imageOrientation: 'flipY' ⟹ 所有图层上下颠倒"
+    + '（而文字是正的 —— 那两条路径的 flipY 行为不同）');
+  // ⚠️ 而**不能**指望 texture.flipY 去修它（那条对 ImageBitmap 是死的）
+  assert.ok(!/tex\.flipY\s*=/.test(renderCode),
+    '还在设 tex.flipY ⟹ 那对 ImageBitmap 无效，会让人以为已经处理了');
+});
+
+check('⚠️⚠️ 相机偏移和 zoom 要读出来（只看一个样本发现不了）', () => {
+  // ⚠️ 实测样本 B 的 `camera.eye` 是 `(-103.6, 120.9)`，而我原来**整个忽略了它**
+  //   ⟹ 画面整体偏 104 像素（混在"大小不太对"里，很难单独看出来）。
+  //   ⚠️⚠️ 而样本 A 的 eye 是 `(0, 0)` ⟹ **只看一个样本发现不了这条**。
+  //   ⟹ 判据：**"默认值恰好正确"的样本会掩盖漏读的字段。**
+  assert.match(renderCode, /payload\.camera && payload\.camera\.eye/,
+    '没读 camera.eye ⟹ 相机偏移的壁纸会整体偏几百像素');
+  assert.match(renderCode, /camOffset\.x = e\[0\] - baseW \/ 2/,
+    'camera.eye 没换算成中心原点 ⟹ 偏移量会错半个画布');
+  assert.match(renderCode, /camera\.position\.set\(camOffset\.x, camOffset\.y/,
+    '算了偏移但没作用到相机上 ⟹ 那是个静默 no-op');
+  // ⚠️ zoom 也要读（实测两样本都是 1，但它是个真参数）
+  assert.match(renderCode, /Number\(\(payload\.general \|\| \{\}\)\.zoom\)/,
+    '没读 general.zoom');
+  assert.match(renderCode, /Math\.max\(W \/ baseW, H \/ baseH\) \* camZoom/,
+    'zoom 读了但没进投影计算 ⟹ 静默 no-op');
+});
+
+check('⚠️⚠️ 第三方内容不合规范时要说清"不是我们的 bug"', () => {
+  // ⚠️ 实测 `迷你简综艺.ttf`：Chromium 的 OTS 报
+  //   「cmap: Out of order end range (59299 <= 59299)」。
+  //   ⚠️ 我把它的 cmap format 4 逐段解出来核过：3710 段里 **8 段**
+  //     endCode 不是严格递增 ⟹ 那是**字体作者的问题**。
+  //   而字节完好（24 个字体魔数全合法）⟹ 不是解包出错。
+  //   ⟹ 判据：**第三方内容不合规范时，要说清"这不是我们的 bug"** ——
+  //     否则用户（和下一个我）会去查一个查不出结果的方向。
+  assert.match(renderCode, /那是字体本身不合规范/,
+    '字体加载失败的提示没说清归属 ⟹ 会让人往"我们读坏了"的方向查');
+  assert.match(renderCode, /回退成系统字体/,
+    '没说清后果（不致命，那几段字回退）⟹ 读起来像画面废了');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
