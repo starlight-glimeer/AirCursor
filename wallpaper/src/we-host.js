@@ -35,17 +35,32 @@ const TYPES = {
   web: { support: 'full', label: '交互网页' },
   // mp4/webm。一个 <video loop muted> 的事。
   video: { support: 'full', label: '视频' },
-  // ⚠️ WE 编辑器的原生格式：私有 PKGV 归档 + TEXV 纹理 + 它自己方言的 GLSL。
-  // 不支持，而且**明确说出来比画一张静止的图好** —— 静止的图看起来像坏了。
-  //
-  // 证据（读 Open Wallpaper Engine 的代码，5 项）：粒子函数定义 1 处调用 0 处、
-  // 零 shader、零动画代码、加色层直接 skip、DXT 纹理 return nil。
-  // ⟹ 连专门做这件事的开源项目都只画静态底图。
-  // 唯一真做了 Scene 渲染的是 linux-wallpaperengine（C++/OpenGL），
-  // 移植评估在 aicursor-helper/scene-wallpaper-feasibility.md。
-  // ⚠️⚠️⚠️ **0.9.158 起支持**（用户 2026-08-03：「scene 这种类型我们可以支持，
+  // ⚠️⚠️⚠️ **WE 编辑器的原生格式**：私有 PKGV 归档 + TEXV 纹理 + 它方言的 GLSL。
+  //   0.9.158/159 起支持（用户 2026-08-03：「scene 这种类型我们可以支持，
   //   后面我们的 agent 也支持生成 scene 类型的壁纸」）。
-  //   见下面那段"我 07-30 的评估错在哪"。
+  //
+  // ⚠️ 而它是**分维度支持**，不是"全都行"：
+  //     图层（image）+ 变换树 + 视差 ✅
+  //     文字（canvas 画字 → 纹理，含包内 ttf/otf）✅
+  //     音频柱（Simple_Audio_Bars，按参数还原）✅
+  //     tint / opacity 效果（折进材质的两个乘法）✅
+  //     ⛔ 其余 shader effect（水波纹 / 模糊 / 色散 / 遮罩…）
+  //     ⛔ 粒子系统、合成层（composelayer 那种"抓下层再套 effect"的）
+  //   ⟹ 所以 `renderability(scene)` 会**逐张报出覆盖率和缺口**，
+  //     而装载时屏幕上和日志里都要说清（见 scene-pkg.js 那段判据）。
+  //     ⚠️ 判据：**`support: 'full'` 不能变成假承诺** ——
+  //       静默少画的症状是"这张壁纸怪怪的"，而用户无从判断是谁的问题。
+  //
+  // ⚠️⚠️ 实测两个真实样本的覆盖率（继承 visible 之后的口径）：
+  //     `3299228616`（Lonely Cat）：8 个可见元素能画 6 个（53%），
+  //        ⚠️ 但它的动态**全在 12 个 shader effect 里** ⟹ 画出来接近静止
+  //     `2902406982`（月半与鬼哭）：87 个可见元素能画 87 个（99%），
+  //        视差 + 音频柱都能动
+  //   ⟹ 那两个数字的差别本身说明"scene 支持"是个**区间**而不是开关。
+  //
+  // ⚠️ 顺带修正一条旧结论：我 07-30 那份评估说"要移植 30k 行 C++"，
+  //   那是量了 `linux-wallpaperengine` 的**代码规模**（支持 WE 的全部功能），
+  //   而不是量**真实壁纸里有什么**。⟹ 判据见 scene-pkg.js 开头那段。
   scene: { support: 'full', label: '场景（WE 编辑器格式）' },
   // 别人编译的 Windows .exe。跑不了也不该跑（用户已明确不做）。
   application: { support: 'none', label: 'Windows 程序' },

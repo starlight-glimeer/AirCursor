@@ -1,0 +1,69 @@
+<!doctype html>
+<!--
+  scene 类壁纸的渲染页（0.9.159）。
+
+  ⚠️⚠️⚠️ 这是**第三条渲染路径**：
+    web   → 直接 loadURL 那个 HTML（壁纸自己是个网页）
+    video → video.html + 一个 <video>
+    scene → **这个文件** + 主进程解好的场景数据（IPC 送进来）
+
+  ⚠️ 为什么数据从主进程来：`scene.pkg` 是 11-120MB 的二进制，
+    而这个窗口是 sandbox（读不了文件系统）。
+
+  ⚠️⚠️ 用户 2026-08-03：「你可以写好探针/日志，方便我给你更加准确具体的信息」
+    ⟹ 所以这一页有一个**屏幕上的诊断层**（右上角），它显示：
+      解析了几个对象、几张纹理、能画多少、每一步耗时、以及任何报错。
+    ⟹ 判据：**壁纸层没有 devtools 入口，而"黑屏"是所有失败的共同外观**
+      ⟹ 出错要在屏幕上说。
+-->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>DreamPaper · scene</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05060c; }
+  #c { display: block; width: 100vw; height: 100vh; }
+
+  /* ⚠️⚠️ **诊断层** —— 默认显示 6 秒然后淡出。
+     为什么默认显示：用户第一次装 scene 壁纸时最需要知道"它到底解析成什么了"。
+     而它**只在有问题时留着**（有 error/warning 就不淡出）。
+     ⚠️ 判据：**探针要默认可见** —— 藏在快捷键后面的诊断，
+       在"我不知道出了什么事"的时候没人会去按。 */
+  #diag {
+    position: fixed; right: 16px; top: 16px; max-width: 46vw;
+    padding: 12px 15px;
+    background: rgba(10, 12, 20, .86);
+    border: 1px solid rgba(255, 255, 255, .14); border-radius: 10px;
+    color: #e8e8ee;
+    font: 400 11.5px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-line; user-select: text;
+    transition: opacity .6s ease;
+    z-index: 10;
+  }
+  #diag.fade { opacity: 0; pointer-events: none; }
+  #diag b { color: #6cc7ff; font-weight: 600; }
+  #diag .ok { color: #b6ffd8; }
+  #diag .warn { color: #ffd9a8; }
+  #diag .bad { color: #ff9db0; }
+
+  /* 致命错误：居中大字（那时候画面上没有别的东西） */
+  #fatal {
+    display: none; position: fixed; left: 50%; top: 50%;
+    transform: translate(-50%, -50%); max-width: 74vw; padding: 20px 24px;
+    background: rgba(10, 12, 20, .9);
+    border: 1px solid rgba(255, 180, 84, .45); border-radius: 12px;
+    color: #ffd9a8;
+    font: 400 13px/1.9 -apple-system, "PingFang SC", sans-serif;
+    white-space: pre-line; text-align: left; user-select: text; z-index: 20;
+  }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="diag">scene 壁纸 · 等主进程送数据…</div>
+  <div id="fatal"></div>
+  <script src="vendor/three.r128.min.js"></script>
+  <script src="scene-render.js"></script>
+</body>
+</html>

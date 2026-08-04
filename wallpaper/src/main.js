@@ -50,6 +50,9 @@ const MouseBridge = require('./mouse-bridge.js');
 //   而"开窗口真跑"那部分留在这个文件里（它绕不开 Electron）。
 const LLM = require('./llm.js');
 const Gen = require('./wallpaper-gen.js');
+// ⚠️ scene 类壁纸的解析（0.9.158）—— 同样是**纯逻辑**（25 项测试），
+//   而"开窗口渲染"那部分在这个文件里（`sendSceneData`）。
+const ScenePkg = require('./scene-pkg.js');
 // ⚠️ 0.9.140：防同质化的配方表（枚举维度 + 读历史避重）。纯逻辑、有测试。
 // ⚠️ 0.9.111：去音轨那个 helper 也走预编译优先那条路（和音频/鼠标一样）。
 const { findPrebuilt } = require('./prebuilt-helper.js');
@@ -2347,9 +2350,16 @@ function createWEWindow() {
     backgroundColor: '#000000',
     ...strategy.options,
     webPreferences: {
-      // ⚠️ 两种 preload：video 是我们自己的页面（要 gw 那套），
-      // web 是第三方壁纸（只给 WE 的 5 个全局函数，见 we-preload.js 的注释）。
-      preload: WE.isMediaType(weProject.type)
+      // ⚠️ 两种 preload：**我们自己的页面**（video.html / scene.html）要 `gw` 那套，
+      // 而 web 是第三方壁纸（只给 WE 的 5 个全局函数，见 we-preload.js 的注释）。
+      //
+      // ⚠️⚠️⚠️ scene 也要走 `preload.js` —— 而 `isMediaType('scene')` 是 **false**
+      //   （它只认 video/gif）⟹ 光靠那个判断会给 scene 挂 we-preload.js，
+      //   那里面**没有** `onSceneData` ⟹ 场景数据永远送不到，画面全黑。
+      //   ⚠️ 而那种失败**完全静默**：窗口开了、页面加载了、一个错误都没有。
+      //   ⟹ 判据：**"我们自己的页面"和"媒体类型"是两个不同的问题**，
+      //     别拿一个判断兼两用。
+      preload: (WE.isMediaType(weProject.type) || weProject.type === 'scene')
         ? path.join(__dirname, 'preload.js')
         : path.join(__dirname, 'we-preload.js'),
       // ⚠️ 这里曾经是 contextIsolation: false，因为属性接口是反向的（壁纸自己挂
@@ -2378,7 +2388,27 @@ function createWEWindow() {
 
   // ⚠️ web 和 video 的装载路径必须分开：video 的 project.file 是视频文件名不是 html，
   // 拿它去 loadURL 会让 Chromium 直接下载或黑屏（不报错）。
-  if (WE.isMediaType(weProject.type)) {
+  if (weProject.type === 'scene') {
+    // ⚠️⚠️⚠️ **第三条渲染路径**（0.9.159）：scene 类。
+    //
+    // 和 video / web 都不一样：
+    //   web   → 直接 loadURL 那个 HTML（壁纸自己是个网页）
+    //   video → 我们的 video.html + 一个 <video>
+    //   scene → 我们的 scene.html + **主进程解好的场景数据**
+    //
+    // ⚠️ 为什么解析在主进程做：`scene.pkg` 是 11-120MB 的二进制，
+    //   而渲染进程是 sandbox（读不了文件系统）。
+    //   ⟹ 主进程解包 → 挑出需要的东西 → IPC 送过去。
+    // ⚠️⚠️ 而**不整包送** —— 那会把 120MB 塞进 IPC（Electron 会卡死或者直接崩）。
+    //   ⟹ 只送场景结构 + 用到的纹理（逐张按需送）。
+    win.loadFile(path.join(__dirname, 'scene.html'));
+    win.webContents.once('did-finish-load', () => {
+      sendSceneData(win, dir).catch((error) => {
+        console.error('[scene] 送场景数据失败：', error.message);
+        logEvent('we', `scene 数据没送成：${error.message}`);
+      });
+    });
+  } else if (WE.isMediaType(weProject.type)) {
     // 页面是我们自己的 video.html，视频文件通过 IPC 把 wall:// 的 URL 送进去。
     win.loadFile(path.join(__dirname, 'video.html'));
     win.webContents.once('did-finish-load', () => {
@@ -3988,6 +4018,560 @@ function checkJsSyntax(code) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **scene 类壁纸：把解好的场景送进渲染窗口**（0.9.159）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-03：「scene 这种类型我们可以支持」+「你可以写好探针/日志，
+//   方便我给你更加准确具体的信息」
+//
+// ⚠️ 而这一层的**每一步都要报**：scene 有 6 种对象、几十到几百个实例、
+//   十几张 DXT 纹理 —— 任何一步静默失败的症状都是"壁纸怪怪的"或者黑屏，
+//   而那时用户无从判断是哪一步。
+//   ⟹ 判据：**跨进程 + 多阶段的链路，每个阶段都要留一句能对账的日志。**
+//     （这个项目为"静默失败"栽过很多次。）
+
+// 一次装载的诊断记录 —— ⌃⇧H 和诊断报告都要读它
+let lastSceneDiag = null;
+
+async function sendSceneData(win, dir) {
+  const t0 = Date.now();
+  const diag = {
+    dir,
+    at: new Date().toISOString(),
+    steps: [],
+    warnings: [],
+    errors: [],
+  };
+  // ⚠️ 每一步都记 —— 那让"卡在哪一步"是看一眼就知道的事
+  const step = (name, detail) => {
+    const line = `${name}${detail ? `：${detail}` : ''}`;
+    diag.steps.push({ name, detail: detail || '', ms: Date.now() - t0 });
+    console.log(`[scene] ${line}`);
+    logEvent('we', `scene ${line}`);
+  };
+  const fail = (name, detail) => {
+    diag.errors.push(`${name}：${detail}`);
+    console.error(`[scene] ❌ ${name}：${detail}`);
+    logEvent('we', `scene ❌ ${name}：${detail}`);
+    // ⚠️⚠️ 渲染窗口也要收到 —— 否则用户看到一片黑而屏幕上什么都不说
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('scene-error', { step: name, detail });
+    }
+  };
+
+  // ── ① 找 scene.pkg
+  const pkgPath = path.join(dir, 'scene.pkg');
+  if (!fs.existsSync(pkgPath)) {
+    // ⚠️ 有的 scene 壁纸是**散包**的（没打成 pkg，直接放 scene.json + 材质目录）
+    //   ⟹ 那种也要支持，而不是报"找不到 scene.pkg"
+    const looseJson = path.join(dir, 'scene.json');
+    if (fs.existsSync(looseJson)) {
+      step('散包模式', '没有 scene.pkg，直接读目录里的 scene.json');
+      return sendSceneLoose(win, dir, diag, step, fail, t0);
+    }
+    fail('找 scene.pkg', `${dir} 里既没有 scene.pkg 也没有 scene.json`);
+    lastSceneDiag = diag;
+    return;
+  }
+
+  // ── ② 解包
+  let buf;
+  try {
+    buf = fs.readFileSync(pkgPath);
+  } catch (error) {
+    fail('读 scene.pkg', error.message);
+    lastSceneDiag = diag;
+    return;
+  }
+  step('读到 scene.pkg', `${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+
+  const pkg = ScenePkg.parsePkg(buf);
+  if (!pkg.ok) {
+    fail('解包', pkg.error);
+    lastSceneDiag = diag;
+    return;
+  }
+  const sum = ScenePkg.summarize(pkg);
+  step('解包成功', `${pkg.version} · ${pkg.entries.length} 个条目 · `
+    + Object.entries(sum).map(([k, v]) => `${k}×${v.count}`).join(' '));
+  for (const w of pkg.warnings || []) {
+    diag.warnings.push(w);
+    console.warn(`[scene] ⚠️ ${w}`);
+  }
+  diag.pkg = { version: pkg.version, entries: pkg.entries.length, summary: sum };
+
+  // ── ③ 解 scene.json
+  // ⚠️ 入口可能叫 gifscene.json（WE 把 GIF 包成 scene 那条）
+  const sceneName = ['scene.json', 'gifscene.json']
+    .find((n) => pkg.entries.some((e) => e.name === n));
+  if (!sceneName) {
+    fail('找 scene.json', `包里没有 scene.json 也没有 gifscene.json`
+      + `（有这些：${pkg.entries.slice(0, 8).map((e) => e.name).join(' ')}…）`);
+    lastSceneDiag = diag;
+    return;
+  }
+  const sceneRaw = ScenePkg.readEntry(buf, pkg, sceneName);
+  const scene = ScenePkg.parseScene(sceneRaw.toString('utf8'));
+  if (!scene.ok) {
+    fail('解 scene.json', scene.error);
+    lastSceneDiag = diag;
+    return;
+  }
+  // ⚠️⚠️⚠️ **摊平变换树** —— 实测样本 A 有 264/271 个对象是子对象，
+  //   而子对象的 `origin` 是**相对父节点**的（根对象才是绝对画布坐标）。
+  //   ⟹ 不摊平的话它们的位置全错（我第一版把子对象推出了画布）。
+  // ⚠️ 它还做 `visible` 继承：实测样本 A 靠父节点的 visible 切 6 种语言 ——
+  //   不继承就是 6 套语言的字糊在一起（70 个可见 → 正确的 8 个）。
+  ScenePkg.flattenTransforms(scene);
+  step('解析场景', `${sceneName} · ${scene.objects.length} 个对象 · `
+    + Object.entries(scene.counts).map(([k, v]) => `${k}×${v}`).join(' '));
+  if (scene.skipped.length) {
+    // ⚠️⚠️ 不认识的对象要**报出来**（可观测 > 静默），但不阻止装载
+    diag.warnings.push(`${scene.skipped.length} 个不认识的对象`);
+    console.warn(`[scene] ⚠️ ${scene.skipped.length} 个不认识的对象：`
+      + scene.skipped.slice(0, 5).map((x) => x.name || x.id).join(' '));
+  }
+
+  // ⚠️ 变换树的问题要报（环 / parent 指向不存在的 id）
+  for (const w of scene.transformWarnings || []) {
+    diag.warnings.push(w);
+    console.warn(`[scene] ⚠️ ${w}`);
+  }
+  // ⚠️⚠️ **"该画多少"的口径**：自己 visible **且祖先都 visible**。
+  //   实测样本 A：70 → 8（5 套非英语语言 + 备用时钟皮肤被父节点关掉）
+  //   ⟹ 这两个数都要报，因为"少画了"和"多画了"是两种完全不同的 bug。
+  const selfVis = scene.objects.filter(
+    (o) => (o.kind === 'image' || o.kind === 'text') && o.visible).length;
+  const treeVis = scene.objects.filter(
+    (o) => (o.kind === 'image' || o.kind === 'text') && o.worldVisible).length;
+  step('可见对象', `自己 visible ${selfVis} 个 → 继承父节点后 ${treeVis} 个`
+    + `（差 ${selfVis - treeVis} 个被父节点关掉：多语言/备用皮肤）`);
+  diag.visible = { self: selfVis, tree: treeVis };
+
+  // ── ④⚠️⚠️ **能画多少** —— 那是 `support: 'full'` 不变成假承诺的关键
+  const cap = ScenePkg.renderability(scene);
+  step('能力自述', `${cap.summary}（覆盖 ${(cap.coverage * 100).toFixed(0)}%）`);
+  diag.renderability = cap;
+
+  // ── ⑤ 纹理：只送**图层真正用到的**
+  // ⚠️ 一个包里有 19 张 tex 但可能只有 8 张被图层引用 ⟹ 送全部是白费 IPC
+  // ⚠️⚠️⚠️ **`image` 不是贴图路径** —— 它指向一个 model JSON，
+  //   而真贴图要走 `model → material → 贴图裸名 → materials/<名>.tex`。
+  //   ⚠️ 我第一版直接把它当 `.tex` ⟹ 实测**两个样本一张纹理都读不出来**
+  //     （全报"不是 .tex 文件"）⟹ 画面会是全黑。
+  //   ⟹ 见 `resolveImageTexture` 里那段（含为什么纯函数测试逮不到）。
+  const readJson = (name) => {
+    const r = ScenePkg.readEntry(buf, pkg, name);
+    if (!r) return null;
+    try { return JSON.parse(r.toString('utf8')); } catch { return null; }
+  };
+  // ⚠️⚠️ 只收**继承后仍可见**的 —— 实测样本 A 那 62 个被父节点关掉的图层
+  //   各自都有纹理，全送等于白搭几十 MB 的 IPC。
+  // ⚠️ `wanted` 的键是**解析后的 .tex 路径**（多个图层可能共用一张贴图）
+  const wanted = new Map();   // texPath → 第一个引用它的 image ref
+  // ⚠️ 而对象要知道"我该用哪张贴图" ⟹ 记一份 image ref → texPath 的映射
+  const texByImageRef = {};
+  let composites = 0;
+  const composNames = [];
+  const resolveFail = [];
+  for (const o of scene.objects) {
+    if (o.kind !== 'image' || !o.worldVisible) continue;
+    if (texByImageRef[o.image] !== undefined) continue;   // 已解析过
+    const r = ScenePkg.resolveImageTexture(buf, pkg, o.image, readJson);
+    if (r.ok) {
+      texByImageRef[o.image] = r.texPath;
+      if (!wanted.has(r.texPath)) wanted.set(r.texPath, o.image);
+    } else if (r.composite) {
+      // ⚠️⚠️ **合成层**（`models/util/composelayer.json`）——WE 内置模型，
+      //   不在包里、本来就没有贴图（画面来自下层 + effect）。
+      //   ⟹ 那**不是失败**，实测两个样本一共 14 个。
+      //   ⚠️ 而挂了音频柱的那几个照样能画（柱子是我们生成的，不要贴图）。
+      texByImageRef[o.image] = null;
+      composites += 1;
+      if (!composNames.includes(r.composite)) composNames.push(r.composite);
+    } else {
+      texByImageRef[o.image] = null;
+      resolveFail.push(`${o.name || o.id}：${r.error}`);
+    }
+  }
+  if (composites > 0) {
+    step('合成层', `${composites} 个（${composNames.join(' / ')}）`
+      + ' —— WE 内置模型、本来没有贴图，画面来自下层 + effect'
+      + '（挂音频柱的那些照样画）');
+  }
+  if (resolveFail.length) {
+    diag.warnings.push(`${resolveFail.length} 个图层的贴图解析失败`);
+    console.warn(`[scene] ⚠️ 贴图解析失败：${resolveFail.slice(0, 5).join(' | ')}`);
+  }
+  diag.imageResolve = {
+    resolved: Object.values(texByImageRef).filter(Boolean).length,
+    composites,
+    compositeKinds: composNames,
+    failed: resolveFail,
+  };
+
+  const textures = [];
+  const texFail = [];
+  for (const [name] of wanted) {
+    const raw = ScenePkg.readEntry(buf, pkg, name);
+    if (!raw) { texFail.push(`${name}（包里没有）`); continue; }
+    const head = ScenePkg.parseTexHeader(raw);
+    if (!head.ok) { texFail.push(`${name}（${head.error}）`); continue; }
+    // ⚠️⚠️⚠️ **像素数据不是"头部之后的全部"** —— 要解 TEXB 块。
+    //   而 body 通常是 **PNG / JPEG**（实测图层真正用到的 11 张里 10 张是），
+    //   不是头部 `format` 声明的 DXT3。
+    //   ⚠️ 我第一版做 `raw.slice(head.headerBytes)` 然后按 DXT 上传
+    //     ⟹ 34 张里没有一张能那么用 ⟹ 整个画面是黑的。
+    //   ⟹ 判据：**头部声明的格式说的是"解出来之后是什么"，不是"存储时是什么"。**
+    const body = ScenePkg.parseTexData(raw, head);
+    if (!body.ok) { texFail.push(`${name}（${body.error}）`); continue; }
+    // ⚠️⚠️ 只送**浏览器能直接解**的（PNG / JPEG）——
+    //   那让渲染层用 `createImageBitmap` 一句话搞定，不用 DXT 解码器 / LZ4。
+    //   ⚠️ 而 `none` 容器（裸 DXT / RGBA / LZ4 压缩）**这一版不支持** ——
+    //     实测图层真正用到的只有 1 张是那种（22×40 的 `number.am`，一个小数字贴图）
+    //     ⟹ 报出来而不是静默少画。
+    if (body.container !== 'PNG' && body.container !== 'JPEG') {
+      texFail.push(`${name}（存储格式是 ${body.container}`
+        + `${body.isLZ4 ? ' + LZ4 压缩' : ''}，这一版只支持 PNG/JPEG`
+        + `；头部声明 ${head.formatName} ${body.width}×${body.height}）`);
+      continue;
+    }
+    textures.push({
+      name,
+      // ⚠️ 两套尺寸都送：`texWidth/imgWidth` 来自 .tex 头部，
+      //   而 `width/height` 是 mip0 的实际尺寸（那才是图片真正的像素数）
+      format: head.formatName,
+      container: body.container,
+      width: body.width,
+      height: body.height,
+      texWidth: head.texWidth,
+      texHeight: head.texHeight,
+      imgWidth: head.imgWidth,
+      imgHeight: head.imgHeight,
+      // ⚠️⚠️ **UV 不用缩** —— PNG/JPEG 解出来就是图片本身的尺寸
+      //   （实测 mip0 尺寸 = imgWidth/imgHeight，而不是 texWidth）。
+      //   ⚠️ 那和"DXT 装在 2 的幂纹理里"是两种情况，别把那条 uvScale 套过来。
+      // ⚠️ 像素数据在这里切出来 —— 渲染进程是 sandbox，读不了文件。
+      //   ⚠️ 它是 Buffer ⟹ IPC 会序列化成 Uint8Array（拷贝，不是共享内存）
+      //   ⟹ 所以只送用到的那些（见上面那个 wanted）。
+      data: body.data,
+    });
+  }
+  const texBytes = textures.reduce((n, t) => n + t.data.length, 0);
+  step('纹理', `${textures.length}/${wanted.size} 张可用 · `
+    + `${(texBytes / 1024 / 1024).toFixed(1)} MB · `
+    // ⚠️ 报**存储容器**而不只是头部声明的格式 —— 那两个经常不一致
+    //   （头部说 DXT3，实际存的是 PNG）
+    + [...new Set(textures.map((t) => `${t.container}(声明${t.format})`))].join(' '));
+  if (texFail.length) {
+    diag.warnings.push(`${texFail.length} 张纹理读不了`);
+    console.warn(`[scene] ⚠️ 读不了的纹理：${texFail.slice(0, 5).join(' / ')}`);
+  }
+  diag.textures = { wanted: wanted.size, ok: textures.length, failed: texFail, bytes: texBytes };
+
+  // ── ⑤b⚠️⚠️ **字体** —— 实测样本 B 的 97 个文字用了 26 种包里的 ttf/otf
+  //   （合计 75MB，最大一个 16.7MB）。
+  // ⚠️ 只送**真正被文字对象引用的**那些 —— 包里的字体常常比用到的多，
+  //   而 75MB 全送会把 IPC 撑爆。
+  const fontWanted = new Set();
+  for (const o of scene.objects) {
+    if (o.kind !== 'text' || !o.worldVisible || typeof o.font !== 'string') continue;
+    // ⚠️ `systemfont_xxx` 是系统字体（不在包里）⟹ 渲染层映射到 CSS 字体族
+    if (/^fonts\//.test(o.font)) fontWanted.add(o.font);
+  }
+  const fonts = [];
+  const fontFail = [];
+  for (const name of fontWanted) {
+    const raw = ScenePkg.readEntry(buf, pkg, name);
+    if (!raw) { fontFail.push(`${name}（包里没有）`); continue; }
+    fonts.push({ name, data: raw });
+  }
+  // ⚠️⚠️ **总量上限** —— 实测样本 B 用到的 10 个字体合计 **33.8MB**
+  //   （最大一个「微软雅黑Bold」14.3MB、「书法字体」16.6MB）。
+  //   ⚠️ 那些字节要过 IPC（structured clone = 一次拷贝）⟹ 无上限会让装载卡几秒。
+  //   ⟹ 按体积从小到大装，超了就停 —— 而**被丢掉的要报出来**
+  //     （那样"某几段字的字体不对"有解释，不是无解的谜）。
+  //   ⚠️ 判据：**要设上限就得说清丢了什么** ——
+  //     静默截断读起来像"全都送了"，而这个项目为那种事栽过。
+  const FONT_BUDGET = 24 * 1024 * 1024;
+  fonts.sort((a, b) => a.data.length - b.data.length);
+  let fontBytes = 0;
+  const fontDropped = [];
+  while (fonts.length && fontBytes + fonts[fonts.length - 1].data.length > FONT_BUDGET) {
+    const cut = fonts.pop();
+    fontDropped.push(`${cut.name}（${(cut.data.length / 1024 / 1024).toFixed(1)}MB）`);
+  }
+  fontBytes = fonts.reduce((n, f) => n + f.data.length, 0);
+  if (fontDropped.length) {
+    const msg = `${fontDropped.length} 个字体超出 ${FONT_BUDGET / 1024 / 1024}MB 预算被丢下`
+      + `：${fontDropped.join(' / ')} ⟹ 用它们的文字会回退成系统字体`;
+    diag.warnings.push(msg);
+    console.warn(`[scene] ⚠️ ${msg}`);
+  }
+  step('字体', `${fonts.length}/${fontWanted.size} 个可用 · `
+    + `${(fontBytes / 1024 / 1024).toFixed(1)} MB`
+    + (fontDropped.length ? ` · ⚠️ ${fontDropped.length} 个因超预算丢下` : ''));
+  if (fontFail.length) {
+    diag.warnings.push(`${fontFail.length} 个字体读不了`);
+    console.warn(`[scene] ⚠️ 读不了的字体：${fontFail.slice(0, 5).join(' / ')}`);
+  }
+  diag.fonts = {
+    wanted: fontWanted.size, ok: fonts.length, failed: fontFail,
+    bytes: fontBytes, dropped: fontDropped,
+  };
+
+  // ── ⑥ 送过去
+  // ──⚠️⚠️⚠️ **「屏幕上会有几个」** —— 那是唯一不会变成假承诺的数字。
+  //
+  // ⚠️ `renderability()` 说的是"这些类型我们支持"，而它**看不到**：
+  //     · 贴图解析失败 / 存储格式不支持
+  //     · 合成层（没有自己的贴图）
+  //     · 空文字（模板占位）
+  //   ⟹ 实测样本 A：`renderability` 说"能画 9 个"，而屏幕上只会有 **6 个**。
+  //   ⚠️⚠️ 判据：**能力自述和实际产出要分开报，而且两个都要报。**
+  //     只报前者是假承诺；只报后者则丢掉了"为什么少"。
+  //     （这个项目为"报数不交代口径"栽过一整轮。）
+  const texSet = new Set(textures.map((t) => t.name));
+  let willImage = 0;
+  let willText = 0;
+  let willBars = 0;
+  const skip = { composite: 0, emptyText: 0, noTexture: 0 };
+  for (const o of scene.objects) {
+    if (!o.worldVisible) continue;
+    if (o.audioBars) { willBars += 1; continue; }
+    if (o.kind === 'text') {
+      if (String(o.text == null ? '' : o.text).trim()) willText += 1;
+      else skip.emptyText += 1;
+      continue;
+    }
+    if (o.kind !== 'image') continue;
+    const tp = texByImageRef[o.image];
+    if (tp === null || tp === undefined) { skip.composite += 1; continue; }
+    if (!texSet.has(tp)) { skip.noTexture += 1; continue; }
+    willImage += 1;
+  }
+  step('屏幕上会有',
+    `图层 ${willImage} · 文字 ${willText} · 音频柱 ${willBars}`
+    + `（跳过：合成层 ${skip.composite} / 空文字 ${skip.emptyText} / 纹理不可用 ${skip.noTexture}）`);
+  diag.willDraw = { image: willImage, text: willText, audioBars: willBars, skip };
+
+  // ──⚠️⚠️ **动态来源盘点** —— "这张壁纸为什么不动"的直接答案。
+  //   ⚠️ 实测样本 A 的 8 个可见对象视差深度**全是 0**、动态全在 shader effect 里
+  //     ⟹ 我们画出来接近静止，而那必须说出来。
+  const gp = scene.general || {};
+  const camOn = ScenePkg.unwrapValue(gp.cameraparallax) === true;
+  const layerPar = scene.objects.filter(
+    (o) => o.worldVisible && (o.parallaxDepth[0] || o.parallaxDepth[1])).length;
+  const motion = [];
+  if (camOn) motion.push(`相机视差（幅度 ${gp.cameraparallaxamount}）`);
+  if (layerPar) motion.push(`${layerPar} 个图层有视差深度`);
+  if (willBars) motion.push(`${willBars} 个音频柱`);
+  if (motion.length) {
+    step('动态来源', motion.join(' + '));
+  } else {
+    const msg = `这张 scene 没有我们能还原的动态来源`
+      + `${cap.shaderMissN ? `（它的动态全在 ${cap.shaderMissN} 个 shader 效果里）` : ''}`
+      + ' ⟹ 画出来会是静止的';
+    diag.warnings.push(msg);
+    step('⚠️ 动态来源', msg);
+  }
+  diag.motion = { cameraParallax: camOn, layerParallax: layerPar, audioBars: willBars };
+
+  // ⚠️ `objects` 里的 `raw` 要去掉 —— 那是给我们自己排查用的，
+  //   而 IPC 序列化它会让载荷翻几倍（每个对象都带一份原始 JSON）。
+  const lean = scene.objects.map((o) => {
+    const { raw, ...rest } = o;
+    return rest;
+  });
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('scene-data', {
+      camera: scene.camera,
+      general: scene.general,
+      // ⚠️⚠️ 画布尺寸**读出来的**（`general.orthogonalprojection`），
+      //   而不是渲染层从最大图层反推 —— 实测样本 B 最大图层 5760×2880
+      //   比画布 3840×2160 大 1.5 倍（留给视差的余量）⟹ 反推会让画面缩 2/3。
+      canvas: scene.canvas,
+      objects: lean,
+      textures,
+      fonts,
+      // ⚠️⚠️ `image` → 真贴图路径 的映射（null = 合成层，没有贴图）——
+      //   渲染层拿对象的 `image` 查这张表，而不是直接当路径用。
+      texByImageRef,
+      renderability: cap,
+      // ⚠️⚠️ **主进程预计会画多少** —— 渲染层报"实际画了多少"，
+      //   而那两个数**不一致就是 bug**（预计 18 实际 0 = 纹理解码全失败）。
+      //   ⟹ 判据：**跨进程的链路要能对账。**
+      willDraw: diag.willDraw,
+      // ⚠️ 诊断也送过去 —— 屏幕上那个错误框要能说清"能画多少"
+      diag: {
+        warnings: diag.warnings,
+        skipped: scene.skipped.length,
+        boundFields: scene.boundFields,
+        composites,
+        compositeKinds: composNames,
+      },
+    });
+    step('已送到渲染进程',
+      `${lean.length} 个对象 + ${textures.length} 张纹理 + ${fonts.length} 个字体`);
+  }
+  lastSceneDiag = diag;
+}
+
+// ⚠️ 散包模式：有的 scene 壁纸没打成 pkg（scene.json + materials/ 直接放着）
+//   ⟹ 那种也要支持。⚠️ 判据：**别假设输入一定是打好包的。**
+async function sendSceneLoose(win, dir, diag, step, fail, t0) {
+  let scene;
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'scene.json'), 'utf8');
+    scene = ScenePkg.parseScene(raw);
+  } catch (error) {
+    fail('读散包 scene.json', error.message);
+    lastSceneDiag = diag;
+    return;
+  }
+  if (!scene.ok) {
+    fail('解散包 scene.json', scene.error);
+    lastSceneDiag = diag;
+    return;
+  }
+  ScenePkg.flattenTransforms(scene);
+  step('解析场景（散包）', `${scene.objects.length} 个对象`);
+  const cap = ScenePkg.renderability(scene);
+  step('能力自述', cap.summary);
+  diag.renderability = cap;
+
+  // ⚠️ 散包的纹理走文件系统 —— 逐个读
+  // ⚠️⚠️ 同样要走 `model → material → .tex` 那条链（见 resolveImageTexture）——
+  //   `image` **不是**贴图路径，直接当路径用会一张也读不出来。
+  // ⚠️ 路径必须过越界检查 —— scene.json 是第三方内容，
+  //   里面一个 `../../../etc/passwd` 不该读到东西。
+  const readLoose = (name) => {
+    const abs = WE.resolveAsset(`/${name}`, dir, 'scene.json');
+    if (!abs) return null;
+    try { return fs.readFileSync(abs); } catch { return null; }
+  };
+  const readJson = (name) => {
+    const r = readLoose(name);
+    if (!r) return null;
+    try { return JSON.parse(r.toString('utf8')); } catch { return null; }
+  };
+  // ⚠️ 散包不能复用 `resolveImageTexture` —— 它靠 `pkg.entries` 判"文件在不在"，
+  //   而散包要问文件系统 ⟹ 同一条链在这里重走一遍（下面），
+  //   两处的候选名顺序要一致（`materials/<名>.tex` → `<名>.tex` → 裸名）。
+  const wanted = new Map();
+  const texByImageRef = {};
+  let composites = 0;
+  const resolveFail = [];
+  for (const o of scene.objects) {
+    if (o.kind !== 'image' || !o.worldVisible) continue;
+    if (texByImageRef[o.image] !== undefined) continue;
+    // ⚠️ 合成层：WE 内置模型，散包里同样不存在
+    if (/^models\/util\//.test(String(o.image))) {
+      texByImageRef[o.image] = null; composites += 1; continue;
+    }
+    if (/\.tex$/i.test(String(o.image))) {
+      texByImageRef[o.image] = o.image;
+      if (!wanted.has(o.image)) wanted.set(o.image, o.image);
+      continue;
+    }
+    const model = readJson(o.image);
+    const mat = model && typeof model.material === 'string' ? readJson(model.material) : null;
+    const pass = mat && (mat.passes || [])[0];
+    const texName = pass && (pass.textures || []).find((t) => typeof t === 'string' && t);
+    if (!texName) {
+      texByImageRef[o.image] = null;
+      resolveFail.push(`${o.name || o.id}：${o.image} 解不出贴图名`);
+      continue;
+    }
+    const hit = [`materials/${texName}.tex`, `${texName}.tex`, texName]
+      .find((c) => {
+        const abs = WE.resolveAsset(`/${c}`, dir, 'scene.json');
+        return !!(abs && fs.existsSync(abs));
+      });
+    if (!hit) {
+      texByImageRef[o.image] = null;
+      resolveFail.push(`${o.name || o.id}：贴图 "${texName}" 找不到文件`);
+      continue;
+    }
+    texByImageRef[o.image] = hit;
+    if (!wanted.has(hit)) wanted.set(hit, o.image);
+  }
+  if (composites) step('合成层（散包）', `${composites} 个（本来没有贴图）`);
+  if (resolveFail.length) {
+    diag.warnings.push(`${resolveFail.length} 个图层的贴图解析失败`);
+    console.warn(`[scene] ⚠️ ${resolveFail.slice(0, 5).join(' | ')}`);
+  }
+
+  const textures = [];
+  const texFail = [];
+  for (const [name] of wanted) {
+    const raw = readLoose(name);
+    if (!raw) { texFail.push(`${name}（读不到或路径越界）`); continue; }
+    const head = ScenePkg.parseTexHeader(raw);
+    if (!head.ok) { texFail.push(`${name}（${head.error}）`); continue; }
+    // ⚠️ 和打包路径同一套（见那边的注释）——body 通常是 PNG/JPEG
+    const body = ScenePkg.parseTexData(raw, head);
+    if (!body.ok) { texFail.push(`${name}（${body.error}）`); continue; }
+    if (body.container !== 'PNG' && body.container !== 'JPEG') {
+      texFail.push(`${name}（存储格式 ${body.container}，这一版只支持 PNG/JPEG）`);
+      continue;
+    }
+    textures.push({
+      name,
+      format: head.formatName,
+      container: body.container,
+      width: body.width,
+      height: body.height,
+      texWidth: head.texWidth,
+      texHeight: head.texHeight,
+      imgWidth: head.imgWidth,
+      imgHeight: head.imgHeight,
+      data: body.data,
+    });
+  }
+  step('纹理（散包）', `${textures.length}/${wanted.size} 张可用`);
+  if (texFail.length) {
+    diag.warnings.push(`${texFail.length} 张纹理读不了`);
+    console.warn(`[scene] ⚠️ ${texFail.slice(0, 5).join(' / ')}`);
+  }
+  diag.textures = { wanted: wanted.size, ok: textures.length, failed: texFail };
+
+  // ⚠️ 散包的字体也走文件系统（同样过越界检查）
+  const fonts = [];
+  for (const o of scene.objects) {
+    if (o.kind !== 'text' || typeof o.font !== 'string') continue;
+    if (!/^fonts\//.test(o.font)) continue;
+    if (fonts.some((f) => f.name === o.font)) continue;
+    const abs = WE.resolveAsset(`/${o.font}`, dir, 'scene.json');
+    if (!abs) continue;
+    try { fonts.push({ name: o.font, data: fs.readFileSync(abs) }); } catch { /* 读不到就算了 */ }
+  }
+  step('字体（散包）', `${fonts.length} 个`);
+
+  if (win && !win.isDestroyed()) {
+    const lean = scene.objects.map(({ raw: _r, ...rest }) => rest);
+    win.webContents.send('scene-data', {
+      camera: scene.camera,
+      general: scene.general,
+      canvas: scene.canvas,
+      objects: lean,
+      textures,
+      fonts,
+      texByImageRef,
+      renderability: cap,
+      diag: {
+        warnings: diag.warnings,
+        skipped: scene.skipped.length,
+        boundFields: scene.boundFields,
+        composites,
+      },
+    });
+    step('已送到渲染进程（散包）', `${lean.length} 个对象`);
+  }
+  lastSceneDiag = diag;
+}
+
 // ---------------------------------------------------------------------------
 // ② 真跑闸门 —— 在一个隐藏窗口里跑 3 秒，看它到底活不活
 // ---------------------------------------------------------------------------
@@ -4893,7 +5477,8 @@ ipcMain.handle('gen-meta', () => ({
 //
 // 用户点一下导出，比自然语言描述准得多。这个形状是另一个模块验证过的 ——
 // 他靠诊断报告定位了四个根因，并且明确说"比自然语言描述准得多"。
-ipcMain.handle('export-diagnostics', () => {
+// ⚠️ async —— 渲染侧的 scene 读数要 await `executeJavaScript`（见下面 sceneRuntime）
+ipcMain.handle('export-diagnostics', async () => {
   const report = {
     v: 1,
     at: new Date().toISOString(),
@@ -5002,6 +5587,13 @@ ipcMain.handle('export-diagnostics', () => {
     },
     we: { ready: weReady },
     video: videoStatus,
+    // ⚠️⚠️⚠️ **scene 类的解包/装载全过程**（0.9.159）——
+    //   用户 2026-08-04：「我用 scene 类型的壁纸在 mac 测试验证，给你反馈。
+    //   这里你可以写好探针/日志，方便我给你更加准确具体的信息」
+    //   ⟹ 这一份含：每一步的耗时、包里有什么、每张纹理的格式/尺寸、
+    //     字体、能画多少、以及任何警告/报错。
+    //   ⚠️ 而它是**主进程侧**的；渲染侧的读数由下面 `sceneRuntime` 那条探针取。
+    scene: lastSceneDiag,
     audio: audioStatus,
     mouse: {
       status: mouseStatus, lastEvent: lastMouseEvent, injected: mouseInjected,
@@ -5017,6 +5609,21 @@ ipcMain.handle('export-diagnostics', () => {
     config: redactConfig(config),
     events: events.slice(-EVENT_LIMIT),
   };
+
+  // ⚠️⚠️⚠️ **渲染侧的读数**（scene 类）——
+  //   主进程只知道"我送了什么"，而"画出来几个"只有渲染进程知道。
+  //   ⚠️ 那两个数不一致正是最要紧的信息（送了 30 张纹理但建了 0 个图层
+  //     = 纹理上传全失败，而那两种失败的下一步动作完全不同）。
+  //   ⚠️ 走 `executeJavaScript`（跑在主世界）—— 和 `sendWEProperties` 同一条路。
+  if (weProject && weProject.type === 'scene' && weWindow && !weWindow.isDestroyed()) {
+    try {
+      report.sceneRuntime = await weWindow.webContents.executeJavaScript(
+        '({ info: window.__dpSceneInfo || null, diag: window.__dpDiag || null })', true);
+    } catch (error) {
+      // ⚠️ 探针失败本身是信息（页面挂了/脚本没跑起来）⟹ 记下来而不是丢
+      report.sceneRuntime = { error: error.message };
+    }
+  }
 
   const dir = path.join(app.getPath('userData'), 'diagnostics');
   fs.mkdirSync(dir, { recursive: true });

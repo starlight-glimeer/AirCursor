@@ -154,5 +154,16 @@ contextBridge.exposeInMainWorld('gw', {
   onMouseStatus: on('mouse-status'),
   onVideoStatus: on('video-status'),
   onVideoSource: on('video-source'),
+  // ⚠️ scene 类壁纸（0.9.159）：主进程解好包再送过来（渲染进程是 sandbox，读不了文件）
+  onSceneData: on('scene-data'),
+  // ⚠️⚠️ **裸的 128 段频谱** —— scene 里的音频柱要它（实测两个样本都挂了
+  //   `Simple_Audio_Bars` effect）。
+  //   ⚠️ 和面板用的 `we-audio-frame` 是**两回事**：那个是抽样过的诊断数据
+  //     （每半秒一次、只有几个采样点），拿它驱动柱子会是每秒 2 帧的抖动。
+  //   ⟹ 判据：**诊断用的抽样数据不能拿来驱动画面。**
+  onWeAudio: on('we-audio'),
+  // ⚠️⚠️ 错误也要单独一条 —— 那让屏幕上能说清"卡在哪一步"，
+  //   而不是留一片黑让用户猜（这个项目为"静默失败"栽过很多次）
+  onSceneError: on('scene-error'),
   onCancelRecording: on('cancel-recording'),
 });
