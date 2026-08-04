@@ -700,9 +700,28 @@ check('⚠️⚠️⚠️ 拿作者的 preview 当真值对照（两边指标口
   // ⚠️⚠️ 上下颠倒要有**专门判据**（上下带互换比"某带偏"更明确）
   assert.match(mainCode, /上下带正好互换了/,
     '没有"上下颠倒"的专门判据 ⟹ 那个 bug 只会表现成两条带都偏');
-  // ⚠️ ffmpeg 不在是最常见的失败原因 ⟹ 要说清那件事
-  assert.match(mainCode, /没有 ffmpeg/,
-    'ffmpeg 缺失时没说清 ⟹ 用户只看到"对照失败"');
+  // ⚠️⚠️ ffmpeg 要走**绝对路径候选表**，不能靠 PATH。
+  //   ⚠️ 打包版从 Finder 启动时 `PATH` 是登录环境的，
+  //     而 Homebrew 的 `/opt/homebrew/bin` 是 `.zshrc` 里加的
+  //     ⟹ 拿不到 ⟹ ENOENT ⟹ 报"没装 ffmpeg"，而用户明明装了。
+  //   ⟹ 判据：**打包的 GUI 应用不能靠 PATH 找外部命令**
+  //     （这个项目对 steamcmd 已经是这么做的，而我写 ffmpeg 时忘了套）。
+  //   ⚠️⚠️ 锚到 `findFfmpeg` 里那次**遍历**，不是常量名 ——
+  //     `FFMPEG_CANDIDATES` 这个词在错误消息里也有，改名照样绿。
+  //     （这是我第三次栽在"查名字出现过"上：前两次是 scene:lastSceneDiag
+  //       和 FONT_BUDGET。⟹ 判据：**永远锚到"那段代码会跑"的形状**。）
+  assert.match(mainCode, /for \(const c of FFMPEG_CANDIDATES\)/,
+    'ffmpeg 没走候选路径表 ⟹ 打包版从 Finder 启动时拿不到 Homebrew 的路径');
+  assert.match(mainCode, /function findFfmpeg\(\)/, '没有 findFfmpeg');
+  assert.match(mainCode, /'\/opt\/homebrew\/bin\/ffmpeg'/,
+    '候选表里没有 Apple Silicon 的 Homebrew 路径');
+  assert.match(mainCode, /'\/usr\/local\/bin\/ffmpeg'/,
+    '候选表里没有 Intel Homebrew 的路径');
+  // ⚠️ 找不到时要说清**怎么装** + **查过哪些位置**
+  assert.match(mainCode, /brew install ffmpeg/,
+    'ffmpeg 缺失时没告诉用户怎么装');
+  assert.match(mainCode, /FFMPEG_CANDIDATES\.join/,
+    '没列出查过哪些位置 ⟹ "我装了啊"这种情况没法自查');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

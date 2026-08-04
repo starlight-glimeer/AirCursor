@@ -6074,17 +6074,54 @@ async function captureWallpaperMetrics(frames = 5, gapMs = 400) {
   return { ok: true, frames: shots.length, metrics: m };
 }
 
+// ⚠️⚠️⚠️ **找 ffmpeg 的绝对路径**，不能指望 `PATH`（0.9.163）。
+//
+// ⚠️ 打包版的 `.app` 从 Finder / Dock 启动时，进程的 `PATH` 是**登录环境的**，
+//   而 Homebrew 的 `/opt/homebrew/bin` 通常是 shell 配置（`.zshrc`）里加的
+//   ⟹ 从 Finder 启动**拿不到它** ⟹ 调 `ffmpeg` 直接 ENOENT。
+//   ⚠️⚠️ 而症状是"这台机器没装 ffmpeg"，而用户明明装了
+//     ⟹ 那种误导比没有提示更糟。
+// ⟹ 判据：**打包的 GUI 应用不能靠 PATH 找外部命令** ——
+//   这个项目对 `steamcmd` 已经是这么做的（`findSteamCmd` 走候选路径表），
+//   而我写 ffmpeg 那段时忘了套同一个模式。
+const FFMPEG_CANDIDATES = [
+  '/opt/homebrew/bin/ffmpeg',      // Apple Silicon 的 Homebrew
+  '/usr/local/bin/ffmpeg',         // Intel 的 Homebrew
+  '/opt/local/bin/ffmpeg',         // MacPorts
+  '/usr/bin/ffmpeg',               // 系统自带（macOS 一般没有）
+];
+
+function findFfmpeg() {
+  for (const c of FFMPEG_CANDIDATES) {
+    try { if (fs.existsSync(c)) return c; } catch { /* 权限问题当没找到 */ }
+  }
+  // ⚠️ 兜底试一下 PATH（开发时从终端起的话它在）
+  try {
+    const r = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore', timeout: 3000 });
+    if (r.status === 0) return 'ffmpeg';
+  } catch { /* 没有就没有 */ }
+  return null;
+}
+
 // ⚠️ 抽 preview 的帧（走 ffmpeg —— gif/jpg/png 都能吃）
-//   ⚠️⚠️ 而 ffmpeg 可能不在（打包版没带）⟹ 拿不到就说清，别让整个对照失败
+//   ⚠️⚠️ 而 ffmpeg 可能不在 ⟹ 拿不到就说清，别让整个对照失败
 function previewMetrics(dir, project, frames = 8) {
   const names = [project && project.preview, 'preview.gif', 'preview.jpg', 'preview.png']
     .filter(Boolean);
   const file = names.map((n) => path.join(dir, n)).find((f) => fs.existsSync(f));
   if (!file) return { ok: false, error: '这张壁纸没有 preview' };
+  // ⚠️ 先找它 —— 找不到要说清"怎么装"，而不是只说"失败"
+  const ff = findFfmpeg();
+  if (!ff) {
+    return { ok: false,
+      error: '这台机器上找不到 ffmpeg（对照要靠它抽 preview 的帧）。'
+        + `装一下：brew install ffmpeg。已经装了的话，它可能不在这几个位置：`
+        + FFMPEG_CANDIDATES.join(' / ') };
+  }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-prev-'));
   try {
     const N = 32;
-    execFileSync('ffmpeg', ['-v', 'error', '-i', file,
+    execFileSync(ff, ['-v', 'error', '-i', file,
       '-vf', `fps=4,scale=${N}:${N}:flags=area`, '-vsync', '0',
       '-frames:v', String(frames), path.join(tmp, 'f%03d.ppm')], { stdio: 'pipe', timeout: 15000 });
     const per = [];
@@ -6127,11 +6164,9 @@ function previewMetrics(dir, project, frames = 8) {
       ? +(deltas.reduce((x, y) => x + y, 0) / deltas.length).toFixed(2) : 0;
     return { ok: true, frames: per.length, metrics: avg, file: path.basename(file) };
   } catch (error) {
-    // ⚠️ ffmpeg 不在是最常见的原因 ⟹ 说清那件事，而不是"对照失败"
-    return { ok: false,
-      error: /ENOENT/.test(error.message)
-        ? '系统里没有 ffmpeg（brew install ffmpeg 之后这项才有）'
-        : `抽 preview 失败：${error.message}` };
+    // ⚠️ 到这里 ffmpeg 是找到了的（上面查过）⟹ 失败是别的原因
+    //   ⚠️ 而**要带上用的是哪个 ffmpeg** —— 那让"版本太老不认这个 gif"能查
+    return { ok: false, error: `抽 preview 失败（用的是 ${ff}）：${error.message}` };
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* */ }
   }
