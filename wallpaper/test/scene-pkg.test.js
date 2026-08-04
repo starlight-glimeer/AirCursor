@@ -709,4 +709,168 @@ check('⚠️⚠️ 覆盖率的口径要和屏幕上的东西一致', () => {
 });
 
 
+
+console.log('\n⚠️⚠️⚠️ 像素格式 / LZ4 / DXT（2026-08-04，9 张真实壁纸 232 张贴图实测）');
+
+check('⚠️⚠️⚠️ 像素格式由 flags 定，`format` 字段大面积说谎', () => {
+  // ⚠️ 实测：`format=2`（声明 DXT3）的贴图里，实际是
+  //   DXT3/5 ×96 · R8 ×28 · RGBA8888 ×22 · DXT1 ×8 · RG88 ×6
+  //   ⟹ 按 `format` 上传会得到"长度不匹配"或者一张乱码图。
+  // ⚠️⚠️ 而 flags 是干净的判据，怎么定的：
+  //   ① 用**长度**反推候选；② 只取唯一匹配的 80 张来学 flags→格式；
+  //   ③ 学出来的表核全部 172 张 ⟹ 一致 172、冲突 0。
+  //   ⟹ 判据：**先用无歧义的样本学规则，再用规则解释有歧义的。**
+  assert.strictEqual(S.PIXEL_BY_FLAGS[0], 'RGBA8888');
+  assert.strictEqual(S.PIXEL_BY_FLAGS[4], 'DXT3/5');
+  assert.strictEqual(S.PIXEL_BY_FLAGS[7], 'DXT1');
+  assert.strictEqual(S.PIXEL_BY_FLAGS[8], 'RG88');
+  assert.strictEqual(S.PIXEL_BY_FLAGS[9], 'R8');
+  // ⚠️ 长度反推：4 的倍数时 DXT3/5 和 R8 会撞（那正是要靠 flags 的地方）
+  assert.deepStrictEqual(S.pixelCandidates(64, 64, 64 * 64), ['DXT3/5', 'R8'],
+    '64×64 时 DXT3/5 和 R8 长度相同 ⟹ 那是歧义，必须靠 flags 分');
+  // ⚠️ 而非 4 倍数时长度就能定（22×20 那两张就是这么认出是 R8 的）
+  assert.deepStrictEqual(S.pixelCandidates(22, 20, 440), ['R8'],
+    '22×20 的 440 字节该唯一匹配 R8');
+  // ⚠️⚠️ flags 和长度冲突时**以长度为准**（长度是事实，flags 是声明）
+  const r = S.resolvePixelFormat(9, 22, 20, 440);
+  assert.strictEqual(r.format, 'R8');
+  assert.strictEqual(r.byFlags, 'R8');
+  const bad = S.resolvePixelFormat(4, 22, 20, 440);   // flags 说 DXT3/5，长度说 R8
+  assert.strictEqual(bad.format, 'R8', 'flags 和长度冲突时该信长度');
+  assert.strictEqual(bad.agreed, false, '冲突要标出来');
+});
+
+check('⚠️⚠️ LZ4 解压（实测 158/232 张贴图是压缩的）', () => {
+  // ⚠️ LZ4 **block** 格式（不带帧头）—— WE 在 TEXB 里给了 uncompressedLen
+  const lit = (buf) => {
+    const out = [];
+    let n = buf.length;
+    if (n < 15) out.push(n << 4);
+    else { out.push(0xf0); n -= 15; while (n >= 255) { out.push(255); n -= 255; } out.push(n); }
+    return Buffer.concat([Buffer.from(out), buf]);
+  };
+  const src = Buffer.from('DreamPaper scene renderer 0123456789');
+  const r = S.lz4Decompress(lit(src), src.length);
+  assert.ok(r.ok, `全字面量解压失败：${r && r.error}`);
+  assert.ok(r.data.equals(src), '全字面量解出来的内容不对');
+  // ⚠️⚠️ **重叠匹配**：offset < matchLen 时要逐字节复制（copy 会读到没写的字节）
+  //   ⟹ 造一个：literal "AB" + match(offset=2, len=4) ⟹ "ABABAB"
+  const token = (2 << 4) | (4 - 4);         // 2 个字面量、匹配长 4
+  const seq = Buffer.concat([Buffer.from([token]), Buffer.from('AB'), Buffer.from([2, 0])]);
+  const ov = S.lz4Decompress(seq, 6);
+  assert.strictEqual(ov.data.toString('latin1'), 'ABABAB',
+    '重叠匹配解错了 ⟹ 用 copy 会读到还没写的字节');
+  // ⚠️ 坏数据要停住而不是崩
+  assert.doesNotThrow(() => S.lz4Decompress(Buffer.from([0xff, 0xff, 0xff]), 100));
+  const short = S.lz4Decompress(lit(Buffer.from('AB')), 100);
+  assert.ok(!short.ok && /解出 2 字节/.test(short.error),
+    '长度不符要说清（那分辨"数据坏了"和"我的解压有 bug"）');
+});
+
+check('⚠️⚠️⚠️ DXT 解码（对着手算的值验，不是"看起来对"）', () => {
+  const u16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16LE(v); return b; };
+  const RED = 0xF800;
+  const BLUE = 0x001F;
+  const blk = (c0, c1, idx) => Buffer.concat([u16(c0), u16(c1), Buffer.from(idx)]);
+  const px = (r, i = 0) => [...r.data.slice(i * 4, i * 4 + 4)];
+
+  // 索引全 0 ⟹ color0
+  assert.deepStrictEqual(px(S.decodeDXT(blk(RED, BLUE, [0, 0, 0, 0]), 4, 4, 'DXT1')),
+    [255, 0, 0, 255], 'DXT1 color0 解错');
+  // ⚠️ 索引 0x55555555 = 每 2bit 都是 1 ⟹ color1
+  assert.deepStrictEqual(px(S.decodeDXT(blk(RED, BLUE, [0x55, 0x55, 0x55, 0x55]), 4, 4, 'DXT1')),
+    [0, 0, 255, 255], 'DXT1 color1 解错');
+  // ⚠️ 索引 3 ⟹ (c0 + 2·c1)/3
+  assert.deepStrictEqual(px(S.decodeDXT(blk(RED, BLUE, [0xff, 0xff, 0xff, 0xff]), 4, 4, 'DXT1')),
+    [85, 0, 170, 255], 'DXT1 插值色解错（该是 (c0+2c1)/3）');
+  // ⚠️⚠️ **5/6 位要按比例扩到 8 位** —— `<<3` 会让纯白变成 248,252,248
+  assert.deepStrictEqual(
+    px(S.decodeDXT(blk(0xFFFF, 0, [0, 0, 0, 0]), 4, 4, 'DXT1')).slice(0, 3),
+    [255, 255, 255], '565→888 没按比例扩 ⟹ 纯白会变成 248,252,248（整体偏暗）');
+  // ⚠️⚠️⚠️ DXT1 的 c0 <= c1 ⟹ 第 4 个颜色是**透明**（1bit alpha）
+  assert.strictEqual(
+    px(S.decodeDXT(blk(BLUE, RED, [0xff, 0xff, 0xff, 0xff]), 4, 4, 'DXT1'))[3], 0,
+    'DXT1 的 c0<=c1 模式下索引 3 该是透明 ⟹ 漏了会让该透明的地方变黑块');
+  // DXT3：alpha 是 4bit 直值（*17 扩到 8bit）
+  const dxt3 = (a, idx) => Buffer.concat([Buffer.alloc(8, a), u16(RED), u16(BLUE), Buffer.from(idx)]);
+  assert.strictEqual(px(S.decodeDXT(dxt3(0xff, [0, 0, 0, 0]), 4, 4, 'DXT3'))[3], 255);
+  assert.strictEqual(px(S.decodeDXT(dxt3(0x00, [0, 0, 0, 0]), 4, 4, 'DXT3'))[3], 0);
+  // ⚠️ 4bit 的 0x8 该扩成 136（8*17），不是 128 —— 那是"按比例"和"左移"的差别
+  assert.strictEqual(px(S.decodeDXT(dxt3(0x88, [0, 0, 0, 0]), 4, 4, 'DXT3'))[3], 136,
+    '4bit alpha 没按 *17 扩 ⟹ 半透明会偏');
+  // DXT5：a0/a1 + 3bit 索引
+  const dxt5 = (a0, a1, bits, idx) => Buffer.concat([
+    Buffer.from([a0, a1]), Buffer.alloc(6, bits), u16(RED), u16(BLUE), Buffer.from(idx)]);
+  assert.strictEqual(px(S.decodeDXT(dxt5(255, 0, 0, [0, 0, 0, 0]), 4, 4, 'DXT5'))[3], 255,
+    'DXT5 索引 0 该取 a0');
+  // ⚠️⚠️ 边缘块：非 4 倍数尺寸时最后一块只有部分像素在图内。
+  //   ⚠️ 只查输出长度**逮不到**这个 bug —— Buffer 写越界是**静默丢弃**的，
+  //     长度永远是 w*h*4。⟹ 要查**像素落在了正确的位置**。
+  //     （反向验证逮到的：删掉那个 `continue` 之后长度还是对的。）
+  //   ⟹ 造一个 5×5：4 个块，每块一个不同的颜色 ⟹ 检查 (4,4) 那个像素
+  //     来自**右下**那块（若越界写，它会被上一块的数据盖掉）。
+  const GREEN = 0x07E0;
+  const edge = S.decodeDXT(Buffer.concat([
+    blk(RED, RED, [0, 0, 0, 0]),      // 块(0,0)：左上 4×4 全红
+    blk(BLUE, BLUE, [0, 0, 0, 0]),    // 块(1,0)：x=4 那一列全蓝
+    blk(GREEN, GREEN, [0, 0, 0, 0]),  // 块(0,1)：y=4 那一行全绿
+    blk(0xFFFF, 0xFFFF, [0, 0, 0, 0]), // 块(1,1)：只有 (4,4) 这一个像素在图内
+  ]), 5, 5, 'DXT1');
+  assert.ok(edge.ok);
+  assert.strictEqual(edge.data.length, 5 * 5 * 4, '5×5 的输出长度不对');
+  const at = (x, y) => [...edge.data.slice((y * 5 + x) * 4, (y * 5 + x) * 4 + 3)];
+  // ⚠️⚠️ 检查点要选**会被冲掉**的那些。反向验证逮到过：
+  //   `(4,4)` 恰好是"越界写也不变"的那个点（右下块最后一个像素本来就该落那儿），
+  //   所以拿它当锚点的话，删掉边界检查照样绿。
+  //   ⟹ 判据：**验边界处理要挑"越界时会变"的位置**，
+  //     而那要先想清楚"越界之后数据会跑到哪"。
+  //     （实测删掉检查之后：y=1..3 的 x=0..2 从红变蓝 —— 右上那块的像素
+  //       按 `py*width+px` 算落到了上一行的中间。）
+  assert.deepStrictEqual(at(0, 0), [255, 0, 0], '(0,0) 该来自左上块');
+  assert.deepStrictEqual(at(1, 1), [255, 0, 0],
+    '(1,1) 该还是左上块的红 ⟹ 变蓝说明右上那块越界写，冲掉了左上块的像素');
+  assert.deepStrictEqual(at(2, 3), [255, 0, 0], '(2,3) 同上');
+  assert.deepStrictEqual(at(4, 0), [0, 0, 255], '(4,0) 该来自右上块');
+  assert.deepStrictEqual(at(0, 4), [0, 255, 0], '(0,4) 该来自左下块');
+  assert.deepStrictEqual(at(4, 4), [255, 255, 255], '(4,4) 该来自右下块');
+  // ⚠️ 数据不够要报清楚
+  const tiny = S.decodeDXT(Buffer.alloc(4), 64, 64, 'DXT3');
+  assert.ok(!tiny.ok && /需要/.test(tiny.error), '数据不够时该说清需要多少');
+});
+
+check('⚠️ 单/双通道展成 RGBA（遮罩类贴图）', () => {
+  // ⚠️ R8 是灰度遮罩 ⟹ rgb 和 a 都填那个值（让调用方自己挑通道）
+  const r8 = S.expandToRGBA(Buffer.from([128, 255]), 2, 1, 'R8');
+  assert.deepStrictEqual([...r8.data], [128, 128, 128, 128, 255, 255, 255, 255]);
+  const rg = S.expandToRGBA(Buffer.from([10, 20]), 1, 1, 'RG88');
+  assert.deepStrictEqual([...rg.data], [10, 20, 0, 255]);
+  assert.ok(!S.expandToRGBA(Buffer.alloc(4), 1, 1, 'RGBA16F').ok,
+    '还不支持的格式该明确报错，不是蒙一个');
+});
+
+check('⚠️⚠️ decodeTexture 把三类输入分清（image / rgba / video）', () => {
+  // ⚠️ 渲染层只该处理三种输入 ⟹ 这一层要把 11 种存储形态归成 3 类
+  const png = S.decodeTexture({ ok: true, container: 'PNG', data: Buffer.from([1, 2]),
+    width: 4, height: 4 });
+  assert.strictEqual(png.kind, 'image');
+  assert.strictEqual(png.mime, 'image/png');
+  const mp4 = S.decodeTexture({ ok: true, container: 'none', isVideo: true,
+    data: Buffer.from([1]), width: 8, height: 8 });
+  assert.strictEqual(mp4.kind, 'video');
+  assert.strictEqual(mp4.mime, 'video/mp4');
+  const rgba = S.decodeTexture({ ok: true, container: 'none', isLZ4: false,
+    pixelFormat: 'RGBA8888', data: Buffer.alloc(4), width: 1, height: 1 });
+  assert.strictEqual(rgba.kind, 'rgba');
+  // ⚠️ 定不下格式时要说清是哪种情况，不能蒙
+  const un = S.decodeTexture({ ok: true, container: 'none', pixelFormat: null,
+    pixelByFlags: null, pixelByLength: [], data: Buffer.alloc(4), width: 1, height: 1 });
+  assert.ok(!un.ok && /定不下/.test(un.error));
+});
+
+check('⚠️ format=34 是 MP4 视频（不是像素格式）', () => {
+  // ⚠️ 实测 6 张：数据以 ISO BMFF 的 `ftyp` box 开头
+  assert.strictEqual(S.TEX_FORMATS[34].name, 'MP4');
+  assert.strictEqual(S.TEX_FORMATS[34].video, true);
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

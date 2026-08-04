@@ -174,6 +174,9 @@
   // ═══════════════════════════════════════════════════════════════════
 
   const texCache = new Map();
+  // ⚠️ 视频纹理的 <video> 元素 —— 3 秒自检要报"它到底在播没有"
+  //   （自动播放被拦的症状是"那个图层是静止的第一帧"，而那不报错）
+  const videoEls = [];
 
   // ⚠️⚠️⚠️ **纹理是 PNG / JPEG，不是 DXT。**
   //
@@ -191,7 +194,56 @@
     try {
       const bytes = info.data instanceof Uint8Array
         ? info.data : new Uint8Array(info.data);
-      const mime = info.container === 'JPEG' ? 'image/jpeg' : 'image/png';
+
+      // ──⚠️⚠️⚠️ **三种输入**（0.9.160）：主进程已经把 232 张 `.tex` 归成三类。
+      //   ⚠️ 上一版只认 PNG/JPEG ⟹ **放弃了 3/4 的贴图**
+      //     （实测 DXT+LZ4 就占 74 张）—— 那就是"有几张壁纸只画出一两个图层"的原因。
+
+      // ① 已经解好的 RGBA 缓冲（DXT / R8 / RG88 / RGBA8888 都归这里）
+      if (info.kind === 'rgba') {
+        const tex = new THREE.DataTexture(bytes, info.width, info.height, THREE.RGBAFormat);
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        // ⚠️⚠️ **DataTexture 的 flipY 默认是 false**（和 CanvasTexture 相反）——
+        //   而我们的 RGBA 是按"第一行在上"存的（DXT 解码就是那个顺序）
+        //   ⟹ 要显式翻，否则这些图层上下颠倒**而 PNG 那些是正的**
+        //     （又一次"一半正一半反"，和 flipY 对 ImageBitmap 无效那次同一个形状）。
+        tex.flipY = true;
+        tex.needsUpdate = true;
+        texCache.set(info.name, tex);
+        return tex;
+      }
+
+      // ② 视频纹理（WE 的 format=34：一个图层的内容是一段 MP4）
+      if (info.kind === 'video') {
+        const blob = new Blob([bytes], { type: info.mime || 'video/mp4' });
+        const el = document.createElement('video');
+        el.src = URL.createObjectURL(blob);
+        el.loop = true;
+        el.muted = true;          // ⚠️ 壁纸不该出声（而且不静音自动播放会被拦）
+        el.playsInline = true;
+        el.autoplay = true;
+        // ⚠️ 等第一帧 —— 没有它 VideoTexture 头几帧是黑的
+        await new Promise((done) => {
+          let settled = false;
+          const go = () => { if (!settled) { settled = true; done(); } };
+          el.addEventListener('loadeddata', go, { once: true });
+          el.addEventListener('error', go, { once: true });
+          setTimeout(go, 3000);   // ⚠️ 超时也放行（宁可黑一下也不要卡住整个装载）
+        });
+        el.play().catch(() => { /* 自动播放被拦：下面会报出来 */ });
+        const tex = new THREE.VideoTexture(el);
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        videoEls.push({ el, name: info.name });
+        texCache.set(info.name, tex);
+        return tex;
+      }
+
+      // ③ PNG / JPEG：浏览器自己解
+      const mime = info.mime || (info.container === 'JPEG' ? 'image/jpeg' : 'image/png');
       // ⚠️⚠️⚠️ **`imageOrientation: 'flipY'` 必须在这里给**（0.9.159 用户实测）。
       //
       // ⚠️ `texture.flipY` 对 **ImageBitmap 无效** —— three 是靠
@@ -902,6 +954,16 @@
     if (camClamped) {
       say(`相机偏移被夹住了（原 ${camOffset.x.toFixed(0)},${camOffset.y.toFixed(0)}）`
         + ' —— 不夹会露黑边，宁可少偏几十像素');
+    }
+    // ⚠️⚠️ 视频纹理要报**在播没有** —— 自动播放被拦的症状是"那个图层是静止的
+    //   第一帧"，而那看起来像"这个图层本来就是静态的"。
+    if (videoEls.length) {
+      const playing = videoEls.filter((v) => !v.el.paused && v.el.currentTime > 0).length;
+      say(`视频纹理 ${videoEls.length} 个 · 在播 ${playing} 个`
+        + (playing < videoEls.length
+          ? '（⚠️ 没在播的那些：自动播放被拦或者解码失败 ⟹ 会停在第一帧）' : ''),
+      playing === videoEls.length ? 'ok' : 'warn');
+      if (playing < videoEls.length) hasProblem = true;
     }
     if (frames === 0) fatal('一帧都没画', 'requestAnimationFrame 循环没跑起来');
     if (glErr !== 0) fatal('WebGL 报错', `gl.getError()=${glErr}（0 才是正常）`);

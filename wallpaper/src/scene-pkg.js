@@ -162,7 +162,73 @@ const TEX_FORMATS = {
   7: { name: 'R16f', compressed: false, glFormat: null },
   8: { name: 'RGBA16161616f', compressed: false, glFormat: null },
   9: { name: 'RGB888', compressed: false, glFormat: null },
+  // ⚠️⚠️⚠️ **34 = MP4 视频**（实测 6 张，数据以 ISO BMFF 的 `ftyp` 开头）——
+  //   那是 WE 的"视频纹理"：一个图层的内容是一段视频。
+  //   ⚠️ 而 `format` 字段的其余取值**不可信**（见下面 PIXEL_BY_FLAGS 那段）。
+  34: { name: 'MP4', compressed: false, glFormat: null, video: true },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **真实像素格式由 `flags` 定，不是 `format`**（2026-08-04，9 张实测）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ 我原来信 `format` 字段 ⟹ 实测 178 张 `.tex` 里它**大面积说谎**：
+//     format=2（声明 DXT3）的 178 张里，实际是
+//       DXT3/5 ×96 · R8 ×28 · RGBA8888 ×22 · DXT1 ×8 · RG88 ×6
+//   ⟹ 按它上传纹理会得到"数据长度不匹配"或者一张乱码图。
+//
+// ⚠️⚠️ 而 `flags` 是干净的判据。怎么确定的（这一步很重要）：
+//   ① 先用**长度**反推：`len == ceil(w/4)*ceil(h/4)*16` ⟹ DXT3/5，
+//     `len == w*h*4` ⟹ RGBA8888，等等。
+//   ② 只取**唯一匹配**的那些样本（80 张）来学 `flags → 格式`；
+//     有歧义的（92 张，w/h 都是 4 的倍数时 DXT3/5 和 R8 长度相同）**不参与学**。
+//   ③ 学出来的表拿去核**全部** 172 张 ⟹ **一致 172、冲突 0**。
+//   ⟹ 判据：**先用无歧义的样本学规则，再用规则解释有歧义的** ——
+//     反过来（拿有歧义的去学）会把两种格式混成一个。
+//
+// ⚠️ 而剩下 6 张长度对不上任何像素格式的，是 `format=34` 的 **MP4 视频**。
+const PIXEL_BY_FLAGS = {
+  0: 'RGBA8888',
+  4: 'DXT3/5',
+  7: 'DXT1',
+  8: 'RG88',
+  9: 'R8',
+};
+
+// 每种像素格式的字节数算法（用来交叉验证，也用来上传时算长度）
+const PIXEL_BYTES = {
+  DXT1: (w, h) => Math.ceil(w / 4) * Math.ceil(h / 4) * 8,
+  'DXT3/5': (w, h) => Math.ceil(w / 4) * Math.ceil(h / 4) * 16,
+  R8: (w, h) => w * h,
+  RG88: (w, h) => w * h * 2,
+  RGB888: (w, h) => w * h * 3,
+  RGBA8888: (w, h) => w * h * 4,
+  RGBA16F: (w, h) => w * h * 8,
+};
+
+// ⚠️ 按长度反推候选（事实优先于声明）
+function pixelCandidates(w, h, len) {
+  return Object.entries(PIXEL_BYTES)
+    .filter(([, fn]) => fn(w, h) === len)
+    .map(([name]) => name);
+}
+
+// ⚠️⚠️ 定像素格式：`flags` 给答案，长度做交叉验证。
+//   ⟹ 返回 { format, byFlags, byLength, agreed }
+//   ⚠️ 不一致时**以长度为准**并标出来 —— 长度是事实，flags 是声明。
+function resolvePixelFormat(flags, w, h, len) {
+  const byFlags = PIXEL_BY_FLAGS[flags] || null;
+  const byLength = pixelCandidates(w, h, len);
+  if (byFlags && byLength.includes(byFlags)) {
+    return { format: byFlags, byFlags, byLength, agreed: true };
+  }
+  // ⚠️ 长度只有一个候选 ⟹ 信它（那种情况 flags 一定是我们还没见过的值）
+  if (byLength.length === 1) {
+    return { format: byLength[0], byFlags, byLength, agreed: false };
+  }
+  // ⚠️ 都定不下来 ⟹ 说清是哪一种情况，别蒙一个
+  return { format: byFlags || null, byFlags, byLength, agreed: false };
+}
 
 // 解析 .tex 的头部（不解 mipmap 数据 —— 那按需做）
 function parseTexHeader(buf) {
@@ -306,21 +372,278 @@ function parseTexData(buf, head) {
     if (p + compressedLen > buf.length) {
       return { ok: false, error: `mip0 数据越界（需要 ${compressedLen} 字节，只剩 ${buf.length - p}）` };
     }
+    const container = TEXB_FORMATS[fmt] || `未知(${fmt})`;
+    // ⚠️⚠️ **像素格式**：只有"没有图片容器"（container==='none'）时才需要定它
+    //   —— PNG/JPEG 那些浏览器自己认。
+    //   ⚠️ 而 `format=34` 是 **MP4 视频**（那既不是像素也不是图片容器）。
+    const isVideo = (head.formatName === 'MP4');
+    const rawLen = isLZ4 === 1 ? uncompressedLen : compressedLen;
+    const pix = (container === 'none' && !isVideo)
+      ? resolvePixelFormat(head.flags, width, height, rawLen)
+      : null;
     return {
       ok: true,
       texb,
-      container: TEXB_FORMATS[fmt] || `未知(${fmt})`,
+      container,
       freeImageFormat: fmt,
       isLZ4: isLZ4 === 1,
       width,
       height,
       uncompressedLen,
       mipCount,
+      // ⚠️ 视频纹理：数据是一整个 MP4 文件
+      isVideo,
+      // ⚠️⚠️ 头部声明的名字 —— `decodeTexture` 靠它在 **DXT3 / DXT5** 之间选。
+      //   ⚠️ 那两个块大小一样（16B）⟹ 长度分不出来，而 alpha 的编码完全不同
+      //     （DXT3 是 4bit 直值、DXT5 是 3bit 索引 + 两个端点）。
+      //   ⟹ `format` 字段对"压不压缩"说谎，但对**块内布局**这一项可信。
+      declaredName: head.formatName,
+      // ⚠️ 像素格式（container==='none' 时才有）——
+      //   `agreed:false` 意味着 flags 和长度对不上，那要报出来
+      pixelFormat: pix ? pix.format : null,
+      pixelAgreed: pix ? pix.agreed : null,
+      pixelByFlags: pix ? pix.byFlags : null,
+      pixelByLength: pix ? pix.byLength : null,
       data: buf.slice(p, p + compressedLen),
     };
   } catch (error) {
     return { ok: false, error: `TEXB 块读不通：${error.message}` };
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **LZ4 解压**（2026-08-04：实测 158/232 张贴图是 LZ4 压缩的）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ 那是**块格式**（LZ4 block，不带帧头）—— WE 自己在 TEXB 里给了
+//   `uncompressedLen`，所以不需要帧头里的长度。
+//
+// ⚠️⚠️ 而这是纯算术 ⟹ 放在这一层（云端可测），不放渲染层。
+//   实测 13 张 LZ4 贴图逐张验过：解出来的长度 == 声明的 uncompressedLen。
+//
+// 格式：[token][literals][offset(2B, 小端)][matchLen 扩展]…
+//   token 高 4 位 = 字面量长度、低 4 位 = 匹配长度 - 4
+//   两者都用 15 表示"还有更多"，后面跟若干个 255 直到出现非 255
+function lz4Decompress(src, destLen) {
+  if (!src || !(destLen > 0)) return null;
+  const dst = Buffer.alloc(destLen);
+  let s = 0;
+  let d = 0;
+  try {
+    while (s < src.length) {
+      const token = src[s]; s += 1;
+      // 字面量
+      let lit = token >> 4;
+      if (lit === 15) {
+        let b;
+        do { b = src[s]; s += 1; lit += b; } while (b === 255);
+      }
+      if (lit > 0) {
+        if (s + lit > src.length || d + lit > destLen) break;
+        src.copy(dst, d, s, s + lit);
+        s += lit; d += lit;
+      }
+      // ⚠️ 最后一个序列只有字面量，没有匹配 ⟹ 到这里就结束
+      if (s >= src.length) break;
+      // 匹配
+      const offset = src[s] | (src[s + 1] << 8); s += 2;
+      if (offset === 0 || offset > d) break;   // ⚠️ 非法偏移：坏数据，停住而不是崩
+      let mlen = token & 15;
+      if (mlen === 15) {
+        let b;
+        do { b = src[s]; s += 1; mlen += b; } while (b === 255);
+      }
+      mlen += 4;
+      // ⚠️⚠️ 匹配可以**重叠**（offset < mlen 时）⟹ 必须逐字节复制，
+      //   不能用 copy（那会读到还没写的字节）。
+      let r = d - offset;
+      for (let i = 0; i < mlen && d < destLen; i += 1) { dst[d] = dst[r]; d += 1; r += 1; }
+    }
+  } catch {
+    return { ok: false, error: 'LZ4 数据读越界', written: d, data: dst };
+  }
+  return {
+    ok: d === destLen,
+    // ⚠️ 长度不符要说清 —— 那是"数据坏了"或者"我的解压有 bug"，两种都要能看出
+    error: d === destLen ? null : `解出 ${d} 字节，声明 ${destLen}`,
+    written: d,
+    data: dst,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️ **DXT 解码**（S3TC → RGBA）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ 为什么在 CPU 解而不用 WebGL 的 s3tc 扩展：
+//   ① 那 84 张 DXT 里**大部分是遮罩**（mask），而遮罩要给我们自己的
+//     合成/裁剪逻辑用 —— 走 GPU 纹理反而拿不回来。
+//   ② s3tc 扩展在部分 mac GPU 上没有（实测要靠运行时探测）。
+//   ③ DXT1/3/5 的解码是**几十行定长算术** ⟹ 比"两条路径分别维护"简单。
+//   ⚠️ 而它是纯函数 ⟹ 云端能逐块验。
+//
+// 块布局（每块 4×4 像素）：
+//   DXT1: [2B color0][2B color1][4B 2bit/px 索引]                 = 8B
+//   DXT3: [8B alpha（4bit/px）][DXT1 的那 8B]                      = 16B
+//   DXT5: [1B a0][1B a1][6B 3bit/px alpha 索引][DXT1 的那 8B]      = 16B
+function rgb565(v) {
+  const r = (v >> 11) & 0x1f;
+  const g = (v >> 5) & 0x3f;
+  const b = v & 0x1f;
+  // ⚠️ 5/6 位扩到 8 位要**按比例**（<<3 会让最大值变 248 而不是 255）
+  return [(r * 255 + 15) / 31 | 0, (g * 255 + 31) / 63 | 0, (b * 255 + 15) / 31 | 0];
+}
+
+function decodeDXT(src, width, height, variant) {
+  const bw = Math.ceil(width / 4);
+  const bh = Math.ceil(height / 4);
+  const blockBytes = variant === 'DXT1' ? 8 : 16;
+  if (src.length < bw * bh * blockBytes) {
+    return { ok: false, error: `DXT 数据只有 ${src.length} 字节，`
+      + `${width}×${height} 的 ${variant} 需要 ${bw * bh * blockBytes}` };
+  }
+  const out = Buffer.alloc(width * height * 4);
+  let p = 0;
+  for (let by = 0; by < bh; by += 1) {
+    for (let bx = 0; bx < bw; bx += 1) {
+      // ── alpha
+      let alpha = null;      // 16 个像素的 alpha
+      if (variant === 'DXT3') {
+        alpha = new Array(16);
+        for (let i = 0; i < 8; i += 1) {
+          const b = src[p + i];
+          // ⚠️ 4bit → 8bit 也要按比例（*17 = *255/15）
+          alpha[i * 2] = (b & 0x0f) * 17;
+          alpha[i * 2 + 1] = (b >> 4) * 17;
+        }
+        p += 8;
+      } else if (variant === 'DXT5') {
+        const a0 = src[p];
+        const a1 = src[p + 1];
+        const tab = [a0, a1];
+        if (a0 > a1) {
+          for (let i = 1; i <= 6; i += 1) tab.push(((7 - i) * a0 + i * a1) / 7 | 0);
+        } else {
+          for (let i = 1; i <= 4; i += 1) tab.push(((5 - i) * a0 + i * a1) / 5 | 0);
+          tab.push(0, 255);
+        }
+        // 6 字节 = 16 个 3bit 索引
+        let bits = 0n;
+        for (let i = 0; i < 6; i += 1) bits |= BigInt(src[p + 2 + i]) << BigInt(8 * i);
+        alpha = new Array(16);
+        for (let i = 0; i < 16; i += 1) {
+          alpha[i] = tab[Number((bits >> BigInt(3 * i)) & 7n)];
+        }
+        p += 8;
+      }
+      // ── 颜色（DXT1 那 8 字节）
+      const c0 = src.readUInt16LE(p);
+      const c1 = src.readUInt16LE(p + 2);
+      const idx = src.readUInt32LE(p + 4);
+      p += 8;
+      const p0 = rgb565(c0);
+      const p1 = rgb565(c1);
+      const pal = [p0, p1];
+      // ⚠️⚠️ DXT1 的 c0 <= c1 时第 4 个颜色是**透明黑**（那是 1bit alpha）——
+      //   漏了这条的症状是"该透明的地方变成黑块"。
+      //   ⚠️ 而 DXT3/5 里 alpha 由单独的块给 ⟹ 颜色永远走 4 色模式。
+      const fourColor = (variant !== 'DXT1') || c0 > c1;
+      if (fourColor) {
+        pal.push([(2 * p0[0] + p1[0]) / 3 | 0, (2 * p0[1] + p1[1]) / 3 | 0, (2 * p0[2] + p1[2]) / 3 | 0]);
+        pal.push([(p0[0] + 2 * p1[0]) / 3 | 0, (p0[1] + 2 * p1[1]) / 3 | 0, (p0[2] + 2 * p1[2]) / 3 | 0]);
+      } else {
+        pal.push([(p0[0] + p1[0]) / 2 | 0, (p0[1] + p1[1]) / 2 | 0, (p0[2] + p1[2]) / 2 | 0]);
+        pal.push([0, 0, 0]);   // ⚠️ 这个是透明的（下面 a 会设 0）
+      }
+      for (let i = 0; i < 16; i += 1) {
+        const px = bx * 4 + (i % 4);
+        const py = by * 4 + (i / 4 | 0);
+        if (px >= width || py >= height) continue;   // ⚠️ 边缘块超出实际尺寸
+        const sel = (idx >> (2 * i)) & 3;
+        const c = pal[sel];
+        const o = (py * width + px) * 4;
+        out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2];
+        if (alpha) out[o + 3] = alpha[i];
+        else out[o + 3] = (!fourColor && sel === 3) ? 0 : 255;
+      }
+    }
+  }
+  return { ok: true, data: out, width, height };
+}
+
+// ⚠️ 单通道/双通道 → RGBA（遮罩类贴图）
+//   ⚠️⚠️ R8 是**灰度遮罩**：它的值该进 alpha 还是 rgb 取决于用途
+//     ⟹ 两个都填（rgb=值、a=值），让调用方自己挑通道。
+function expandToRGBA(src, width, height, format) {
+  const out = Buffer.alloc(width * height * 4);
+  const n = width * height;
+  if (format === 'R8') {
+    for (let i = 0; i < n; i += 1) {
+      const v = src[i];
+      out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = v;
+    }
+  } else if (format === 'RG88') {
+    for (let i = 0; i < n; i += 1) {
+      out[i * 4] = src[i * 2]; out[i * 4 + 1] = src[i * 2 + 1];
+      out[i * 4 + 2] = 0; out[i * 4 + 3] = 255;
+    }
+  } else if (format === 'RGB888') {
+    for (let i = 0; i < n; i += 1) {
+      out[i * 4] = src[i * 3]; out[i * 4 + 1] = src[i * 3 + 1];
+      out[i * 4 + 2] = src[i * 3 + 2]; out[i * 4 + 3] = 255;
+    }
+  } else if (format === 'RGBA8888') {
+    src.copy(out, 0, 0, Math.min(src.length, out.length));
+  } else {
+    return { ok: false, error: `还不支持把 ${format} 展成 RGBA` };
+  }
+  return { ok: true, data: out, width, height };
+}
+
+// ⚠️⚠️⚠️ **一步到底**：`.tex` 的 body → RGBA 像素（或者 PNG/JPEG/MP4 原样）
+//   ⟹ 那让渲染层只需要处理三种输入：RGBA 缓冲 / 图片 blob / 视频 blob。
+function decodeTexture(body) {
+  if (!body || !body.ok) return { ok: false, error: '.tex 数据没解出来' };
+  // ① 图片容器：原样给渲染层（浏览器自己解）
+  if (body.container === 'PNG' || body.container === 'JPEG') {
+    return { ok: true, kind: 'image', mime: body.container === 'PNG' ? 'image/png' : 'image/jpeg',
+      data: body.data, width: body.width, height: body.height };
+  }
+  // ② 视频
+  if (body.isVideo) {
+    return { ok: true, kind: 'video', mime: 'video/mp4',
+      data: body.data, width: body.width, height: body.height };
+  }
+  // ③ 像素数据：先解 LZ4，再按格式展成 RGBA
+  if (!body.pixelFormat) {
+    return { ok: false,
+      error: `定不下像素格式（flags 说 ${body.pixelByFlags || '?'}、`
+        + `长度允许 ${(body.pixelByLength || []).join('/') || '无'}）` };
+  }
+  let raw = body.data;
+  if (body.isLZ4) {
+    const un = lz4Decompress(body.data, body.uncompressedLen);
+    if (!un || !un.ok) return { ok: false, error: `LZ4 解压失败：${un ? un.error : '空'}` };
+    raw = un.data;
+  }
+  const f = body.pixelFormat;
+  if (f === 'DXT1' || f === 'DXT3/5') {
+    // ⚠️⚠️ **DXT3 和 DXT5 块大小一样（16B），靠 alpha 块区分而长度分不出** ——
+    //   而 `format` 字段不可信（见 PIXEL_BY_FLAGS 那段）。
+    //   ⚠️ 实测两种都当 DXT5 解会让 DXT3 的 alpha 全错（3bit 索引 vs 4bit 直值）。
+    //   ⟹ 用头部声明的那个（`formatName`）在 DXT3/DXT5 之间选 ——
+    //     它对**块内布局**这一项是可信的（错的是"到底压不压缩"那一层）。
+    const variant = f === 'DXT1' ? 'DXT1'
+      : (body.declaredName === 'DXT5' ? 'DXT5' : 'DXT3');
+    const r = decodeDXT(raw, body.width, body.height, variant);
+    if (!r.ok) return r;
+    return { ok: true, kind: 'rgba', data: r.data, width: r.width, height: r.height,
+      pixelFormat: variant };
+  }
+  const r = expandToRGBA(raw, body.width, body.height, f);
+  if (!r.ok) return r;
+  return { ok: true, kind: 'rgba', data: r.data, width: r.width, height: r.height,
+    pixelFormat: f };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1002,6 +1325,14 @@ function flattenTransforms(scene) {
 
 module.exports = {
   KNOWN_VERSIONS,
+  PIXEL_BY_FLAGS,
+  PIXEL_BYTES,
+  pixelCandidates,
+  resolvePixelFormat,
+  lz4Decompress,
+  decodeDXT,
+  expandToRGBA,
+  decodeTexture,
   flattenTransforms,
   resolveImageTexture,
   FOLDABLE_EFFECTS,

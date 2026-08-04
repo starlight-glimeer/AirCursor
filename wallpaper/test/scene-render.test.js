@@ -538,9 +538,23 @@ check('⚠️⚠️⚠️ ImageBitmap 的翻转要在创建时给（texture.flip
   assert.match(renderCode, /createImageBitmap\([\s\S]{0,80}?\{ imageOrientation: 'flipY' \}\)/,
     "createImageBitmap 没给 imageOrientation: 'flipY' ⟹ 所有图层上下颠倒"
     + '（而文字是正的 —— 那两条路径的 flipY 行为不同）');
-  // ⚠️ 而**不能**指望 texture.flipY 去修它（那条对 ImageBitmap 是死的）
-  assert.ok(!/tex\.flipY\s*=/.test(renderCode),
-    '还在设 tex.flipY ⟹ 那对 ImageBitmap 无效，会让人以为已经处理了');
+  // ⚠️⚠️ 而**不能**指望 texture.flipY 去修 ImageBitmap（那条对它是死的）。
+  //   ⚠️ 但 `flipY` 对 **DataTexture** 是**必需**的（0.9.160）——
+  //     DataTexture 的默认值是 `false`（和 CanvasTexture 相反），
+  //     而我们的 RGBA 是"第一行在上"存的 ⟹ 不翻就上下颠倒。
+  //   ⟹ 判据：**同一个属性在不同的纹理类上默认值不同、生效性也不同** ——
+  //     所以这条守卫只能管"ImageBitmap 那条路径"，不能全文禁用 flipY。
+  //     （我第一版写成全文禁用 ⟹ 加 DataTexture 时它当场误报。）
+  const bitmapPath = /const bitmap = await createImageBitmap[\s\S]{0,600}?texCache\.set/.exec(renderCode);
+  assert.ok(bitmapPath, 'ImageBitmap 那段抠不出来 —— 锚点变了');
+  assert.ok(!/tex\.flipY\s*=/.test(bitmapPath[0]),
+    'ImageBitmap 那条路径上设了 tex.flipY ⟹ 那对它无效，会让人以为已经处理了');
+  // ⚠️ 而 DataTexture 那条**必须**设
+  const dataPath = /new THREE\.DataTexture\([\s\S]{0,400}?texCache\.set/.exec(renderCode);
+  if (dataPath) {
+    assert.match(dataPath[0], /tex\.flipY = true;/,
+      'DataTexture 没设 flipY=true ⟹ 那些图层会上下颠倒（而 PNG 那些是正的）');
+  }
 });
 
 check('⚠️⚠️ 相机偏移和 zoom 要读出来（只看一个样本发现不了）', () => {

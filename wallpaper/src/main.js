@@ -4311,44 +4311,57 @@ async function sendSceneData(win, dir) {
     //   ⟹ 判据：**头部声明的格式说的是"解出来之后是什么"，不是"存储时是什么"。**
     const body = ScenePkg.parseTexData(raw, head);
     if (!body.ok) { texFail.push(`${name}（${body.error}）`); continue; }
-    // ⚠️⚠️ 只送**浏览器能直接解**的（PNG / JPEG）——
-    //   那让渲染层用 `createImageBitmap` 一句话搞定，不用 DXT 解码器 / LZ4。
-    //   ⚠️ 而 `none` 容器（裸 DXT / RGBA / LZ4 压缩）**这一版不支持** ——
-    //     实测图层真正用到的只有 1 张是那种（22×40 的 `number.am`，一个小数字贴图）
-    //     ⟹ 报出来而不是静默少画。
-    if (body.container !== 'PNG' && body.container !== 'JPEG') {
-      texFail.push(`${name}（存储格式是 ${body.container}`
-        + `${body.isLZ4 ? ' + LZ4 压缩' : ''}，这一版只支持 PNG/JPEG`
-        + `；头部声明 ${head.formatName} ${body.width}×${body.height}）`);
+    // ⚠️⚠️⚠️ **解码在主进程做**（0.9.160，9 张壁纸实测逼出来的）。
+    //
+    // ⚠️ 实测 232 张 `.tex` 的存储形态：
+    //     DXT3/5+LZ4 ×74 · PNG ×52 · R8+LZ4 ×50 · RGBA8888+LZ4 ×20 ·
+    //     RGBA8888 ×8 · DXT1+LZ4 ×8 · RG88+LZ4 ×6 · **MP4 ×6** ·
+    //     R8 ×4 · JPEG ×2 · DXT3/5 ×2
+    //   ⟹ **只支持 PNG/JPEG 等于放弃 3/4 的贴图**（上一版就是那样，
+    //     所以有几张壁纸只能画出一两个图层）。
+    //
+    // ⟹ 现在 `decodeTexture` 一步到底，渲染层只需处理三种输入：
+    //     kind='image' → PNG/JPEG 的字节（浏览器自己解）
+    //     kind='rgba'  → 已经解好的 RGBA 缓冲（DXT/R8/RG88 都归到这里）
+    //     kind='video' → MP4 的字节（WE 的"视频纹理"）
+    // ⚠️ 而 LZ4 解压和 DXT 解码都是**纯算术** ⟹ 放在 scene-pkg.js（云端可测）。
+    const tex = ScenePkg.decodeTexture(body);
+    if (!tex.ok) {
+      texFail.push(`${name}（${tex.error}）`);
       continue;
     }
     textures.push({
       name,
+      kind: tex.kind,
+      mime: tex.mime || null,
       // ⚠️ 两套尺寸都送：`texWidth/imgWidth` 来自 .tex 头部，
-      //   而 `width/height` 是 mip0 的实际尺寸（那才是图片真正的像素数）
+      //   而 `width/height` 是 mip0 的实际尺寸（那才是真正的像素数）
       format: head.formatName,
       container: body.container,
-      width: body.width,
-      height: body.height,
+      pixelFormat: tex.pixelFormat || null,
+      width: tex.width,
+      height: tex.height,
       texWidth: head.texWidth,
       texHeight: head.texHeight,
       imgWidth: head.imgWidth,
       imgHeight: head.imgHeight,
-      // ⚠️⚠️ **UV 不用缩** —— PNG/JPEG 解出来就是图片本身的尺寸
-      //   （实测 mip0 尺寸 = imgWidth/imgHeight，而不是 texWidth）。
-      //   ⚠️ 那和"DXT 装在 2 的幂纹理里"是两种情况，别把那条 uvScale 套过来。
-      // ⚠️ 像素数据在这里切出来 —— 渲染进程是 sandbox，读不了文件。
+      // ⚠️ 数据在这里切出来 —— 渲染进程是 sandbox，读不了文件。
       //   ⚠️ 它是 Buffer ⟹ IPC 会序列化成 Uint8Array（拷贝，不是共享内存）
       //   ⟹ 所以只送用到的那些（见上面那个 wanted）。
-      data: body.data,
+      data: tex.data,
     });
   }
   const texBytes = textures.reduce((n, t) => n + t.data.length, 0);
+  // ⚠️⚠️ 报**解码后的形态**而不只是头部声明 —— 那两个大面积不一致
+  //   （实测 format=2「DXT3」的贴图里，实际是 DXT3/5 / R8 / RGBA8888 / DXT1 / RG88 五种）
+  const byKind = {};
+  for (const t of textures) {
+    const k = t.kind === 'rgba' ? t.pixelFormat : (t.kind === 'video' ? 'MP4' : t.container);
+    byKind[k] = (byKind[k] || 0) + 1;
+  }
   step('纹理', `${textures.length}/${wanted.size} 张可用 · `
     + `${(texBytes / 1024 / 1024).toFixed(1)} MB · `
-    // ⚠️ 报**存储容器**而不只是头部声明的格式 —— 那两个经常不一致
-    //   （头部说 DXT3，实际存的是 PNG）
-    + [...new Set(textures.map((t) => `${t.container}(声明${t.format})`))].join(' '));
+    + Object.entries(byKind).map(([k, v]) => `${k}×${v}`).join(' '));
   if (texFail.length) {
     diag.warnings.push(`${texFail.length} 张纹理读不了`);
     console.warn(`[scene] ⚠️ 读不了的纹理：${texFail.slice(0, 5).join(' / ')}`);
@@ -4609,24 +4622,25 @@ async function sendSceneLoose(win, dir, diag, step, fail, t0) {
     if (!raw) { texFail.push(`${name}（读不到或路径越界）`); continue; }
     const head = ScenePkg.parseTexHeader(raw);
     if (!head.ok) { texFail.push(`${name}（${head.error}）`); continue; }
-    // ⚠️ 和打包路径同一套（见那边的注释）——body 通常是 PNG/JPEG
+    // ⚠️ 和打包路径同一套（见那边的注释）
     const body = ScenePkg.parseTexData(raw, head);
     if (!body.ok) { texFail.push(`${name}（${body.error}）`); continue; }
-    if (body.container !== 'PNG' && body.container !== 'JPEG') {
-      texFail.push(`${name}（存储格式 ${body.container}，这一版只支持 PNG/JPEG）`);
-      continue;
-    }
+    const tex = ScenePkg.decodeTexture(body);
+    if (!tex.ok) { texFail.push(`${name}（${tex.error}）`); continue; }
     textures.push({
       name,
+      kind: tex.kind,
+      mime: tex.mime || null,
       format: head.formatName,
       container: body.container,
-      width: body.width,
-      height: body.height,
+      pixelFormat: tex.pixelFormat || null,
+      width: tex.width,
+      height: tex.height,
       texWidth: head.texWidth,
       texHeight: head.texHeight,
       imgWidth: head.imgWidth,
       imgHeight: head.imgHeight,
-      data: body.data,
+      data: tex.data,
     });
   }
   step('纹理（散包）', `${textures.length}/${wanted.size} 张可用`);

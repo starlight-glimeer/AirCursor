@@ -136,10 +136,22 @@ function auditOne(dir) {
     if (!head.ok) { r.tex.failed.push(`${res.texPath}：${head.error}`); continue; }
     const body = S.parseTexData(tb, head);
     if (!body.ok) { r.tex.failed.push(`${res.texPath}：${body.error}`); continue; }
+    // ⚠️⚠️ 走**完整解码**（不只是解头部）—— 那才是"这张贴图能不能画"的答案。
+    //   ⚠️ 上一版只判 container 是不是 PNG/JPEG ⟹ 把 DXT/R8 那些
+    //     全报成"还不支持"，而 0.9.160 已经支持了。
+    const dec = S.decodeTexture(body);
+    if (!dec.ok) { r.tex.failed.push(`${res.texPath}：${dec.error}`); continue; }
     r.tex.ok += 1;
-    const key = `${body.container}${body.isLZ4 ? '+LZ4' : ''}`;
-    r.containers[key] = (r.containers[key] || 0) + 1;
+    const key = dec.kind === 'rgba' ? dec.pixelFormat
+      : (dec.kind === 'video' ? 'MP4' : body.container);
+    r.containers[`${key}${body.isLZ4 ? '+LZ4' : ''}`]
+      = (r.containers[`${key}${body.isLZ4 ? '+LZ4' : ''}`] || 0) + 1;
     r.texFormats[head.formatName] = (r.texFormats[head.formatName] || 0) + 1;
+    // ⚠️ flags 和长度对不上的要报 —— 那是"我的格式判定还有缺口"
+    if (body.pixelFormat && body.pixelAgreed === false) {
+      r.unknown.push(`${res.texPath} 的 flags(${body.pixelByFlags})`
+        + ` 和长度(${(body.pixelByLength || []).join('/')})对不上`);
+    }
   }
 
   // ── effect：哪些能折、哪些要 shader
@@ -177,9 +189,8 @@ function auditOne(dir) {
     if (!lvl) r.unknown.push(`没见过的对象类型 ${kind}×${n}`);
     else if (lvl === 'none') r.unknown.push(`画不了的类型 ${kind}×${n}`);
   }
-  for (const k of Object.keys(r.containers)) {
-    if (k !== 'PNG' && k !== 'JPEG') r.unknown.push(`还不支持的贴图存储 ${k}`);
-  }
+  // ⚠️ 0.9.160 起 PNG/JPEG/DXT/R8/RG88/RGBA/MP4 全支持
+  //   ⟹ 这里只报**真的解不出来**的（`decodeTexture` 失败那些进 tex.failed）
   // ⚠️ 混合模式：编号→模式的映射我没有权威来源 ⟹ 见到的都要记
   r.blendModes = {};
   for (const o of sc.objects) {
@@ -300,10 +311,9 @@ if (comp.length) {
   }
 }
 const cont = agg((r) => r.containers);
-console.log('\n贴图存储格式：');
+console.log('\n贴图解码后的类型（全部已支持 —— 0.9.160）：');
 for (const [k, v] of cont) {
-  const ok = k === 'PNG' || k === 'JPEG';
-  console.log(`  ${ok ? '✅' : '⚠️'} ${String(k).padEnd(26)} ${v.walls}/${scenes.length} 张 · 共 ${v.uses} 张`);
+  console.log(`  ✅ ${String(k).padEnd(26)} ${v.walls}/${scenes.length} 张 · 共 ${v.uses} 张`);
 }
 const bm = agg((r) => r.blendModes);
 if (bm.length) {
