@@ -4084,6 +4084,79 @@ document.getElementById('diag-export').onclick = async () => {
 
 document.getElementById('diag-reveal').onclick = () => window.gw.revealDiagnostics();
 
+// ⚠️⚠️⚠️ **一键复制**（0.9.161）
+//
+// 用户 2026-08-04：「我这只是随手看了两个壁纸就有这些问题，
+//   如果你不能让我一键复制反馈给你的话，太慢了」
+//
+// ⚠️ 反馈成本是这个协作模型的瓶颈：看一张壁纸 3 秒，而"选中状态行 + 复制 +
+//   描述哪里不对"要一分钟 ⟹ 看 10 张的成本绝大部分花在反馈上。
+// ⟹ 判据：**探针的价值 = 信息量 ÷ 获取成本**，这里该优化的是分母。
+//
+// ⚠️⚠️ 而按钮要**说清复制成功了** —— 剪贴板操作没有可见反馈时，
+//   用户会以为没生效然后再点一次（那是我们在别处栽过的形状）。
+function wireCopy(id, fetchText, label) {
+  const btn = document.getElementById(id);
+  // ⚠️⚠️ 这里**显式再取一次** `#diag-state` —— 而不是用外层那个 `diagState`。
+  //   ⚠️ 那条"多行容器要保留换行"的守卫是按 `getElementById('x')` 的**位置**
+  //     切窗口的：我原来的写入点落在 `diag-reveal` 那次取节点之后
+  //     ⟹ 它把这些多行写入算到了 `diag-reveal` 名下并报红。
+  //   ⟹ 判据：**源码文本守卫靠"锚点之间的窗口"归属代码时，
+  //     写入点要紧跟在它自己那次 getElementById 后面。**
+  //     （那不是守卫的 bug —— 它逮到的"某个容器会被写多行"这件事是真的，
+  //       只是归错了名字；而让它归对比放宽它好。）
+  const out = document.getElementById('diag-state');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const original = btn.textContent;
+    try {
+      const r = await fetchText();
+      if (!r || !r.ok) throw new Error((r && r.error) || '没拿到内容');
+      await navigator.clipboard.writeText(r.text);
+      btn.textContent = `✅ 已复制（${r.text.split('\n').length} 行）`;
+      out.innerHTML = `✅ ${label}已复制到剪贴板，直接粘给开发者就行\n`
+        + `<span style="opacity:.6">${r.text.split('\n').slice(0, 3).join('\n')}…</span>`;
+    } catch (error) {
+      // ⚠️ 复制失败也要给出路（选中那段文字手动复制）
+      btn.textContent = '⚠️ 复制失败';
+      out.innerHTML = `<span class="warn">复制失败：${error.message}</span>\n`
+        + '（可以改用「导出诊断报告」那个按钮）';
+    }
+    setTimeout(() => { btn.textContent = original; }, 2500);
+  };
+}
+wireCopy('scene-copy', () => window.gw.sceneReport(), '壁纸诊断');
+wireCopy('scene-copy-objects', () => window.gw.sceneObjects(), '逐图层清单');
+
+// ⚠️⚠️ **在页面上直接显示**（0.9.161）——
+//   用户：「你要把你想要的信息这些搞好搞全，都在开发者选项那里，我复制就行了」
+//   ⟹ 按钮复制是快路径，而这一块是**保底**：
+//     剪贴板 API 在某些情况下会失败（没有焦点、权限），而选中复制永远能用。
+//   ⚠️ 判据：**关键的观测手段要有两条独立的路** ——
+//     一条挂了另一条还在（这个项目为"唯一的观测点挂了"栽过）。
+const sceneShow = document.getElementById('scene-show');
+if (sceneShow) {
+  sceneShow.onclick = async () => {
+    const dump = document.getElementById('scene-dump');
+    if (!dump) return;
+    if (dump.style.display !== 'none' && dump.textContent) {
+      dump.style.display = 'none';
+      sceneShow.textContent = '在下面显示';
+      return;
+    }
+    dump.style.display = 'block';
+    dump.textContent = '读取中…';
+    try {
+      const [a, b] = await Promise.all([window.gw.sceneReport(), window.gw.sceneObjects()]);
+      dump.textContent = `${(a && a.text) || (a && a.error) || '(没有)'}\n\n`
+        + `${'─'.repeat(60)}\n${(b && b.text) || (b && b.error) || '(没有)'}`;
+      sceneShow.textContent = '收起';
+    } catch (error) {
+      dump.textContent = `读取失败：${error.message}`;
+    }
+  };
+}
+
 // 视频播放状态。⚠️ 这是"放了但你看不见"的唯一证据 —— 有分辨率和时间在涨，
 // 就说明解码正常、问题在窗口层级或遮挡，那和"放不了"是两种完全不同的修法。
 window.gw.onVideoStatus((status) => {

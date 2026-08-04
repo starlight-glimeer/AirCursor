@@ -92,6 +92,11 @@ contextBridge.exposeInMainWorld('gw', {
   // 诊断报告
   exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
   revealDiagnostics: () => ipcRenderer.invoke('reveal-diagnostics'),
+  // ⚠️⚠️⚠️ **一键复制 scene 诊断**（0.9.161）——
+  //   用户：「如果你不能让我一键复制反馈给你的话，太慢了」
+  //   ⟹ 判据：**探针的价值 = 信息量 ÷ 获取成本**，而这里该优化的是分母。
+  sceneReport: () => ipcRenderer.invoke('scene-report'),
+  sceneObjects: () => ipcRenderer.invoke('scene-objects'),
 
   // video 页面 → 主进程
   sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),

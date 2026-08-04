@@ -600,6 +600,59 @@ function expandToRGBA(src, width, height, format) {
   return { ok: true, data: out, width, height };
 }
 
+// ⚠️⚠️⚠️ **贴图的 alpha 分布** —— 那是"这个图层为什么是一块实心色"的答案。
+//
+// ⚠️ 用户实测报「一块黑色遮挡了大部分画面」，而诊断里看不出原因：
+//   那张贴图的 `container` / 尺寸 / 解码都正常。
+//   ⟹ 真正的信息是**它有没有透明区域**：
+//     一张 colorType=2（RGB 无 alpha）的 PNG 挂在加色图层上，
+//     当普通不透明画就是一块实心的。
+// ⟹ 判据：**"这张贴图能不能解出来"和"它长什么样"是两个问题**，
+//   而诊断只报了前者 ⟹ 那类问题就查不出来。
+function alphaProfile(dec) {
+  if (!dec || !dec.ok) return null;
+  // ⚠️ PNG/JPEG 这一层解不了（那要浏览器）⟹ 只报 colorType（PNG 头里有）
+  if (dec.kind === 'image') {
+    if (dec.mime !== 'image/png') return { kind: 'jpeg', hasAlpha: false };
+    // PNG: 8 字节签名 + [4B len][IHDR][13B data]，colorType 在 data 的第 9 字节
+    const ct = dec.data.length > 26 ? dec.data[25] : -1;
+    return {
+      kind: 'png',
+      colorType: ct,
+      // ⚠️ colorType 6=RGBA / 4=灰度+alpha 才有 alpha 通道
+      hasAlpha: ct === 6 || ct === 4,
+      note: ct === 2 ? 'RGB 无 alpha 通道（整张不透明）'
+        : ct === 6 ? 'RGBA' : ct === 3 ? '索引色' : `colorType ${ct}`,
+    };
+  }
+  if (dec.kind === 'video') return { kind: 'video', hasAlpha: false };
+  // ⚠️ RGBA 缓冲：直接数
+  const n = dec.width * dec.height;
+  if (!n || dec.data.length < n * 4) return null;
+  let a0 = 0;
+  let aMid = 0;
+  let a255 = 0;
+  let lumSum = 0;
+  // ⚠️ 大图抽样 —— 4K 逐像素数要几十毫秒，而这是诊断路径
+  const step = n > 500000 ? 7 : 1;
+  let counted = 0;
+  for (let i = 0; i < n; i += step) {
+    const a = dec.data[i * 4 + 3];
+    if (a === 0) a0 += 1; else if (a < 255) aMid += 1; else a255 += 1;
+    lumSum += (dec.data[i * 4] + dec.data[i * 4 + 1] + dec.data[i * 4 + 2]) / 3;
+    counted += 1;
+  }
+  return {
+    kind: 'rgba',
+    hasAlpha: a0 + aMid > 0,
+    transparent: +(a0 / counted).toFixed(3),
+    semi: +(aMid / counted).toFixed(3),
+    opaque: +(a255 / counted).toFixed(3),
+    avgLum: Math.round(lumSum / counted),
+    sampled: step > 1 ? counted : null,
+  };
+}
+
 // ⚠️⚠️⚠️ **一步到底**：`.tex` 的 body → RGBA 像素（或者 PNG/JPEG/MP4 原样）
 //   ⟹ 那让渲染层只需要处理三种输入：RGBA 缓冲 / 图片 blob / 视频 blob。
 function decodeTexture(body) {
@@ -628,13 +681,22 @@ function decodeTexture(body) {
   }
   const f = body.pixelFormat;
   if (f === 'DXT1' || f === 'DXT3/5') {
-    // ⚠️⚠️ **DXT3 和 DXT5 块大小一样（16B），靠 alpha 块区分而长度分不出** ——
-    //   而 `format` 字段不可信（见 PIXEL_BY_FLAGS 那段）。
-    //   ⚠️ 实测两种都当 DXT5 解会让 DXT3 的 alpha 全错（3bit 索引 vs 4bit 直值）。
-    //   ⟹ 用头部声明的那个（`formatName`）在 DXT3/DXT5 之间选 ——
-    //     它对**块内布局**这一项是可信的（错的是"到底压不压缩"那一层）。
-    const variant = f === 'DXT1' ? 'DXT1'
-      : (body.declaredName === 'DXT5' ? 'DXT5' : 'DXT3');
+    // ⚠️⚠️⚠️ **16 字节的那种一律按 DXT5 解**（2026-08-04 实测 61/61）。
+    //
+    // ⚠️ DXT3 和 DXT5 块大小一样（16B）⟹ 长度分不出来，
+    //   而 `format` 字段**对这一项也说谎**（它说 DXT3）。
+    // ⚠️⚠️ 怎么定的：同一份数据分别按 DXT3 / DXT5 解，量**块内行周期性**
+    //   （真 DXT5 当 DXT3 解，会把 a0/a1 端点当成前 4 个像素的 4bit alpha
+    //     ⟹ 每个 4×4 块的第 0 行和第 2 行 alpha 统计上差很远）。
+    //   实测 61 张：DXT3 解的行周期差 79-108，DXT5 解只有 0-56
+    //   ⟹ **全部指向 DXT5**，而且差距是一个数量级。
+    //   ⚠️ 交叉验证：一张纯不透明背景（`h.tex`）按 DXT5 解是 100% alpha=255，
+    //     按 DXT3 解出来是 12.5% 的周期性图案 —— 后者显然是错的。
+    // ⟹ 判据：**"两种格式长度相同"时，用"哪种解出来更合理"判别** ——
+    //   而"合理"要能量化（这里是行周期性），不能靠眼看。
+    // ⚠️ 而这条错了的后果很隐蔽：alpha 变成一个 4 行周期的图案
+    //   ⟹ 画面像蒙了一层细密的横纹，而那看起来像"这张贴图本来就有质感"。
+    const variant = f === 'DXT1' ? 'DXT1' : 'DXT5';
     const r = decodeDXT(raw, body.width, body.height, variant);
     if (!r.ok) return r;
     return { ok: true, kind: 'rgba', data: r.data, width: r.width, height: r.height,
@@ -1333,6 +1395,7 @@ module.exports = {
   decodeDXT,
   expandToRGBA,
   decodeTexture,
+  alphaProfile,
   flattenTransforms,
   resolveImageTexture,
   FOLDABLE_EFFECTS,

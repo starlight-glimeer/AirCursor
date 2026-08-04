@@ -635,6 +635,11 @@
     box-shadow: 0 8px 24px -12px rgba(4,7,16,.7);
   }
   .hint { color: var(--dim); font-size: 11px; line-height: 1.8; margin: 8px 0 0; }
+  /* ⚠️⚠️ `#diag-state` 会被写入**多行**文本（一键复制那两个按钮的回执）
+     ⟹ 不保留换行就挤成一行读不了。
+     ⚠️ 而 `.hint` 是全局类，不能给它加 pre-line（别处那些单行文案会被影响）
+     ⟹ 只给这一个 id 加。（gating.test.js 那条守卫当场逮到了这件事。） */
+  #diag-state { white-space: pre-line; }
   .warn { color: var(--warn); }
   .ok { color: var(--ok); }
 
@@ -2159,6 +2164,27 @@
         <button class="act" id="diag-export" type="button">导出诊断报告</button>
         <button class="act" id="diag-reveal" type="button">打开报告目录</button>
       </div>
+      <!-- ⚠️⚠️⚠️ **一键复制**（0.9.161）—— 用户 2026-08-04：
+           「我这只是随手看了两个壁纸就有这些问题，
+             如果你不能让我一键复制反馈给你的话，太慢了」
+           ⟹ 判据：**探针的价值 = 信息量 ÷ 获取成本**。
+             一个按钮 → 剪贴板 → 直接粘进聊天框，而不是"选中那一栏再复制"。 -->
+      <div class="bar-row tight" style="margin-top:8px">
+        <button class="act" id="scene-copy" type="button">复制这张壁纸的诊断</button>
+        <button class="act" id="scene-copy-objects" type="button">复制逐图层清单</button>
+        <button class="act" id="scene-show" type="button">在下面显示</button>
+      </div>
+      <!-- ⚠️⚠️⚠️ **完整诊断**（0.9.161）—— 用户 2026-08-04：
+           「一键复制的意思是你要把你想要的信息这些搞好搞全，都在开发者选项那里，
+             我复制就行了，当然你要是做个按钮那更好」
+           ⟹ 所以**两条路都有**：按钮复制（快）+ 这一块直接选中复制（保底）。
+           ⚠️ 而它默认空着：那份清单几十行，常驻会把这一页撑爆
+             ⟹ 点「在下面显示」才填。 -->
+      <pre id="scene-dump" style="display:none; max-height:340px; overflow:auto;
+           font: 400 10.5px/1.6 ui-monospace, Menlo, monospace; color: var(--dim);
+           background: rgba(0,0,0,.25); border: 1px solid var(--line);
+           border-radius: 8px; padding: 10px; margin: 8px 0 0;
+           white-space: pre; user-select: text"></pre>
       <div id="diag-state" class="hint">出问题时点一下，把那个 JSON 发过来。</div>
       <p class="hint">
         报告里有：是否打包、装载了什么类型、各窗口活没活、实际窗口尺寸 vs 屏幕尺寸、

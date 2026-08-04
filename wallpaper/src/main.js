@@ -5790,6 +5790,189 @@ ipcMain.handle('reveal-wallpaper-dir', (_event, target) => {
 // 我们自己的壁纸目录路径（面板要显示它，而且要能点开）。
 ipcMain.handle('our-wallpaper-dir', () => ({ ok: true, dir: ensureOurWallpaperDir() }));
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **一键复制 scene 诊断**（0.9.161）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-04：「我这只是随手看了两个壁纸就有这些问题，
+//   如果你不能让我一键复制反馈给你的话，太慢了」
+// + 「你在开发者选项这里尽可能多写探针和日志这些信息，
+//   然后我在 mac 本地只要哪个壁纸有问题，我就对应把诊断发给你」
+//
+// ⚠️⚠️ **反馈成本是这个协作模型的瓶颈** —— 用户看一张壁纸只要 3 秒，
+//   而"把状态行选中复制 + 描述哪里不对"要一分钟。
+//   ⟹ 那意味着他看 10 张壁纸的成本，绝大部分花在反馈上而不是看上。
+//
+// ⟹ 判据：**探针的价值 = 信息量 ÷ 获取成本。**
+//   而这里最该优化的是**分母** —— 一个按钮，出来一段能直接粘给我的文本。
+//
+// ⚠️ 而它要**紧凑**（不是 JSON 全量）：
+//   全量报告有几百 KB，粘进聊天框会把真正的信息埋掉。
+//   ⟹ 只出"我拿到之后能立刻定位"的那些：每一步 + 每个对象的关键读数
+//     + 渲染侧实际画了多少 + 最近的报错。
+function buildSceneReport() {
+  const L = [];
+  const pad = (v, n) => String(v).padEnd(n);
+  L.push(`DreamPaper ${buildStamp()}`);
+  if (!weProject) { L.push('没有装载壁纸'); return L.join('\n'); }
+  L.push(`壁纸：${weProject.title || '(无标题)'}`);
+  L.push(`类型：${weProject.type}　目录：${path.basename(weProject.dir || '')}`);
+  L.push(`就绪：${weReady ? '✅ 脚本跑起来了' : '⏳ 还没报 ready'}`);
+
+  // ⚠️ 屏幕/窗口尺寸 —— "画面大小不对"要靠它判断
+  try {
+    const disp = screen.getPrimaryDisplay();
+    L.push(`屏幕：${disp.bounds.width}×${disp.bounds.height}`
+      + ` (scale ${disp.scaleFactor})`
+      + `　壁纸窗口：${weWindow && !weWindow.isDestroyed()
+        ? `${weWindow.getBounds().width}×${weWindow.getBounds().height}` : '(没有)'}`
+      + `　层：${config.we && config.we.strategy}`);
+  } catch { /* 拿不到就算了 */ }
+
+  const d = lastSceneDiag;
+  if (d) {
+    if (d.errors && d.errors.length) {
+      L.push('');
+      L.push('❌ 主进程侧错误：');
+      for (const e of d.errors) L.push(`   ${e}`);
+    }
+    if (d.warnings && d.warnings.length) {
+      L.push('');
+      L.push('⚠️ 警告：');
+      for (const w of d.warnings) L.push(`   ${w}`);
+    }
+    L.push('');
+    L.push('装载步骤：');
+    for (const st of d.steps || []) {
+      L.push(`   ${pad(`${st.ms}ms`, 7)}${st.name}${st.detail ? `：${st.detail}` : ''}`);
+    }
+    if (d.renderability) {
+      L.push('');
+      L.push(`能力：${d.renderability.summary}`);
+    }
+  } else {
+    L.push('');
+    L.push('（这张不是 scene 类，或者还没装载过 scene）');
+  }
+
+  // ⚠️ 壁纸窗口自己抛的异常
+  if (lastWeErrors.length) {
+    L.push('');
+    L.push('❌ 渲染进程报错：');
+    for (const e of lastWeErrors) L.push(`   ${e}`);
+  }
+  return L.join('\n');
+}
+
+// ⚠️⚠️ **逐对象清单** —— "哪个图层不对"要靠它。
+//   ⚠️ 它比上面那份长得多 ⟹ 单独一个按钮（用户只在需要时才要它）。
+function buildSceneObjects() {
+  if (!weProject || weProject.type !== 'scene') return '（不是 scene 类壁纸）';
+  const dir = weProject.dir;
+  const pkgPath = path.join(dir, 'scene.pkg');
+  if (!fs.existsSync(pkgPath)) return '（找不到 scene.pkg）';
+  let buf;
+  let pkg;
+  try {
+    buf = fs.readFileSync(pkgPath);
+    pkg = ScenePkg.parsePkg(buf);
+    if (!pkg.ok) return `解包失败：${pkg.error}`;
+  } catch (error) { return `读包失败：${error.message}`; }
+  const name = ['scene.json', 'gifscene.json']
+    .find((n) => pkg.entries.some((e) => e.name === n));
+  if (!name) return '（包里没有 scene.json）';
+  const scene = ScenePkg.parseScene(ScenePkg.readEntry(buf, pkg, name).toString('utf8'));
+  if (!scene.ok) return `解析失败：${scene.error}`;
+  ScenePkg.flattenTransforms(scene);
+  const readJson = (n) => {
+    const r = ScenePkg.readEntry(buf, pkg, n);
+    if (!r) return null;
+    try { return JSON.parse(r.toString('utf8')); } catch { return null; }
+  };
+
+  // ⚠️ 屏幕坐标 —— 那让"哪个是那块黑的"能直接对上位置
+  let W = 1920;
+  let H = 1080;
+  try {
+    const b = weWindow && !weWindow.isDestroyed()
+      ? weWindow.getBounds() : screen.getPrimaryDisplay().bounds;
+    W = b.width; H = b.height;
+  } catch { /* 用默认 */ }
+  const bW = scene.canvas.width;
+  const bH = scene.canvas.height;
+  const sc = Math.max(W / bW, H / bH);
+
+  const L = [];
+  L.push(`画布 ${bW}×${bH}　屏幕 ${W}×${H}　缩放 ${sc.toFixed(3)}`);
+  const eye = String((scene.camera || {}).eye || '').trim().split(/\s+/).map(Number);
+  L.push(`相机 eye=(${eye[0] || 0}, ${eye[1] || 0})　zoom=${(scene.general || {}).zoom}`
+    + `　相机视差=${ScenePkg.unwrapValue((scene.general || {}).cameraparallax) === true ? '开' : '关'}`);
+  L.push('');
+  L.push('会画出来的对象（按叠放顺序，屏幕坐标）：');
+  L.push('   类型   名字            屏幕位置    屏幕尺寸    α    fxα  blend 视差   贴图 → 解码结果 + alpha 分布');
+  L.push('   ⚠️ blend≠0 走加色（那些贴图通常没 alpha）　alpha 全不透明 + 大尺寸 = 可能盖住画面');
+
+  const draw = scene.objects
+    .filter((o) => (o.kind === 'image' || o.kind === 'text') && o.worldVisible)
+    .sort((a, b) => (a.worldPos[2] || 0) - (b.worldPos[2] || 0));
+  for (const o of draw) {
+    const w = Math.abs(o.size[0]) * (o.worldScale[0] || 1) * sc;
+    const h = Math.abs(o.size[1]) * (o.worldScale[1] || 1) * sc;
+    const cx = W / 2 + o.worldPos[0] * sc;
+    const cy = H / 2 - o.worldPos[1] * sc;
+    let tex = '—';
+    if (o.audioBars) tex = `[音频柱 ×${o.audioBars.count}]`;
+    else if (o.kind === 'text') tex = `[文字 "${String(o.text || '').slice(0, 12)}" ${o.font || ''}]`;
+    else {
+      const r = ScenePkg.resolveImageTexture(buf, pkg, o.image, readJson);
+      if (r.composite) tex = `[合成层 ${r.composite} —— 没画]`;
+      else if (!r.ok) tex = `⚠️ ${r.error}`;
+      else {
+        const raw = ScenePkg.readEntry(buf, pkg, r.texPath);
+        const head = ScenePkg.parseTexHeader(raw);
+        const body = head.ok ? ScenePkg.parseTexData(raw, head) : null;
+        const dec = body && body.ok ? ScenePkg.decodeTexture(body) : null;
+        // ⚠️⚠️⚠️ **alpha 分布要报** —— 那是"这个图层为什么是一块实心色"的答案。
+        //   ⚠️ 用户实测报「一块黑色遮挡了大部分画面」时，诊断里看不出原因：
+        //     那张贴图的容器/尺寸/解码全正常，真正的信息是**它没有 alpha 通道**
+        //     （而它挂在 `colorBlendMode=9` 的加色图层上）。
+        //   ⟹ 判据：**"这张贴图能不能解出来"和"它长什么样"是两个问题。**
+        const ap = dec && dec.ok ? ScenePkg.alphaProfile(dec) : null;
+        const alphaNote = !ap ? ''
+          : ap.kind === 'rgba'
+            ? `　alpha[透明${(ap.transparent * 100).toFixed(0)}% 半透${(ap.semi * 100).toFixed(0)}% `
+              + `不透明${(ap.opaque * 100).toFixed(0)}% 亮度${ap.avgLum}]`
+            : `　alpha[${ap.note || (ap.hasAlpha ? '有' : '无')}]`;
+        tex = `${r.texPath.replace('materials/', '')} → `
+          + (dec && dec.ok
+            ? `${dec.kind}/${dec.pixelFormat || dec.mime} ${dec.width}×${dec.height}${alphaNote}`
+            : `⚠️ ${(dec && dec.error) || (body && body.error) || head.error}`);
+      }
+    }
+    // ⚠️ 挂着的 effect —— "这个图层为什么怪"最常见的答案
+    const fx = (o.effects || []).filter((e) => ScenePkg.effectEnabled(e))
+      .map((e) => (e.file || '').replace(/^effects\/(workshop\/[\d/]+)?/, '').replace(/\/effect\.json$/, ''));
+    L.push(`   ${pad(o.kind, 6)} ${pad(String(o.name).slice(0, 14), 15)}`
+      + ` ${pad(`${cx.toFixed(0)},${cy.toFixed(0)}`, 11)}`
+      + ` ${pad(`${w.toFixed(0)}×${h.toFixed(0)}`, 11)}`
+      + ` ${pad(o.alpha.toFixed(2), 5)}${pad(o.fx.alpha.toFixed(2), 5)}`
+      + `${pad(o.blendMode, 6)}${pad(o.parallaxDepth.slice(0, 2).join(','), 7)}`
+      + ` ${tex}`);
+    if (fx.length) L.push(`          effect: ${fx.join(' ')}`);
+  }
+  return L.join('\n');
+}
+
+ipcMain.handle('scene-report', () => {
+  try { return { ok: true, text: buildSceneReport() }; }
+  catch (error) { return { ok: false, error: error.message }; }
+});
+
+ipcMain.handle('scene-objects', () => {
+  try { return { ok: true, text: buildSceneObjects() }; }
+  catch (error) { return { ok: false, error: error.message }; }
+});
+
 ipcMain.handle('reveal-diagnostics', () => {
   const dir = path.join(app.getPath('userData'), 'diagnostics');
   fs.mkdirSync(dir, { recursive: true });
