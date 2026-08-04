@@ -678,4 +678,31 @@ check('⚠️⚠️⚠️ scene 装载**只读**壁纸目录，一个字节都�
     'scene-render.js 里有 fs 调用 ⟹ 渲染进程是 sandbox，那本来就不该有');
 });
 
+check('⚠️⚠️⚠️ 拿作者的 preview 当真值对照（两边指标口径必须一致）', () => {
+  // ⚠️ 用户 2026-08-04：「有什么你不确定的你就探针呗，拿真机数据你不就知道怎么做了」
+  //   ⚠️⚠️ 而每张壁纸都带 `preview.gif`（作者在 WE 里渲染的）= **真值**，
+  //     而我前面几轮全靠"用户看一眼说哪里不对"发现 bug
+  //     （黑块 / 上下颠倒 / 偏位置）—— 那些**都能从 preview 对照里量出来**。
+  //   ⟹ 判据：**不确定的时候先找真值，而真值往往已经在输入里。**
+  assert.match(mainCode, /ipcMain\.handle\('scene-compare'/,
+    '没有和 preview 对照的入口');
+  assert.match(mainCode, /function captureWallpaperMetrics/, '没有截我们画面的探针');
+  assert.match(mainCode, /function previewMetrics/, '没有抽 preview 指标的探针');
+  // ⚠️⚠️⚠️ **两边必须用同一个指标函数** —— 各写一遍的话差值没有意义
+  //   （那是"自造度量脚本反复假阳性"那条教训的形状）。
+  const calls = (mainCode.match(/frameMetricsBGRA\(/g) || []).length;
+  assert.ok(calls >= 3,
+    `frameMetricsBGRA 只被调了 ${calls} 次 ⟹ 截图侧和 preview 侧该共用它`
+    + '（各算一遍的话，差值反映的是两份实现的差异而不是渲染的差异）');
+  // ⚠️ preview 侧要把 RGB 转成 BGRA 再走同一个函数（而不是另写一份 RGB 版）
+  assert.match(mainCode, /bgra\[i \* 4\] = rgb\[i \* 3 \+ 2\]/,
+    'preview 的 RGB 没转成 BGRA ⟹ 那说明另写了一份指标实现');
+  // ⚠️⚠️ 上下颠倒要有**专门判据**（上下带互换比"某带偏"更明确）
+  assert.match(mainCode, /上下带正好互换了/,
+    '没有"上下颠倒"的专门判据 ⟹ 那个 bug 只会表现成两条带都偏');
+  // ⚠️ ffmpeg 不在是最常见的失败原因 ⟹ 要说清那件事
+  assert.match(mainCode, /没有 ffmpeg/,
+    'ffmpeg 缺失时没说清 ⟹ 用户只看到"对照失败"');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

@@ -4128,6 +4128,32 @@ function wireCopy(id, fetchText, label) {
 wireCopy('scene-copy', () => window.gw.sceneReport(), '壁纸诊断');
 wireCopy('scene-copy-objects', () => window.gw.sceneObjects(), '逐图层清单');
 
+// ⚠️⚠️⚠️ **对照**要花 2 秒（截 5 帧 + 抽 preview）⟹ 按钮要说"在跑"，
+//   否则用户会以为没反应然后再点（那是我们在别处栽过的形状）。
+const cmpBtn = document.getElementById('scene-compare');
+if (cmpBtn) {
+  cmpBtn.onclick = async () => {
+    const dump = document.getElementById('scene-dump');
+    const original = cmpBtn.textContent;
+    cmpBtn.textContent = '截帧对照中（约 2 秒）…';
+    cmpBtn.disabled = true;
+    if (dump) { dump.style.display = 'block'; dump.textContent = '截帧中…'; }
+    try {
+      const r = await window.gw.sceneCompare();
+      const text = (r && r.text) || (r && r.error) || '没拿到结果';
+      if (dump) dump.textContent = text;
+      // ⚠️ 顺手复制 —— 那份对照正是要发给开发者的东西
+      try { await navigator.clipboard.writeText(text); cmpBtn.textContent = '已对照并复制'; }
+      catch { cmpBtn.textContent = '已对照（下面可选中复制）'; }
+    } catch (error) {
+      if (dump) dump.textContent = `对照失败：${error.message}`;
+      cmpBtn.textContent = '对照失败';
+    }
+    cmpBtn.disabled = false;
+    setTimeout(() => { cmpBtn.textContent = original; }, 3000);
+  };
+}
+
 // ⚠️⚠️ **在页面上直接显示**（0.9.161）——
 //   用户：「你要把你想要的信息这些搞好搞全，都在开发者选项那里，我复制就行了」
 //   ⟹ 按钮复制是快路径，而这一块是**保底**：

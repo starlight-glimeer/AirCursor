@@ -11,8 +11,9 @@ const { app, BrowserWindow, ipcMain, screen, globalShortcut, dialog, nativeTheme
   protocol, net, shell, systemPreferences } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 // spawn 给 steamcmd（长跑、要流式读进度），spawnSync 给一次性的系统动作。
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 // ⚠️ 0.9.111：视频缓存的文件名要按源路径+mtime+size算 key（见 stripCachePath）。
 const crypto = require('node:crypto');
@@ -5962,6 +5963,261 @@ function buildSceneObjects() {
   }
   return L.join('\n');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️⚠️⚠️ **拿作者的 preview 当真值，量我们渲染差多少**（0.9.162）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 用户 2026-08-04：「有什么你不确定的你就探针呗，拿真机数据你不就知道怎么做了」
+//
+// ⚠️⚠️ 而这里有一份**我一直没用起来的真值**：每张壁纸都带 `preview.gif` ——
+//   那是作者在 WE 里渲染的，等于"这张壁纸该长什么样"的标准答案。
+//
+// ⟹ 判据：**不确定的时候先找真值，而真值往往已经在输入里。**
+//   我前面几轮的 bug 全靠"用户看一眼说哪里不对"发现（黑块 / 上下颠倒 / 偏位置），
+//   而那些**都能从 preview 对照里量出来**：
+//     上下颠倒 ⟹ 上下带的亮度反了　　一块黑 ⟹ 近黑占比高一大截
+//     位置偏   ⟹ 亮度重心偏移　　　　偏色   ⟹ 饱和/亮度差很远
+//     该动没动 ⟹ 帧间变化≈0 而真值 > 0
+//
+// ⚠️ 指标口径要和 `scripts/scene-preview-diff.js` **完全一致**（守卫核对）——
+//   两边不一致的话对照出来的差值没有意义。
+
+// ⚠️ 一帧 BGRA（Electron 的 toBitmap 是 BGRA）→ 指标
+function frameMetricsBGRA(bitmap, N) {
+  const n = N * N;
+  const lum = [];
+  const sats = [];
+  let nearBlack = 0;
+  let highlight = 0;
+  const bands = [0, 0, 0];
+  const bandN = [0, 0, 0];
+  let cx = 0;
+  let cy = 0;
+  let cw = 0;
+  for (let i = 0; i < n && i * 4 + 3 < bitmap.length; i += 1) {
+    const b = bitmap[i * 4] / 255;
+    const g = bitmap[i * 4 + 1] / 255;
+    const r = bitmap[i * 4 + 2] / 255;
+    // ⚠️ 感知亮度（和那个脚本同一个公式）
+    const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lum.push(L);
+    if (L < 0.12) nearBlack += 1;
+    if (L > 0.75) highlight += 1;
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    sats.push(mx > 0 ? (mx - mn) / mx : 0);
+    const y = Math.floor(i / N);
+    const bi = Math.min(2, Math.floor(y / (N / 3)));
+    bands[bi] += L; bandN[bi] += 1;
+    cx += (i % N) * L; cy += y * L; cw += L;
+  }
+  if (!lum.length) return null;
+  sats.sort((a, b) => a - b);
+  const mean = lum.reduce((a, b) => a + b, 0) / lum.length;
+  const std = Math.sqrt(lum.reduce((a, L) => a + (L - mean) ** 2, 0) / lum.length);
+  return {
+    nearBlack: +(nearBlack / lum.length).toFixed(3),
+    highlight: +(highlight / lum.length).toFixed(3),
+    bandTop: +(bands[0] / Math.max(1, bandN[0])).toFixed(3),
+    bandMid: +(bands[1] / Math.max(1, bandN[1])).toFixed(3),
+    bandBottom: +(bands[2] / Math.max(1, bandN[2])).toFixed(3),
+    satMedian: +sats[Math.floor(sats.length / 2)].toFixed(3),
+    lumMean: +mean.toFixed(3),
+    lumStd: +std.toFixed(3),
+    centroidX: +(cw > 0 ? cx / cw / (N - 1) : 0.5).toFixed(3),
+    centroidY: +(cw > 0 ? cy / cw / (N - 1) : 0.5).toFixed(3),
+  };
+}
+
+// ⚠️⚠️ 截我们自己渲染的壁纸窗口（多帧 —— "动不动"单帧测不出）
+async function captureWallpaperMetrics(frames = 5, gapMs = 400) {
+  if (!weWindow || weWindow.isDestroyed()) return { ok: false, error: '壁纸窗口不在' };
+  const N = 32;
+  const shots = [];
+  try {
+    for (let k = 0; k < frames; k += 1) {
+      if (k > 0) await new Promise((r) => setTimeout(r, gapMs));
+      const img = await weWindow.webContents.capturePage();
+      const sz = img.getSize();
+      if (sz.width > 0 && sz.height > 0) {
+        shots.push(img.resize({ width: N, height: N, quality: 'good' }).toBitmap());
+      }
+    }
+  } catch (error) {
+    return { ok: false, error: `截帧失败：${error.message}` };
+  }
+  if (!shots.length) return { ok: false, error: '一帧都没截到' };
+  const per = shots.map((b) => frameMetricsBGRA(b, N)).filter(Boolean);
+  if (!per.length) return { ok: false, error: '截到了但算不出指标' };
+  const m = {};
+  for (const k of Object.keys(per[0])) {
+    m[k] = +(per.reduce((a, x) => a + x[k], 0) / per.length).toFixed(3);
+  }
+  // 帧间变化
+  const deltas = [];
+  for (let i = 1; i < shots.length; i += 1) {
+    let d = 0;
+    let c = 0;
+    const a = shots[i - 1];
+    const b = shots[i];
+    for (let j = 0; j + 3 < Math.min(a.length, b.length); j += 4) {
+      d += Math.abs(a[j] - b[j]) + Math.abs(a[j + 1] - b[j + 1]) + Math.abs(a[j + 2] - b[j + 2]);
+      c += 3;
+    }
+    if (c) deltas.push(d / c);
+  }
+  m.frameDelta = deltas.length
+    ? +(deltas.reduce((x, y) => x + y, 0) / deltas.length).toFixed(2) : 0;
+  m.frameDeltaMin = deltas.length ? +Math.min(...deltas).toFixed(2) : 0;
+  m.frameDeltaMax = deltas.length ? +Math.max(...deltas).toFixed(2) : 0;
+  return { ok: true, frames: shots.length, metrics: m };
+}
+
+// ⚠️ 抽 preview 的帧（走 ffmpeg —— gif/jpg/png 都能吃）
+//   ⚠️⚠️ 而 ffmpeg 可能不在（打包版没带）⟹ 拿不到就说清，别让整个对照失败
+function previewMetrics(dir, project, frames = 8) {
+  const names = [project && project.preview, 'preview.gif', 'preview.jpg', 'preview.png']
+    .filter(Boolean);
+  const file = names.map((n) => path.join(dir, n)).find((f) => fs.existsSync(f));
+  if (!file) return { ok: false, error: '这张壁纸没有 preview' };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dp-prev-'));
+  try {
+    const N = 32;
+    execFileSync('ffmpeg', ['-v', 'error', '-i', file,
+      '-vf', `fps=4,scale=${N}:${N}:flags=area`, '-vsync', '0',
+      '-frames:v', String(frames), path.join(tmp, 'f%03d.ppm')], { stdio: 'pipe', timeout: 15000 });
+    const per = [];
+    const raws = [];
+    for (const n of fs.readdirSync(tmp).sort()) {
+      const buf = fs.readFileSync(path.join(tmp, n));
+      const m = /^P6\s+(\d+)\s+(\d+)\s+(\d+)\s/.exec(buf.toString('latin1', 0, 32));
+      if (!m) continue;
+      const rgb = buf.slice(m[0].length);
+      // ⚠️ 转成 BGRA 复用同一个指标函数（那保证两边口径一致）
+      const bgra = Buffer.alloc(N * N * 4);
+      for (let i = 0; i < N * N; i += 1) {
+        bgra[i * 4] = rgb[i * 3 + 2];
+        bgra[i * 4 + 1] = rgb[i * 3 + 1];
+        bgra[i * 4 + 2] = rgb[i * 3];
+        bgra[i * 4 + 3] = 255;
+      }
+      raws.push(bgra);
+      const fm = frameMetricsBGRA(bgra, N);
+      if (fm) per.push(fm);
+    }
+    if (!per.length) return { ok: false, error: 'preview 抽不出帧' };
+    const avg = {};
+    for (const k of Object.keys(per[0])) {
+      avg[k] = +(per.reduce((a, x) => a + x[k], 0) / per.length).toFixed(3);
+    }
+    const deltas = [];
+    for (let i = 1; i < raws.length; i += 1) {
+      let d = 0;
+      let c = 0;
+      for (let j = 0; j + 3 < raws[i].length; j += 4) {
+        d += Math.abs(raws[i - 1][j] - raws[i][j])
+          + Math.abs(raws[i - 1][j + 1] - raws[i][j + 1])
+          + Math.abs(raws[i - 1][j + 2] - raws[i][j + 2]);
+        c += 3;
+      }
+      if (c) deltas.push(d / c);
+    }
+    avg.frameDelta = deltas.length
+      ? +(deltas.reduce((x, y) => x + y, 0) / deltas.length).toFixed(2) : 0;
+    return { ok: true, frames: per.length, metrics: avg, file: path.basename(file) };
+  } catch (error) {
+    // ⚠️ ffmpeg 不在是最常见的原因 ⟹ 说清那件事，而不是"对照失败"
+    return { ok: false,
+      error: /ENOENT/.test(error.message)
+        ? '系统里没有 ffmpeg（brew install ffmpeg 之后这项才有）'
+        : `抽 preview 失败：${error.message}` };
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* */ }
+  }
+}
+
+// ⚠️⚠️⚠️ **对照** —— 把"看起来不对"变成"哪一项差多少"
+//   ⟹ 那让下一轮我拿到的是**数字**而不是形容词。
+function diffMetrics(ours, theirs) {
+  const L = [];
+  const rows = [
+    ['nearBlack', '近黑占比', 0.15, '高很多 ⟹ 有图层没画出来，或者一块实心黑盖住了'],
+    ['highlight', '高亮占比', 0.15, '差很多 ⟹ 混合模式错了（加色/普通）'],
+    ['bandTop', '上带亮度', 0.15, ''],
+    ['bandMid', '中带亮度', 0.15, ''],
+    ['bandBottom', '下带亮度', 0.15, ''],
+    ['satMedian', '饱和中位', 0.15, '差很多 ⟹ 颜色解码或者染色错了'],
+    ['lumMean', '平均亮度', 0.12, ''],
+    ['lumStd', '亮度σ', 0.10, '低很多 ⟹ 画面平（该有的明暗层次没出来）'],
+    ['centroidX', '重心X', 0.08, '偏 ⟹ 位置/相机偏移算错了'],
+    ['centroidY', '重心Y', 0.08, '偏 ⟹ 同上（上下颠倒会让它反过来）'],
+  ];
+  let worst = null;
+  for (const [k, label, tol, hint] of rows) {
+    const a = ours[k];
+    const b = theirs[k];
+    if (a === undefined || b === undefined) continue;
+    const d = a - b;
+    const bad = Math.abs(d) > tol;
+    if (bad && (!worst || Math.abs(d) / tol > worst.score)) {
+      worst = { k, label, d, hint, score: Math.abs(d) / tol };
+    }
+    L.push(`   ${bad ? '⚠️' : '  '} ${label.padEnd(9)}`
+      + `我们 ${String(a).padEnd(6)} preview ${String(b).padEnd(6)}`
+      + `差 ${(d > 0 ? '+' : '') + d.toFixed(3)}`
+      + `${bad && hint ? `　${hint}` : ''}`);
+  }
+  // ⚠️⚠️ 帧间变化单独说 —— 那是"该动的动没动"，和构图是两件事
+  const od = ours.frameDelta || 0;
+  const td = theirs.frameDelta || 0;
+  const motionBad = td > 2 && od < td * 0.3;
+  L.push(`   ${motionBad ? '⚠️' : '  '} 帧间变化   `
+    + `我们 ${od}　preview ${td}`
+    + `${motionBad ? '　⟹ 该动的没动（effect / 视差 / 音频柱 / 视频纹理）' : ''}`);
+  // ⚠️ 上下颠倒的**专门判据** —— 上下带反了比"某一带偏"更明确
+  const flipped = Math.abs(ours.bandTop - theirs.bandBottom) < 0.08
+    && Math.abs(ours.bandBottom - theirs.bandTop) < 0.08
+    && Math.abs(theirs.bandTop - theirs.bandBottom) > 0.12;
+  if (flipped) {
+    L.push('   ⚠️⚠️ 上下带正好互换了 ⟹ **画面上下颠倒**（flipY 那类 bug）');
+  }
+  return { lines: L, worst, motionBad, flipped };
+}
+
+ipcMain.handle('scene-compare', async () => {
+  try {
+    if (!weProject) return { ok: false, error: '没有装载壁纸' };
+    const prev = previewMetrics(weProject.dir, weProject);
+    const ours = await captureWallpaperMetrics();
+    const L = [];
+    L.push(`对照：我们的渲染 vs 作者的 ${prev.ok ? prev.file : 'preview'}`);
+    L.push(`壁纸：${weProject.title || path.basename(weProject.dir)}`);
+    if (!ours.ok) { L.push(`⚠️ 截我们的画面失败：${ours.error}`); }
+    if (!prev.ok) { L.push(`⚠️ ${prev.error}`); }
+    if (ours.ok && prev.ok) {
+      L.push(`（我们 ${ours.frames} 帧　preview ${prev.frames} 帧　都缩到 32×32）`);
+      L.push('');
+      const d = diffMetrics(ours.metrics, prev.metrics);
+      L.push(...d.lines);
+      L.push('');
+      if (d.flipped) L.push('结论：**上下颠倒**');
+      else if (d.worst) {
+        L.push(`结论：最大偏差是**${d.worst.label}**`
+          + `（差 ${d.worst.d > 0 ? '+' : ''}${d.worst.d.toFixed(3)}）`
+          + `${d.worst.hint ? `　${d.worst.hint}` : ''}`);
+      } else if (d.motionBad) L.push('结论：构图对得上，但**该动的没动**');
+      else L.push('结论：各项都在容差内 ✅（画面和作者的 preview 接近）');
+    } else if (ours.ok) {
+      L.push('');
+      L.push('我们这边的指标（没有 preview 可比）：');
+      for (const [k, v] of Object.entries(ours.metrics)) L.push(`   ${k.padEnd(14)}${v}`);
+    }
+    return { ok: true, text: L.join('\n') };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
 
 ipcMain.handle('scene-report', () => {
   try { return { ok: true, text: buildSceneReport() }; }

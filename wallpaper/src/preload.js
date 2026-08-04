@@ -97,6 +97,10 @@ contextBridge.exposeInMainWorld('gw', {
   //   ⟹ 判据：**探针的价值 = 信息量 ÷ 获取成本**，而这里该优化的是分母。
   sceneReport: () => ipcRenderer.invoke('scene-report'),
   sceneObjects: () => ipcRenderer.invoke('scene-objects'),
+  // ⚠️⚠️⚠️ **和作者的 preview 对照**（0.9.162）——
+  //   用户：「有什么你不确定的你就探针呗，拿真机数据你不就知道怎么做了」
+  //   ⟹ preview.gif 就是"这张壁纸该长什么样"的真值，而它一直在输入里。
+  sceneCompare: () => ipcRenderer.invoke('scene-compare'),
 
   // video 页面 → 主进程
   sendVideoStatus: (payload) => ipcRenderer.send('video-status', payload),

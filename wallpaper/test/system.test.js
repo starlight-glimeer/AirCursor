@@ -110,15 +110,24 @@ const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'),
 const declared = declaredNames(mainSource);
 
 check('main.js 用到的 Node / Electron API 都导入了', () => {
-  // 只查这些：它们是"忘了导入"的高发区，而且都是纯函数调用形式（`name(` ），
-  // 所以正则不会误报成属性访问。
+  // 只查这些：它们是"忘了导入"的高发区。
+  // ⚠️ 而它们**也可能是别的对象的方法**（`/re/.exec()`、`img.resize()`）
+  //   ⟹ 正则要排除"前面是点号"的情况（见下面那段判据）。
   const suspects = [
-    'spawnSync', 'spawn', 'exec', 'execFile', 'execSync',
+    // ⚠️ 名单要**穷举那一族** —— 0.9.162 我漏引入 `execFileSync`，
+    //   而它不在名单里 ⟹ 守卫沉默，真机上才会抛 ReferenceError。
+    //   ⟹ 判据：**"高发区名单"漏一个就等于那一个没守。**
+    'spawnSync', 'spawn', 'exec', 'execFile', 'execSync', 'execFileSync',
     'shell', 'clipboard', 'nativeImage', 'powerMonitor', 'Notification',
     'Tray', 'Menu', 'globalShortcut', 'dialog', 'screen', 'nativeTheme',
   ];
+  // ⚠️⚠️ **前面不能是点号** —— `\b` 挡不住属性访问。
+  //   实测（0.9.162）：`/pattern/.exec(str)` 里的 `exec` 被这条守卫报成
+  //   "未导入却在用 exec"，而它是**正则的方法**，不是 child_process 的 API。
+  //   ⚠️ 而上面那句注释还写着"正则不会误报成属性访问" —— 那句话本身是错的。
+  //   ⟹ 判据：**`\b` 只管词边界，而点号是词边界** ⟹ 要显式排除 `.name`。
   const missing = suspects.filter((name) =>
-    new RegExp(`\\b${name}\\s*[(.]`).test(mainSource) && !declared.has(name));
+    new RegExp(`(^|[^.\\w$])${name}\\s*\\(`, 'm').test(mainSource) && !declared.has(name));
   assert.deepStrictEqual(missing, [], `未导入却在用：${missing.join(', ')}`);
 });
 
