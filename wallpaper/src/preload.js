@@ -154,6 +154,17 @@ contextBridge.exposeInMainWorld('gw', {
   onMouseStatus: on('mouse-status'),
   onVideoStatus: on('video-status'),
   onVideoSource: on('video-source'),
+  // ⚠️⚠️⚠️ **报"我跑起来了"**（0.9.159）。
+  //
+  // ⚠️ `we-preload.js` 有 `wallpaperReady`（第三方壁纸自己调），
+  //   而**我们自己的页面**（`scene.html` / `video.html`）走这个 preload
+  //   ⟹ 它们调 `window.wallpaperReady()` 是个**静默 no-op**
+  //     （`window.wallpaperReady` 压根不存在，那个 `if` 直接跳过）。
+  //   ⚠️ 后果：面板永远显示「⏳ 页面加载了，但壁纸还没报 ready：
+  //     如果一直这样，是里面的脚本没跑起来」—— 而脚本明明跑起来了。
+  //   ⟹ 判据：**"我们自己的页面"和"第三方壁纸"用两套 preload 时，
+  //     两边都要有的那些通道要逐个核**（这次漏的是 ready，上次漏的是 onSceneData）。
+  wallpaperReady: () => ipcRenderer.send('we-ready'),
   // ⚠️ scene 类壁纸（0.9.159）：主进程解好包再送过来（渲染进程是 sandbox，读不了文件）
   onSceneData: on('scene-data'),
   // ⚠️⚠️ **裸的 128 段频谱** —— scene 里的音频柱要它（实测两个样本都挂了

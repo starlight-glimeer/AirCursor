@@ -2468,7 +2468,28 @@ function createWEWindow() {
   });
 
   win.webContents.on('did-finish-load', () => {
-    sendWEProperties();
+    // ⚠️⚠️⚠️ **属性只对 web 类有意义**（0.9.159 用户实测逼出来的）。
+    //
+    // ⚠️ 那条链是**反向**的：壁纸自己挂 `window.wallpaperPropertyListener`，
+    //   宿主去调它。而 scene / video 走的是**我们自己的页面**
+    //   （`scene.html` / `video.html`）—— 它们压根不挂那个 listener，
+    //   属性也不通过它生效（scene 的参数在 scene.json 里，我们解析时就用了）。
+    //   ⟹ 对它们调 `sendWEProperties()` 会**轮询 30 秒**然后报
+    //     「⚠️ 有 138 项属性，但壁纸没挂 wallpaperPropertyListener ⟹ 一项都没进去。
+    //       它的圆环/粒子/时间都靠属性驱动，所以画面会缺一大块」
+    //   ⚠️⚠️ 而那句话对 scene 是**错的**：画面不缺（实测 18 图层 + 44 文字 + 3 柱子
+    //     都画出来了），是那条诊断的前提不成立。
+    //   ⟹ 判据：**给 A 写的诊断话术套到 B 上，会变成误导** ——
+    //     它比没有诊断更糟（用户会去查一个不存在的问题）。
+    if (!WE.isMediaType(weProject.type) && weProject.type !== 'scene') {
+      sendWEProperties();
+    } else {
+      // ⚠️ 而要说清"为什么这里没有属性状态" —— 空着会让人以为是漏了
+      wePropState = {
+        state: `不适用（${weProject.type} 类走我们自己的页面）`,
+        count: Object.keys(weProject.properties || {}).length,
+      };
+    }
     // ⚠️ 不在这里判"成功"。did-finish-load 只说 HTML 到了，不说里面的 ES module
     // 跑起来了 —— 而模块加载失败正是 file:// 那个坑的症状。真正的成功信号是壁纸
     // 自己调 wallpaperReady（见 ipcMain.on('we-ready')）。
@@ -4256,7 +4277,11 @@ async function sendSceneData(win, dir) {
     }
   }
   if (composites > 0) {
-    step('合成层', `${composites} 个（${composNames.join(' / ')}）`
+    // ⚠️⚠️ `composites` 是**引用它的 image 路径数**（去重后），
+    //   而下面"跳过：合成层 N"是**对象实例数** —— 实测 3 vs 12。
+    //   ⚠️ 我原来两处都写「个」⟹ 同一个词指两个不同的东西，看起来像对不上账。
+    //   ⟹ 判据：**同一屏上的计数要标明单位**（种类 / 实例）。
+    step('合成层', `${composNames.length} 种（${composNames.join(' / ')}）`
       + ' —— WE 内置模型、本来没有贴图，画面来自下层 + effect'
       + '（挂音频柱的那些照样画）');
   }
@@ -4411,9 +4436,23 @@ async function sendSceneData(win, dir) {
     if (!texSet.has(tp)) { skip.noTexture += 1; continue; }
     willImage += 1;
   }
+  // ⚠️⚠️⚠️ **两个数字要能对上账** —— 用户实测那份读数里：
+  //   「能画 87 个元素（image 30 / text 57）」 vs 「预计画：图层 18 · 文字 44」
+  //   ⟹ 差 12 + 13，而**两个数都对**：
+  //     · text 57 − 13 个空串（模板占位）= 44
+  //     · image 30 − 12 个合成层（本来没贴图；其中 3 个挂音频柱另算）= 18
+  //   ⚠️ 但 `renderability()`（"能画多少"）**把空串和合成层也算成能画** ⟹ 它高估。
+  //   ⟹ 判据：**同一屏上的两个数字必须能互相解释** ——
+  //     不能解释的差额会让人以为哪个是 bug（而这次两个都不是）。
+  //   ⟹ 所以这一行把差额**逐项列出来**，让 87 → 65 那个减法是看得见的。
   step('屏幕上会有',
     `图层 ${willImage} · 文字 ${willText} · 音频柱 ${willBars}`
-    + `（跳过：合成层 ${skip.composite} / 空文字 ${skip.emptyText} / 纹理不可用 ${skip.noTexture}）`);
+    + `　共 ${willImage + willText + willBars} 个`
+    + `（上面那句"能画 ${cap.doneN} 个"减去：`
+    + `合成层 ${skip.composite}（本来没贴图）`
+    + ` / 空文字 ${skip.emptyText}（模板占位）`
+    + `${skip.noTexture ? ` / 纹理不可用 ${skip.noTexture}` : ''}`
+    + `）`);
   diag.willDraw = { image: willImage, text: willText, audioBars: willBars, skip };
 
   // ──⚠️⚠️ **动态来源盘点** —— "这张壁纸为什么不动"的直接答案。

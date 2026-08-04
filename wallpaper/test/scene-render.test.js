@@ -474,4 +474,56 @@ check('⚠️⚠️⚠️ 壁纸窗口的报错要通到面板（进日志不等
     '装载新壁纸时没清空上一张的 scene 读数');
 });
 
+check('⚠️⚠️⚠️ 我们自己的页面要能报 ready（否则面板永远说"没跑起来"）', () => {
+  // ⚠️ 用户实测：面板显示「⏳ 页面加载了，但壁纸还没报 ready」——
+  //   而脚本明明跑起来了（后面那些步骤全有读数）。
+  //   ⚠️⚠️ 根因：`wallpaperReady` 是 `we-preload.js` 暴露的（给第三方壁纸），
+  //     而 `scene.html` 走的是 `preload.js` ⟹ `window.wallpaperReady`
+  //     压根不存在 ⟹ 那句 `if` 直接跳过，**静默 no-op**。
+  //   ⟹ 判据：**"我们自己的页面"和"第三方壁纸"用两套 preload 时，
+  //     两边都要有的那些通道要逐个核**（这次漏 ready，上次漏 onSceneData）。
+  assert.match(preload, /wallpaperReady:\s*\(\)\s*=>\s*ipcRenderer\.send\('we-ready'\)/,
+    "preload.js 没暴露 wallpaperReady ⟹ scene 永远报不了 ready");
+  // ⚠️ 而渲染层要调**这一个**，不是 window.wallpaperReady
+  assert.match(renderCode, /window\.gw\.wallpaperReady\(\)/,
+    '渲染层调的不是 gw.wallpaperReady ⟹ 判 window.wallpaperReady 等于永远不报');
+  assert.ok(!/if \(window\.wallpaperReady\)/.test(renderCode),
+    '还在判 window.wallpaperReady ⟹ 那是 we-preload 才有的，这里恒为假');
+});
+
+check('⚠️⚠️⚠️ 属性推送不该套到 scene / video 上（诊断话术会变成误导）', () => {
+  // ⚠️ 用户实测那行：「⚠️ 有 138 项属性，但壁纸没挂 wallpaperPropertyListener
+  //   ⟹ 一项都没进去。它的圆环/粒子/时间都靠属性驱动，所以画面会缺一大块」
+  //   ⚠️⚠️ 而那句话对 scene 是**错的**：画面不缺（18 图层 + 44 文字 + 3 柱子都画了），
+  //     是那条诊断的前提不成立 —— 属性那条链是给**第三方 web 壁纸**的
+  //     （它们自己挂 `wallpaperPropertyListener`），而 scene / video 走
+  //     我们自己的页面、参数在 scene.json 里、解析时就用了。
+  //   ⟹ 判据：**给 A 写的诊断话术套到 B 上，会变成误导** ——
+  //     它比没有诊断更糟（用户会去查一个不存在的问题）。
+  assert.match(mainCode,
+    /if \(!WE\.isMediaType\(weProject\.type\) && weProject\.type !== 'scene'\) \{\s*sendWEProperties\(\);/,
+    'did-finish-load 里无条件调 sendWEProperties ⟹ 它会对 scene 轮询 30 秒'
+    + '然后报一句"画面会缺一大块"的错话');
+  // ⚠️ 而要说清"为什么这里没有属性状态"（空着会让人以为漏了）
+  assert.match(mainCode, /state: `不适用（\$\{weProject\.type\} 类走我们自己的页面）`/,
+    '跳过属性推送时没说明原因 ⟹ 那一栏空着会让人以为是漏了');
+});
+
+check('⚠️⚠️ 同一屏上的两个数字要能互相解释', () => {
+  // ⚠️ 用户那份读数里：「能画 87 个元素（image 30 / text 57）」
+  //   vs 「预计画：图层 18 · 文字 44」 ⟹ 差 12 + 13。
+  //   ⚠️⚠️ **两个数都对**（57−13 空串=44、30−12 合成层=18），
+  //     但差额没解释 ⟹ 会让人以为哪个是 bug。
+  //   ⟹ 判据：**同一屏上的两个数字必须能互相解释。**
+  assert.match(mainCode, /上面那句"能画 \$\{cap\.doneN\} 个"减去/,
+    '"屏幕上会有"那行没说清它和"能画 N 个"的差额从哪来');
+  assert.match(mainCode, /合成层 \$\{skip\.composite\}（本来没贴图）/,
+    '差额里没标明合成层是"本来没贴图"⟹ 读起来像我们画不出来');
+  assert.match(mainCode, /空文字 \$\{skip\.emptyText\}（模板占位）/,
+    '差额里没标明空文字是模板占位');
+  // ⚠️⚠️ 而"种类"和"实例"不能都叫「个」（实测 3 种 vs 12 个实例）
+  assert.match(mainCode, /\$\{composNames\.length\} 种/,
+    '合成层那行用「个」报种类数 ⟹ 和下面的实例数撞词，看起来像对不上账');
+});
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);

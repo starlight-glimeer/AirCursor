@@ -691,7 +691,10 @@
       // ⚠️ build 是 async（纹理解码要 await）⟹ 异常要在 .catch 里接，
       //   而不是靠外面那个 try（那个接不到 async 里抛的）
       build(payload).then(() => {
-        if (window.wallpaperReady) window.wallpaperReady();
+        // ⚠️ 走 `gw.wallpaperReady`（我们自己的 preload）——
+        //   `window.wallpaperReady` 是 `we-preload.js` 才有的，
+        //   在这里判它等于永远不报（那让面板一直显示"还没报 ready"）。
+        if (window.gw.wallpaperReady) window.gw.wallpaperReady();
       }).catch((error) => {
         fatal('建场景时抛异常', `${error.message}\n${(error.stack || '').split('\n')[1] || ''}`);
       });

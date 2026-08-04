@@ -450,7 +450,13 @@ check('preload 暴露的调用，面板里都有地方触发', () => {
   // ⚠️ 消费者名单要跟着新页面走。漏一个的后果是**假阳性** —— 守卫说"点不到"
   // 而其实接好了，于是我会去"修"一个不存在的问题。加新渲染进程页面时要加到这里。
   const video = fs.readFileSync(path.join(__dirname, '..', 'src', 'video.js'), 'utf8');
-  const consumers = dash + wall + sensor + overlay + video;
+  // ⚠️⚠️ scene 渲染层（0.9.159 新增的第三条渲染路径）——
+  //   ⚠️ 我加了 `wallpaperReady` 到 preload 却忘了把这个文件加进名单
+  //     ⟹ 这条守卫**当场报红**（说 wallpaperReady 点不到）。
+  //     那正是它该有的行为：名单漏一个 = 假阳性，而注释里已经写着
+  //     「加新渲染进程页面时要加到这里」。
+  const sceneRender = fs.readFileSync(path.join(__dirname, '..', 'src', 'scene-render.js'), 'utf8');
+  const consumers = dash + wall + sensor + overlay + video + sceneRender;
 
   // 只查主动调用（invoke/send 那类），不查 onXxx 监听 —— 监听没人用是浪费，
   // 但主动调用没人用意味着**用户点不到那个功能**。
