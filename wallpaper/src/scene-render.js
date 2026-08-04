@@ -128,6 +128,8 @@
   //   ⚠️ 样本 A 的 eye 是 (0,0) ⟹ 只看一个样本发现不了这条。
   const camOffset = { x: 0, y: 0 };
   let camZoom = 1;
+  // ⚠️ 偏移被夹过要报出来 —— 那解释了"画面和 WE 里差几十像素"
+  let camClamped = false;
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -147,10 +149,22 @@
     camera.top = halfH;
     camera.bottom = -halfH;
     camera.updateProjectionMatrix();
-    // ⚠️⚠️ 相机偏移：`camera.eye` 是**画布像素坐标**里的位置
-    //   ⟹ 和 origin 一样要换成中心原点（减半宽半高）。
-    camera.position.set(camOffset.x, camOffset.y, 100);
-    camera.lookAt(camOffset.x, camOffset.y, 0);
+    // ⚠️⚠️⚠️ **相机偏移要夹在"画布还盖满屏幕"的范围内。**
+    //
+    // ⚠️ `camera.eye` 已经是以画布中心为原点的（见 build 里那段判据）。
+    // ⚠️⚠️ 而偏移会把可见范围推出画布：实测样本 B 的 eye.y=+121 会让
+    //   上边界到 1201，而画布顶只到 1080、最大的背景层顶到 1111
+    //   ⟹ 露 90 单位的黑边。
+    //   ⟹ 判据：**壁纸铺满屏幕是硬需求，露黑边看起来像"坏了"** ——
+    //     宁可少偏几十像素，也不要黑边。
+    // ⚠️ 夹的范围 = 画布半宽/半高 减去 相机半宽/半高（若相机比画布还大就夹到 0）
+    const maxOffX = Math.max(0, baseW / 2 - halfW);
+    const maxOffY = Math.max(0, baseH / 2 - halfH);
+    const ox = Math.max(-maxOffX, Math.min(maxOffX, camOffset.x));
+    const oy = Math.max(-maxOffY, Math.min(maxOffY, camOffset.y));
+    camClamped = (ox !== camOffset.x) || (oy !== camOffset.y);
+    camera.position.set(ox, oy, 100);
+    camera.lookAt(ox, oy, 0);
   }
   resize();
   window.addEventListener('resize', resize);
@@ -391,10 +405,31 @@
     if (typeof eye === 'string') {
       const e = eye.trim().split(/\s+/).map(Number);
       if (e.length >= 2 && e.every(Number.isFinite)) {
-        // ⚠️ 和 origin 同一个换算：画布像素 → 中心原点
-        camOffset.x = e[0] - baseW / 2;
-        camOffset.y = e[1] - baseH / 2;
+        // ⚠️⚠️⚠️ **`camera.eye` 已经是以画布中心为原点的** —— 不要再减半宽半高。
+        //
+        // ⚠️ 我上一版照 `origin` 的模式减了 `baseW/2` ⟹ **整个画面被推到右上角**
+        //   （用户截图：图只占屏幕右上，左边和下边全黑）。
+        // ⚠️⚠️ 判据（这次是怎么坐实的）：样本 A 的 `eye` 是 `(0, 0)`，
+        //   而它的画面是**居中**的（抽 preview.gif 首帧核过）。
+        //   ⟹ 若 eye 是"画布像素坐标（原点左下）"，(0,0) 就意味着相机在左下角
+        //     ⟹ 画面会只剩右上 1/4 —— 那正好是这次的症状。
+        //   ⟹ 所以 eye 和 origin **不在同一个坐标空间**。
+        // ⟹ 判据：**同一个文件里的两个坐标字段可以有不同的原点** ——
+        //   "这个字段是画布像素坐标"是从 origin 那里推广过来的，而推广没有依据。
+        //   ⚠️ 而它**只有一个样本能证伪**（样本 A 的 0,0 恰好是"默认值正确"，
+        //     样本 B 的偏移量小到看不出是不是差了半个画布）
+        //     ⟹ 两个样本都要过一遍才敢说。
+        camOffset.x = e[0];
+        camOffset.y = e[1];
         if (camOffset.x || camOffset.y) {
+          // ⚠️⚠️⚠️ **偏移要夹住** —— 否则可见范围会越出"有内容"的区域露黑边。
+          //   ⚠️ 实测样本 B：eye.y=+121，而相机可见上边界到 1201，
+          //     最大的背景层上边只到 1111 ⟹ **差 90 单位露黑边**。
+          //   ⚠️⚠️ 而图层的尺寸是按**画布**做的（背景 4444×2222 vs 画布 3840×2160，
+          //     那 1.15 倍是留给视差移动的余量，不是留给相机偏移的）。
+          //   ⟹ 判据：**壁纸铺满屏幕是硬需求，露黑边看起来像"坏了"** ——
+          //     一个不该看到的黑边比"相机偏移少了几十像素"严重得多。
+          //   ⟹ 所以按"画布必须盖满可见范围"夹住它（见 resize 里的 clamp）。
           say(`相机偏移 (${camOffset.x.toFixed(0)}, ${camOffset.y.toFixed(0)})`);
         }
       }
@@ -862,6 +897,11 @@
       audioFrames > 0 ? 'ok' : 'warn');
       if (audioFrames === 0) hasProblem = true;
       if (!window.gw.onWeAudio) warn('gw.onWeAudio 不在 ⟹ preload 没挂音频通道');
+    }
+    // ⚠️ 相机偏移被夹过要报 —— 那解释了"画面和 WE 里差几十像素"
+    if (camClamped) {
+      say(`相机偏移被夹住了（原 ${camOffset.x.toFixed(0)},${camOffset.y.toFixed(0)}）`
+        + ' —— 不夹会露黑边，宁可少偏几十像素');
     }
     if (frames === 0) fatal('一帧都没画', 'requestAnimationFrame 循环没跑起来');
     if (glErr !== 0) fatal('WebGL 报错', `gl.getError()=${glErr}（0 才是正常）`);

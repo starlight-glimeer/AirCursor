@@ -550,9 +550,15 @@ check('⚠️⚠️ 相机偏移和 zoom 要读出来（只看一个样本发现
   //   ⟹ 判据：**"默认值恰好正确"的样本会掩盖漏读的字段。**
   assert.match(renderCode, /payload\.camera && payload\.camera\.eye/,
     '没读 camera.eye ⟹ 相机偏移的壁纸会整体偏几百像素');
-  assert.match(renderCode, /camOffset\.x = e\[0\] - baseW \/ 2/,
-    'camera.eye 没换算成中心原点 ⟹ 偏移量会错半个画布');
-  assert.match(renderCode, /camera\.position\.set\(camOffset\.x, camOffset\.y/,
+  // ⚠️⚠️⚠️ 这条断言原来写的是 `camOffset.x = e[0] - baseW / 2` ——
+  //   **它把上一版的 bug 写成了要守的东西**，而且当时是绿的。
+  //   ⟹ 判据：**守卫锁住的是我当时的理解，而理解错了守卫就跟着错。**
+  //     一条断言的价值上限 = 写它的时候我对那件事的理解。
+  //   ⟹ 现在改成守"直接用"（正确的语义在下面那条专门的守卫里）。
+  assert.match(renderCode, /camOffset\.x = e\[0\];/,
+    'camera.eye 没被读进 camOffset');
+  // ⚠️ 相机用的是**夹住之后**的值（`ox/oy`）—— 见下面那条专门的守卫
+  assert.match(renderCode, /camera\.position\.set\(ox, oy, 100\)/,
     '算了偏移但没作用到相机上 ⟹ 那是个静默 no-op');
   // ⚠️ zoom 也要读（实测两样本都是 1，但它是个真参数）
   assert.match(renderCode, /Number\(\(payload\.general \|\| \{\}\)\.zoom\)/,
@@ -573,6 +579,34 @@ check('⚠️⚠️ 第三方内容不合规范时要说清"不是我们的 bug"
     '字体加载失败的提示没说清归属 ⟹ 会让人往"我们读坏了"的方向查');
   assert.match(renderCode, /回退成系统字体/,
     '没说清后果（不致命，那几段字回退）⟹ 读起来像画面废了');
+});
+
+check('⚠️⚠️⚠️ camera.eye 已经是中心原点（再减半画布会把画面推到角上）', () => {
+  // ⚠️⚠️ **用户实测**：上一版我照 `origin` 的模式给 eye 减了 `baseW/2`
+  //   ⟹ 画面**只出现在屏幕右上角**，左边和下边全黑。
+  //   ⚠️ 怎么坐实的：样本 A 的 `eye` 是 `(0, 0)`，而它的画面是**居中**的
+  //     （抽 preview.gif 首帧核过）⟹ 若 eye 是"画布像素坐标（原点左下）"，
+  //     (0,0) 就意味着相机在左下角 ⟹ 画面只剩右上 1/4 —— 正是那个症状。
+  //   ⟹ 判据：**同一个文件里的两个坐标字段可以有不同的原点** ——
+  //     "这个字段是画布像素坐标"是从 origin 推广过来的，而推广没有依据。
+  assert.ok(!/camOffset\.x = e\[0\] - baseW \/ 2/.test(renderCode),
+    'camera.eye 又减了半个画布 ⟹ 画面会被推到屏幕右上角（那是实测过的回归）');
+  assert.match(renderCode, /camOffset\.x = e\[0\];/,
+    'camera.eye 该直接用（它已经是以画布中心为原点的）');
+});
+
+check('⚠️⚠️ 相机偏移要夹住（露黑边比少偏几十像素严重）', () => {
+  // ⚠️ 实测样本 B：eye.y=+121 会让可见上边界到 1201，
+  //   而最大的背景层顶只到 1111 ⟹ **露 90 单位黑边**。
+  //   ⚠️ 而图层尺寸是按**画布**做的（背景 4444×2222 vs 画布 3840×2160，
+  //     那 1.15 倍是留给视差的余量，不是留给相机偏移的）。
+  //   ⟹ 判据：**壁纸铺满屏幕是硬需求，露黑边看起来像"坏了"。**
+  assert.match(renderCode, /const maxOffX = Math\.max\(0, baseW \/ 2 - halfW\)/,
+    '相机偏移没夹在"画布还盖满屏幕"的范围内 ⟹ 会露黑边');
+  assert.match(renderCode, /camera\.position\.set\(ox, oy, 100\)/,
+    '算了夹住后的值但没用它 ⟹ 那是个静默 no-op');
+  // ⚠️ 夹过要报出来（那解释了"和 WE 里差几十像素"）
+  assert.match(renderCode, /camClamped/, '夹住这件事没报出来');
 });
 
 console.log(`\n${passed} 项通过${process.exitCode ? '，有失败' : '，全绿'}\n`);
