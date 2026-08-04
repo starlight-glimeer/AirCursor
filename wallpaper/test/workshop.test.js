@@ -588,8 +588,22 @@ check('类型标签是 Steam 认的大写形式', () => {
     assert.match(t.id, /^[A-Z]/, `${t.id} 首字母没大写 —— Steam 会返回空结果且不报错`);
   }
   // 而且要标出哪些我们放不了 —— 筛选按钮上就能看到
-  assert.strictEqual(S.TYPE_TAGS_QUERY.find((t) => t.id === 'Scene').supported, false);
-  assert.strictEqual(S.TYPE_TAGS_QUERY.find((t) => t.id === 'Web').supported, true);
+  // ⚠️⚠️ **Scene 0.9.159 起是 true** —— 渲染做了（图层+文字+音频柱+视差）。
+  //   ⚠️ 漏改这里的症状：筛选按钮和下载按钮都说「暂不支持」，而它其实能装能画。
+  //   ⟹ 判据：**"支持"这件事散落在好几张表里，改一处要全扫一遍。**
+  assert.strictEqual(S.TYPE_TAGS_QUERY.find((x) => x.id === 'Scene').supported, true);
+  assert.strictEqual(S.TYPE_TAGS_QUERY.find((x) => x.id === 'Web').supported, true);
+  // ⚠️ 而这张表和 `we-host.js` 的 TYPES 是**两份**（一份给 Steam 查询、
+  //   一份给装载判定）⟹ 它们对同一个类型的说法必须一致。
+  const WE = (() => {
+    require(require('node:path').join(__dirname, '..', 'src', 'we-host.js'));
+    return globalThis.GestureWallWE;
+  })();
+  for (const x of S.TYPE_TAGS_QUERY) {
+    assert.strictEqual(x.supported, WE.isSupportedType(x.id),
+      `${x.id}：搜索面板说 supported=${x.supported}，`
+      + `而 we-host 说 ${WE.isSupportedType(x.id)} ⟹ 两张表打架`);
+  }
 });
 
 check('每页数量有上下限（Steam 不接受任意值）', () => {

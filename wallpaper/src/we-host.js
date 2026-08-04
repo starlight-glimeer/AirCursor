@@ -650,7 +650,10 @@ function isSupportedType(type) {
 // Windows 程序" —— 于是 image 被报成 Windows 程序。少一个分支的后果不是
 // "少说一句"，是**说错**，而说错比不说糟。所以做成查表，加类型时不会漏。
 const TYPE_REFUSALS = {
-  scene: 'scene 类是 WE 编辑器的私有格式（含它自己方言的 shader 和粒子），装了也只能看静态图',
+  // ⚠️ scene 那条也删了（0.9.159 起支持）—— `typeRefusal` 只该收
+  //   真的不支持的类型，而现在只剩 application。
+  //   ⚠️ 判据：**支持了之后要把旧的拒绝话术删干净** ——
+  //     漏一处就会在某个界面上说"暂不支持"，而那和"坏了"分不清。
   application: 'application 类是 Windows 程序，macOS 上跑不了',
 };
 
@@ -673,14 +676,12 @@ function refusalReason(project) {
   if (project.type === 'application') {
     return '这是 Windows 程序类壁纸（别人编译的 .exe），macOS 上跑不了';
   }
-  if (project.gifScene) {
-    return 'GIF 壁纸暂不支持 —— 它在 WE 里被包成 scene 格式（gifscene），'
-      + '而 scene 的渲染还没做。下面是它的预览图';
-  }
-  if (project.type === 'scene') {
-    return 'scene 类暂不支持 —— 那是 WE 编辑器的私有格式（含它自己方言的 shader 和粒子），'
-      + '需要重新实现渲染引擎。下面是它的预览图';
-  }
+  // ⚠️⚠️ **scene 和 gifscene 那两条拒绝话术 0.9.159 删了** ——
+  //   scene 现在 `support: 'full'`，`refusalReason` 根本走不到它。
+  //   ⚠️ 而留着死话术比没有更糟：下一个人读到"scene 类暂不支持"会以为它还没做，
+  //     或者去改一段永远不执行的代码。
+  //   ⚠️ gifscene（GIF 包成 scene）走的是同一条渲染路径 —— `scene.json` 找不到时
+  //     `sendSceneData` 会去找 `gifscene.json`（见那里的注释）。
   return `暂不支持 ${project.typeLabel}`;
 }
 

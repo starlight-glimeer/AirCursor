@@ -448,21 +448,33 @@ check('GIF 被认出来是 scene 的一种（gifscene）', () => {
   assert.strictEqual(gif.gifScene, true);
   assert.strictEqual(WE.isGifScene('gifscene.json'), true);
   assert.strictEqual(WE.isGifScene('scene.json'), false);
-  // 理由里要点出它是 GIF，否则用户以为自己装错了文件
-  assert.match(WE.refusalReason(gif), /GIF/);
+  // ⚠️⚠️ **0.9.159 起它不再被拒绝** —— 走的是和 scene 同一条渲染路径
+  //   （`sendSceneData` 找不到 `scene.json` 会去找 `gifscene.json`）。
+  //   ⟹ 这里守的是"它还是被认出来是 gifscene"（那个标记进诊断），
+  //     而**不是**"它被拒绝"。
+  assert.strictEqual(gif.supported, true,
+    'gifscene 被拒绝了 ⟹ 它和 scene 走同一条渲染路径，该能装');
 });
 
 // ⚠️ "不支持"三个字对用户没有价值。他需要知道为什么、以及能不能换一个。
 // 更要紧的是说清"这不是坏了" —— 否则他会去排查一个不存在的 bug
 //（我们已经在这类混淆上烧掉过一整天）。
 check('每种拒绝都给出具体理由，不是一句"不支持"', () => {
-  const scene = WE.refusalReason(WE.parseProject({ type: 'scene', file: 'scene.json' }));
-  assert.match(scene, /私有格式|shader|渲染/, `scene 的理由太笼统：${scene}`);
+  // ⚠️⚠️ scene 从这里**移出去了**（0.9.159 起支持）——
+  //   现在真的不支持的只剩 application（别人编译的 Windows .exe）。
   const app = WE.refusalReason(WE.parseProject({ type: 'application' }));
   assert.match(app, /Windows|exe/, `application 的理由太笼统：${app}`);
   // 每条都得比"暂不支持"长，否则等于没说
-  for (const t of ['scene', 'application', 'zzz']) {
+  for (const t of ['application', 'zzz']) {
     assert.ok(WE.refusalReason(WE.parseProject({ type: t })).length > 12);
+  }
+  // ⚠️⚠️⚠️ 而**支持了的类型不该还有拒绝话术** ——
+  //   漏一处就会在某个界面上说"暂不支持"，而那和"坏了"分不清。
+  //   （0.9.159 实测栽在这里：渲染做完了，而搜索面板还标着「暂不支持」、
+  //     下载按钮还写「仍然下载（暂不支持）」。）
+  for (const t of ['scene', 'web', 'video', 'image']) {
+    assert.strictEqual(WE.typeRefusal(t), null,
+      `${t} 支持了却还留着拒绝话术 ⟹ 界面上会说"暂不支持"`);
   }
 });
 

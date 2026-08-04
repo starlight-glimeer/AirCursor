@@ -562,16 +562,20 @@ function queryTypeFor(sortId, hasText) {
 
 // 类型。
 const TYPE_TAGS_QUERY = [
-  { id: 'Scene', label: '场景', supported: false },
+  // ⚠️⚠️ **0.9.159 起 supported: true** —— scene 的渲染做了
+  //   （图层 + 文字 + 音频柱 + 视差；shader effect / 粒子还没有）。
+  //   ⚠️ 而它是**分维度支持** ⟹ 装载时逐张报覆盖率（见 scene-pkg 的 renderability）。
+  //   ⚠️ 漏改这里的症状：搜索面板把 scene 标成「暂不支持」、下载按钮写
+  //     「仍然下载（暂不支持）」—— 而它其实能装能画。
+  { id: 'Scene', label: '场景', supported: true },
   { id: 'Video', label: '视频', supported: true },
   { id: 'Web', label: '网页', supported: true },
   // ⚠️⚠️ 这里原来有 `{ id: 'Application', label: '程序', supported: false }`
   //   —— **0.9.118 删了**。用户 2026-08-02：「类型那里把程序这种类型直接删除不显示了」
   //
   // ⚠️ 而它和「场景」不是一类东西，所以只删这一个：
-  //   · **场景**（Scene）—— 我们暂不支持，但**将来可能支持**
-  //     （评估过：linux-wallpaperengine 真实现了，只是移植成本太高）
-  //     ⟹ 留着，标「暂不支持」，用户至少知道那类壁纸存在
+  //   · **场景**（Scene）—— **0.9.159 起支持**（那条评估我量错了对象，
+  //     见 we-host.js 里 scene 那段）⟹ 标 supported: true
   //   · **程序**（Application）—— 别人编译的 **Windows .exe**，
   //     在 macOS 上**永远跑不了**，而且用户明确说过不做
   //     ⟹ 一个永远不会支持的筛选项 = 纯噪声，删掉
